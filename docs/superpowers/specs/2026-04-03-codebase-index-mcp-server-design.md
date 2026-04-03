@@ -1239,7 +1239,11 @@ CREATE TABLE pipeline_wal (
        │     │     │
        │     │     ├── event_type = 'added' | 'modified'
        │     │     │     ├── Check if file still exists on disk
-       │     │     │     │     ├── YES → Re-run: chunk → embed → upsert LanceDB → update Merkle
+       │     │     │     │     ├── YES → Idempotent re-run:
+       │     │     │     │     │     ├── 1. Delete existing LanceDB vectors for file_path (if any)
+       │     │     │     │     │     ├── 2. chunk → embed → insert LanceDB → update Merkle
+       │     │     │     │     │     └── (delete-before-insert ensures no duplicate vectors
+       │     │     │     │     │          regardless of how many times recovery is re-executed)
        │     │     │     │     └── NO  → Clean up: delete vectors + Merkle entry
        │     │     │     └── DELETE FROM pipeline_wal WHERE file_path = ?
        │     │
@@ -1277,12 +1281,91 @@ class IndexPipeline {
 }
 ```
 
+**Idempotent Recovery Implementation:**
+
+リカバリ処理は通常パイプラインの `executeStages()` と同一のフローを使用する。
+`executeStages()` は内部で「対象 `filePath` の既存チャンクを削除してから新規チャンクを挿入する」
+処理を行うため、リカバリ時に特別な分岐は不要。
+
+```typescript
+class IndexPipeline {
+  /**
+   * Recover incomplete operations from WAM markers on server startup.
+   * This method is idempotent — safe to call repeatedly without
+   * creating duplicate vectors.
+   */
+  async recoverFromWal(): Promise<{ recovered: number; cleaned: number }> {
+    const pendingEntries = this.metadataStore.getWalMarkers();
+    let recovered = 0;
+    let cleaned = 0;
+
+    for (const entry of pendingEntries) {
+      if (entry.eventType === 'deleted') {
+        // Ensure both stores are clean
+        await this.vectorStore.deleteByFilePath(entry.filePath);
+        this.metadataStore.deleteMerkleNode(entry.filePath);
+        cleaned++;
+      } else {
+        // 'added' | 'modified' — idempotent re-processing
+        const fileExists = await this.fileExists(entry.filePath);
+
+        if (fileExists) {
+          // Step 1: Delete any existing vectors (idempotency guarantee)
+          await this.vectorStore.deleteByFilePath(entry.filePath);
+
+          // Step 2: Re-run full pipeline (chunk → embed → insert)
+          await this.executeStages({
+            filePath: entry.filePath,
+            type: entry.eventType,
+            contentHash: entry.contentHash,
+          });
+
+          // Step 3: Update Merkle tree
+          await this.updateMerkleTree({
+            filePath: entry.filePath,
+            type: entry.eventType,
+            contentHash: entry.contentHash,
+          });
+          recovered++;
+        } else {
+          // File was deleted while WAM was pending — clean up
+          await this.vectorStore.deleteByFilePath(entry.filePath);
+          this.metadataStore.deleteMerkleNode(entry.filePath);
+          cleaned++;
+        }
+      }
+
+      // Remove WAM marker after successful recovery
+      this.metadataStore.deleteWalMarker(entry.filePath);
+    }
+
+    if (pendingEntries.length > 0) {
+      logger.info(`WAM recovery complete`, { recovered, cleaned });
+    }
+
+    return { recovered, cleaned };
+  }
+}
+```
+
+**Idempotency mechanism:**
+
+| Recovery scenario | 1st Execution | 2nd Execution (redundant) | Result |
+|---|---|---|---|
+| Crash before LanceDB write | delete(0 rows) → insert | delete(rows) → insert | Identical final state |
+| Crash after LanceDB write | delete(rows) → insert | delete(rows) → insert | Identical final state |
+| Crash after both writes | delete(rows) → insert | delete(rows) → insert | Identical final state |
+
+`delete → insert` パターンはすべてのケースで同一の最終状態を生成するため、
+何回再実行しても結果が変わらない（冪等）。
+
 **Design rationale:**
 
 - WAMマーカーはSQLite内の単一行INSERTであり、オーバーヘッドはマイクロ秒レベル
 - 起動時リカバリは `pipeline_wal` テーブルに残存するエントリ数に比例し、通常0件（正常終了時）
 - フルスキャンGC（Tier 2）との併用により、WAMでカバーできないエッジケース（WAM INSERT前のクラッシュ）も最終的に是正される
 - WAMマーカーのINSERTは `better-sqlite3` の同期操作だが、1行のみのため event loop への影響は無視できる
+- リカバリの冪等性は `deleteByFilePath → insert` パターンにより保証される。LanceDB の append-only 特性上、`upsert` ではなく明示的な delete-before-insert が必要
 
 ### Retry Exhaustion Fallback (Pre-DLQ)
 
@@ -1368,12 +1451,128 @@ This prevents the main pipeline from stalling while preserving failed events for
                                          healthy ─────┤───── unhealthy
                                             │                    │
                                             v                    v
-                                    [Re-process batch]    [Skip, wait next sweep]
+                                     [Stale Check]        [Skip, wait next sweep]
                                             │
-                                            v
-                                    Success: remove from DLQ
-                                    Failure: increment retry, keep in DLQ
+                                   ┌────────┼────────────────┐
+                                   │        │                │
+                                file       hash            hash
+                                deleted    mismatch        match
+                                   │     (file updated)      │
+                                   v        v                v
+                             [Discard]  [Discard]    [Re-process entry]
+                             [log:      [log:               │
+                              stale]     superseded]        v
+                                                    Success: remove from DLQ
+                                                    Failure: increment retry, keep in DLQ
 ```
+
+**DLQ Stale Entry Detection:**
+
+DLQ エントリがキューに入った後にファイルが更新または削除されている場合、そのエントリは
+「stale（陳腐化）」しており、再処理すると最新のインデックス状態を破壊する可能性がある。
+スイープ実行時に各エントリの鮮度を検証し、stale エントリを安全に破棄する。
+
+```typescript
+class DeadLetterQueue {
+  /**
+   * Periodic recovery sweep with stale entry detection.
+   * Compares DLQ content_hash against current filesystem state
+   * to prevent re-processing outdated events.
+   */
+  async recoverySweep(
+    pipeline: IndexPipeline,
+    metadataStore: MetadataStore,
+    embeddingProvider: EmbeddingProvider,
+  ): Promise<DLQSweepResult> {
+    // 1. Health check — skip sweep entirely if provider is down
+    const healthy = await embeddingProvider.healthCheck();
+    if (!healthy) {
+      return { skipped: true, reason: 'provider_unhealthy' };
+    }
+
+    const entries = this.getEntries();
+    let processed = 0;
+    let discardedStale = 0;
+    let discardedDeleted = 0;
+    let failed = 0;
+
+    for (const entry of entries) {
+      // 2. File existence check
+      const fileExists = await pipeline.fileExists(entry.filePath);
+      if (!fileExists) {
+        // File was deleted after DLQ entry was created — discard safely
+        logger.info('DLQ: discarding entry for deleted file', {
+          filePath: entry.filePath,
+          dlqContentHash: entry.contentHash,
+        });
+        this.removeEntry(entry.id);
+        discardedDeleted++;
+        continue;
+      }
+
+      // 3. Hash freshness check
+      const currentHash = await pipeline.computeFileHash(entry.filePath);
+      if (currentHash !== entry.contentHash) {
+        // File was modified after DLQ entry was created.
+        // The normal pipeline has already processed (or will process) the
+        // newer version, so this DLQ entry is superseded.
+        logger.info('DLQ: discarding superseded entry (hash mismatch)', {
+          filePath: entry.filePath,
+          dlqContentHash: entry.contentHash,
+          currentHash,
+        });
+        this.removeEntry(entry.id);
+        discardedStale++;
+        continue;
+      }
+
+      // 4. Hash matches — safe to re-process
+      try {
+        await pipeline.reprocessFromDlq(entry);
+        this.removeEntry(entry.id);
+        processed++;
+      } catch (error) {
+        entry.retryCount++;
+        entry.updatedAt = Date.now();
+        this.updateEntry(entry);
+        failed++;
+      }
+    }
+
+    return {
+      skipped: false,
+      processed,
+      discardedStale,
+      discardedDeleted,
+      failed,
+    };
+  }
+}
+
+interface DLQSweepResult {
+  skipped: boolean;
+  reason?: string;
+  processed?: number;
+  discardedStale?: number;
+  discardedDeleted?: number;
+  failed?: number;
+}
+```
+
+**Stale entry determination logic:**
+
+| Condition | Action | Rationale |
+|---|---|---|
+| File does not exist on disk | Discard DLQ entry | 通常パイプラインの `deleted` イベントで既にクリーンアップ済み |
+| File exists, hash mismatch | Discard DLQ entry | ファイルが更新済み。通常パイプラインが最新バージョンを処理済み or 処理予定 |
+| File exists, hash match | Re-process DLQ entry | DLQ 登録時と同一のファイル状態。安全に再処理可能 |
+
+**ハッシュ不一致時に「破棄」を選択する理由:**
+
+1. ファイルが更新された場合、Watcher が新しい `modified` イベントを発行し、通常パイプラインで処理される
+2. その通常処理も失敗した場合は、**新しい DLQ エントリが新しい `content_hash` で作成される**
+3. したがって古い DLQ エントリの再処理は不要であり、むしろ最新状態を上書きするリスクがある
+4. 「最新の状態として処理を統合する」選択肢は、DLQ の責務（失敗したイベントのリカバリ）を超えるため採用しない
 
 **SQLite DLQ Schema:**
 
@@ -1503,13 +1702,13 @@ class TestEmbeddingProvider implements EmbeddingProvider {
 5. **Search Orchestrator**: Semantic/grep parallel execution -> RRF fusion integration flow
 6. **Grep Semaphore**: Concurrent request limiting, queue ordering, timeout enforcement, **AbortController signal propagation, process cleanup on client disconnection**
 7. **Rename Pipeline**: Vector reuse on file rename (LanceDB filePath update without re-embedding)
-8. **Dead Letter Queue**: Event retirement after retry exhaustion, periodic recovery sweep, DLQ purge after TTL
+8. **Dead Letter Queue**: Event retirement after retry exhaustion, periodic recovery sweep, DLQ purge after TTL, **stale entry detection（ファイル削除済みエントリの安全な破棄）**, **hash mismatch handling（DLQ `content_hash` と現在のファイルハッシュ不一致時のエントリ破棄＋ログ記録）**, **hash match re-processing（ハッシュ一致時のみ再処理が実行され成功時に DLQ から除去）**, **race condition safety（DLQ スイープ中のファイル削除/更新に対する防御的ハンドリング）**
 9. **Pipeline Mutex**: Concurrent reindex rejection (idempotent `already_running`), watcher event serialization, no deadlock under error conditions, **compaction serialization with index writes**
 10. **LanceDB Compaction**: Fragmentation threshold detection, post-reindex compaction trigger, idle-time scheduling, version retention, **mutex acquisition before compaction execution**
 11. **SQLite Batched Writes**: Batch size boundary correctness, event loop yielding between batches, partial-failure atomicity
 12. **Path Sanitization**: Path traversal rejection (`../` escape), glob pattern validation, `PathTraversalError` response for all tool handlers
 13. **Orphan Node GC**: Full-scan GC reconciles SQLite Merkle tree against filesystem, purging stale nodes after missed events
-14. **Crash Recovery (WAM)**: `pipeline_wal` marker insertion/deletion, startup recovery of incomplete operations, Dual-Store consistency verification after simulated SIGKILL
+14. **Crash Recovery (WAM)**: `pipeline_wal` marker insertion/deletion, startup recovery of incomplete operations, Dual-Store consistency verification after simulated SIGKILL, **idempotent recovery（WAM リカバリを複数回実行しても LanceDB にチャンクが重複しない delete-before-insert パターンの検証）**, **post-crash vector deduplication（部分書き込み状態からのリカバリでリカバリ前後の vector 数が正確に一致）**, **concurrent recovery safety（リカバリ中に Watcher イベントが到着した場合の Mutex 排他制御）**
 15. **Retry Exhaustion Fallback**: `RetryExhaustedError` propagation, `skippedFiles` tracking, error log output on retry exhaustion, graceful pipeline continuation
 16. **License Audit**: `npm run license:check` rejects disallowed licenses, `NOTICE` file generation accuracy
 
