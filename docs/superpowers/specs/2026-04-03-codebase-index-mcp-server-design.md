@@ -1106,13 +1106,33 @@ Post-reindex compaction is called **within** the mutex-held reindex execution, s
 additional lock acquisition is needed. Idle-time compaction acquires the mutex independently,
 which naturally serializes it against any in-flight pipeline work.
 
+**Compaction 中の Watcher イベントオーバーフロー防止:**
+
+Idle-time コンパクションは Pipeline `AsyncMutex` を保持している間、Watcher は稼働し続ける。
+大規模リポジトリではコンパクション（Lance ファイルのリライト）に数秒〜数十秒かかる場合があり、
+その間にファイル変更イベントが `fullScanThreshold`（デフォルト: 5,000）を超えて蓄積すると、
+バックプレッシャー機構が誤作動してフルスキャンが意図せずトリガーされるリスクがある。
+
+これはフルスキャン中のデススパイラルと本質的に同じ問題であるため、同一のアプローチで緩和する:
+
+1. **コンパクション開始前に Watcher を一時停止する**（`watcher.pause()`）
+2. **コンパクション完了後に Watcher を再開する**（`watcher.resume()`）
+3. 一時停止中に発生したファイル変更は、再開後のインクリメンタルサイクルで捕捉される
+
+Post-reindex コンパクション（リインデックス完了直後）は、フルスキャン時には Watcher が
+既に停止済みであり、インクリメンタルリインデックス後のコンパクションは tombstone 数が
+少ないため高速に完了する。いずれの場合も `watcher.pause()` は冪等であり安全に呼び出せる。
+
 **Compaction operations:**
 
 ```
 [Pipeline idle / Reindex complete]
        │
        v
-  mutex.acquire()  ← required for idle-time compaction; already held for post-reindex
+  watcher.pause()    ← イベント蓄積によるフルスキャン誤爆を防止
+       │
+       v
+  mutex.acquire()    ← required for idle-time compaction; already held for post-reindex
        │
        v
   fragmentation = table.stats().numDeletedRows / table.stats().numRows
@@ -1126,7 +1146,9 @@ which naturally serializes it against any in-flight pipeline work.
        │
        ├── Log compaction result (rows reclaimed, duration, new size)
        │
-       └── mutex.release()  ← for idle-time compaction only
+       ├── mutex.release()   ← for idle-time compaction only
+       │
+       └── watcher.resume()  ← 再開後の新規イベントのみインクリメンタル処理対象
 ```
 
 ```typescript
@@ -1181,10 +1203,19 @@ class VectorStore {
    * Idle-time compaction acquires the pipeline mutex to prevent
    * I/O contention with concurrent index writes.
    */
-  scheduleIdleCompaction(pipelineMutex: Mutex): void {
+  scheduleIdleCompaction(pipelineMutex: Mutex, watcher: FSWatcher): void {
     this.cancelIdleCompaction();
     this.compactionTimer = setTimeout(
-      () => void pipelineMutex.runExclusive(() => this.compactIfNeeded()),
+      async () => {
+        // Watcher を一時停止し、コンパクション中のイベント蓄積を防止
+        // （fullScanThreshold 超過によるフルスキャン誤爆の回避）
+        watcher.pause();
+        try {
+          await pipelineMutex.runExclusive(() => this.compactIfNeeded());
+        } finally {
+          watcher.resume();
+        }
+      },
       this.config.idleThresholdMs,
     );
     if (this.compactionTimer.unref) {
@@ -1893,6 +1924,8 @@ class DeadLetterQueue {
     }
 
     const entries = this.getEntries();
+    const entriesToRemove: string[] = [];
+    const entriesToUpdate: DLQEntry[] = [];
     let processed = 0;
     let discardedStale = 0;
     let discardedDeleted = 0;
@@ -1907,7 +1940,7 @@ class DeadLetterQueue {
           filePath: entry.filePath,
           dlqContentHash: entry.contentHash,
         });
-        this.removeEntry(entry.id);
+        entriesToRemove.push(entry.id);
         discardedDeleted++;
         continue;
       }
@@ -1923,7 +1956,7 @@ class DeadLetterQueue {
           dlqContentHash: entry.contentHash,
           currentHash,
         });
-        this.removeEntry(entry.id);
+        entriesToRemove.push(entry.id);
         discardedStale++;
         continue;
       }
@@ -1931,14 +1964,24 @@ class DeadLetterQueue {
       // 4. Hash matches — safe to re-process
       try {
         await pipeline.reprocessFromDlq(entry);
-        this.removeEntry(entry.id);
+        entriesToRemove.push(entry.id);
         processed++;
       } catch (error) {
         entry.retryCount++;
         entry.updatedAt = Date.now();
-        this.updateEntry(entry);
+        entriesToUpdate.push(entry);
         failed++;
       }
+    }
+
+    // 5. Batch SQLite operations with cooperative yielding
+    //    DRY: executeBatchedWithYield を再利用し、多数の stale エントリの
+    //    一括削除・更新時にイベントループをブロックしない
+    if (entriesToRemove.length > 0) {
+      await this.bulkRemoveEntries(entriesToRemove);
+    }
+    if (entriesToUpdate.length > 0) {
+      await this.bulkUpdateEntries(entriesToUpdate);
     }
 
     return {
@@ -1991,6 +2034,85 @@ CREATE TABLE dead_letter_queue (
 );
 CREATE INDEX idx_dlq_created ON dead_letter_queue(created_at);
 ```
+
+### DLQ イベントループ保護 (Batched SQLite Operations)
+
+DLQ の Recovery Sweep および TTL パージにおいて、多数の stale エントリを一括削除・更新する際、
+個別の `DELETE`/`UPDATE` 文をループ実行すると `better-sqlite3` の同期特性によりイベントループが
+ブロックされる。これは「SQLite Event Loop Protection」セクションで定義した
+`executeBatchedWithYield` と同一の問題であるため、同ヘルパーを DLQ でも再利用する（DRY 原則）。
+
+```typescript
+class DeadLetterQueue {
+  private readonly db: BetterSqlite3.Database;
+  private readonly batchSize: number; // default: 100
+
+  /**
+   * Bulk remove DLQ entries by ID with cooperative yielding.
+   * Reuses executeBatchedWithYield (see SQLite Event Loop Protection)
+   * to prevent event loop starvation when discarding many stale/expired entries.
+   */
+  async bulkRemoveEntries(ids: string[]): Promise<void> {
+    const deleteStmt = this.db.prepare(
+      'DELETE FROM dead_letter_queue WHERE id = ?',
+    );
+
+    await executeBatchedWithYield(ids, this.batchSize, (batch) => {
+      const runBatch = this.db.transaction((rows: string[]) => {
+        for (const id of rows) {
+          deleteStmt.run(id);
+        }
+      });
+      runBatch(batch);
+    });
+  }
+
+  /**
+   * Bulk update DLQ entry status (retry count, timestamp) with cooperative yielding.
+   * Used after recovery sweep to batch-update failed entries.
+   */
+  async bulkUpdateEntries(entries: DLQEntry[]): Promise<void> {
+    const updateStmt = this.db.prepare(
+      'UPDATE dead_letter_queue SET retry_count = ?, updated_at = ? WHERE id = ?',
+    );
+
+    await executeBatchedWithYield(entries, this.batchSize, (batch) => {
+      const runBatch = this.db.transaction((rows: DLQEntry[]) => {
+        for (const entry of rows) {
+          updateStmt.run(entry.retryCount, entry.updatedAt, entry.id);
+        }
+      });
+      runBatch(batch);
+    });
+  }
+
+  /**
+   * Purge expired DLQ entries (older than TTL).
+   * Uses bulkRemoveEntries (→ executeBatchedWithYield) for event loop protection.
+   */
+  async purgeExpired(ttlMs: number): Promise<number> {
+    const cutoff = Date.now() - ttlMs;
+    const expired = this.db
+      .prepare('SELECT id FROM dead_letter_queue WHERE created_at < ?')
+      .all(cutoff)
+      .map((row: { id: string }) => row.id);
+
+    if (expired.length === 0) return 0;
+
+    await this.bulkRemoveEntries(expired);
+    logger.info(`DLQ: purged ${expired.length} expired entries (TTL: ${ttlMs}ms)`);
+    return expired.length;
+  }
+}
+```
+
+**DLQ における `executeBatchedWithYield` の適用箇所:**
+
+| Operation | Method | Trigger |
+|---|---|---|
+| Stale/deleted エントリの一括削除 | `bulkRemoveEntries()` | Recovery Sweep 完了時 |
+| Failed エントリのリトライカウント更新 | `bulkUpdateEntries()` | Recovery Sweep 完了時 |
+| TTL 期限切れエントリのパージ | `purgeExpired()` | 定期スイープ開始時（sweep 前処理） |
 
 ### Pipeline Mutex (Reindex Exclusion Control)
 
@@ -2260,9 +2382,9 @@ describe('IndexPipeline', () => {
 5. **Search Orchestrator**: Semantic/grep parallel execution -> RRF fusion integration flow, **`IGrepEngine` モック注入による ripgrep 不要な RRF 統合テスト**
 6. **Grep Semaphore**: Concurrent request limiting, queue ordering, timeout enforcement, **AbortController signal propagation, process cleanup on client disconnection**
 7. **Rename Pipeline**: Vector reuse on file rename (LanceDB filePath update without re-embedding)
-8. **Dead Letter Queue**: Event retirement after retry exhaustion, periodic recovery sweep, DLQ purge after TTL, **stale entry detection（ファイル削除済みエントリの安全な破棄）**, **hash mismatch handling（DLQ `content_hash` と現在のファイルハッシュ不一致時のエントリ破棄＋ログ記録）**, **hash match re-processing（ハッシュ一致時のみ再処理が実行され成功時に DLQ から除去）**, **race condition safety（DLQ スイープ中のファイル削除/更新に対する防御的ハンドリング）**
+8. **Dead Letter Queue**: Event retirement after retry exhaustion, periodic recovery sweep, DLQ purge after TTL, **stale entry detection（ファイル削除済みエントリの安全な破棄）**, **hash mismatch handling（DLQ `content_hash` と現在のファイルハッシュ不一致時のエントリ破棄＋ログ記録）**, **hash match re-processing（ハッシュ一致時のみ再処理が実行され成功時に DLQ から除去）**, **race condition safety（DLQ スイープ中のファイル削除/更新に対する防御的ハンドリング）**, **`executeBatchedWithYield` による一括削除・更新のイベントループ保護（DRY）**, **TTL パージの `bulkRemoveEntries` 経由実行**
 9. **Pipeline Mutex**: Concurrent reindex rejection (idempotent `already_running`), watcher event serialization, no deadlock under error conditions, **compaction serialization with index writes**, **フルスキャン時の Watcher 停止・キュークリア・再開のライフサイクル検証**
-10. **LanceDB Compaction**: Fragmentation threshold detection, post-reindex compaction trigger, idle-time scheduling, version retention, **mutex acquisition before compaction execution**
+10. **LanceDB Compaction**: Fragmentation threshold detection, post-reindex compaction trigger, idle-time scheduling, version retention, **mutex acquisition before compaction execution**, **コンパクション中の Watcher 一時停止・再開による `fullScanThreshold` 超過防止**
 11. **SQLite Batched Writes**: Batch size boundary correctness, event loop yielding between batches, partial-failure atomicity, **WAL autocheckpoint 設定の初期化検証**
 12. **Path Sanitization**: Path traversal rejection (`../` escape), glob pattern validation, `PathTraversalError` response for all tool handlers
 13. **Orphan Node GC**: Full-scan GC reconciles SQLite Merkle tree against filesystem, purging stale nodes after missed events
@@ -2490,10 +2612,10 @@ Each phase produces a testable, demonstrable increment.
 
 | # | Task | Key Deliverables | Estimated Effort |
 |---|------|-------------------|------------------|
-| 3.1 | Dead Letter Queue | In-memory ring buffer + SQLite persistence, periodic recovery sweep, **Phase 1の `RetryExhaustedError` catch をDLQ enqueueに差し替え** | 1d |
+| 3.1 | Dead Letter Queue | In-memory ring buffer + SQLite persistence, periodic recovery sweep, **Phase 1の `RetryExhaustedError` catch をDLQ enqueueに差し替え**, **`executeBatchedWithYield` による一括削除・更新のイベントループ保護（DRY）** | 1d |
 | 3.2 | Backpressure | Queue threshold detection, watcher pause/resume, full-scan fallback state machine, **フルスキャン中の Watcher 停止＋キュークリアによるデススパイラル防止** | 1d |
 | 3.3 | File Rename Optimization | Same-hash detection in debounce window, vector reuse without re-embedding | 0.5d |
-| 3.4 | LanceDB Compaction | Fragmentation monitoring, idle-time + post-reindex compaction triggers, **Pipeline Mutex integration for I/O exclusion** | 0.5d |
+| 3.4 | LanceDB Compaction | Fragmentation monitoring, idle-time + post-reindex compaction triggers, **Pipeline Mutex integration for I/O exclusion**, **Watcher pause/resume によるコンパクション中のイベントオーバーフロー防止** | 0.5d |
 | 3.5 | SQLite Batched Writes | Bulk upsert/delete with cooperative yielding, performance benchmarking | 0.5d |
 | 3.6 | Grep Zombie Prevention | `AbortController` + `AbortSignal.any()` integration, process tree cleanup | 0.5d |
 | 3.7 | Additional Language Plugins | Python, Go tree-sitter grammars | 1d |
