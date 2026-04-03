@@ -86,7 +86,8 @@ multi-agent-codebase-index/
 │   ├── search/
 │   │   ├── orchestrator.ts          # Search orchestrator
 │   │   ├── semantic.ts              # Semantic search engine
-│   │   ├── grep.ts                  # ripgrep search engine
+│   │   ├── grep-interface.ts        # IGrepEngine interface (DI)
+│   │   ├── grep.ts                  # RipgrepEngine (IGrepEngine impl)
 │   │   └── rrf.ts                   # RRF fusion algorithm
 │   ├── storage/
 │   │   ├── vector-store.ts          # LanceDB wrapper
@@ -170,11 +171,54 @@ File Change Detected
      │
      │ queue fully drained
      v
-  [FullScan] ── trigger merkle-tree full reconciliation
+  [FullScan] ── watcher remains STOPPED, queue.clear()
+     │           trigger merkle-tree full reconciliation
      │
      │ full-scan complete
      v
   [Normal] ── watcher.resume()
+```
+
+#### Full-Scan 中のデススパイラル防止
+
+フルリインデックス（フルスキャン）実行中に Watcher が稼働し続けると、Mutex ロック中に
+イベントキューへ変更イベントが蓄積し、フルスキャン完了直後に `fullScanThreshold` を
+再超過して「さらなるフルスキャン」が即座にトリガーされる無限ループ（デススパイラル）が
+発生するリスクがある。
+
+これを防止するため、以下のルールを適用する:
+
+1. **フルスキャン開始時に Watcher を停止する**（`[Paused]` 遷移時点で既に停止済みだが、
+   手動 `reindex --fullRebuild` による直接フルスキャンでも同様に停止する）
+2. **フルスキャン開始直前にイベントキューをクリアする** — フルスキャンの結果は
+   ファイルシステム全体の最新状態を反映するため、蓄積済みイベントは安全に破棄可能
+3. **フルスキャン完了後に Watcher を再開する** — 再開後の新規イベントのみが
+   インクリメンタル処理の対象となる
+
+```
+デススパイラル防止の保証:
+
+  [FullScan 開始]
+       │
+       ├── watcher.stop()          ← 新規イベント生成を完全停止
+       ├── eventQueue.clear()      ← 蓄積済みイベントを安全に破棄
+       ├── (フルスキャン実行)       ← FS全体の最新状態を反映
+       │
+  [FullScan 完了]
+       │
+       ├── assert(eventQueue.size === 0)  ← Watcher停止中のためキューは空
+       └── watcher.start()         ← ここからのイベントのみ処理対象
+
+  ∴ FullScan 完了直後に fullScanThreshold を超えることは構造的に不可能
+```
+
+**Watcher イベントがフルスキャン結果に包含される論拠:**
+
+フルスキャンは Merkle Tree の全ノードをファイルシステムの実際の状態と突き合わせるため
+（Startup Reconciliation と同等のロジック）、フルスキャン開始以前に発生したファイル変更は
+すべてフルスキャンの差分検出でカバーされる。フルスキャン開始から完了までの間に発生した
+変更は Watcher 停止中のため検出されないが、フルスキャン完了後の Watcher 再開により
+次のインクリメンタルサイクルで捕捉される。
 
 ### File Rename Optimization (Vector Reuse)
 
@@ -564,7 +608,7 @@ uncontrolled spawning causes file descriptor exhaustion and OS process limits.
 
 **Semaphore strategy:**
 
-- `GrepEngine` holds a module-level semaphore (`p-limit`) limiting concurrent ripgrep child processes
+- `RipgrepEngine` (concrete `IGrepEngine` implementation) holds a module-level semaphore (`p-limit`) limiting concurrent ripgrep child processes
 - Default limit: `search.grepMaxConcurrency` (default: 4)
 - When all slots are occupied, additional requests queue and await an available slot
 - The semaphore is shared across all callers (`grep_search` tool, `hybrid_search` via orchestrator)
@@ -601,7 +645,7 @@ heavy concurrent load or when MCP clients disconnect mid-request.
 ```typescript
 import { spawn } from 'node:child_process';
 
-class GrepEngine {
+class RipgrepEngine implements IGrepEngine {
   private readonly semaphore: pLimit.Limit;
   private readonly timeoutMs: number;
 
@@ -767,8 +811,9 @@ class PluginRegistry {
 
 ### Storage Interfaces (TDD / Dependency Injection)
 
-ストレージ層の具象クラスに対してインターフェースを定義し、パイプラインの単体テストで
-In-Memory モックによる高速な I/O レスなテスト（Red/Green TDD）を可能にする。
+ストレージ層および検索エンジン層の具象クラスに対してインターフェースを定義し、
+パイプライン・オーケストレーターの単体テストで In-Memory モックによる高速な
+I/O レスなテスト（Red/Green TDD）を可能にする。
 これは既存のプラグインインターフェース（`EmbeddingProvider`, `LanguagePlugin`）と
 同一の DI パターンを採用しており、設計の一貫性を保つ。
 
@@ -866,7 +911,97 @@ interface IndexStatsRow {
 }
 ```
 
-**Pipeline での利用:**
+### Search Engine Interface (TDD / Dependency Injection)
+
+`GrepEngine` は外部プロセス（ripgrep）に直接依存しており、`SearchOrchestrator` の
+純粋な単体テストが困難である。`IGrepEngine` インターフェースを定義し、具象クラス
+（Ripgrep 実装）とテスト用 In-Memory モック（`TestGrepEngine`）を分離することで、
+ripgrep バイナリなしでもオーケストレーターの RRF 統合ロジックをテスト可能にする。
+
+これは `IVectorStore`/`IMetadataStore` と同一の DI パターンであり、設計の一貫性を保つ。
+
+```typescript
+/**
+ * Grep Engine interface for dependency injection.
+ * Concrete implementation: ripgrep child process wrapper.
+ * Test implementation: In-memory pattern matching mock.
+ */
+interface IGrepEngine {
+  /** Execute a grep search and return ranked results */
+  search(
+    params: GrepParams,
+    requestSignal?: AbortSignal,
+  ): Promise<SearchResult[]>;
+}
+
+interface GrepParams {
+  pattern: string;
+  isRegex?: boolean;
+  filePattern?: string;
+  caseSensitive?: boolean;
+  maxResults?: number;
+}
+```
+
+**具象クラスとモックの対応:**
+
+| Role | Class | Description |
+|---|---|---|
+| Production | `RipgrepEngine implements IGrepEngine` | ripgrep 子プロセスを spawn し、semaphore + AbortController で管理 |
+| Test | `TestGrepEngine implements IGrepEngine` | In-memory の文字列パターンマッチング。プロセス spawn なし |
+
+```typescript
+/**
+ * In-memory mock for IGrepEngine.
+ * Uses simple string matching for deterministic test results.
+ * No child process spawning — pure unit test compatible.
+ */
+class TestGrepEngine implements IGrepEngine {
+  private files = new Map<string, string>(); // filePath → content
+
+  /** Populate test data */
+  addFile(filePath: string, content: string): void {
+    this.files.set(filePath, content);
+  }
+
+  async search(
+    params: GrepParams,
+    _requestSignal?: AbortSignal,
+  ): Promise<SearchResult[]> {
+    const results: SearchResult[] = [];
+
+    for (const [filePath, content] of this.files) {
+      const lines = content.split('\n');
+      for (let i = 0; i < lines.length; i++) {
+        const match = params.isRegex
+          ? new RegExp(params.pattern).test(lines[i])
+          : lines[i].includes(params.pattern);
+
+        if (match) {
+          results.push({
+            chunk: {
+              id: `${filePath}:${i + 1}`,
+              filePath,
+              content: lines[i],
+              language: 'unknown',
+              symbolName: `line_${i + 1}`,
+              symbolKind: 'unknown',
+              startLine: i + 1,
+              endLine: i + 1,
+            },
+            score: 1.0,
+            source: 'grep',
+          });
+        }
+      }
+    }
+
+    return results.slice(0, params.maxResults ?? 100);
+  }
+}
+```
+
+**Pipeline / Orchestrator での利用:**
 
 ```typescript
 class IndexPipeline {
@@ -877,6 +1012,37 @@ class IndexPipeline {
     // ...
   ) {}
 }
+
+class SearchOrchestrator {
+  constructor(
+    private readonly semanticSearch: SemanticSearch,
+    private readonly grepEngine: IGrepEngine,       // ← interface (not concrete GrepEngine)
+    private readonly rrfK: number,
+  ) {}
+}
+```
+
+**利用例（オーケストレーター単体テスト）:**
+
+```typescript
+describe('SearchOrchestrator', () => {
+  let orchestrator: SearchOrchestrator;
+  let grepEngine: TestGrepEngine;
+
+  beforeEach(() => {
+    grepEngine = new TestGrepEngine();
+    grepEngine.addFile('src/utils.ts', 'export function parseConfig() {}\n');
+    orchestrator = new SearchOrchestrator(
+      new TestSemanticSearch(),
+      grepEngine,        // IGrepEngine — ripgrep バイナリ不要
+      60,
+    );
+  });
+
+  it('should fuse semantic and grep results via RRF', async () => {
+    // Red → Green → Refactor without ripgrep binary
+  });
+});
 ```
 
 ### LanceDB Table Schema
@@ -1311,6 +1477,7 @@ achieves the goal — preventing event loop starvation — with far less overhea
 - LanceDB writes are atomic per file (delete old chunks -> insert new chunks as transaction)
 - SQLite runs in WAL mode for concurrent read/write
 - SQLite bulk writes use batched transactions with cooperative yielding (see above)
+- SQLite WAL ファイルの肥大化防止のため、`MetadataStore` 初期化時に `PRAGMA wal_autocheckpoint = 1000`（デフォルト値）を明示設定する。大量ファイルのインデックス作成時（ブランチスイッチ等）でも WAL ファイルが無制限に成長することを防ぎ、チェックポイントを自動的にトリガーする。カスタム値が必要な場合は `metadataStore.walAutocheckpoint` 設定で変更可能。
 - When embedding provider is down, events are retried with exponential backoff (max 3 attempts)
 - Events that exhaust all retry attempts are moved to the **Dead Letter Queue (DLQ)** rather than blocking the pipeline
   - **Phase 1 fallback (DLQ未実装時):** リトライ上限到達時はエラーログを出力しイベントをスキップする（下記「Retry Exhaustion Fallback」セクション参照）
@@ -1837,6 +2004,7 @@ corruption from concurrent reindex requests or overlapping watcher-triggered upd
 - If a `reindex` is requested while another is in progress, the server returns `{ status: 'already_running' }` immediately (non-blocking, idempotent)
 - Watcher events that arrive during a locked pipeline are buffered in the event queue (bounded by `maxQueueSize`)
 - Lock granularity is intentionally coarse (pipeline-level) — fine-grained locking adds complexity disproportionate to the benefit in a single-process local server
+- **フルスキャン実行時は Watcher を停止し、キューをクリアする**（「Full-Scan 中のデススパイラル防止」セクション参照）。これにより、Mutex ロック中にイベントが蓄積して完了直後に再度フルスキャンがトリガーされる無限ループを構造的に排除する
 
 ```
 [reindex tool] ──> mutex.acquire() ──> [Pipeline Execution] ──> mutex.release()
@@ -1845,6 +2013,11 @@ corruption from concurrent reindex requests or overlapping watcher-triggered upd
 Concurrent reindex:
   [Agent A: reindex] ──> mutex.acquire() ──> running...
   [Agent B: reindex] ──> mutex.tryAcquire() ──> FAIL ──> return { status: 'already_running' }
+
+Full-scan reindex (backpressure or manual --fullRebuild):
+  [FullScan trigger] ──> watcher.stop() ──> eventQueue.clear()
+                     ──> mutex.acquire() ──> [Full Reconciliation]
+                     ──> mutex.release() ──> watcher.start()
 ```
 
 ```typescript
@@ -2083,20 +2256,20 @@ describe('IndexPipeline', () => {
 1. **Merkle Tree**: Correct hash propagation on file add/change/delete, rename detection (same-hash delete+add pairs), **subtree deletion cascading (directory delete → all descendants removed)**
 2. **Chunker**: Correct AST node chunking per language, large node re-splitting, event loop yielding under large files, **AST parse failsafe fallback to line-based chunking**
 3. **RRF Fusion**: Score calculation matches formula, handling of single-source results
-4. **Event Queue**: Debounce, priority, concurrency limit correctness, **backpressure threshold triggering, full-scan fallback on overflow**
-5. **Search Orchestrator**: Semantic/grep parallel execution -> RRF fusion integration flow
+4. **Event Queue**: Debounce, priority, concurrency limit correctness, **backpressure threshold triggering, full-scan fallback on overflow**, **フルスキャン中の Watcher 停止＋キュークリアによるデススパイラル防止**
+5. **Search Orchestrator**: Semantic/grep parallel execution -> RRF fusion integration flow, **`IGrepEngine` モック注入による ripgrep 不要な RRF 統合テスト**
 6. **Grep Semaphore**: Concurrent request limiting, queue ordering, timeout enforcement, **AbortController signal propagation, process cleanup on client disconnection**
 7. **Rename Pipeline**: Vector reuse on file rename (LanceDB filePath update without re-embedding)
 8. **Dead Letter Queue**: Event retirement after retry exhaustion, periodic recovery sweep, DLQ purge after TTL, **stale entry detection（ファイル削除済みエントリの安全な破棄）**, **hash mismatch handling（DLQ `content_hash` と現在のファイルハッシュ不一致時のエントリ破棄＋ログ記録）**, **hash match re-processing（ハッシュ一致時のみ再処理が実行され成功時に DLQ から除去）**, **race condition safety（DLQ スイープ中のファイル削除/更新に対する防御的ハンドリング）**
-9. **Pipeline Mutex**: Concurrent reindex rejection (idempotent `already_running`), watcher event serialization, no deadlock under error conditions, **compaction serialization with index writes**
+9. **Pipeline Mutex**: Concurrent reindex rejection (idempotent `already_running`), watcher event serialization, no deadlock under error conditions, **compaction serialization with index writes**, **フルスキャン時の Watcher 停止・キュークリア・再開のライフサイクル検証**
 10. **LanceDB Compaction**: Fragmentation threshold detection, post-reindex compaction trigger, idle-time scheduling, version retention, **mutex acquisition before compaction execution**
-11. **SQLite Batched Writes**: Batch size boundary correctness, event loop yielding between batches, partial-failure atomicity
+11. **SQLite Batched Writes**: Batch size boundary correctness, event loop yielding between batches, partial-failure atomicity, **WAL autocheckpoint 設定の初期化検証**
 12. **Path Sanitization**: Path traversal rejection (`../` escape), glob pattern validation, `PathTraversalError` response for all tool handlers
 13. **Orphan Node GC**: Full-scan GC reconciles SQLite Merkle tree against filesystem, purging stale nodes after missed events
 14. **Startup Reconciliation**: SQLite Merkle ハッシュ vs ファイルシステムハッシュの突き合わせ検証、orphan 検出と LanceDB/SQLite クリーンアップ、hash mismatch ファイルの再インデックス、正常終了時の fast-path（全 consistent で処理ゼロ）、**シミュレート SIGKILL 後の Dual-Store 整合性復元**、**部分書き込み状態からのリカバリ後 vector 数一致**、**Reconciliation 中の Watcher イベント到着に対する Mutex 排他制御**
 15. **Retry Exhaustion Fallback**: `RetryExhaustedError` propagation, `skippedFiles` tracking, error log output on retry exhaustion, graceful pipeline continuation
 16. **License Audit**: `npm run license:check` rejects disallowed licenses, `NOTICE` file generation accuracy
-17. **Storage Interface Mocks**: `InMemoryVectorStore` / `InMemoryMetadataStore` による I/O レスな単体テスト、DI 経由のモック注入でパイプラインロジックのみを分離テスト
+17. **Storage / Search Interface Mocks**: `InMemoryVectorStore` / `InMemoryMetadataStore` / `TestGrepEngine` による I/O レスな単体テスト、DI 経由のモック注入でパイプライン・オーケストレーターロジックのみを分離テスト
 
 ### Test Fixtures
 
@@ -2159,6 +2332,7 @@ interface Config {
   };
   metadataStore: {
     batchSize: number;             // default: 100 (rows per SQLite batched transaction)
+    walAutocheckpoint: number;     // default: 1000 (WAL auto-checkpoint threshold in pages)
   };
   languages: {
     builtIn: string[];             // default: ["typescript", "python", "go"]
@@ -2300,7 +2474,7 @@ Each phase produces a testable, demonstrable increment.
 | # | Task | Key Deliverables | Estimated Effort |
 |---|------|-------------------|------------------|
 | 2.1 | Semantic Search | LanceDB ANN query wrapper, top-K retrieval | 0.5d |
-| 2.2 | Grep Search (ripgrep) | `GrepEngine` with semaphore, `AbortController` timeout, keyword extraction | 1d |
+| 2.2 | Grep Search (ripgrep) | **`IGrepEngine` インターフェース**, `RipgrepEngine` with semaphore, `AbortController` timeout, keyword extraction, **`TestGrepEngine` モック** | 1d |
 | 2.3 | RRF Fusion | Score fusion algorithm, orchestrator (parallel semantic + grep) | 0.5d |
 | 2.4 | MCP Server & Transport | SSE/StreamableHTTP transport, multi-client support | 1d |
 | 2.5 | Tool Handlers | `hybrid_search`, `semantic_search`, `grep_search`, `get_context`, `index_status`, `reindex` | 1.5d |
@@ -2308,7 +2482,7 @@ Each phase produces a testable, demonstrable increment.
 | 2.7 | Configuration | Config loading (env → file → defaults), validation | 0.5d |
 | 2.8 | Integration Tests | Pipeline E2E, search flow, MCP protocol tests with test embedding provider | 1.5d |
 
-**Exit criteria:** MCP client can connect, call `hybrid_search`, and receive ranked results.
+**Exit criteria:** MCP client can connect, call `hybrid_search`, and receive ranked results. **`TestGrepEngine` を用いた `SearchOrchestrator` の単体テストが ripgrep バイナリなしで動作する。**
 
 ### Phase 3: Resilience & Edge Cases
 
@@ -2317,7 +2491,7 @@ Each phase produces a testable, demonstrable increment.
 | # | Task | Key Deliverables | Estimated Effort |
 |---|------|-------------------|------------------|
 | 3.1 | Dead Letter Queue | In-memory ring buffer + SQLite persistence, periodic recovery sweep, **Phase 1の `RetryExhaustedError` catch をDLQ enqueueに差し替え** | 1d |
-| 3.2 | Backpressure | Queue threshold detection, watcher pause/resume, full-scan fallback state machine | 1d |
+| 3.2 | Backpressure | Queue threshold detection, watcher pause/resume, full-scan fallback state machine, **フルスキャン中の Watcher 停止＋キュークリアによるデススパイラル防止** | 1d |
 | 3.3 | File Rename Optimization | Same-hash detection in debounce window, vector reuse without re-embedding | 0.5d |
 | 3.4 | LanceDB Compaction | Fragmentation monitoring, idle-time + post-reindex compaction triggers, **Pipeline Mutex integration for I/O exclusion** | 0.5d |
 | 3.5 | SQLite Batched Writes | Bulk upsert/delete with cooperative yielding, performance benchmarking | 0.5d |
@@ -2328,7 +2502,7 @@ Each phase produces a testable, demonstrable increment.
 | 3.10 | Input Path Sanitization | `PathSanitizer` utility, tool handler integration, path traversal error handling | 0.5d |
 | 3.11 | Merkle Tree Orphan Cleanup | Subtree prefix-match deletion, full-scan GC reconciliation phase | 0.5d |
 
-**Exit criteria:** All unit/integration/E2E tests pass. System survives branch-switch flood and concurrent reindex without OOM, zombie processes, or data corruption. Path traversal attacks return appropriate error responses. Full reindex leaves zero orphan Merkle nodes. **DLQ導入によりPhase 1の `skippedFiles` フォールバックが完全に置換されている。**
+**Exit criteria:** All unit/integration/E2E tests pass. System survives branch-switch flood and concurrent reindex without OOM, zombie processes, or data corruption. Path traversal attacks return appropriate error responses. Full reindex leaves zero orphan Merkle nodes. **DLQ導入によりPhase 1の `skippedFiles` フォールバックが完全に置換されている。** **フルスキャン後に fullScanThreshold を超えるイベント蓄積が発生しないことがストレステストで検証されている（デススパイラル防止）。**
 
 ### Phase Dependency Graph
 
