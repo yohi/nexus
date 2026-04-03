@@ -378,6 +378,105 @@ type SymbolKind = 'function' | 'class' | 'interface' | 'variable' | 'imports' | 
 | `index_status` | Return index state and statistics | `projectPath?` |
 | `reindex` | Manually trigger reindexing | `projectPath?`, `fullRebuild?` |
 
+### Input Path Sanitization (Path Traversal Defense)
+
+All MCP tool handlers that accept file path parameters (`filePath`, `filePattern`, `lineRange`
+referencing files) MUST resolve and validate paths within the project root boundary before
+any I/O operation. This prevents autonomous AI agents from accessing files outside the
+project scope via crafted inputs like `../../../etc/passwd`.
+
+**Sanitization layer:**
+
+A shared `sanitizePath()` utility is applied at the **Tool Handler entry point** (before
+the Search Orchestrator or any storage access), forming a security boundary.
+
+```typescript
+import path from 'node:path';
+
+class PathSanitizer {
+  private readonly projectRoot: string; // Absolute, normalized path
+  private readonly projectRootWithSep: string;
+
+  constructor(projectRoot: string) {
+    this.projectRoot = path.resolve(projectRoot);
+    this.projectRootWithSep = this.projectRoot + path.sep;
+  }
+
+  /**
+   * Resolve a user-provided path and verify it is within the project root.
+   * Returns the resolved absolute path.
+   * Throws if the path escapes the project boundary.
+   */
+  resolve(userPath: string): string {
+    // Normalize and resolve against project root
+    const resolved = path.resolve(this.projectRoot, userPath);
+
+    // Allow exact match (projectRoot itself) or child paths
+    if (resolved !== this.projectRoot && !resolved.startsWith(this.projectRootWithSep)) {
+      throw new PathTraversalError(
+        `Path '${userPath}' resolves outside project root`,
+      );
+    }
+
+    return resolved;
+  }
+
+  /**
+   * Resolve and return a relative path from project root.
+   * Used for storage keys and display.
+   */
+  resolveRelative(userPath: string): string {
+    const resolved = this.resolve(userPath);
+    return path.relative(this.projectRoot, resolved);
+  }
+
+  /**
+   * Validate a glob pattern does not escape project root.
+   * Rejects patterns containing '..' segments.
+   */
+  validateGlob(pattern: string): string {
+    if (pattern.includes('..')) {
+      throw new PathTraversalError(
+        `Glob pattern '${pattern}' contains directory traversal`,
+      );
+    }
+    return pattern;
+  }
+}
+
+class PathTraversalError extends Error {
+  readonly code = 'PATH_TRAVERSAL';
+  constructor(message: string) {
+    super(message);
+    this.name = 'PathTraversalError';
+  }
+}
+```
+
+**Application points:**
+
+```
+[MCP Tool Handler] ─── sanitizer.resolve(filePath) ───→ [Search Orchestrator / Storage]
+                   ─── sanitizer.validateGlob(filePattern) ───→ [Grep Engine]
+                   ─── PathTraversalError? → return MCP error response (400)
+```
+
+| Tool | Sanitized Parameters | Notes |
+|---|---|---|
+| `get_context` | `filePath` → `sanitizer.resolve()` | Direct file read — highest risk |
+| `grep_search` | `filePattern` → `sanitizer.validateGlob()` | ripgrep `cwd` is set to `projectRoot` as implicit jail |
+| `hybrid_search` | `filePattern` → `sanitizer.validateGlob()` | Passed through to grep sub-query |
+| `semantic_search` | `filePattern` → `sanitizer.validateGlob()` | Post-filter on LanceDB results |
+| `reindex` | `projectPath` → `sanitizer.resolve()` | Prevents reindexing arbitrary directories |
+
+**Additional hardening:**
+
+- ripgrep is always spawned with `cwd: projectRoot`, providing an implicit OS-level path jail
+  for `--glob` patterns. Even if glob validation is bypassed, ripgrep cannot access files
+  outside its working directory.
+- `PathSanitizer` is instantiated once at server startup and injected into all tool handlers
+  via the dependency injection scope.
+
 ### Search Orchestrator Flow
 
 ```
@@ -696,10 +795,44 @@ grows monotonically over time as files are modified and re-indexed.
 3. **Manual compaction**: Exposed via the `index_status` tool response as a recommendation
    when fragmentation ratio exceeds a warning threshold
 
+**Compaction and Pipeline Mutex Integration:**
+
+Compaction is I/O intensive (LanceDB's Rust-based napi-rs bindings consume `libuv`
+thread pool slots for file rewriting). Running compaction concurrently with pipeline
+index writes causes:
+
+1. `libuv` thread pool exhaustion (default 4 threads) — stalling all async I/O
+2. Lance v2 manifest lock contention — triggering internal retries and throughput collapse
+3. Disk I/O spikes — degrading ripgrep search latency for concurrent MCP clients
+
+To prevent this, **compaction MUST acquire the Pipeline `AsyncMutex`** before execution.
+This ensures mutual exclusion between:
+
+- Watcher-triggered incremental index updates
+- Manual `reindex` tool calls
+- Background compaction passes
+
+```
+[Idle timer fires] ──→ mutex.acquire() ──→ compactIfNeeded() ──→ mutex.release()
+[Post-reindex]     ──→ (already holding mutex) ──→ compactIfNeeded() ──→ (continues)
+
+Concurrent scenario:
+  [Watcher events]   ──→ mutex.acquire() ──→ processing...
+  [Idle compaction]   ──→ mutex.acquire() ──→ WAIT (queued behind pipeline)
+                                            ──→ pipeline completes ──→ compaction runs
+```
+
+Post-reindex compaction is called **within** the mutex-held reindex execution, so no
+additional lock acquisition is needed. Idle-time compaction acquires the mutex independently,
+which naturally serializes it against any in-flight pipeline work.
+
 **Compaction operations:**
 
 ```
 [Pipeline idle / Reindex complete]
+       │
+       v
+  mutex.acquire()  ← required for idle-time compaction; already held for post-reindex
        │
        v
   fragmentation = table.stats().numDeletedRows / table.stats().numRows
@@ -711,7 +844,9 @@ grows monotonically over time as files are modified and re-indexed.
        │     ├── table.optimize.prune()         ← remove tombstoned rows
        │     └── table.cleanupOldVersions()     ← delete old manifest versions
        │
-       └── Log compaction result (rows reclaimed, duration, new size)
+       ├── Log compaction result (rows reclaimed, duration, new size)
+       │
+       └── mutex.release()  ← for idle-time compaction only
 ```
 
 ```typescript
@@ -763,11 +898,13 @@ class VectorStore {
   /**
    * Schedule compaction after pipeline idle period.
    * Reset the timer whenever new pipeline activity occurs.
+   * Idle-time compaction acquires the pipeline mutex to prevent
+   * I/O contention with concurrent index writes.
    */
-  scheduleIdleCompaction(): void {
+  scheduleIdleCompaction(pipelineMutex: Mutex): void {
     this.cancelIdleCompaction();
     this.compactionTimer = setTimeout(
-      () => void this.compactIfNeeded(),
+      () => void pipelineMutex.runExclusive(() => this.compactIfNeeded()),
       this.config.idleThresholdMs,
     );
     if (this.compactionTimer.unref) {
@@ -797,7 +934,7 @@ interface CompactionResult {
 CREATE TABLE merkle_nodes (
   path        TEXT PRIMARY KEY,
   hash        TEXT NOT NULL,
-  parent_path TEXT,
+  parent_path TEXT REFERENCES merkle_nodes(path),
   is_directory INTEGER NOT NULL DEFAULT 0,
   updated_at   INTEGER NOT NULL
 );
@@ -811,6 +948,133 @@ CREATE TABLE index_stats (
   root_hash     TEXT NOT NULL
 );
 ```
+
+> **Note:** `parent_path` has a self-referential `REFERENCES` constraint for documentation
+> and data integrity validation purposes. However, `ON DELETE CASCADE` is **not** relied upon
+> as the primary deletion mechanism — see "Orphan Node Cleanup" below for rationale.
+
+### Orphan Node Cleanup (Merkle Tree Garbage Collection)
+
+When a directory is deleted from the filesystem, all descendant nodes (files and
+subdirectories) in the Merkle tree become orphans — they reference a `parent_path`
+that no longer exists. Without cleanup, these stale rows accumulate indefinitely,
+causing hash inconsistencies and wasted storage.
+
+**Two-tier cleanup strategy:**
+
+#### Tier 1: Application-Level Cascading Delete (Primary)
+
+When the Diff Detector emits a `DeleteEvent` for a directory, the `MetadataStore`
+performs a prefix-match deletion of all descendant nodes. This approach is preferred
+over SQLite `ON DELETE CASCADE` because:
+
+1. CASCADE on self-referential FKs executes row-by-row recursively, blocking the
+   event loop for deep directory trees (unbounded synchronous work)
+2. Application-level deletion uses the existing batched transaction pattern with
+   cooperative yielding, maintaining event loop responsiveness
+3. `better-sqlite3` requires `PRAGMA foreign_keys = ON` per connection (default OFF),
+   making CASCADE fragile if accidentally omitted
+
+```typescript
+class MetadataStore {
+  /**
+   * Delete a directory node and all its descendants from the Merkle tree.
+   * Uses prefix matching on path for efficient subtree removal.
+   * Batched with cooperative yielding to protect the event loop.
+   */
+  async deleteSubtree(directoryPath: string): Promise<number> {
+    // Ensure trailing separator for correct prefix matching
+    const prefix = directoryPath.endsWith('/')
+      ? directoryPath
+      : directoryPath + '/';
+
+    // 1. Collect all descendant paths (single SELECT, no event loop impact)
+    const descendants = this.db
+      .prepare('SELECT path FROM merkle_nodes WHERE path LIKE ? OR path = ?')
+      .all(prefix + '%', directoryPath)
+      .map((row: { path: string }) => row.path);
+
+    if (descendants.length === 0) return 0;
+
+    // 2. Batch delete with yielding (reuses existing pattern)
+    await this.bulkDeleteMerkleNodes(descendants);
+
+    // 3. Also delete corresponding vectors from LanceDB
+    //    (handled by the pipeline's delete flow, not here)
+
+    return descendants.length;
+  }
+}
+```
+
+```
+[FS Watcher: directory deleted "src/old-module/"]
+       │
+       v
+  [Diff Detector] ── emit DeleteEvent(path="src/old-module/", isDirectory=true)
+       │
+       v
+  [Pipeline]
+       ├── metadataStore.deleteSubtree("src/old-module/")
+       │     ├── SELECT paths LIKE 'src/old-module/%'
+       │     ├── Batch 1: DELETE 100 rows → COMMIT → yield
+       │     ├── Batch 2: DELETE 100 rows → COMMIT → yield
+       │     └── ... until all descendants removed
+       │
+       ├── vectorStore.deleteByPathPrefix("src/old-module/")
+       │     └── DELETE FROM chunks WHERE filePath LIKE 'src/old-module/%'
+       │
+       └── Propagate Merkle hash changes up to root
+```
+
+#### Tier 2: Full-Scan Garbage Collection (Safety Net)
+
+During a full reindex (`reindex --fullRebuild`), a GC phase reconciles the
+SQLite Merkle tree against the actual filesystem state. This catches any orphans
+that may have been missed due to:
+
+- Rapid watcher events being dropped during backpressure mode
+- Edge cases in rename detection (partial debounce window)
+- External filesystem modifications while the server was stopped
+
+```typescript
+/**
+ * Garbage-collect orphan Merkle nodes that no longer correspond
+ * to files/directories on the filesystem.
+ * Called as a final phase of full reindex.
+ */
+async function gcOrphanNodes(
+  metadataStore: MetadataStore,
+  projectRoot: string,
+): Promise<{ purged: number }> {
+  const allNodes = metadataStore.getAllPaths();
+  const orphans: string[] = [];
+
+  for (const nodePath of allNodes) {
+    const absolutePath = path.resolve(projectRoot, nodePath);
+    try {
+      await fs.access(absolutePath);
+    } catch {
+      orphans.push(nodePath);
+    }
+  }
+
+  if (orphans.length > 0) {
+    await metadataStore.bulkDeleteMerkleNodes(orphans);
+    logger.info(`GC: purged ${orphans.length} orphan Merkle nodes`);
+  }
+
+  return { purged: orphans.length };
+}
+```
+
+**Design rationale (two-tier approach):**
+
+- Tier 1 handles the common case (explicit delete events) with minimal latency
+- Tier 2 handles the edge cases and acts as a consistency checkpoint
+- Together they provide **eventual consistency** guarantees — the Merkle tree
+  is always consistent after a full reindex, and best-effort consistent during
+  incremental updates
 
 ### SQLite Event Loop Protection (Batched Transactions)
 
@@ -1071,7 +1335,7 @@ class TestEmbeddingProvider implements EmbeddingProvider {
 
 ### Key Coverage Areas
 
-1. **Merkle Tree**: Correct hash propagation on file add/change/delete, rename detection (same-hash delete+add pairs)
+1. **Merkle Tree**: Correct hash propagation on file add/change/delete, rename detection (same-hash delete+add pairs), **subtree deletion cascading (directory delete → all descendants removed)**
 2. **Chunker**: Correct AST node chunking per language, large node re-splitting, event loop yielding under large files, **AST parse failsafe fallback to line-based chunking**
 3. **RRF Fusion**: Score calculation matches formula, handling of single-source results
 4. **Event Queue**: Debounce, priority, concurrency limit correctness, **backpressure threshold triggering, full-scan fallback on overflow**
@@ -1079,9 +1343,11 @@ class TestEmbeddingProvider implements EmbeddingProvider {
 6. **Grep Semaphore**: Concurrent request limiting, queue ordering, timeout enforcement, **AbortController signal propagation, process cleanup on client disconnection**
 7. **Rename Pipeline**: Vector reuse on file rename (LanceDB filePath update without re-embedding)
 8. **Dead Letter Queue**: Event retirement after retry exhaustion, periodic recovery sweep, DLQ purge after TTL
-9. **Pipeline Mutex**: Concurrent reindex rejection (idempotent `already_running`), watcher event serialization, no deadlock under error conditions
-10. **LanceDB Compaction**: Fragmentation threshold detection, post-reindex compaction trigger, idle-time scheduling, version retention
+9. **Pipeline Mutex**: Concurrent reindex rejection (idempotent `already_running`), watcher event serialization, no deadlock under error conditions, **compaction serialization with index writes**
+10. **LanceDB Compaction**: Fragmentation threshold detection, post-reindex compaction trigger, idle-time scheduling, version retention, **mutex acquisition before compaction execution**
 11. **SQLite Batched Writes**: Batch size boundary correctness, event loop yielding between batches, partial-failure atomicity
+12. **Path Sanitization**: Path traversal rejection (`../` escape), glob pattern validation, `PathTraversalError` response for all tool handlers
+13. **Orphan Node GC**: Full-scan GC reconciles SQLite Merkle tree against filesystem, purging stale nodes after missed events
 
 ### Test Fixtures
 
@@ -1225,14 +1491,16 @@ Each phase produces a testable, demonstrable increment.
 | 3.1 | Dead Letter Queue | In-memory ring buffer + SQLite persistence, periodic recovery sweep | 1d |
 | 3.2 | Backpressure | Queue threshold detection, watcher pause/resume, full-scan fallback state machine | 1d |
 | 3.3 | File Rename Optimization | Same-hash detection in debounce window, vector reuse without re-embedding | 0.5d |
-| 3.4 | LanceDB Compaction | Fragmentation monitoring, idle-time + post-reindex compaction triggers | 0.5d |
+| 3.4 | LanceDB Compaction | Fragmentation monitoring, idle-time + post-reindex compaction triggers, **Pipeline Mutex integration for I/O exclusion** | 0.5d |
 | 3.5 | SQLite Batched Writes | Bulk upsert/delete with cooperative yielding, performance benchmarking | 0.5d |
 | 3.6 | Grep Zombie Prevention | `AbortController` + `AbortSignal.any()` integration, process tree cleanup | 0.5d |
 | 3.7 | Additional Language Plugins | Python, Go tree-sitter grammars | 1d |
 | 3.8 | Stress Testing | Branch-switch simulation (10k+ events), concurrent multi-agent access, large repo (100k files) | 1d |
 | 3.9 | Documentation & Release | README, configuration reference, MCP tool documentation | 0.5d |
+| 3.10 | Input Path Sanitization | `PathSanitizer` utility, tool handler integration, path traversal error handling | 0.5d |
+| 3.11 | Merkle Tree Orphan Cleanup | Subtree prefix-match deletion, full-scan GC reconciliation phase | 0.5d |
 
-**Exit criteria:** All unit/integration/E2E tests pass. System survives branch-switch flood and concurrent reindex without OOM, zombie processes, or data corruption.
+**Exit criteria:** All unit/integration/E2E tests pass. System survives branch-switch flood and concurrent reindex without OOM, zombie processes, or data corruption. Path traversal attacks return appropriate error responses. Full reindex leaves zero orphan Merkle nodes.
 
 ### Phase Dependency Graph
 
