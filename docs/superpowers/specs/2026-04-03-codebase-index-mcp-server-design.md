@@ -2,7 +2,7 @@
 
 ## Overview
 
-A locally-complete codebase index MCP server inspired by Cursor IDE's advanced codebase indexing architecture, accessible cross-functionally from multiple AI agents. All data remains on the local machine (Zero Data Retention principle), with embedding inference handled by local endpoints such as Ollama.
+A locally-complete codebase index MCP server inspired by Cursor IDE's advanced codebase indexing architecture, accessible cross-functionally from multiple AI agents. All data remains on the local machine (Zero External Data Transmission — no data is sent to external servers; all index data is stored locally in `<projectRoot>/.codebase-index/`), with embedding inference handled by local endpoints such as Ollama.
 
 ## Architecture: Event-Driven Pipeline (Approach B)
 
@@ -55,7 +55,7 @@ Single-process architecture with the MCP server (Transport + Tool Handlers) and 
 | Metadata Storage | better-sqlite3 | Merkle tree state + index stats, WAL mode for concurrent read/write |
 | Grep Engine | ripgrep (child process) | Unmatched speed, .gitignore support, bundled in Devcontainer |
 | Transport | SSE / StreamableHTTP | Multi-client support for simultaneous AI agent connections |
-| Embedding Default | Ollama (local) | Zero data retention, no external API calls by default |
+| Embedding Default | Ollama (local) | Zero external data transmission, no external API calls by default |
 | Hash Algorithm | xxhash | Non-cryptographic, 10x+ faster than SHA-256, sufficient for diff detection |
 
 ## Directory Structure
@@ -471,16 +471,80 @@ uncontrolled spawning causes file descriptor exhaustion and OS process limits.
 - The semaphore is shared across all callers (`grep_search` tool, `hybrid_search` via orchestrator)
 - Each ripgrep process has a per-process timeout (default: 10s) to prevent zombie processes
 
+**Zombie Process Prevention (AbortController):**
+
+A per-request `AbortController` ensures deterministic child process cleanup on timeout or
+caller cancellation. This prevents orphaned ripgrep processes from accumulating under
+heavy concurrent load or when MCP clients disconnect mid-request.
+
+- Each `executeRipgrep` call creates a dedicated `AbortController`
+- The `signal` is passed to `spawn()` — Node.js automatically sends `SIGTERM` on abort
+- A `setTimeout`-based watchdog aborts the controller after `grepTimeoutMs` (default: 10s)
+- On abort, `SIGKILL` is sent as a fallback if the process doesn't exit within 1s grace period
+- The caller's `AbortSignal` (from MCP request context) is chained via `AbortSignal.any()`
+  to propagate client disconnection
+
+```
+[MCP Request] ──→ GrepEngine.search(params, requestSignal)
+                    │
+                    ├─ semaphore.acquire()
+                    ├─ AbortController created (per-request)
+                    ├─ signal = AbortSignal.any([timeoutSignal, requestSignal])
+                    ├─ spawn('rg', args, { signal })
+                    │    │
+                    │    ├─ Normal completion → resolve results
+                    │    ├─ Timeout (10s) → controller.abort() → SIGTERM → 1s grace → SIGKILL
+                    │    └─ Client disconnect → requestSignal aborted → SIGTERM
+                    │
+                    └─ semaphore.release()
+```
+
 ```typescript
+import { spawn } from 'node:child_process';
+
 class GrepEngine {
   private readonly semaphore: pLimit.Limit;
+  private readonly timeoutMs: number;
 
   constructor(config: SearchConfig) {
     this.semaphore = pLimit(config.grepMaxConcurrency); // default: 4
+    this.timeoutMs = config.grepTimeoutMs ?? 10_000;
   }
 
-  async search(params: GrepParams): Promise<SearchResult[]> {
-    return this.semaphore(() => this.executeRipgrep(params));
+  async search(
+    params: GrepParams,
+    requestSignal?: AbortSignal,
+  ): Promise<SearchResult[]> {
+    return this.semaphore(() => this.executeRipgrep(params, requestSignal));
+  }
+
+  private async executeRipgrep(
+    params: GrepParams,
+    requestSignal?: AbortSignal,
+  ): Promise<SearchResult[]> {
+    const controller = new AbortController();
+
+    // Combine timeout + caller signal
+    const timeoutId = setTimeout(() => controller.abort(), this.timeoutMs);
+    const combinedSignal = requestSignal
+      ? AbortSignal.any([controller.signal, requestSignal])
+      : controller.signal;
+
+    try {
+      const child = spawn('rg', this.buildArgs(params), {
+        signal: combinedSignal,
+        stdio: ['ignore', 'pipe', 'pipe'],
+      });
+
+      return await this.collectOutput(child);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ABORT_ERR') {
+        return []; // Timeout or client disconnection — return empty
+      }
+      throw error;
+    } finally {
+      clearTimeout(timeoutId);
+    }
   }
 }
 ```
@@ -616,6 +680,117 @@ class PluginRegistry {
 | endLine | uint32 | End line |
 | vector | float32[] | Embedding vector (fixed-size-list) |
 
+### LanceDB Compaction Strategy
+
+LanceDB uses the Lance v2 columnar format, which is append-only by design.
+Deletion is implemented as tombstone markers (logical delete), meaning the physical
+storage is never reclaimed automatically. Without periodic compaction, disk usage
+grows monotonically over time as files are modified and re-indexed.
+
+**Compaction trigger points:**
+
+1. **Post-reindex compaction**: After a full or incremental reindex completes, run compaction
+   if the number of accumulated delete tombstones exceeds a threshold
+2. **Idle-time compaction**: When the pipeline has been idle for `compactionIdleThresholdMs`
+   (default: 300,000ms = 5 minutes), trigger a background compaction pass
+3. **Manual compaction**: Exposed via the `index_status` tool response as a recommendation
+   when fragmentation ratio exceeds a warning threshold
+
+**Compaction operations:**
+
+```
+[Pipeline idle / Reindex complete]
+       │
+       v
+  fragmentation = table.stats().numDeletedRows / table.stats().numRows
+       │
+       ├── fragmentation < 0.2 → skip (acceptable overhead)
+       ├── fragmentation >= 0.2 → trigger compaction
+       │     │
+       │     ├── table.optimize.compact()       ← merge small fragments
+       │     ├── table.optimize.prune()         ← remove tombstoned rows
+       │     └── table.cleanupOldVersions()     ← delete old manifest versions
+       │
+       └── Log compaction result (rows reclaimed, duration, new size)
+```
+
+```typescript
+interface CompactionConfig {
+  /** Fragmentation ratio threshold to trigger compaction (default: 0.2 = 20%) */
+  fragmentationThreshold: number;
+  /** Idle time before background compaction fires (default: 300000ms = 5min) */
+  idleThresholdMs: number;
+  /** Minimum number of versions to retain (default: 2) */
+  minRetainedVersions: number;
+}
+
+class VectorStore {
+  private compactionTimer: ReturnType<typeof setTimeout> | null = null;
+
+  /**
+   * Run compaction if fragmentation exceeds threshold.
+   * Called after reindex completion or on idle timer.
+   */
+  async compactIfNeeded(): Promise<CompactionResult> {
+    const stats = await this.table.stats();
+    const fragmentation = stats.numDeletedRows / Math.max(stats.numRows, 1);
+
+    if (fragmentation < this.config.fragmentationThreshold) {
+      return { skipped: true, fragmentation };
+    }
+
+    const before = await this.getStorageSize();
+
+    // 1. Merge small data fragments into larger files
+    await this.table.optimize({ cleanupOlderThan: new Date() });
+
+    // 2. Delete old manifest versions (keep last N)
+    await this.table.cleanupOldVersions(
+      undefined, // olderThan
+      this.config.minRetainedVersions,
+    );
+
+    const after = await this.getStorageSize();
+
+    return {
+      skipped: false,
+      fragmentation,
+      bytesReclaimed: before - after,
+      durationMs: Date.now() - startTime,
+    };
+  }
+
+  /**
+   * Schedule compaction after pipeline idle period.
+   * Reset the timer whenever new pipeline activity occurs.
+   */
+  scheduleIdleCompaction(): void {
+    this.cancelIdleCompaction();
+    this.compactionTimer = setTimeout(
+      () => void this.compactIfNeeded(),
+      this.config.idleThresholdMs,
+    );
+    if (this.compactionTimer.unref) {
+      this.compactionTimer.unref(); // Don't prevent process exit
+    }
+  }
+
+  cancelIdleCompaction(): void {
+    if (this.compactionTimer) {
+      clearTimeout(this.compactionTimer);
+      this.compactionTimer = null;
+    }
+  }
+}
+
+interface CompactionResult {
+  skipped: boolean;
+  fragmentation: number;
+  bytesReclaimed?: number;
+  durationMs?: number;
+}
+```
+
 ### SQLite Metadata Schema
 
 ```sql
@@ -637,10 +812,109 @@ CREATE TABLE index_stats (
 );
 ```
 
+### SQLite Event Loop Protection (Batched Transactions)
+
+`better-sqlite3` is a synchronous native addon — every `INSERT`, `UPDATE`, and `SELECT`
+blocks the Node.js event loop for the duration of the underlying SQLite C call.
+While individual operations complete in microseconds, bulk Merkle tree updates during
+branch switching (thousands of nodes) can accumulate into 100-500ms+ of continuous blocking,
+disrupting SSE heartbeats and MCP client timeouts.
+
+**Batched transaction strategy:**
+
+Instead of wrapping all updates in a single large transaction (which blocks for the entire
+duration), the MetadataStore splits bulk writes into fixed-size batches with cooperative
+yielding between them.
+
+```
+[Merkle Tree Update: 2,000 nodes]
+       │
+       ├── Batch 1: BEGIN → 100 INSERTs → COMMIT    (~2ms)
+       ├── setImmediate() yield                       ← event loop breathes
+       ├── Batch 2: BEGIN → 100 INSERTs → COMMIT    (~2ms)
+       ├── setImmediate() yield
+       ├── ... (20 batches total)
+       └── Batch 20: BEGIN → 100 INSERTs → COMMIT
+
+  Total wall time: ~40ms + 20 yields ≈ ~45ms
+  Max continuous block: ~2ms per batch (well within SSE heartbeat tolerance)
+```
+
+```typescript
+class MetadataStore {
+  private readonly db: BetterSqlite3.Database;
+  private readonly batchSize: number; // default: 100
+
+  /**
+   * Bulk upsert merkle nodes with batched transactions.
+   * Yields to the event loop between batches to prevent starvation.
+   */
+  async bulkUpsertMerkleNodes(
+    nodes: Array<{ path: string; hash: string; parentPath: string | null; isDirectory: boolean }>,
+  ): Promise<void> {
+    const upsertStmt = this.db.prepare(`
+      INSERT OR REPLACE INTO merkle_nodes (path, hash, parent_path, is_directory, updated_at)
+      VALUES (?, ?, ?, ?, ?)
+    `);
+
+    for (let i = 0; i < nodes.length; i += this.batchSize) {
+      const batch = nodes.slice(i, i + this.batchSize);
+
+      // Synchronous transaction — but bounded to batchSize rows
+      const runBatch = this.db.transaction((rows: typeof batch) => {
+        const now = Date.now();
+        for (const node of rows) {
+          upsertStmt.run(node.path, node.hash, node.parentPath, node.isDirectory ? 1 : 0, now);
+        }
+      });
+
+      runBatch(batch);
+
+      // Yield between batches to release event loop
+      if (i + this.batchSize < nodes.length) {
+        await new Promise<void>((resolve) => setImmediate(resolve));
+      }
+    }
+  }
+
+  /**
+   * Bulk delete merkle nodes with batched transactions.
+   */
+  async bulkDeleteMerkleNodes(paths: string[]): Promise<void> {
+    const deleteStmt = this.db.prepare('DELETE FROM merkle_nodes WHERE path = ?');
+
+    for (let i = 0; i < paths.length; i += this.batchSize) {
+      const batch = paths.slice(i, i + this.batchSize);
+
+      const runBatch = this.db.transaction((rows: string[]) => {
+        for (const path of rows) {
+          deleteStmt.run(path);
+        }
+      });
+
+      runBatch(batch);
+
+      if (i + this.batchSize < paths.length) {
+        await new Promise<void>((resolve) => setImmediate(resolve));
+      }
+    }
+  }
+}
+```
+
+**Design rationale (Worker Thread rejection):**
+
+`better-sqlite3` does not support sharing a database connection across threads.
+Using Worker Threads would require a message-passing proxy pattern (serialize query →
+post to worker → deserialize result), adding significant latency and complexity for
+operations that complete in microseconds individually. The batched transaction approach
+achieves the goal — preventing event loop starvation — with far less overhead.
+
 ### Data Integrity
 
 - LanceDB writes are atomic per file (delete old chunks -> insert new chunks as transaction)
 - SQLite runs in WAL mode for concurrent read/write
+- SQLite bulk writes use batched transactions with cooperative yielding (see above)
 - When embedding provider is down, events are retried with exponential backoff (max 3 attempts)
 - Events that exhaust all retry attempts are moved to the **Dead Letter Queue (DLQ)** rather than blocking the pipeline
 
@@ -802,10 +1076,12 @@ class TestEmbeddingProvider implements EmbeddingProvider {
 3. **RRF Fusion**: Score calculation matches formula, handling of single-source results
 4. **Event Queue**: Debounce, priority, concurrency limit correctness, **backpressure threshold triggering, full-scan fallback on overflow**
 5. **Search Orchestrator**: Semantic/grep parallel execution -> RRF fusion integration flow
-6. **Grep Semaphore**: Concurrent request limiting, queue ordering, timeout enforcement
+6. **Grep Semaphore**: Concurrent request limiting, queue ordering, timeout enforcement, **AbortController signal propagation, process cleanup on client disconnection**
 7. **Rename Pipeline**: Vector reuse on file rename (LanceDB filePath update without re-embedding)
 8. **Dead Letter Queue**: Event retirement after retry exhaustion, periodic recovery sweep, DLQ purge after TTL
 9. **Pipeline Mutex**: Concurrent reindex rejection (idempotent `already_running`), watcher event serialization, no deadlock under error conditions
+10. **LanceDB Compaction**: Fragmentation threshold detection, post-reindex compaction trigger, idle-time scheduling, version retention
+11. **SQLite Batched Writes**: Batch size boundary correctness, event loop yielding between batches, partial-failure atomicity
 
 ### Test Fixtures
 
@@ -859,6 +1135,15 @@ interface Config {
     grepWeight: number;            // default: 1.0
     grepMaxResults: number;        // default: 100
     grepMaxConcurrency: number;    // default: 4 (max concurrent ripgrep processes)
+    grepTimeoutMs: number;         // default: 10000 (per-process timeout for ripgrep)
+  };
+  compaction: {
+    fragmentationThreshold: number; // default: 0.2 (trigger compaction at 20% tombstones)
+    idleThresholdMs: number;       // default: 300000 (5min idle before background compaction)
+    minRetainedVersions: number;   // default: 2 (Lance manifest versions to keep)
+  };
+  metadataStore: {
+    batchSize: number;             // default: 100 (rows per SQLite batched transaction)
   };
   languages: {
     builtIn: string[];             // default: ["typescript", "python", "go"]
@@ -889,3 +1174,74 @@ interface Config {
 | Linter | ESLint (flat config) | latest |
 | Formatter | Prettier | latest |
 | Embedding (default) | Ollama (nomic-embed-text) | local |
+
+## Implementation Plan (Phases)
+
+Staged development milestones ordered by dependency chain.
+Each phase produces a testable, demonstrable increment.
+
+### Phase 1: Core Pipeline Foundation
+
+**Goal:** End-to-end flow from file change detection to indexed vector storage.
+
+| # | Task | Key Deliverables | Estimated Effort |
+|---|------|-------------------|------------------|
+| 1.1 | Project scaffold | `package.json`, `tsconfig.json`, `eslint.config.mjs`, `vitest.config.ts`, Devcontainer | 0.5d |
+| 1.2 | Type definitions | `src/types/index.ts` — all shared interfaces | 0.5d |
+| 1.3 | Metadata Store (SQLite) | `better-sqlite3` wrapper, schema migration, batched transaction API, WAL mode | 1d |
+| 1.4 | Merkle Tree | In-memory tree + SQLite persistence, xxhash leaf nodes, diff detection | 1.5d |
+| 1.5 | Chunker | tree-sitter integration, AST-based chunking, fixed-line fallback, event loop yielding | 1.5d |
+| 1.6 | Embedding Provider (Ollama) | Plugin interface, Ollama provider, batch embed, health check, retry with backoff | 1d |
+| 1.7 | Vector Store (LanceDB) | Table creation, upsert/delete/search, compaction scheduling | 1d |
+| 1.8 | Event Queue | Priority queue, debounce, `p-limit` concurrency control | 1d |
+| 1.9 | FS Watcher | chokidar wrapper, pause/resume for backpressure | 0.5d |
+| 1.10 | Pipeline Integration | Wire all components, `AsyncMutex`, incremental + full reindex | 1.5d |
+
+**Exit criteria:** `npm run test:unit` passes. Manual `reindex` on a sample project populates LanceDB.
+
+### Phase 2: Search & MCP Server Layer
+
+**Goal:** Functional MCP server with all 6 tools accessible by AI agents.
+
+| # | Task | Key Deliverables | Estimated Effort |
+|---|------|-------------------|------------------|
+| 2.1 | Semantic Search | LanceDB ANN query wrapper, top-K retrieval | 0.5d |
+| 2.2 | Grep Search (ripgrep) | `GrepEngine` with semaphore, `AbortController` timeout, keyword extraction | 1d |
+| 2.3 | RRF Fusion | Score fusion algorithm, orchestrator (parallel semantic + grep) | 0.5d |
+| 2.4 | MCP Server & Transport | SSE/StreamableHTTP transport, multi-client support | 1d |
+| 2.5 | Tool Handlers | `hybrid_search`, `semantic_search`, `grep_search`, `get_context`, `index_status`, `reindex` | 1.5d |
+| 2.6 | Plugin Registry | Language registry, embedding provider registry, dynamic registration | 0.5d |
+| 2.7 | Configuration | Config loading (env → file → defaults), validation | 0.5d |
+| 2.8 | Integration Tests | Pipeline E2E, search flow, MCP protocol tests with test embedding provider | 1.5d |
+
+**Exit criteria:** MCP client can connect, call `hybrid_search`, and receive ranked results.
+
+### Phase 3: Resilience & Edge Cases
+
+**Goal:** Production-grade reliability under adversarial conditions.
+
+| # | Task | Key Deliverables | Estimated Effort |
+|---|------|-------------------|------------------|
+| 3.1 | Dead Letter Queue | In-memory ring buffer + SQLite persistence, periodic recovery sweep | 1d |
+| 3.2 | Backpressure | Queue threshold detection, watcher pause/resume, full-scan fallback state machine | 1d |
+| 3.3 | File Rename Optimization | Same-hash detection in debounce window, vector reuse without re-embedding | 0.5d |
+| 3.4 | LanceDB Compaction | Fragmentation monitoring, idle-time + post-reindex compaction triggers | 0.5d |
+| 3.5 | SQLite Batched Writes | Bulk upsert/delete with cooperative yielding, performance benchmarking | 0.5d |
+| 3.6 | Grep Zombie Prevention | `AbortController` + `AbortSignal.any()` integration, process tree cleanup | 0.5d |
+| 3.7 | Additional Language Plugins | Python, Go tree-sitter grammars | 1d |
+| 3.8 | Stress Testing | Branch-switch simulation (10k+ events), concurrent multi-agent access, large repo (100k files) | 1d |
+| 3.9 | Documentation & Release | README, configuration reference, MCP tool documentation | 0.5d |
+
+**Exit criteria:** All unit/integration/E2E tests pass. System survives branch-switch flood and concurrent reindex without OOM, zombie processes, or data corruption.
+
+### Phase Dependency Graph
+
+```
+Phase 1 (Core Pipeline)
+  │
+  ├──→ Phase 2 (Search & MCP)     ← depends on storage + pipeline from Phase 1
+  │         │
+  └──→ Phase 3 (Resilience)        ← depends on both Phase 1 and Phase 2
+```
+
+**Total estimated effort:** ~22 developer-days (single developer).
