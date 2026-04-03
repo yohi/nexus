@@ -947,6 +947,14 @@ CREATE TABLE index_stats (
   last_indexed  INTEGER NOT NULL,
   root_hash     TEXT NOT NULL
 );
+
+-- Pipeline Write-Ahead Marker for crash recovery
+CREATE TABLE pipeline_wal (
+  file_path   TEXT PRIMARY KEY,
+  event_type  TEXT NOT NULL,           -- 'added' | 'modified' | 'deleted'
+  content_hash TEXT,                   -- expected hash after completion
+  started_at  INTEGER NOT NULL
+);
 ```
 
 > **Note:** `parent_path` has a self-referential `REFERENCES` constraint for documentation
@@ -1181,6 +1189,159 @@ achieves the goal — preventing event loop starvation — with far less overhea
 - SQLite bulk writes use batched transactions with cooperative yielding (see above)
 - When embedding provider is down, events are retried with exponential backoff (max 3 attempts)
 - Events that exhaust all retry attempts are moved to the **Dead Letter Queue (DLQ)** rather than blocking the pipeline
+  - **Phase 1 fallback (DLQ未実装時):** リトライ上限到達時はエラーログを出力しイベントをスキップする（下記「Retry Exhaustion Fallback」セクション参照）
+
+### Crash Recovery Sequence (Dual-Store Consistency)
+
+LanceDB（ベクトル）とSQLite（Merkleメタデータ）の更新は2つの独立したアトミック操作であり、
+プロセスが両操作の間で異常終了した場合（SIGKILL等）、起動時にデータストア間の不整合が発生する。
+
+**不整合パターン:**
+
+| Scenario | LanceDB State | SQLite State | Symptom |
+|---|---|---|---|
+| Crash after LanceDB write, before SQLite commit | New vectors exist | Merkle hash stale | Orphan vectors (LanceDB has chunks for old hash) |
+| Crash after SQLite commit, before LanceDB write | Vectors missing | Merkle hash updated | Phantom entries (SQLite says indexed, vectors absent) |
+| Crash during batched SQLite transaction | Vectors exist | Partial Merkle update | Inconsistent subtree hashes |
+
+**Recovery strategy: Write-Ahead Marker (WAM)**
+
+SQLiteに `pipeline_wal` テーブルを導入し、パイプライン処理の開始前にマーカーを書き込む。
+正常完了時にマーカーを削除する。起動時にマーカーが残っていれば、そのファイルのインデックスが
+不完全であることがわかるため、対象ファイルのみ再処理する。
+
+```sql
+CREATE TABLE pipeline_wal (
+  file_path   TEXT PRIMARY KEY,
+  event_type  TEXT NOT NULL,           -- 'added' | 'modified' | 'deleted'
+  content_hash TEXT,                   -- expected hash after completion
+  started_at  INTEGER NOT NULL
+);
+```
+
+**Recovery flow (server startup):**
+
+```
+[Server Startup]
+       │
+       v
+  SELECT * FROM pipeline_wal
+       │
+       ├── empty → No pending work, proceed normally
+       │
+       ├── entries found → Incomplete operations detected
+       │     │
+       │     ├── For each entry:
+       │     │     ├── event_type = 'deleted'
+       │     │     │     ├── Ensure LanceDB has no vectors for file_path
+       │     │     │     ├── Ensure SQLite merkle_nodes has no entry for file_path
+       │     │     │     └── DELETE FROM pipeline_wal WHERE file_path = ?
+       │     │     │
+       │     │     ├── event_type = 'added' | 'modified'
+       │     │     │     ├── Check if file still exists on disk
+       │     │     │     │     ├── YES → Re-run: chunk → embed → upsert LanceDB → update Merkle
+       │     │     │     │     └── NO  → Clean up: delete vectors + Merkle entry
+       │     │     │     └── DELETE FROM pipeline_wal WHERE file_path = ?
+       │     │
+       │     └── Log recovered file count
+       │
+       └── Resume normal operation (start watcher, etc.)
+```
+
+**Pipeline integration:**
+
+```typescript
+class IndexPipeline {
+  async processEvent(event: IndexEvent): Promise<void> {
+    // 1. Write WAM marker BEFORE any mutation
+    this.metadataStore.insertWalMarker({
+      filePath: event.filePath,
+      eventType: event.type,
+      contentHash: event.contentHash,
+    });
+
+    try {
+      // 2. Execute pipeline stages (chunk → embed → store)
+      await this.executeStages(event);
+
+      // 3. Update Merkle tree
+      await this.updateMerkleTree(event);
+
+      // 4. Remove WAM marker on SUCCESS
+      this.metadataStore.deleteWalMarker(event.filePath);
+    } catch (error) {
+      // WAM marker remains — will be recovered on next startup
+      throw error;
+    }
+  }
+}
+```
+
+**Design rationale:**
+
+- WAMマーカーはSQLite内の単一行INSERTであり、オーバーヘッドはマイクロ秒レベル
+- 起動時リカバリは `pipeline_wal` テーブルに残存するエントリ数に比例し、通常0件（正常終了時）
+- フルスキャンGC（Tier 2）との併用により、WAMでカバーできないエッジケース（WAM INSERT前のクラッシュ）も最終的に是正される
+- WAMマーカーのINSERTは `better-sqlite3` の同期操作だが、1行のみのため event loop への影響は無視できる
+
+### Retry Exhaustion Fallback (Pre-DLQ)
+
+DLQが未実装の開発初期段階（Phase 1-2）において、エンベディングのリトライが上限に達した
+イベントに対する安全なフォールバック挙動を定義する。
+
+**Fallback behavior:**
+
+1. 構造化エラーログを出力（ファイルパス、エラー内容、リトライ回数）
+2. イベントをスキップし、パイプラインの処理を継続
+3. WAMマーカーを削除（リトライ上限到達は「処理完了（失敗）」として扱う）
+4. `index_status` ツールのレスポンスに `skippedFiles` カウンタを追加し、可視化
+
+```typescript
+class IndexPipeline {
+  private skippedFiles: Map<string, { error: string; timestamp: number }> = new Map();
+
+  private async embedWithRetry(chunks: CodeChunk[], maxRetries: number): Promise<number[][]> {
+    for (let attempt = 1; attempt <= maxRetries; attempt++) {
+      try {
+        return await this.embeddingProvider.embedBatch(
+          chunks.map(c => c.content)
+        );
+      } catch (error) {
+        if (attempt === maxRetries) {
+          // Fallback: log and skip (DLQ will replace this in Phase 3)
+          logger.error('Embedding failed after all retries, skipping file', {
+            filePath: chunks[0]?.filePath,
+            error: error instanceof Error ? error.message : String(error),
+            retries: maxRetries,
+          });
+          this.skippedFiles.set(chunks[0]?.filePath ?? 'unknown', {
+            error: error instanceof Error ? error.message : String(error),
+            timestamp: Date.now(),
+          });
+          throw new RetryExhaustedError(chunks[0]?.filePath ?? 'unknown', error);
+        }
+        // Exponential backoff
+        await sleep(Math.min(1000 * 2 ** (attempt - 1), 10_000));
+      }
+    }
+    throw new Error('Unreachable');
+  }
+}
+
+class RetryExhaustedError extends Error {
+  readonly code = 'RETRY_EXHAUSTED';
+  constructor(public readonly filePath: string, public readonly cause: unknown) {
+    super(`Retry exhausted for ${filePath}`);
+    this.name = 'RetryExhaustedError';
+  }
+}
+```
+
+**DLQ導入時の移行:**
+
+Phase 3でDLQが実装された際、`RetryExhaustedError` の `catch` ブロックを
+「エラーログ＋スキップ」から「DLQへのenqueue」に差し替えるだけで移行が完了する。
+`skippedFiles` マップも DLQ のクエリに置き換わる。
 
 ### Dead Letter Queue (DLQ)
 
@@ -1348,6 +1509,9 @@ class TestEmbeddingProvider implements EmbeddingProvider {
 11. **SQLite Batched Writes**: Batch size boundary correctness, event loop yielding between batches, partial-failure atomicity
 12. **Path Sanitization**: Path traversal rejection (`../` escape), glob pattern validation, `PathTraversalError` response for all tool handlers
 13. **Orphan Node GC**: Full-scan GC reconciles SQLite Merkle tree against filesystem, purging stale nodes after missed events
+14. **Crash Recovery (WAM)**: `pipeline_wal` marker insertion/deletion, startup recovery of incomplete operations, Dual-Store consistency verification after simulated SIGKILL
+15. **Retry Exhaustion Fallback**: `RetryExhaustedError` propagation, `skippedFiles` tracking, error log output on retry exhaustion, graceful pipeline continuation
+16. **License Audit**: `npm run license:check` rejects disallowed licenses, `NOTICE` file generation accuracy
 
 ### Test Fixtures
 
@@ -1425,21 +1589,100 @@ interface Config {
 
 ## Technology Stack Summary
 
-| Component | Technology | Version |
+| Component | Technology | Version | License |
+|---|---|---|---|
+| Runtime | Node.js | 22 LTS | MIT |
+| Language | TypeScript | 5.x | Apache-2.0 |
+| MCP SDK | @modelcontextprotocol/sdk | latest | MIT |
+| AST Parser | tree-sitter (web-tree-sitter) | latest | MIT |
+| Vector Store | LanceDB (@lancedb/lancedb) | latest | Apache-2.0 |
+| Metadata Store | better-sqlite3 | latest | MIT |
+| Grep Engine | ripgrep (child process) | latest | Unlicense/MIT |
+| FS Watcher | chokidar | latest | MIT |
+| Hash | xxhash (xxhash-wasm) | latest | MIT |
+| Test Runner | Vitest | latest | MIT |
+| Linter | ESLint (flat config) | latest | MIT |
+| Formatter | Prettier | latest | MIT |
+| Embedding (default) | Ollama (nomic-embed-text) | local | MIT |
+
+## Third-Party License Management
+
+MITライセンスで提供される本プロジェクトでは、サードパーティの依存関係およびバンドルバイナリの
+ライセンス互換性を継続的に管理する。
+
+### License Compatibility Policy
+
+| Category | Allowed Licenses | Restricted Licenses |
 |---|---|---|
-| Runtime | Node.js | 22 LTS |
-| Language | TypeScript | 5.x |
-| MCP SDK | @modelcontextprotocol/sdk | latest |
-| AST Parser | tree-sitter (web-tree-sitter) | latest |
-| Vector Store | LanceDB (@lancedb/lancedb) | latest |
-| Metadata Store | better-sqlite3 | latest |
-| Grep Engine | ripgrep (child process) | latest |
-| FS Watcher | chokidar | latest |
-| Hash | xxhash (xxhash-wasm) | latest |
-| Test Runner | Vitest | latest |
-| Linter | ESLint (flat config) | latest |
-| Formatter | Prettier | latest |
-| Embedding (default) | Ollama (nomic-embed-text) | local |
+| npm dependencies | MIT, ISC, BSD-2, BSD-3, Apache-2.0, Unlicense, CC0 | GPL-2.0, GPL-3.0, AGPL (copyleft — バンドル不可) |
+| Bundled binaries | MIT, Unlicense, Apache-2.0, BSD | GPL (動的リンクのみ許可、静的バンドル禁止) |
+| WASM modules | MIT, Apache-2.0, BSD | GPL (WASMは静的リンク相当のため不可) |
+
+### Automated License Audit
+
+`license-checker` をCIパイプラインに統合し、ビルド時にライセンス互換性を自動検証する。
+
+```json
+// package.json (scripts)
+{
+  "scripts": {
+    "license:check": "license-checker --production --onlyAllow 'MIT;ISC;BSD-2-Clause;BSD-3-Clause;Apache-2.0;Unlicense;CC0-1.0;0BSD' --excludePrivatePackages",
+    "license:report": "license-checker --production --csv --out THIRD_PARTY_LICENSES.csv",
+    "license:notice": "generate-license-file --input package.json --output NOTICE --overwrite"
+  }
+}
+```
+
+**CI integration:**
+
+```
+[CI Pipeline]
+       │
+       ├── npm ci
+       ├── npm run license:check    ← 禁止ライセンスの検出で build fail
+       ├── npm run license:notice   ← NOTICE ファイルの自動生成
+       └── npm run build
+```
+
+### NOTICE File
+
+プロジェクトルートに `NOTICE` ファイルを配置し、バンドルされる全サードパーティコンポーネントの
+ライセンス表記をまとめる。`generate-license-file` により自動生成し、リリース時にパッケージに同梱する。
+
+```
+NOTICE
+======
+
+This product includes software developed by third parties.
+See below for their respective license terms.
+
+---
+ripgrep (https://github.com/BurntSushi/ripgrep)
+License: The Unlicense / MIT
+Copyright (c) Andrew Gallant
+
+---
+tree-sitter (https://github.com/tree-sitter/tree-sitter)
+License: MIT
+Copyright (c) Tree-sitter contributors
+
+---
+... (auto-generated by generate-license-file)
+```
+
+### Bundled Binary Tracking
+
+Devcontainerに同梱されるネイティブバイナリ（ripgrep等）は、Dockerfileの
+インストールステップにライセンス確認コメントを付記する。
+
+```dockerfile
+# ripgrep — License: Unlicense/MIT (compatible with MIT project license)
+# See: https://github.com/BurntSushi/ripgrep/blob/master/LICENSE-MIT
+RUN apt-get update && apt-get install -y --no-install-recommends ripgrep
+```
+
+npmパッケージとして配布する場合、`postinstall` スクリプトでダウンロードする
+外部バイナリがあれば、そのライセンス情報を `NOTICE` ファイルに含める。
 
 ## Implementation Plan (Phases)
 
@@ -1452,18 +1695,18 @@ Each phase produces a testable, demonstrable increment.
 
 | # | Task | Key Deliverables | Estimated Effort |
 |---|------|-------------------|------------------|
-| 1.1 | Project scaffold | `package.json`, `tsconfig.json`, `eslint.config.mjs`, `vitest.config.ts`, Devcontainer | 0.5d |
-| 1.2 | Type definitions | `src/types/index.ts` — all shared interfaces | 0.5d |
-| 1.3 | Metadata Store (SQLite) | `better-sqlite3` wrapper, schema migration, batched transaction API, WAL mode | 1d |
+| 1.1 | Project scaffold | `package.json`, `tsconfig.json`, `eslint.config.mjs`, `vitest.config.ts`, Devcontainer, **license audit script** | 0.5d |
+| 1.2 | Type definitions | `src/types/index.ts` — all shared interfaces, **`RetryExhaustedError`** | 0.5d |
+| 1.3 | Metadata Store (SQLite) | `better-sqlite3` wrapper, schema migration, batched transaction API, WAL mode, **`pipeline_wal` テーブル** | 1d |
 | 1.4 | Merkle Tree | In-memory tree + SQLite persistence, xxhash leaf nodes, diff detection | 1.5d |
 | 1.5 | Chunker | tree-sitter integration, AST-based chunking, fixed-line fallback, event loop yielding | 1.5d |
-| 1.6 | Embedding Provider (Ollama) | Plugin interface, Ollama provider, batch embed, health check, retry with backoff | 1d |
+| 1.6 | Embedding Provider (Ollama) | Plugin interface, Ollama provider, batch embed, health check, retry with backoff, **リトライ上限フォールバック（ログ出力＋スキップ）** | 1d |
 | 1.7 | Vector Store (LanceDB) | Table creation, upsert/delete/search, compaction scheduling | 1d |
 | 1.8 | Event Queue | Priority queue, debounce, `p-limit` concurrency control | 1d |
 | 1.9 | FS Watcher | chokidar wrapper, pause/resume for backpressure | 0.5d |
-| 1.10 | Pipeline Integration | Wire all components, `AsyncMutex`, incremental + full reindex | 1.5d |
+| 1.10 | Pipeline Integration | Wire all components, `AsyncMutex`, incremental + full reindex, **WAMベースのクラッシュリカバリ** | 1.5d |
 
-**Exit criteria:** `npm run test:unit` passes. Manual `reindex` on a sample project populates LanceDB.
+**Exit criteria:** `npm run test:unit` passes. Manual `reindex` on a sample project populates LanceDB. **リトライ上限イベントはエラーログに記録されスキップされる。異常終了テスト後の再起動で `pipeline_wal` が正常にリカバリされる。**
 
 ### Phase 2: Search & MCP Server Layer
 
@@ -1488,19 +1731,19 @@ Each phase produces a testable, demonstrable increment.
 
 | # | Task | Key Deliverables | Estimated Effort |
 |---|------|-------------------|------------------|
-| 3.1 | Dead Letter Queue | In-memory ring buffer + SQLite persistence, periodic recovery sweep | 1d |
+| 3.1 | Dead Letter Queue | In-memory ring buffer + SQLite persistence, periodic recovery sweep, **Phase 1の `RetryExhaustedError` catch をDLQ enqueueに差し替え** | 1d |
 | 3.2 | Backpressure | Queue threshold detection, watcher pause/resume, full-scan fallback state machine | 1d |
 | 3.3 | File Rename Optimization | Same-hash detection in debounce window, vector reuse without re-embedding | 0.5d |
 | 3.4 | LanceDB Compaction | Fragmentation monitoring, idle-time + post-reindex compaction triggers, **Pipeline Mutex integration for I/O exclusion** | 0.5d |
 | 3.5 | SQLite Batched Writes | Bulk upsert/delete with cooperative yielding, performance benchmarking | 0.5d |
 | 3.6 | Grep Zombie Prevention | `AbortController` + `AbortSignal.any()` integration, process tree cleanup | 0.5d |
 | 3.7 | Additional Language Plugins | Python, Go tree-sitter grammars | 1d |
-| 3.8 | Stress Testing | Branch-switch simulation (10k+ events), concurrent multi-agent access, large repo (100k files) | 1d |
-| 3.9 | Documentation & Release | README, configuration reference, MCP tool documentation | 0.5d |
+| 3.8 | Stress Testing | Branch-switch simulation (10k+ events), concurrent multi-agent access, large repo (100k files), **クラッシュリカバリシナリオテスト** | 1d |
+| 3.9 | Documentation & Release | README, configuration reference, MCP tool documentation, **NOTICE ファイル同梱** | 0.5d |
 | 3.10 | Input Path Sanitization | `PathSanitizer` utility, tool handler integration, path traversal error handling | 0.5d |
 | 3.11 | Merkle Tree Orphan Cleanup | Subtree prefix-match deletion, full-scan GC reconciliation phase | 0.5d |
 
-**Exit criteria:** All unit/integration/E2E tests pass. System survives branch-switch flood and concurrent reindex without OOM, zombie processes, or data corruption. Path traversal attacks return appropriate error responses. Full reindex leaves zero orphan Merkle nodes.
+**Exit criteria:** All unit/integration/E2E tests pass. System survives branch-switch flood and concurrent reindex without OOM, zombie processes, or data corruption. Path traversal attacks return appropriate error responses. Full reindex leaves zero orphan Merkle nodes. **DLQ導入によりPhase 1の `skippedFiles` フォールバックが完全に置換されている。**
 
 ### Phase Dependency Graph
 
