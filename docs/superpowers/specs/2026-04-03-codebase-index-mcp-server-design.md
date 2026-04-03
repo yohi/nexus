@@ -77,11 +77,12 @@ multi-agent-codebase-index/
 │   │       ├── index-status.ts      # Index status check
 │   │       └── reindex.ts           # Manual reindex trigger
 │   ├── indexer/
-│   │   ├── pipeline.ts              # Index pipeline integration
-│   │   ├── event-queue.ts           # Async event queue
+│   │   ├── pipeline.ts              # Index pipeline integration (with AsyncMutex)
+│   │   ├── event-queue.ts           # Async event queue (with backpressure)
+│   │   ├── dead-letter-queue.ts     # DLQ for failed embedding events
 │   │   ├── merkle-tree.ts           # Merkle tree diff detection
-│   │   ├── chunker.ts              # tree-sitter chunking integration
-│   │   └── watcher.ts              # FS watcher
+│   │   ├── chunker.ts              # tree-sitter chunking integration (with failsafe)
+│   │   └── watcher.ts              # FS watcher (with pause/resume)
 │   ├── search/
 │   │   ├── orchestrator.ts          # Search orchestrator
 │   │   ├── semantic.ts              # Semantic search engine
@@ -151,7 +152,29 @@ File Change Detected
 - **Debounce**: 100ms debounce for consecutive changes to the same file
 - **Concurrency limit**: `p-limit` with default concurrency of 4
 - **Priority**: Manual `reindex` requests > FS watcher events
-- **Backpressure**: Buffer watcher events when queue size exceeds threshold
+- **Backpressure**: Queue size is bounded by `maxQueueSize` (default: 10,000)
+  - When queue size exceeds `fullScanThreshold` (default: 5,000), the watcher is paused and new incoming events are dropped
+  - The pipeline drains the current queue, then triggers a **full-scan reindex** to reconcile any missed events
+  - After full-scan completion, the watcher is resumed
+  - This prevents OOM under branch-switch scenarios where thousands of inotify events fire simultaneously
+
+#### Backpressure State Machine
+
+```
+                   queue.size < fullScanThreshold
+  [Normal] ──────────────────────────────────────── events enqueued normally
+     │
+     │ queue.size >= fullScanThreshold
+     v
+  [Paused] ── watcher.pause(), drop new events
+     │
+     │ queue fully drained
+     v
+  [FullScan] ── trigger merkle-tree full reconciliation
+     │
+     │ full-scan complete
+     v
+  [Normal] ── watcher.resume()
 
 ### File Rename Optimization (Vector Reuse)
 
@@ -200,19 +223,48 @@ The chunker processes files sequentially with cooperative yielding between files
 Within a single file, AST parsing is atomic (tree-sitter requires the full source),
 but post-parse traversal and chunk extraction yield periodically.
 
+**AST Parse Failsafe:**
+
+`parser.parse()` may throw or return an invalid tree under the following conditions:
+
+- Corrupted or binary files misidentified by extension
+- Files exceeding tree-sitter's internal memory limits
+- WASM runtime errors (e.g., out-of-memory in the WASM heap)
+
+When this occurs, the chunker catches the exception, logs a warning, and falls back
+to the fixed-line sliding window strategy (same as unsupported languages).
+This ensures the file is still indexed (at lower semantic quality) rather than silently dropped.
+
 ```typescript
 async function chunkFiles(files: FileToChunk[]): Promise<CodeChunk[]> {
   const allChunks: CodeChunk[] = [];
 
   for (const file of files) {
-    // 1. Parse AST (synchronous, unavoidable — but bounded per-file)
-    const tree = parser.parse(file.content);
+    try {
+      // 1. Parse AST (synchronous, unavoidable — but bounded per-file)
+      const tree = parser.parse(file.content);
 
-    // 2. Traverse and extract chunks with periodic yielding
-    const chunks = await extractChunksWithYield(tree.rootNode, file);
-    allChunks.push(...chunks);
+      if (!tree || !tree.rootNode) {
+        throw new Error(`tree-sitter returned invalid tree for ${file.filePath}`);
+      }
 
-    // 3. Yield between files to release event loop
+      // 2. Traverse and extract chunks with periodic yielding
+      const chunks = await extractChunksWithYield(tree.rootNode, file);
+      allChunks.push(...chunks);
+    } catch (error) {
+      // 3. Failsafe: fall back to fixed-line sliding window chunking
+      logger.warn(
+        `AST parse failed for ${file.filePath}, falling back to line-based chunking`,
+        { error: error instanceof Error ? error.message : String(error) }
+      );
+      const chunks = chunkByFixedLines(file, {
+        windowSize: 50,
+        overlap: 10,
+      });
+      allChunks.push(...chunks);
+    }
+
+    // 4. Yield between files to release event loop
     await yieldToEventLoop();
   }
 
@@ -242,6 +294,36 @@ async function extractChunksWithYield(
 
   return chunks;
 }
+
+/**
+ * Fixed-line sliding window chunking for unsupported languages
+ * or when AST parsing fails.
+ */
+function chunkByFixedLines(
+  file: FileToChunk,
+  opts: { windowSize: number; overlap: number }
+): CodeChunk[] {
+  const lines = file.content.split('\n');
+  const chunks: CodeChunk[] = [];
+  const step = opts.windowSize - opts.overlap;
+
+  for (let i = 0; i < lines.length; i += step) {
+    const end = Math.min(i + opts.windowSize, lines.length);
+    chunks.push({
+      id: hashChunkId(file.filePath, 'unknown', i + 1),
+      filePath: file.filePath,
+      content: lines.slice(i, end).join('\n'),
+      language: file.language,
+      symbolName: `lines_${i + 1}_${end}`,
+      symbolKind: 'unknown',
+      startLine: i + 1,
+      endLine: end,
+    });
+    if (end >= lines.length) break;
+  }
+
+  return chunks;
+}
 ```
 
 **Design rationale:**
@@ -250,6 +332,7 @@ async function extractChunksWithYield(
   without the minimum 1ms timer delay, giving other I/O callbacks a chance to run
 - Per-file yielding is the primary protection (most files parse in < 10ms)
 - Intra-file yielding (every 50 nodes) handles edge cases of very large files
+- **AST failsafe** ensures no file is silently dropped from the index due to parse errors
 - Worker Threads were considered but rejected: WASM instance sharing across threads
   adds significant complexity with marginal benefit for this workload
 
@@ -558,7 +641,104 @@ CREATE TABLE index_stats (
 
 - LanceDB writes are atomic per file (delete old chunks -> insert new chunks as transaction)
 - SQLite runs in WAL mode for concurrent read/write
-- When embedding provider is down, events are held in queue and reprocessed on recovery
+- When embedding provider is down, events are retried with exponential backoff (max 3 attempts)
+- Events that exhaust all retry attempts are moved to the **Dead Letter Queue (DLQ)** rather than blocking the pipeline
+
+### Dead Letter Queue (DLQ)
+
+The DLQ provides an escape hatch for events that cannot be processed due to persistent embedding provider failures.
+This prevents the main pipeline from stalling while preserving failed events for later recovery.
+
+**Design:**
+
+- In-memory ring buffer (max 1,000 entries) + SQLite persistence for durability
+- Each DLQ entry stores: original event, failure reason, timestamp, retry count
+- Events are moved to DLQ only after exhausting all retry attempts (3 retries with exponential backoff)
+- A periodic recovery sweep (default: every 60s) attempts to re-process DLQ entries when the embedding provider becomes healthy
+- DLQ entries older than 24 hours are automatically purged (configurable)
+
+**DLQ Recovery Flow:**
+
+```
+[Pipeline] ── embed fails after 3 retries ──> [DLQ (in-memory + SQLite)]
+                                                      │
+                                                      │ periodic sweep (60s)
+                                                      v
+                                               [Health Check: Ollama]
+                                                      │
+                                         healthy ─────┤───── unhealthy
+                                            │                    │
+                                            v                    v
+                                    [Re-process batch]    [Skip, wait next sweep]
+                                            │
+                                            v
+                                    Success: remove from DLQ
+                                    Failure: increment retry, keep in DLQ
+```
+
+**SQLite DLQ Schema:**
+
+```sql
+CREATE TABLE dead_letter_queue (
+  id          TEXT PRIMARY KEY,
+  event_type  TEXT NOT NULL,           -- 'added' | 'modified'
+  file_path   TEXT NOT NULL,
+  content_hash TEXT NOT NULL,
+  error_message TEXT NOT NULL,
+  retry_count INTEGER NOT NULL DEFAULT 0,
+  created_at  INTEGER NOT NULL,
+  updated_at  INTEGER NOT NULL
+);
+CREATE INDEX idx_dlq_created ON dead_letter_queue(created_at);
+```
+
+### Pipeline Mutex (Reindex Exclusion Control)
+
+The index pipeline uses an `AsyncMutex` to serialize all mutation operations, preventing
+corruption from concurrent reindex requests or overlapping watcher-triggered updates.
+
+**Design:**
+
+- A single `Mutex` instance (from `async-mutex` library) guards the entire pipeline execution path
+- Both watcher-triggered incremental updates and manual `reindex` tool calls acquire the mutex
+- If a `reindex` is requested while another is in progress, the server returns `{ status: 'already_running' }` immediately (non-blocking, idempotent)
+- Watcher events that arrive during a locked pipeline are buffered in the event queue (bounded by `maxQueueSize`)
+- Lock granularity is intentionally coarse (pipeline-level) — fine-grained locking adds complexity disproportionate to the benefit in a single-process local server
+
+```
+[reindex tool] ──> mutex.acquire() ──> [Pipeline Execution] ──> mutex.release()
+[watcher event] ──> mutex.acquire() ──> [Pipeline Execution] ──> mutex.release()
+
+Concurrent reindex:
+  [Agent A: reindex] ──> mutex.acquire() ──> running...
+  [Agent B: reindex] ──> mutex.tryAcquire() ──> FAIL ──> return { status: 'already_running' }
+```
+
+```typescript
+import { Mutex } from 'async-mutex';
+
+class IndexPipeline {
+  private readonly mutex = new Mutex();
+
+  async reindex(opts: ReindexOptions): Promise<ReindexResult> {
+    if (this.mutex.isLocked()) {
+      return { status: 'already_running', message: 'Reindex is already in progress' };
+    }
+
+    return this.mutex.runExclusive(async () => {
+      return this.executeFullReindex(opts);
+    });
+  }
+
+  async processEvents(events: IndexEvent[]): Promise<void> {
+    await this.mutex.runExclusive(async () => {
+      for (const event of events) {
+        await this.processEvent(event);
+      }
+    });
+  }
+}
+```
 
 ## Devcontainer Setup
 
@@ -618,12 +798,14 @@ class TestEmbeddingProvider implements EmbeddingProvider {
 ### Key Coverage Areas
 
 1. **Merkle Tree**: Correct hash propagation on file add/change/delete, rename detection (same-hash delete+add pairs)
-2. **Chunker**: Correct AST node chunking per language, large node re-splitting, event loop yielding under large files
+2. **Chunker**: Correct AST node chunking per language, large node re-splitting, event loop yielding under large files, **AST parse failsafe fallback to line-based chunking**
 3. **RRF Fusion**: Score calculation matches formula, handling of single-source results
-4. **Event Queue**: Debounce, priority, concurrency limit correctness
+4. **Event Queue**: Debounce, priority, concurrency limit correctness, **backpressure threshold triggering, full-scan fallback on overflow**
 5. **Search Orchestrator**: Semantic/grep parallel execution -> RRF fusion integration flow
 6. **Grep Semaphore**: Concurrent request limiting, queue ordering, timeout enforcement
 7. **Rename Pipeline**: Vector reuse on file rename (LanceDB filePath update without re-embedding)
+8. **Dead Letter Queue**: Event retirement after retry exhaustion, periodic recovery sweep, DLQ purge after TTL
+9. **Pipeline Mutex**: Concurrent reindex rejection (idempotent `already_running`), watcher event serialization, no deadlock under error conditions
 
 ### Test Fixtures
 
@@ -654,6 +836,9 @@ interface Config {
     concurrency: number;           // default: 4
     maxChunkLines: number;         // default: 200
     ignorePaths: string[];         // default: ["node_modules", ".git", "dist", ...]
+    maxQueueSize: number;          // default: 10000 (max events in queue before rejection)
+    fullScanThreshold: number;     // default: 5000 (trigger full-scan fallback)
+    maxRetries: number;            // default: 3 (embedding retry attempts)
   };
   embedding: {
     provider: string;              // default: "ollama"
@@ -661,6 +846,11 @@ interface Config {
     model: string;                 // default: "nomic-embed-text"
     dimensions: number;            // default: 768
     batchSize: number;             // default: 32
+  };
+  dlq: {
+    maxSize: number;               // default: 1000 (max DLQ entries in memory)
+    recoverySweepIntervalMs: number; // default: 60000 (recovery sweep interval)
+    ttlMs: number;                 // default: 86400000 (24h TTL for DLQ entries)
   };
   search: {
     defaultTopK: number;           // default: 20
