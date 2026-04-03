@@ -153,6 +153,106 @@ File Change Detected
 - **Priority**: Manual `reindex` requests > FS watcher events
 - **Backpressure**: Buffer watcher events when queue size exceeds threshold
 
+### File Rename Optimization (Vector Reuse)
+
+When a file is renamed or moved without content changes, the content hash (xxhash) remains identical.
+In this case, re-embedding via Ollama is skipped and existing vectors are remapped to the new path.
+
+**Detection strategy:**
+
+The Diff Detector emits three event types: `added`, `modified`, `deleted`.
+A rename is detected as a simultaneous `deleted` + `added` pair within the same debounce window
+where both share the same content hash.
+
+```
+[Event Queue] --> [Diff Detector]
+                       │
+                       ├── hash(deleted) == hash(added) ?
+                       │      YES --> emit RenameEvent(oldPath, newPath, hash)
+                       │      NO  --> emit DeleteEvent + AddEvent (normal flow)
+                       │
+                       v
+                  [Pipeline]
+                       │
+                  RenameEvent:
+                       ├── LanceDB: UPDATE filePath WHERE filePath = oldPath
+                       ├── SQLite: UPDATE merkle_nodes SET path = newPath
+                       └── Skip Chunker + Embedder entirely
+```
+
+**Data flow for rename:**
+
+1. Merkle Tree detects one leaf removed and one added with identical hash
+2. Pipeline receives `RenameEvent` instead of separate delete/add
+3. LanceDB: batch update `filePath` column for all chunks of the old path
+4. SQLite: update `merkle_nodes.path` and propagate parent hash changes
+5. Embedding provider is never called — zero GPU cost for renames
+
+### Chunker Event Loop Protection
+
+web-tree-sitter's `parse()` is a synchronous WASM operation that blocks the Node.js event loop.
+For large files (thousands of lines), this can block for 50-200ms+, disrupting SSE heartbeats
+and client timeouts in the multi-client transport layer.
+
+**Yield strategy:**
+
+The chunker processes files sequentially with cooperative yielding between files.
+Within a single file, AST parsing is atomic (tree-sitter requires the full source),
+but post-parse traversal and chunk extraction yield periodically.
+
+```typescript
+async function chunkFiles(files: FileToChunk[]): Promise<CodeChunk[]> {
+  const allChunks: CodeChunk[] = [];
+
+  for (const file of files) {
+    // 1. Parse AST (synchronous, unavoidable — but bounded per-file)
+    const tree = parser.parse(file.content);
+
+    // 2. Traverse and extract chunks with periodic yielding
+    const chunks = await extractChunksWithYield(tree.rootNode, file);
+    allChunks.push(...chunks);
+
+    // 3. Yield between files to release event loop
+    await yieldToEventLoop();
+  }
+
+  return allChunks;
+}
+
+function yieldToEventLoop(): Promise<void> {
+  return new Promise((resolve) => setImmediate(resolve));
+}
+
+async function extractChunksWithYield(
+  rootNode: SyntaxNode,
+  file: FileToChunk,
+  yieldEvery: number = 50  // yield every N nodes visited
+): Promise<CodeChunk[]> {
+  const chunks: CodeChunk[] = [];
+  let visitCount = 0;
+
+  for (const node of walkChunkableNodes(rootNode)) {
+    chunks.push(nodeToChunk(node, file));
+    visitCount++;
+
+    if (visitCount % yieldEvery === 0) {
+      await yieldToEventLoop();
+    }
+  }
+
+  return chunks;
+}
+```
+
+**Design rationale:**
+
+- `setImmediate` is preferred over `setTimeout(0)` — it fires at the end of the current I/O cycle
+  without the minimum 1ms timer delay, giving other I/O callbacks a chance to run
+- Per-file yielding is the primary protection (most files parse in < 10ms)
+- Intra-file yielding (every 50 nodes) handles edge cases of very large files
+- Worker Threads were considered but rejected: WASM instance sharing across threads
+  adds significant complexity with marginal benefit for this workload
+
 ### Chunking Strategy
 
 | AST Node Type | Chunking Strategy |
@@ -272,6 +372,33 @@ function fuseResults(
   return [...scoreMap.values()]
     .sort((a, b) => b.rrfScore - a.rrfScore)
     .slice(0, topK);
+}
+```
+
+### Grep Process Resource Management
+
+ripgrep is executed as a child process per search request. Under multi-client concurrent access,
+uncontrolled spawning causes file descriptor exhaustion and OS process limits.
+
+**Semaphore strategy:**
+
+- `GrepEngine` holds a module-level semaphore (`p-limit`) limiting concurrent ripgrep child processes
+- Default limit: `search.grepMaxConcurrency` (default: 4)
+- When all slots are occupied, additional requests queue and await an available slot
+- The semaphore is shared across all callers (`grep_search` tool, `hybrid_search` via orchestrator)
+- Each ripgrep process has a per-process timeout (default: 10s) to prevent zombie processes
+
+```typescript
+class GrepEngine {
+  private readonly semaphore: pLimit.Limit;
+
+  constructor(config: SearchConfig) {
+    this.semaphore = pLimit(config.grepMaxConcurrency); // default: 4
+  }
+
+  async search(params: GrepParams): Promise<SearchResult[]> {
+    return this.semaphore(() => this.executeRipgrep(params));
+  }
 }
 ```
 
@@ -490,11 +617,13 @@ class TestEmbeddingProvider implements EmbeddingProvider {
 
 ### Key Coverage Areas
 
-1. **Merkle Tree**: Correct hash propagation on file add/change/delete
-2. **Chunker**: Correct AST node chunking per language, large node re-splitting
+1. **Merkle Tree**: Correct hash propagation on file add/change/delete, rename detection (same-hash delete+add pairs)
+2. **Chunker**: Correct AST node chunking per language, large node re-splitting, event loop yielding under large files
 3. **RRF Fusion**: Score calculation matches formula, handling of single-source results
 4. **Event Queue**: Debounce, priority, concurrency limit correctness
 5. **Search Orchestrator**: Semantic/grep parallel execution -> RRF fusion integration flow
+6. **Grep Semaphore**: Concurrent request limiting, queue ordering, timeout enforcement
+7. **Rename Pipeline**: Vector reuse on file rename (LanceDB filePath update without re-embedding)
 
 ### Test Fixtures
 
@@ -539,6 +668,7 @@ interface Config {
     semanticWeight: number;        // default: 1.0
     grepWeight: number;            // default: 1.0
     grepMaxResults: number;        // default: 100
+    grepMaxConcurrency: number;    // default: 4 (max concurrent ripgrep processes)
   };
   languages: {
     builtIn: string[];             // default: ["typescript", "python", "go"]
