@@ -1,8 +1,8 @@
-# Local Codebase Index MCP Server - Design Specification
+# Nexus: Local Codebase Index MCP Server - Design Specification
 
 ## Overview
 
-A locally-complete codebase index MCP server inspired by Cursor IDE's advanced codebase indexing architecture, accessible cross-functionally from multiple AI agents. All data remains on the local machine (Zero External Data Transmission — no data is sent to external servers; all index data is stored locally in `<projectRoot>/.codebase-index/`), with embedding inference handled by local endpoints such as Ollama.
+A locally-complete codebase index MCP server inspired by Cursor IDE's advanced codebase indexing architecture, accessible cross-functionally from multiple AI agents. All data remains on the local machine (Zero External Data Transmission — no data is sent to external servers; all index data is stored locally in `<projectRoot>/.nexus/`), with embedding inference handled by local endpoints such as Ollama.
 
 ## Architecture: Event-Driven Pipeline (Approach B)
 
@@ -61,7 +61,7 @@ Single-process architecture with the MCP server (Transport + Tool Handlers) and 
 ## Directory Structure
 
 ```
-multi-agent-codebase-index/
+nexus/
 ├── .devcontainer/
 │   ├── devcontainer.json
 │   └── Dockerfile
@@ -959,7 +959,7 @@ class PluginRegistry {
 | Vector Store | LanceDB | Embedding vectors + chunk content storage, ANN search | `<dataDir>/vectors/` |
 | Metadata Store | better-sqlite3 | Merkle tree state, index stats, config persistence | `<dataDir>/metadata.db` |
 
-`<dataDir>` defaults to `<projectRoot>/.codebase-index/`, added to `.gitignore`.
+`<dataDir>` defaults to `<projectRoot>/.nexus/`, added to `.gitignore`.
 
 ### Storage Interfaces (TDD / Dependency Injection)
 
@@ -2569,7 +2569,7 @@ interface Config {
     host: string;                  // default: "localhost"
   };
   indexer: {
-    dataDir: string;               // default: ".codebase-index"
+    dataDir: string;               // default: ".nexus"
     watchEnabled: boolean;         // default: true
     debounceMs: number;            // default: 100
     concurrency: number;           // default: 4
@@ -2618,8 +2618,8 @@ interface Config {
 
 ### Config Loading Priority
 
-1. Environment variables (`CODEBASE_INDEX_*`)
-2. Project root config file (`.codebase-index.json`)
+1. Environment variables (`NEXUS_*`)
+2. Project root config file (`.nexus.json`)
 3. Default values
 
 ## Technology Stack Summary
