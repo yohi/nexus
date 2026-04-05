@@ -12,6 +12,14 @@ export const fuseResults = (
 ): RankedResult[] => {
   const k = options.k ?? 60;
   const topK = options.topK ?? 20;
+
+  if (Number.isNaN(k) || !Number.isFinite(k) || k <= 0) {
+    throw new RangeError(`options.k must be a positive finite number, got ${k}`);
+  }
+  if (Number.isNaN(topK) || !Number.isFinite(topK) || topK <= 0) {
+    throw new RangeError(`options.topK must be a positive finite number, got ${topK}`);
+  }
+
   const scoreMap = new Map<string, RankedResult>();
 
   for (const [results, source] of [
@@ -47,6 +55,5 @@ export const fuseResults = (
       ...result,
       rank: index + 1,
       score: result.reciprocalRankScore,
-      source: 'hybrid',
     }));
 };

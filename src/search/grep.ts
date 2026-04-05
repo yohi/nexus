@@ -26,7 +26,14 @@ export class RipgrepEngine implements IGrepEngine {
   constructor(private readonly options: RipgrepEngineOptions) {
     this.limit = pLimit(options.grepMaxConcurrency ?? DEFAULT_MAX_CONCURRENCY);
     this.timeoutMs = options.grepTimeoutMs ?? DEFAULT_TIMEOUT_MS;
-    this.spawnImpl = options.spawn ?? defaultSpawn;
+
+    if (!options.spawn) {
+      throw new Error(
+        'RipgrepEngine requires a spawn function to be provided in options. ' +
+          'The defaultSpawn implementation is not available for direct use.',
+      );
+    }
+    this.spawnImpl = options.spawn;
   }
 
   async search(params: GrepParams): Promise<GrepMatch[]> {
