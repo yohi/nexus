@@ -1,4 +1,5 @@
 import path from 'node:path';
+import crypto from 'node:crypto';
 
 import type { IMetadataStore, IndexEvent, MerkleNodeRow } from '../types/index.js';
 
@@ -18,18 +19,8 @@ export class MerkleTree {
   async load(): Promise<void> {
     this.nodes.clear();
 
-    for (const node of await this.metadataStore.getAllFileNodes()) {
+    for (const node of await this.metadataStore.getAllNodes()) {
       this.nodes.set(node.path, node);
-    }
-
-    const allPaths = await this.metadataStore.getAllPaths();
-    for (const nodePath of allPaths) {
-      if (!this.nodes.has(nodePath)) {
-        const node = await this.metadataStore.getMerkleNode(nodePath);
-        if (node !== null) {
-          this.nodes.set(node.path, node);
-        }
-      }
     }
 
     this.rootHash = this.computeRootHash();
@@ -55,6 +46,29 @@ export class MerkleTree {
 
   async remove(filePath: string): Promise<void> {
     this.nodes.delete(filePath);
+
+    let current = path.dirname(filePath);
+    while (current !== '.' && current !== path.sep) {
+      const parentNode = this.nodes.get(current);
+      if (parentNode !== undefined && parentNode.isDirectory) {
+        let hasChildren = false;
+        for (const node of this.nodes.values()) {
+          if (node.parentPath === current) {
+            hasChildren = true;
+            break;
+          }
+        }
+        if (!hasChildren) {
+          this.nodes.delete(current);
+        } else {
+          break;
+        }
+      } else {
+        break;
+      }
+      current = path.dirname(current);
+    }
+
     this.rootHash = this.computeRootHash();
     await this.persistCurrentState();
   }
@@ -104,14 +118,29 @@ export class MerkleTree {
     const deleted = events.filter((event) => event.type === 'deleted' && event.contentHash !== undefined);
     const matches: RenameCandidate[] = [];
 
+    // Note: In cases where multiple files share the exact same content hash,
+    // this mapping makes a best-effort 1:1 match. While this is sufficient for v1,
+    // it may produce semantically arbitrary mappings among identical files.
+    const addedMap = new Map<string, IndexEvent[]>();
+    for (const event of added) {
+      if (event.contentHash !== undefined) {
+        const list = addedMap.get(event.contentHash) ?? [];
+        list.push(event);
+        addedMap.set(event.contentHash, list);
+      }
+    }
+
     for (const removed of deleted) {
-      const addedMatch = added.find((event) => event.contentHash === removed.contentHash);
-      if (addedMatch?.contentHash !== undefined && removed.contentHash !== undefined) {
-        matches.push({
-          oldPath: removed.filePath,
-          newPath: addedMatch.filePath,
-          hash: addedMatch.contentHash,
-        });
+      if (removed.contentHash !== undefined) {
+        const list = addedMap.get(removed.contentHash);
+        if (list !== undefined && list.length > 0) {
+          const addedMatch = list.shift()!;
+          matches.push({
+            oldPath: removed.filePath,
+            newPath: addedMatch.filePath,
+            hash: addedMatch.contentHash!,
+          });
+        }
       }
     }
 
@@ -168,7 +197,8 @@ export class MerkleTree {
       }
 
       const children = (childMap.get(nodePath) ?? []).sort((left, right) => left.path.localeCompare(right.path));
-      return children.map((child) => `${child.path}:${computeNodeHash(child.path)}`).join('|');
+      const serialized = children.map((child) => `${child.path}:${computeNodeHash(child.path)}`).join('|');
+      return crypto.createHash('sha256').update(serialized).digest('hex');
     };
 
     const roots = (childMap.get(null) ?? []).sort((left, right) => left.path.localeCompare(right.path));
@@ -176,6 +206,7 @@ export class MerkleTree {
       return null;
     }
 
-    return roots.map((node) => `${node.path}:${computeNodeHash(node.path)}`).join('|');
+    const rootSerialized = roots.map((node) => `${node.path}:${computeNodeHash(node.path)}`).join('|');
+    return crypto.createHash('sha256').update(rootSerialized).digest('hex');
   }
 }

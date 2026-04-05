@@ -28,8 +28,16 @@ describe('SqliteMetadataStore', () => {
   });
 
   afterEach(async () => {
-    await store.close();
-    await rm(tempDir, { recursive: true, force: true });
+    try {
+      if (store) await store.close();
+    } catch {
+      // ignore
+    }
+    try {
+      if (tempDir) await rm(tempDir, { recursive: true, force: true });
+    } catch {
+      // ignore
+    }
   });
 
   it('bulkUpsertMerkleNodes stores and returns file nodes', async () => {

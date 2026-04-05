@@ -1,5 +1,5 @@
 import { createReadStream } from 'node:fs';
-import { readFile, stat } from 'node:fs/promises';
+import { open, readFile, stat } from 'node:fs/promises';
 
 import xxhash, { type XXHashAPI } from 'xxhash-wasm';
 
@@ -24,26 +24,31 @@ export const computeFileHash = async (filePath: string): Promise<string> => {
 export const computeFileHashStreaming = async (filePath: string): Promise<string> => {
   const hasher = await getHasher();
   const stream = createReadStream(filePath);
-  const chunks: Uint8Array[] = [];
+  const context = hasher.create64();
 
   for await (const chunk of stream) {
-    chunks.push(typeof chunk === 'string' ? Buffer.from(chunk) : new Uint8Array(chunk));
+    context.update(typeof chunk === 'string' ? Buffer.from(chunk) : new Uint8Array(chunk));
   }
 
-  return toHex(hasher.h64Raw(Buffer.concat(chunks)));
+  return toHex(context.digest());
 };
 
 export const computePartialHash = async (filePath: string, fileSize?: number): Promise<string> => {
   const size = fileSize ?? (await stat(filePath)).size;
 
-  if (size <= 10 * 1024 * 1024) {
+  if (size <= 2 * 1024 * 1024) {
     return computeFileHash(filePath);
   }
 
   const hasher = await getHasher();
-  const buffer = await readFile(filePath);
-  const head = buffer.subarray(0, 1024 * 1024);
-  const tail = buffer.subarray(-1024 * 1024);
-
-  return toHex(hasher.h64Raw(Buffer.concat([head, tail, Buffer.from(String(size))])));
+  const fd = await open(filePath, 'r');
+  try {
+    const head = Buffer.allocUnsafe(1024 * 1024);
+    const tail = Buffer.allocUnsafe(1024 * 1024);
+    await fd.read(head, 0, head.length, 0);
+    await fd.read(tail, 0, tail.length, size - tail.length);
+    return toHex(hasher.h64Raw(Buffer.concat([head, tail, Buffer.from(String(size))])));
+  } finally {
+    await fd.close();
+  }
 };
