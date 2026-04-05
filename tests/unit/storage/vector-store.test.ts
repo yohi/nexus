@@ -94,4 +94,30 @@ describe('LanceVectorStore', () => {
       lastCompactedAt: undefined,
     });
   });
+
+  it('performs core vector store operations: upsert, search, delete, and compact', async () => {
+    const store = new LanceVectorStore({ dimensions: 3 });
+    await store.initialize();
+
+    await store.upsertChunks([
+      makeChunk({ id: 'chunk1', filePath: 'src/file1.ts', content: 'test content' })
+    ]);
+    let stats = await store.getStats();
+    expect(stats.totalChunks).toBe(1);
+    expect(stats.totalFiles).toBe(1);
+
+    const results = await store.search([1, 0, 0], 10);
+    expect(results).toHaveLength(1);
+    expect(results[0]?.chunk.id).toBe('chunk1');
+
+    await store.deleteByFilePath('src/file1.ts');
+    const afterDeleteResults = await store.search([1, 0, 0], 10);
+    expect(afterDeleteResults).toHaveLength(0);
+    
+    const compactResult = await store.compactIfNeeded({ fragmentationThreshold: 0 });
+    expect(compactResult.compacted).toBe(true);
+    expect(compactResult.chunksRemoved).toBe(1);
+    stats = await store.getStats();
+    expect(stats.lastCompactedAt).toBeDefined();
+  });
 });

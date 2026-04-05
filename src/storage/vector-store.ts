@@ -31,6 +31,7 @@ const cosineSimilarity = (left: number[], right: number[]): number => {
 };
 
 export class LanceVectorStore implements IVectorStore {
+  // TODO: Replace Map with actual LanceDB integration (@lancedb/lancedb) in Phase 2.
   private readonly dimensions: number;
 
   private readonly rows = new Map<string, StoredVectorRow>();
@@ -145,7 +146,9 @@ export class LanceVectorStore implements IVectorStore {
 
   scheduleIdleCompaction(runCompaction: () => Promise<void>, delayMs = 0): void {
     setTimeout(() => {
-      void runCompaction();
+      runCompaction().catch((error) => {
+        console.error('Compaction failed:', error);
+      });
     }, delayMs);
   }
 
@@ -164,6 +167,8 @@ export class LanceVectorStore implements IVectorStore {
   }
 
   private vectorize(content: string): number[] {
+    // TODO: Replace this trivial one-hot vectorization with actual embedding vectors 
+    // from an EmbeddingProvider. This is a temporary scaffold.
     const first = content.charCodeAt(0) || 0;
     return Array.from({ length: this.dimensions }, (_, index) => (index === first % this.dimensions ? 1 : 0));
   }

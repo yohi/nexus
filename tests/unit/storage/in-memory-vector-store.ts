@@ -136,7 +136,9 @@ export class InMemoryVectorStore implements IVectorStore {
 
   scheduleIdleCompaction(runCompaction: () => Promise<void>, delayMs = 0): void {
     setTimeout(() => {
-      void runCompaction();
+      runCompaction().catch((error) => {
+        console.error('Compaction failed:', error);
+      });
     }, delayMs);
   }
 

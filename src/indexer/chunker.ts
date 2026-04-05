@@ -25,7 +25,8 @@ export class Chunker {
         const parser = await plugin.createParser();
         const parsed = await parser.parse(file);
         chunks.push(...(await this.extractChunksWithYield(parsed, file)));
-      } catch {
+      } catch (error) {
+        console.warn('Parser failed, falling back to fixed-line chunking', file.filePath, error);
         chunks.push(...this.chunkByFixedLines(file));
       }
     }
@@ -105,6 +106,6 @@ export class Chunker {
   }
 
   private hashContent(content: string): string {
-    return createHash('sha1').update(content).digest('hex');
+    return createHash('sha256').update(content).digest('hex');
   }
 }

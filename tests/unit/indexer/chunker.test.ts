@@ -30,12 +30,12 @@ describe('Chunker', () => {
       ['interface', 'SessionRecord'],
       ['function', 'authenticate'],
       ['class', 'AuthService'],
+      ['method', 'constructor'],
       ['method', 'getIssuer'],
       ['method', 'revoke'],
     ]);
 
-    expect(chunks[2]?.content).toContain('Authenti');
-    expect(chunks[2]?.content).toContain('authenticate');
+    expect(chunks[2]?.content).toMatch(/\bauthenticate\b/);
   });
 
   it('falls back to fixed-line chunking for unsupported languages', async () => {

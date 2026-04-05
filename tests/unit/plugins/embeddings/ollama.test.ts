@@ -141,8 +141,7 @@ describe('OllamaEmbeddingProvider', () => {
 
     const first = provider.embed(['alpha']);
     const second = provider.embed(['beta']);
-    await Promise.resolve();
-    expect(order).toEqual(['first-start']);
+    await vi.waitFor(() => expect(order).toEqual(['first-start']));
 
     firstRelease?.();
 
