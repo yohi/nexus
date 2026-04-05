@@ -32,6 +32,13 @@ export class EventQueue {
 
   enqueue(event: IndexEvent): boolean {
     if (this.overflow) {
+      this.droppedEventCount += 1;
+      return false;
+    }
+
+    if (this.size() >= this.options.maxQueueSize) {
+      this.overflow = true;
+      this.droppedEventCount += 1;
       return false;
     }
 
@@ -76,6 +83,10 @@ export class EventQueue {
       this.timers.set(event.filePath, timer);
     }
 
+    if (this.size() > this.options.fullScanThreshold) {
+      this.overflow = true;
+    }
+
     return true;
   }
 
@@ -93,55 +104,64 @@ export class EventQueue {
 
     const limit = pLimit(this.options.concurrency);
     const results: T[] = [];
+    let firstError: unknown;
 
-    // Phase 1: Reindex events (sequential phase)
+    // Phase 1: Reindex events
     if (this.reindexQueue.length > 0) {
       const events = [...this.reindexQueue];
       this.reindexQueue.length = 0;
-      const completed = new Set<QueueEvent>();
-      try {
-        const phaseResults = await Promise.all(
-          events.map((event) =>
-            limit(async () => {
-              const result = await handler(event);
-              completed.add(event);
-              return result;
-            })
-          )
-        );
-        results.push(...phaseResults);
-      } catch (error) {
-        const uncompleted = events.filter((e) => !completed.has(e));
-        this.reindexQueue.unshift(...uncompleted);
-        throw error;
+      const settled = await Promise.allSettled(
+        events.map((event) =>
+          limit(async () => {
+            return handler(event);
+          })
+        )
+      );
+
+      for (let i = 0; i < settled.length; i += 1) {
+        const res = settled[i];
+        if (res.status === 'fulfilled') {
+          results.push(res.value);
+        } else {
+          this.reindexQueue.push(events[i]);
+          if (!firstError) {
+            firstError = res.reason;
+          }
+        }
       }
     }
 
-    // Phase 2: Watcher events (sequential phase)
+    // Phase 2: Watcher events
     if (this.watcherQueue.length > 0) {
       const events = [...this.watcherQueue];
       this.watcherQueue.length = 0;
-      const completed = new Set<QueueEvent>();
-      try {
-        const phaseResults = await Promise.all(
-          events.map((event) =>
-            limit(async () => {
-              const result = await handler(event);
-              completed.add(event);
-              return result;
-            })
-          )
-        );
-        results.push(...phaseResults);
-      } catch (error) {
-        const uncompleted = events.filter((e) => !completed.has(e));
-        this.watcherQueue.unshift(...uncompleted);
-        throw error;
+      const settled = await Promise.allSettled(
+        events.map((event) =>
+          limit(async () => {
+            return handler(event);
+          })
+        )
+      );
+
+      for (let i = 0; i < settled.length; i += 1) {
+        const res = settled[i];
+        if (res.status === 'fulfilled') {
+          results.push(res.value);
+        } else {
+          this.watcherQueue.push(events[i]);
+          if (!firstError) {
+            firstError = res.reason;
+          }
+        }
       }
     }
 
     if (this.watcherQueue.length === 0 && this.reindexQueue.length === 0) {
       this.overflow = false;
+    }
+
+    if (firstError) {
+      throw firstError;
     }
 
     return results;
@@ -181,19 +201,19 @@ export class EventQueue {
 
     this.debouncedEvents.delete(filePath);
 
-    if (this.watcherQueue.length < this.options.maxQueueSize) {
+    if (this.size() < this.options.maxQueueSize) {
       this.watcherQueue.push(event);
     } else {
       this.droppedEventCount += 1;
       console.warn('Event queue at capacity, dropping event:', {
         filePath,
         type: event.type,
-        currentQueueSize: this.watcherQueue.length,
+        currentQueueSize: this.size(),
         totalDropped: this.droppedEventCount,
       });
     }
 
-    if (this.watcherQueue.length > this.options.fullScanThreshold) {
+    if (this.size() > this.options.fullScanThreshold) {
       this.overflow = true;
     }
   }

@@ -179,4 +179,68 @@ describe('EventQueue', () => {
 
     expect(queue.getDroppedEventCount()).toBe(1);
   });
+
+  describe('drain with error handling', () => {
+    it('re-enqueues only failed events when handler rejects', async () => {
+      vi.useFakeTimers();
+      const queue = new EventQueue({ debounceMs: 0, maxQueueSize: 10, fullScanThreshold: 5, concurrency: 2 });
+
+      queue.enqueue(makeEvent({ filePath: 'src/success.ts' }));
+      queue.enqueue(makeEvent({ filePath: 'src/fail.ts' }));
+      vi.runAllTimers();
+
+      let failCalled = 0;
+      const handler = async (event: any) => {
+        if (event.filePath === 'src/fail.ts') {
+          failCalled += 1;
+          throw new Error('processing failed');
+        }
+        return event.filePath;
+      };
+
+      // First drain attempt
+      await expect(queue.drain(handler)).rejects.toThrow('processing failed');
+
+      expect(failCalled).toBe(1);
+      expect(queue.size()).toBe(1); // src/fail.ts should be back in queue
+
+      // Second drain attempt
+      const results = await queue.drain(async (event: any) => event.filePath);
+      expect(results).toEqual(['src/fail.ts']);
+      expect(queue.size()).toBe(0);
+    });
+
+    it('waits for all in-flight tasks even if some fail', async () => {
+      vi.useFakeTimers();
+      const queue = new EventQueue({ debounceMs: 0, maxQueueSize: 10, fullScanThreshold: 5, concurrency: 2 });
+
+      queue.enqueue(makeEvent({ filePath: 'src/slow-success.ts' }));
+      queue.enqueue(makeEvent({ filePath: 'src/fast-fail.ts' }));
+      vi.runAllTimers();
+
+      const order: string[] = [];
+      const handler = async (event: any) => {
+        if (event.filePath === 'src/slow-success.ts') {
+          await new Promise((resolve) => setTimeout(resolve, 100));
+          order.push('slow-success');
+          return 'slow';
+        }
+        if (event.filePath === 'src/fast-fail.ts') {
+          await new Promise((resolve) => setTimeout(resolve, 10));
+          order.push('fast-fail');
+          throw new Error('fast fail');
+        }
+      };
+
+      const drainPromise = queue.drain(handler);
+
+      // Advance timers repeatedly to resolve the internal promises
+      await vi.advanceTimersByTimeAsync(10);
+      await vi.advanceTimersByTimeAsync(100);
+
+      await expect(drainPromise).rejects.toThrow('fast fail');
+      expect(order).toEqual(['fast-fail', 'slow-success']);
+      expect(queue.size()).toBe(1); // fast-fail.ts should be re-enqueued
+    });
+  });
 });
