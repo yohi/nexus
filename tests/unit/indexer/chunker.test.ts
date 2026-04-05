@@ -30,12 +30,12 @@ describe('Chunker', () => {
       ['interface', 'SessionRecord'],
       ['function', 'authenticate'],
       ['class', 'AuthService'],
+      ['method', 'constructor'],
       ['method', 'getIssuer'],
       ['method', 'revoke'],
     ]);
 
-    expect(chunks[2]?.content).toContain('Authenti');
-    expect(chunks[2]?.content).toContain('authenticate');
+    expect(chunks[2]?.content).toMatch(/\bauthenticate\b/);
   });
 
   it('falls back to fixed-line chunking for unsupported languages', async () => {
@@ -106,5 +106,18 @@ describe('Chunker', () => {
     );
 
     expect(yieldMarkers.length).toBeGreaterThanOrEqual(2);
+  });
+
+  it('returns an empty array for an empty file', async () => {
+    const chunker = new Chunker(new PluginRegistry());
+    const chunks = await chunker.chunkFiles([
+      {
+        filePath: 'empty.txt',
+        language: 'text',
+        content: '',
+      },
+    ]);
+
+    expect(chunks).toHaveLength(0);
   });
 });

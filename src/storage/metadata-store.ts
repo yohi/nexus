@@ -62,7 +62,8 @@ export class SqliteMetadataStore implements IMetadataStore {
     await executeBatchedWithYield({
       items: nodes,
       batchSize: this.batchSize,
-      executeBatch: (batch) => {
+      executeBatch: async (batch) => {
+        await this.asyncBoundary();
         const transaction = this.db.transaction((rows: MerkleNodeRow[]) => {
           for (const node of rows) {
             statement.run({
@@ -86,7 +87,8 @@ export class SqliteMetadataStore implements IMetadataStore {
     await executeBatchedWithYield({
       items: paths,
       batchSize: this.batchSize,
-      executeBatch: (batch) => {
+      executeBatch: async (batch) => {
+        await this.asyncBoundary();
         const transaction = this.db.transaction((rows: string[]) => {
           for (const targetPath of rows) {
             statement.run(targetPath);
@@ -101,9 +103,10 @@ export class SqliteMetadataStore implements IMetadataStore {
 
   async deleteSubtree(pathPrefix: string): Promise<number> {
     await this.asyncBoundary();
-    const prefix = `${pathPrefix}/%`;
+    const escapedPrefix = pathPrefix.replace(/%/g, '\\%').replace(/_/g, '\\_');
+    const prefix = `${escapedPrefix}/%`;
     const result = this.db
-      .prepare('DELETE FROM merkle_nodes WHERE path = ? OR path LIKE ?')
+      .prepare("DELETE FROM merkle_nodes WHERE path = ? OR path LIKE ? ESCAPE '\\'")
       .run(pathPrefix, prefix);
 
     return result.changes;
@@ -129,6 +132,24 @@ export class SqliteMetadataStore implements IMetadataStore {
       parentPath: row.parentPath,
       isDirectory: row.isDirectory === 1,
     };
+  }
+
+  async getAllNodes(): Promise<MerkleNodeRow[]> {
+    await this.asyncBoundary();
+    const rows = this.db
+      .prepare(
+        `SELECT path, hash, parent_path AS parentPath, is_directory AS isDirectory
+         FROM merkle_nodes
+         ORDER BY path ASC`,
+      )
+      .all() as Array<{ path: string; hash: string; parentPath: string | null; isDirectory: number }>;
+
+    return rows.map((row) => ({
+      path: row.path,
+      hash: row.hash,
+      parentPath: row.parentPath,
+      isDirectory: row.isDirectory === 1,
+    }));
   }
 
   async getAllFileNodes(): Promise<MerkleNodeRow[]> {
@@ -190,9 +211,8 @@ export class SqliteMetadataStore implements IMetadataStore {
       .run(stats);
   }
 
-  getPragmaValue(name: string): number {
-    const row = this.db.pragma(`${name}`, { simple: true }) as number;
-    return row;
+  getPragmaValue(name: string): unknown {
+    return this.db.pragma(`${name}`, { simple: true });
   }
 
   async close(): Promise<void> {

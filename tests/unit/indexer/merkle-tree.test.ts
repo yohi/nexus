@@ -90,6 +90,25 @@ describe('MerkleTree', () => {
     ]);
   });
 
+  it('handles multiple deleted entries sharing the same content hash in rename detection', async () => {
+    const oldTree = new MerkleTree(new InMemoryMetadataStore());
+    const newTree = new MerkleTree(new InMemoryMetadataStore());
+
+    await oldTree.load();
+    await newTree.load();
+
+    await oldTree.update('src/old-name-1.ts', 'same-hash');
+    await oldTree.update('src/old-name-2.ts', 'same-hash');
+    await newTree.update('src/new-name.ts', 'same-hash');
+
+    const diff = await MerkleTree.diff(oldTree, newTree);
+    const renameCandidates = MerkleTree.detectRenameCandidates(diff);
+
+    expect(renameCandidates).toHaveLength(1);
+    expect(renameCandidates[0]?.hash).toBe('same-hash');
+    expect(renameCandidates[0]?.newPath).toBe('src/new-name.ts');
+  });
+
   it('restores an in-memory tree from metadata store', async () => {
     const store = new InMemoryMetadataStore();
     await store.bulkUpsertMerkleNodes([

@@ -24,8 +24,13 @@ export class Chunker {
       try {
         const parser = await plugin.createParser();
         const parsed = await parser.parse(file);
-        chunks.push(...(await this.extractChunksWithYield(parsed, file)));
-      } catch {
+        if (!parsed.declarations || parsed.declarations.length === 0) {
+          chunks.push(...this.chunkByFixedLines(file));
+        } else {
+          chunks.push(...(await this.extractChunksWithYield(parsed, file)));
+        }
+      } catch (error) {
+        console.warn('Parser failed, falling back to fixed-line chunking', file.filePath, error);
         chunks.push(...this.chunkByFixedLines(file));
       }
     }
@@ -47,7 +52,7 @@ export class Chunker {
         content: declaration.content,
         language: file.language,
         symbolName: declaration.name,
-        symbolKind: declaration.type as SymbolKind,
+        symbolKind: declaration.type,
         startLine: declaration.startLine,
         endLine: declaration.endLine,
         hash: this.hashContent(declaration.content),
@@ -64,7 +69,23 @@ export class Chunker {
   chunkByFixedLines(file: FileToChunk, options: FixedLineChunkOptions = {}): CodeChunk[] {
     const windowSize = options.windowSize ?? 50;
     const overlap = options.overlap ?? 10;
+
+    if (!Number.isInteger(windowSize) || windowSize <= 0) {
+      throw new RangeError('windowSize must be a positive integer');
+    }
+    if (!Number.isInteger(overlap) || overlap < 0 || overlap >= windowSize) {
+      throw new RangeError('overlap must be a non-negative integer less than windowSize');
+    }
+
     const lines = file.content.split('\n');
+    if (lines.length === 1 && lines[0] === '') {
+      return [];
+    }
+
+    if (lines.length > 0 && lines[lines.length - 1] === '' && file.content.endsWith('\n')) {
+      lines.pop();
+    }
+
     const chunks: CodeChunk[] = [];
     const step = Math.max(1, windowSize - overlap);
 
@@ -72,12 +93,17 @@ export class Chunker {
       const slice = lines.slice(start, start + windowSize);
 
       if (slice.length === 0) {
-        continue;
+        break;
       }
 
       const startLine = start + 1;
       const endLine = start + slice.length;
       const content = slice.join('\n');
+
+      const lastChunk = chunks[chunks.length - 1];
+      if (lastChunk && lastChunk.endLine === endLine) {
+        break;
+      }
 
       chunks.push({
         id: this.createChunkId(file.filePath, startLine, endLine, `file-${chunks.length + 1}`),
@@ -90,6 +116,10 @@ export class Chunker {
         endLine,
         hash: this.hashContent(content),
       });
+
+      if (endLine === lines.length) {
+        break;
+      }
     }
 
     return chunks;
@@ -105,6 +135,6 @@ export class Chunker {
   }
 
   private hashContent(content: string): string {
-    return createHash('sha1').update(content).digest('hex');
+    return createHash('sha256').update(content).digest('hex');
   }
 }

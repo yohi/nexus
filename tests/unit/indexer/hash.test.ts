@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { createWriteStream } from 'node:fs';
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, rm, writeFile, stat } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 
@@ -41,8 +41,9 @@ describe('hash utilities', () => {
       stream.on('error', reject);
     });
 
-    const partialHashA = await computePartialHash(filePath, 11 * 1024 * 1024);
-    const partialHashB = await computePartialHash(filePath, 11 * 1024 * 1024);
+    const actualSize = (await stat(filePath)).size;
+    const partialHashA = await computePartialHash(filePath, actualSize);
+    const partialHashB = await computePartialHash(filePath);
 
     expect(partialHashA).toBe(partialHashB);
   });

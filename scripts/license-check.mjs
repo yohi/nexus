@@ -11,7 +11,6 @@ const allowed = new Set([
   'ISC',
   'MIT',
   'Python-2.0',
-  'UNKNOWN',
 ]);
 
 const packageOverrides = new Map([
