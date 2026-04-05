@@ -75,7 +75,7 @@ describe('SearchOrchestrator', () => {
     ];
 
     const orchestrator = new SearchOrchestrator({
-      semanticSearch: new TestSemanticSearch(semanticResults) as never,
+      semanticSearch: new TestSemanticSearch(semanticResults) as any,
       grepEngine,
       projectRoot: process.cwd(),
     });

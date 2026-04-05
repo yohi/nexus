@@ -8,18 +8,25 @@ export interface HybridSearchParams extends SemanticSearchParams {
   grepPattern?: string;
 }
 
+export interface ILogger {
+  error(message: string, ...args: any[]): void;
+}
+
 export interface SearchOrchestratorOptions {
   semanticSearch: SemanticSearch;
   grepEngine: IGrepEngine;
   projectRoot: string;
   rrfK?: number;
+  logger?: ILogger;
 }
 
 export class SearchOrchestrator {
   private readonly rrfK: number;
+  private readonly logger: ILogger;
 
   constructor(private readonly options: SearchOrchestratorOptions) {
     this.rrfK = options.rrfK ?? 60;
+    this.logger = options.logger ?? console;
   }
 
   async search(params: HybridSearchParams): Promise<SearchResponse> {
@@ -39,12 +46,12 @@ export class SearchOrchestrator {
 
     const semanticResults = semanticResult.status === 'fulfilled' ? semanticResult.value : [];
     if (semanticResult.status === 'rejected') {
-      console.error('Semantic search failed:', semanticResult.reason);
+      this.logger.error('Semantic search failed:', semanticResult.reason);
     }
 
     const grepMatches = grepResult.status === 'fulfilled' ? grepResult.value : [];
     if (grepResult.status === 'rejected') {
-      console.error('Grep search failed:', grepResult.reason);
+      this.logger.error('Grep search failed:', grepResult.reason);
     }
 
     if (semanticResult.status === 'rejected' && grepResult.status === 'rejected') {

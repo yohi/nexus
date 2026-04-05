@@ -28,10 +28,7 @@ export class RipgrepEngine implements IGrepEngine {
     this.timeoutMs = options.grepTimeoutMs ?? DEFAULT_TIMEOUT_MS;
 
     if (!options.spawn) {
-      throw new Error(
-        'RipgrepEngine requires a spawn function to be provided in options. ' +
-          'The defaultSpawn implementation is not available for direct use.',
-      );
+      throw new Error('RipgrepEngine requires a spawn function to be provided in options.');
     }
     this.spawnImpl = options.spawn;
   }
@@ -65,10 +62,6 @@ export class RipgrepEngine implements IGrepEngine {
     };
   }
 }
-
-const defaultSpawn = async (): Promise<GrepMatch[]> => {
-  throw new Error('Ripgrep process spawning is not implemented yet');
-};
 
 export const extractGrepKeywords = (query: string): string[] => {
   const literalMatches = query.match(/\b[A-Za-z0-9]+(?:[_-][A-Za-z0-9]+)+\b|\b[a-z]+[A-Z][A-Za-z0-9]*\b/g);
