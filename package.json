@@ -1,0 +1,41 @@
+{
+  "name": "nexus",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22.0.0"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "lint": "eslint src/**/*.ts vitest.config.ts",
+    "test": "vitest run --passWithNoTests",
+    "license:check": "node scripts/license-check.mjs",
+    "license:report": "license-checker --production --json --out reports/licenses.json",
+    "license:notice": "generate-license-file --input package-lock.json --output notices/THIRD_PARTY_LICENSES.txt"
+  },
+  "dependencies": {
+    "@lancedb/lancedb": "^0.18.2",
+    "@modelcontextprotocol/sdk": "^1.18.0",
+    "async-mutex": "^0.5.0",
+    "better-sqlite3": "^11.10.0",
+    "chokidar": "^4.0.3",
+    "p-limit": "^7.1.1",
+    "web-tree-sitter": "^0.25.10",
+    "xxhash-wasm": "^1.1.0"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.24.0",
+    "@types/better-sqlite3": "^7.6.13",
+    "@types/node": "^22.14.1",
+    "@vitest/coverage-v8": "^3.2.4",
+    "eslint": "^9.24.0",
+    "generate-license-file": "^4.0.0",
+    "globals": "^16.0.0",
+    "license-checker": "^25.0.1",
+    "prettier": "^3.5.3",
+    "typescript": "^5.8.3",
+    "typescript-eslint": "^8.29.1",
+    "vitest": "^3.1.1"
+  }
+}
