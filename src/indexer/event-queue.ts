@@ -36,27 +36,13 @@ export class EventQueue {
       return false;
     }
 
-    if (this.size() >= this.options.maxQueueSize) {
-      this.overflow = true;
-      this.droppedEventCount += 1;
-      return false;
-    }
-
     const existingEvent = this.debouncedEvents.get(event.filePath);
-    const existingTimer = this.timers.get(event.filePath);
-
-    if (existingTimer !== undefined) {
-      clearTimeout(existingTimer);
-      this.timers.delete(event.filePath);
-    }
-
     let mergedEvent: IndexEvent | null = event;
 
     if (existingEvent) {
       if (existingEvent.type === 'added') {
         if (event.type === 'deleted') {
           // added -> deleted = cancel
-          this.debouncedEvents.delete(event.filePath);
           mergedEvent = null;
         } else if (event.type === 'modified') {
           // added -> modified = added
@@ -75,12 +61,34 @@ export class EventQueue {
       }
     }
 
+    let sizeDelta = 0;
+    if (existingEvent && !mergedEvent) {
+      sizeDelta = -1;
+    } else if (!existingEvent && mergedEvent) {
+      sizeDelta = 1;
+    }
+
+    const nextSize = this.size() + sizeDelta;
+    if (nextSize > this.options.maxQueueSize) {
+      this.overflow = true;
+      this.droppedEventCount += 1;
+      return false;
+    }
+
+    const existingTimer = this.timers.get(event.filePath);
+    if (existingTimer !== undefined) {
+      clearTimeout(existingTimer);
+      this.timers.delete(event.filePath);
+    }
+
     if (mergedEvent) {
       this.debouncedEvents.set(event.filePath, mergedEvent);
       const timer = setTimeout(() => {
         this.flushDebouncedEvent(event.filePath);
       }, this.options.debounceMs);
       this.timers.set(event.filePath, timer);
+    } else {
+      this.debouncedEvents.delete(event.filePath);
     }
 
     if (this.size() > this.options.fullScanThreshold) {
@@ -90,13 +98,30 @@ export class EventQueue {
     return true;
   }
 
-  enqueueReindex(options: ReindexOptions): void {
+  enqueueReindex(options: ReindexOptions): boolean {
+    if (this.overflow) {
+      this.droppedEventCount += 1;
+      return false;
+    }
+
+    if (this.size() >= this.options.maxQueueSize) {
+      this.overflow = true;
+      this.droppedEventCount += 1;
+      return false;
+    }
+
     this.reindexQueue.push({
       type: 'reindex',
       priority: 'high',
       options,
       detectedAt: new Date().toISOString(),
     });
+
+    if (this.size() > this.options.fullScanThreshold) {
+      this.overflow = true;
+    }
+
+    return true;
   }
 
   async drain<T>(handler: (event: QueueEvent) => Promise<T>): Promise<T[]> {
@@ -123,7 +148,15 @@ export class EventQueue {
         if (res.status === 'fulfilled') {
           results.push(res.value);
         } else {
-          this.reindexQueue.push(events[i]);
+          if (this.size() >= this.options.maxQueueSize) {
+            this.overflow = true;
+            this.droppedEventCount += 1;
+          } else {
+            this.reindexQueue.push(events[i]);
+            if (this.size() > this.options.fullScanThreshold) {
+              this.overflow = true;
+            }
+          }
           if (!firstError) {
             firstError = res.reason;
           }
