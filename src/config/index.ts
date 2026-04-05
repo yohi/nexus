@@ -86,9 +86,17 @@ export const loadConfig = async (options: LoadConfigOptions): Promise<Config> =>
   return merged;
 };
 
-const asString = (value: string | undefined): string | undefined => (value && value.trim() !== '' ? value : undefined);
+const asString = (value: string | undefined): string | undefined => {
+  if (value === undefined) return undefined;
+  const trimmed = value.trim();
+  return trimmed !== '' ? trimmed : undefined;
+};
 
-const validateString = (value: unknown): string | undefined => (typeof value === 'string' && value.trim() !== '' ? value : undefined);
+const validateString = (value: unknown): string | undefined => {
+  if (typeof value !== 'string') return undefined;
+  const trimmed = value.trim();
+  return trimmed !== '' ? trimmed : undefined;
+};
 
 const asPositiveInt = (value: string | undefined): number | undefined => {
   if (value === undefined || !/^\d+$/.test(value)) return undefined;

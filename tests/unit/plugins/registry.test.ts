@@ -76,6 +76,17 @@ describe('PluginRegistry', () => {
     expect(registry.embeddings.getActiveName()).toBe(undefined);
   });
 
+  it('lists registered embedding provider names', () => {
+    const registry = new PluginRegistry();
+    registry.registerEmbeddingProvider('ollama', new TestEmbeddingProvider());
+    registry.registerEmbeddingProvider('openai', new TestEmbeddingProvider());
+
+    const names = registry.embeddings.getRegisteredProviderNames();
+    expect(names).toContain('ollama');
+    expect(names).toContain('openai');
+    expect(names.length).toBe(2);
+  });
+
   it('handles provider health check errors gracefully', async () => {
     const registry = new PluginRegistry();
     registry.registerLanguage(new TypeScriptLanguagePlugin());

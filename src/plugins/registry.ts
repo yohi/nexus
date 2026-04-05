@@ -93,6 +93,10 @@ export class EmbeddingProviderRegistry {
   getActiveName(): string | undefined {
     return this.activeProviderName;
   }
+
+  getRegisteredProviderNames(): string[] {
+    return Array.from(this.providers.keys());
+  }
 }
 
 export class PluginRegistry {

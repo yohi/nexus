@@ -146,4 +146,27 @@ describe('loadConfig', () => {
     expect(config.storage.metadataDbPath).toBe(path.join(tempDir, '.nexus', 'metadata.db'));
     expect(config.storage.vectorDbPath).toBe(path.join(tempDir, '.nexus', 'vectors'));
   });
+
+  it('trims string values from environment variables and config files', async () => {
+    tempDir = await mkdtemp(path.join(os.tmpdir(), 'nexus-config-'));
+    await writeFile(
+      path.join(tempDir, '.nexus.json'),
+      JSON.stringify({
+        embedding: { apiKey: '  secret-key  ' },
+      }),
+      'utf8',
+    );
+
+    const config = await loadConfig({
+      projectRoot: tempDir,
+      env: {
+        NEXUS_EMBEDDING_PROVIDER: '  ollama  ',
+        NEXUS_EMBEDDING_MODEL: '  nomic-embed-text  ',
+      },
+    });
+
+    expect(config.embedding.provider).toBe('ollama');
+    expect(config.embedding.model).toBe('nomic-embed-text');
+    expect(config.embedding.apiKey).toBe('secret-key');
+  });
 });
