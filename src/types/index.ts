@@ -202,6 +202,11 @@ export interface WatcherConfig {
   fullScanThreshold: number;
 }
 
+export interface FileWatcherOptions {
+  projectRoot: string;
+  ignorePaths?: string[];
+}
+
 export interface StorageConfig {
   rootDir: string;
   metadataDbPath: string;
@@ -246,6 +251,13 @@ export interface ReindexOptions {
   fullScan?: boolean;
   pathPrefix?: string;
   reason?: 'manual' | 'overflow-recovery' | 'startup-reconciliation';
+}
+
+export interface ReindexQueueEvent {
+  type: 'reindex';
+  priority: 'high';
+  options: ReindexOptions;
+  detectedAt: string;
 }
 
 export interface ReindexResult {
