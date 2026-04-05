@@ -107,7 +107,7 @@ export interface CompactionConfig {
 
 export interface IVectorStore {
   initialize(): Promise<void>;
-  upsertChunks(chunks: CodeChunk[]): Promise<void>;
+  upsertChunks(chunks: CodeChunk[], embeddings?: number[][]): Promise<void>;
   deleteByFilePath(filePath: string): Promise<number>;
   deleteByPathPrefix(pathPrefix: string): Promise<number>;
   search(queryVector: number[], topK: number, filter?: VectorFilter): Promise<VectorSearchResult[]>;

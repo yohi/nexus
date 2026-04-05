@@ -52,7 +52,7 @@ export class Chunker {
         content: declaration.content,
         language: file.language,
         symbolName: declaration.name,
-        symbolKind: declaration.type as SymbolKind,
+        symbolKind: declaration.type,
         startLine: declaration.startLine,
         endLine: declaration.endLine,
         hash: this.hashContent(declaration.content),

@@ -57,16 +57,21 @@ export class LanceVectorStore implements IVectorStore {
     return;
   }
 
-  async upsertChunks(chunks: CodeChunk[]): Promise<void> {
+  async upsertChunks(chunks: CodeChunk[], embeddings?: number[][]): Promise<void> {
     await this.asyncBoundary();
-    for (const chunk of chunks) {
+    if (embeddings && embeddings.length !== chunks.length) {
+      throw new Error(`VectorStore.upsertChunks: embeddings length mismatch (expected ${chunks.length}, got ${embeddings.length})`);
+    }
+
+    for (let i = 0; i < chunks.length; i++) {
+      const chunk = chunks[i]!;
       const existing = this.rows.get(chunk.id);
       if (existing?.deleted) {
         this.deletedCount -= 1;
       }
       this.rows.set(chunk.id, {
         chunk,
-        vector: this.vectorize(chunk.content),
+        vector: embeddings ? embeddings[i]! : this.vectorize(chunk.content),
         deleted: false,
       });
     }
@@ -161,9 +166,11 @@ export class LanceVectorStore implements IVectorStore {
 
   scheduleIdleCompaction(runCompaction: () => Promise<void>, delayMs = 0): void {
     setTimeout(() => {
-      runCompaction().catch((error) => {
-        console.error('Compaction failed:', error);
-      });
+      Promise.resolve()
+        .then(() => runCompaction())
+        .catch((error) => {
+          console.error('Compaction failed:', error);
+        });
     }, delayMs);
   }
 
