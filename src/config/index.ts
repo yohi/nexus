@@ -12,7 +12,7 @@ export interface LoadConfigOptions {
 const DEFAULT_EMBEDDING: EmbeddingConfig = {
   provider: 'ollama',
   model: 'nomic-embed-text',
-  dimensions: 64,
+  dimensions: 768,
   baseUrl: 'http://127.0.0.1:11434',
   maxConcurrency: 2,
   batchSize: 32,
@@ -106,7 +106,10 @@ const readJsonFile = async (configPath: string): Promise<Partial<Config>> => {
   try {
     const raw = await readFile(configPath, 'utf8');
     return JSON.parse(raw) as Partial<Config>;
-  } catch {
-    return {};
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
+      return {};
+    }
+    throw err;
   }
 };

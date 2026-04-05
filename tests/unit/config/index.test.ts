@@ -67,7 +67,7 @@ describe('loadConfig', () => {
 
     expect(config.watcher.debounceMs).toBe(100);
     expect(config.embedding.provider).toBe('ollama');
-    expect(config.embedding.dimensions).toBe(64);
+    expect(config.embedding.dimensions).toBe(768);
   });
 
   it('rejects integers with trailing characters in environment variables', async () => {
@@ -83,5 +83,18 @@ describe('loadConfig', () => {
 
     expect(config.watcher.debounceMs).toBe(100); // Should fallback to default 100, not use 250
     expect(config.embedding.batchSize).toBe(32); // Should fallback to default 32
+  });
+
+  it('uses 768 as default dimensions', async () => {
+    tempDir = await mkdtemp(path.join(os.tmpdir(), 'nexus-config-'));
+    const config = await loadConfig({ projectRoot: tempDir, env: {} });
+    expect(config.embedding.dimensions).toBe(768);
+  });
+
+  it('re-throws JSON parse errors', async () => {
+    tempDir = await mkdtemp(path.join(os.tmpdir(), 'nexus-config-'));
+    await writeFile(path.join(tempDir, '.nexus.json'), '{ "invalid": ', 'utf8');
+
+    await expect(loadConfig({ projectRoot: tempDir, env: {} })).rejects.toThrow();
   });
 });
