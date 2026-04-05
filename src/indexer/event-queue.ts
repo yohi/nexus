@@ -26,21 +26,56 @@ export class EventQueue {
 
   constructor(private readonly options: EventQueueOptions) {}
 
+  getDroppedEventCount(): number {
+    return this.droppedEventCount;
+  }
+
   enqueue(event: IndexEvent): boolean {
     if (this.overflow) {
       return false;
     }
 
+    const existingEvent = this.debouncedEvents.get(event.filePath);
     const existingTimer = this.timers.get(event.filePath);
+
     if (existingTimer !== undefined) {
       clearTimeout(existingTimer);
+      this.timers.delete(event.filePath);
     }
 
-    this.debouncedEvents.set(event.filePath, event);
-    const timer = setTimeout(() => {
-      this.flushDebouncedEvent(event.filePath);
-    }, this.options.debounceMs);
-    this.timers.set(event.filePath, timer);
+    let mergedEvent: IndexEvent | null = event;
+
+    if (existingEvent) {
+      if (existingEvent.type === 'added') {
+        if (event.type === 'deleted') {
+          // added -> deleted = cancel
+          this.debouncedEvents.delete(event.filePath);
+          mergedEvent = null;
+        } else if (event.type === 'modified') {
+          // added -> modified = added
+          mergedEvent = { ...event, type: 'added' };
+        }
+      } else if (existingEvent.type === 'modified') {
+        if (event.type === 'deleted') {
+          // modified -> deleted = deleted
+          mergedEvent = { ...event, type: 'deleted' };
+        }
+      } else if (existingEvent.type === 'deleted') {
+        if (event.type === 'added' || event.type === 'modified') {
+          // deleted -> added/modified = modified
+          mergedEvent = { ...event, type: 'modified' };
+        }
+      }
+    }
+
+    if (mergedEvent) {
+      this.debouncedEvents.set(event.filePath, mergedEvent);
+      const timer = setTimeout(() => {
+        this.flushDebouncedEvent(event.filePath);
+      }, this.options.debounceMs);
+      this.timers.set(event.filePath, timer);
+    }
+
     return true;
   }
 
@@ -79,8 +114,12 @@ export class EventQueue {
     this.overflow = false;
   }
 
+  /**
+   * Returns the total number of events currently in the queue,
+   * including pending debounced events.
+   */
   size(): number {
-    return this.watcherQueue.length + this.reindexQueue.length;
+    return this.watcherQueue.length + this.reindexQueue.length + this.debouncedEvents.size;
   }
 
   isOverflowing(): boolean {

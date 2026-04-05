@@ -106,4 +106,77 @@ describe('EventQueue', () => {
     expect(queue.size()).toBe(0);
     expect(queue.isOverflowing()).toBe(false);
   });
+
+  describe('Event Merging', () => {
+    it('cancels added followed by deleted', async () => {
+      vi.useFakeTimers();
+      const queue = new EventQueue({ debounceMs: 10, maxQueueSize: 10, fullScanThreshold: 5, concurrency: 1 });
+
+      queue.enqueue(makeEvent({ type: 'added', filePath: 'src/new.ts' }));
+      expect(queue.size()).toBe(1);
+
+      queue.enqueue(makeEvent({ type: 'deleted', filePath: 'src/new.ts' }));
+      expect(queue.size()).toBe(0);
+
+      vi.runAllTimers();
+      const processed = await queue.drain(async (e) => e);
+      expect(processed).toHaveLength(0);
+    });
+
+    it('merges added followed by modified into added', async () => {
+      vi.useFakeTimers();
+      const queue = new EventQueue({ debounceMs: 10, maxQueueSize: 10, fullScanThreshold: 5, concurrency: 1 });
+
+      queue.enqueue(makeEvent({ type: 'added', filePath: 'src/new.ts', contentHash: 'h1' }));
+      queue.enqueue(makeEvent({ type: 'modified', filePath: 'src/new.ts', contentHash: 'h2' }));
+
+      vi.runAllTimers();
+      const processed = await queue.drain(async (e) => e);
+      expect(processed).toHaveLength(1);
+      expect(processed[0]?.type).toBe('added');
+      expect((processed[0] as IndexEvent).contentHash).toBe('h2');
+    });
+
+    it('merges modified followed by deleted into deleted', async () => {
+      vi.useFakeTimers();
+      const queue = new EventQueue({ debounceMs: 10, maxQueueSize: 10, fullScanThreshold: 5, concurrency: 1 });
+
+      queue.enqueue(makeEvent({ type: 'modified', filePath: 'src/existing.ts' }));
+      queue.enqueue(makeEvent({ type: 'deleted', filePath: 'src/existing.ts' }));
+
+      vi.runAllTimers();
+      const processed = await queue.drain(async (e) => e);
+      expect(processed).toHaveLength(1);
+      expect(processed[0]?.type).toBe('deleted');
+    });
+
+    it('merges deleted followed by added into modified', async () => {
+      vi.useFakeTimers();
+      const queue = new EventQueue({ debounceMs: 10, maxQueueSize: 10, fullScanThreshold: 5, concurrency: 1 });
+
+      queue.enqueue(makeEvent({ type: 'deleted', filePath: 'src/existing.ts' }));
+      queue.enqueue(makeEvent({ type: 'added', filePath: 'src/existing.ts' }));
+
+      vi.runAllTimers();
+      const processed = await queue.drain(async (e) => e);
+      expect(processed).toHaveLength(1);
+      expect(processed[0]?.type).toBe('modified');
+    });
+  });
+
+  it('exposes droppedEventCount via getter', async () => {
+    vi.useFakeTimers();
+    const queue = new EventQueue({ debounceMs: 0, maxQueueSize: 1, fullScanThreshold: 10, concurrency: 1 });
+
+    // Fill the queue (watcherQueue)
+    queue.enqueue(makeEvent({ filePath: 'src/a.ts' }));
+    vi.runAllTimers();
+    expect(queue.size()).toBe(1);
+
+    // This event should be dropped when flushed
+    queue.enqueue(makeEvent({ filePath: 'src/b.ts' }));
+    vi.runAllTimers();
+
+    expect(queue.getDroppedEventCount()).toBe(1);
+  });
 });
