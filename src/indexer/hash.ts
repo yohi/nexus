@@ -7,7 +7,10 @@ let hasherPromise: Promise<XXHashAPI> | undefined;
 
 const getHasher = async (): Promise<XXHashAPI> => {
   if (hasherPromise === undefined) {
-    hasherPromise = xxhash();
+    hasherPromise = xxhash().catch((err) => {
+      hasherPromise = undefined;
+      throw err;
+    });
   }
 
   return hasherPromise;
@@ -48,11 +51,19 @@ export const computePartialHash = async (filePath: string, fileSize?: number): P
   const hasher = await getHasher();
   const fd = await open(filePath, 'r');
   try {
-    const head = Buffer.allocUnsafe(1024 * 1024);
-    const tail = Buffer.allocUnsafe(1024 * 1024);
-    await fd.read(head, 0, head.length, 0);
-    await fd.read(tail, 0, tail.length, size - tail.length);
-    return toHex(hasher.h64Raw(Buffer.concat([head, tail, Buffer.from(String(size))])));
+    const head = Buffer.alloc(1024 * 1024);
+    const tail = Buffer.alloc(1024 * 1024);
+    const { bytesRead: headBytes } = await fd.read(head, 0, head.length, 0);
+    const { bytesRead: tailBytes } = await fd.read(tail, 0, tail.length, size - tail.length);
+    return toHex(
+      hasher.h64Raw(
+        Buffer.concat([
+          head.subarray(0, headBytes),
+          tail.subarray(0, tailBytes),
+          Buffer.from(String(size)),
+        ]),
+      ),
+    );
   } finally {
     await fd.close();
   }

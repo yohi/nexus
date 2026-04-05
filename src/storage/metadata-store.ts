@@ -211,9 +211,8 @@ export class SqliteMetadataStore implements IMetadataStore {
       .run(stats);
   }
 
-  getPragmaValue(name: string): number {
-    const row = this.db.pragma(`${name}`, { simple: true }) as number;
-    return row;
+  getPragmaValue(name: string): unknown {
+    return this.db.pragma(`${name}`, { simple: true });
   }
 
   async close(): Promise<void> {

@@ -110,6 +110,6 @@ describe('SqliteMetadataStore', () => {
     await store.setIndexStats(stats);
 
     await expect(store.getIndexStats()).resolves.toEqual(stats);
-    expect(store.getPragmaValue('wal_autocheckpoint')).toBe(1000);
+    expect(store.getPragmaValue('wal_autocheckpoint') as number).toBe(1000);
   });
 });
