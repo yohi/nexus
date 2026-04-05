@@ -60,6 +60,19 @@ export interface FileToChunk {
   content: string;
 }
 
+export interface ParsedDeclaration {
+  type: SymbolKind;
+  name: string;
+  startLine: number;
+  endLine: number;
+  content: string;
+}
+
+export interface ParsedSourceFile {
+  rootType: string;
+  declarations: ParsedDeclaration[];
+}
+
 export interface VectorFilter {
   filePathPrefix?: string;
   language?: string;
@@ -94,7 +107,7 @@ export interface CompactionConfig {
 
 export interface IVectorStore {
   initialize(): Promise<void>;
-  upsertChunks(chunks: CodeChunk[]): Promise<void>;
+  upsertChunks(chunks: CodeChunk[], embeddings?: number[][]): Promise<void>;
   deleteByFilePath(filePath: string): Promise<number>;
   deleteByPathPrefix(pathPrefix: string): Promise<number>;
   search(queryVector: number[], topK: number, filter?: VectorFilter): Promise<VectorSearchResult[]>;
@@ -178,6 +191,9 @@ export interface LanguagePlugin {
   readonly languageId: string;
   readonly fileExtensions: string[];
   supports(filePath: string): boolean;
+  createParser(): Promise<{
+    parse(file: FileToChunk): Promise<ParsedSourceFile>;
+  }>;
 }
 
 export interface WatcherConfig {
