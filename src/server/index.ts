@@ -1,6 +1,7 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import * as z from 'zod/v4';
 
+import type { IFileWatcher } from '../types/index.js';
 import type { IndexPipeline } from '../indexer/pipeline.js';
 import type { PluginRegistry } from '../plugins/registry.js';
 import type { SearchOrchestrator } from '../search/orchestrator.js';
@@ -24,6 +25,15 @@ export interface NexusServerOptions {
   pluginRegistry: PluginRegistry;
   runReindex: () => Promise<IndexEvent[]>;
   loadFileContent: (filePath: string) => Promise<string>;
+}
+
+export interface NexusRuntimeOptions extends NexusServerOptions {
+  watcher: IFileWatcher;
+}
+
+export interface NexusRuntime {
+  server: McpServer;
+  close(): Promise<void>;
 }
 
 export const createNexusServer = (options: NexusServerOptions): McpServer => {
@@ -127,6 +137,23 @@ export const createNexusServer = (options: NexusServerOptions): McpServer => {
   );
 
   return server;
+};
+
+export const initializeNexusRuntime = async (options: NexusRuntimeOptions): Promise<NexusRuntime> => {
+  await options.metadataStore.initialize();
+  await options.vectorStore.initialize();
+  await options.pipeline.reconcileOnStartup();
+  await options.watcher.start();
+
+  const server = createNexusServer(options);
+
+  return {
+    server,
+    close: async () => {
+      await options.watcher.stop();
+      await server.close();
+    },
+  };
 };
 
 const toolResult = <T extends object>(structuredContent: T) => ({

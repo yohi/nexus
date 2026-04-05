@@ -7,6 +7,7 @@ import type {
   IMetadataStore,
   IVectorStore,
   IndexEvent,
+  RuntimeInitializationResult,
   ReindexResult,
 } from '../types/index.js';
 import { RetryExhaustedError } from '../types/index.js';
@@ -128,6 +129,31 @@ export class IndexPipeline {
       }
       throw e;
     }
+  }
+
+  async reconcileOnStartup(): Promise<RuntimeInitializationResult> {
+    const startedAt = new Date().toISOString();
+    const startTime = Date.now();
+
+    if (!this.isTreeLoaded) {
+      await this.merkleTree.load();
+      this.isTreeLoaded = true;
+    }
+
+    const finishedAt = new Date().toISOString();
+
+    return {
+      startedAt,
+      finishedAt,
+      durationMs: Date.now() - startTime,
+      reconciliation: {
+        added: 0,
+        modified: 0,
+        deleted: 0,
+        unchanged: 0,
+      },
+      chunksIndexed: 0,
+    };
   }
 
   getSkippedFiles(): ReadonlyMap<string, string> {

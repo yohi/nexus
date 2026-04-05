@@ -14,9 +14,12 @@ export const executeIndexStatus = async (
   vectorStore: IVectorStore,
   pipeline: IndexPipeline,
   pluginRegistry: PluginRegistry,
-): Promise<IndexStatusResult> => ({
-  indexStats: await metadataStore.getIndexStats(),
-  vectorStats: await vectorStore.getStats(),
-  skippedFiles: pipeline.getSkippedFiles().size,
-  pluginHealth: await pluginRegistry.healthCheck(),
-});
+): Promise<IndexStatusResult> => {
+  // TODO(Phase 3): Apply PathSanitizer if this tool starts accepting path-scoped status queries.
+  return {
+    indexStats: await metadataStore.getIndexStats(),
+    vectorStats: await vectorStore.getStats(),
+    skippedFiles: pipeline.getSkippedFiles().size,
+    pluginHealth: await pluginRegistry.healthCheck(),
+  };
+};

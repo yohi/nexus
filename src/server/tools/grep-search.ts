@@ -12,6 +12,7 @@ export const executeGrepSearch = async (
   projectRoot: string,
   args: GrepSearchToolArgs,
 ): Promise<{ matches: GrepMatch[] }> => ({
+  // TODO(Phase 3): Apply PathSanitizer at the tool boundary before accepting file patterns.
   matches: await grepEngine.search({
     query: args.pattern,
     cwd: projectRoot,

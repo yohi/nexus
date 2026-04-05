@@ -6,6 +6,9 @@ export interface SemanticSearchToolArgs extends SemanticSearchParams {}
 export const executeSemanticSearch = async (
   semanticSearch: SemanticSearch,
   args: SemanticSearchToolArgs,
-): Promise<{ results: SearchResult[] }> => ({
-  results: await semanticSearch.search(args),
-});
+): Promise<{ results: SearchResult[] }> => {
+  // TODO(Phase 3): Apply PathSanitizer at the tool boundary before accepting semantic search path filters.
+  return {
+    results: await semanticSearch.search(args),
+  };
+};

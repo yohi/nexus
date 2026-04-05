@@ -16,6 +16,7 @@ export const executeGetContext = async (
   loadFileContent: (filePath: string) => Promise<string>,
   args: GetContextToolArgs,
 ): Promise<GetContextResult> => {
+  // TODO(Phase 3): Apply PathSanitizer at the tool boundary before reading file content.
   const content = await loadFileContent(args.filePath);
   const lines = content.split('\n');
   const startLine = args.startLine ?? 1;

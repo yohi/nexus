@@ -12,4 +12,7 @@ export const executeReindex = async (
   runReindex: () => Promise<IndexEvent[]>,
   loadFileContent: (filePath: string) => Promise<string>,
   _args: ReindexToolArgs,
-): Promise<ReindexToolResult> => pipeline.reindex(runReindex, loadFileContent);
+): Promise<ReindexToolResult> => {
+  // TODO(Phase 3): Apply PathSanitizer if manual reindex gains path-scoped input.
+  return pipeline.reindex(runReindex, loadFileContent);
+};

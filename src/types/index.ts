@@ -207,6 +207,11 @@ export interface FileWatcherOptions {
   ignorePaths?: string[];
 }
 
+export interface IFileWatcher {
+  start(): Promise<void>;
+  stop(): Promise<void>;
+}
+
 export interface StorageConfig {
   rootDir: string;
   metadataDbPath: string;
@@ -245,6 +250,14 @@ export interface ReconciliationResult {
   modified: number;
   deleted: number;
   unchanged: number;
+}
+
+export interface RuntimeInitializationResult {
+  startedAt: string;
+  finishedAt: string;
+  durationMs: number;
+  reconciliation: ReconciliationResult;
+  chunksIndexed: number;
 }
 
 export interface ReindexOptions {
