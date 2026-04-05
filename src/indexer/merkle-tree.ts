@@ -1,6 +1,7 @@
 import path from 'node:path';
 
 import type { IMetadataStore, IndexEvent, MerkleNodeRow } from '../types/index.js';
+import { computeStringHash } from './hash.js';
 
 export interface RenameCandidate {
   oldPath: string;
@@ -18,21 +19,11 @@ export class MerkleTree {
   async load(): Promise<void> {
     this.nodes.clear();
 
-    for (const node of await this.metadataStore.getAllFileNodes()) {
+    for (const node of await this.metadataStore.getAllNodes()) {
       this.nodes.set(node.path, node);
     }
 
-    const allPaths = await this.metadataStore.getAllPaths();
-    for (const nodePath of allPaths) {
-      if (!this.nodes.has(nodePath)) {
-        const node = await this.metadataStore.getMerkleNode(nodePath);
-        if (node !== null) {
-          this.nodes.set(node.path, node);
-        }
-      }
-    }
-
-    this.rootHash = this.computeRootHash();
+    this.rootHash = await this.computeRootHash();
   }
 
   async update(filePath: string, contentHash: string): Promise<void> {
@@ -49,13 +40,36 @@ export class MerkleTree {
       this.nodes.set(directory.path, directory);
     }
 
-    this.rootHash = this.computeRootHash();
+    this.rootHash = await this.computeRootHash();
     await this.persistCurrentState();
   }
 
   async remove(filePath: string): Promise<void> {
     this.nodes.delete(filePath);
-    this.rootHash = this.computeRootHash();
+
+    let current = path.dirname(filePath);
+    while (current !== '.' && current !== path.sep) {
+      const parentNode = this.nodes.get(current);
+      if (parentNode !== undefined && parentNode.isDirectory) {
+        let hasChildren = false;
+        for (const node of this.nodes.values()) {
+          if (node.parentPath === current) {
+            hasChildren = true;
+            break;
+          }
+        }
+        if (!hasChildren) {
+          this.nodes.delete(current);
+        } else {
+          break;
+        }
+      } else {
+        break;
+      }
+      current = path.dirname(current);
+    }
+
+    this.rootHash = await this.computeRootHash();
     await this.persistCurrentState();
   }
 
@@ -67,8 +81,8 @@ export class MerkleTree {
     return this.nodes.get(nodePath);
   }
 
+  // eslint-disable-next-line @typescript-eslint/require-await
   static async diff(oldTree: MerkleTree, newTree: MerkleTree): Promise<IndexEvent[]> {
-    await Promise.resolve();
     const events: IndexEvent[] = [];
     const seen = new Set<string>();
     const now = new Date().toISOString();
@@ -104,14 +118,29 @@ export class MerkleTree {
     const deleted = events.filter((event) => event.type === 'deleted' && event.contentHash !== undefined);
     const matches: RenameCandidate[] = [];
 
+    // Note: In cases where multiple files share the exact same content hash,
+    // this mapping makes a best-effort 1:1 match. While this is sufficient for v1,
+    // it may produce semantically arbitrary mappings among identical files.
+    const addedMap = new Map<string, IndexEvent[]>();
+    for (const event of added) {
+      if (event.contentHash !== undefined) {
+        const list = addedMap.get(event.contentHash) ?? [];
+        list.push(event);
+        addedMap.set(event.contentHash, list);
+      }
+    }
+
     for (const removed of deleted) {
-      const addedMatch = added.find((event) => event.contentHash === removed.contentHash);
-      if (addedMatch?.contentHash !== undefined && removed.contentHash !== undefined) {
-        matches.push({
-          oldPath: removed.filePath,
-          newPath: addedMatch.filePath,
-          hash: addedMatch.contentHash,
-        });
+      if (removed.contentHash !== undefined) {
+        const list = addedMap.get(removed.contentHash);
+        if (list !== undefined && list.length > 0) {
+          const addedMatch = list.shift()!;
+          matches.push({
+            oldPath: removed.filePath,
+            newPath: addedMatch.filePath,
+            hash: addedMatch.contentHash!,
+          });
+        }
       }
     }
 
@@ -147,7 +176,7 @@ export class MerkleTree {
     return directories;
   }
 
-  private computeRootHash(): string | null {
+  private async computeRootHash(): Promise<string | null> {
     const childMap = new Map<string | null, MerkleNodeRow[]>();
 
     for (const node of this.nodes.values()) {
@@ -157,7 +186,7 @@ export class MerkleTree {
       childMap.set(key, entries);
     }
 
-    const computeNodeHash = (nodePath: string): string => {
+    const computeNodeHash = async (nodePath: string): Promise<string> => {
       const node = this.nodes.get(nodePath);
       if (node === undefined) {
         return '';
@@ -168,7 +197,14 @@ export class MerkleTree {
       }
 
       const children = (childMap.get(nodePath) ?? []).sort((left, right) => left.path.localeCompare(right.path));
-      return children.map((child) => `${child.path}:${computeNodeHash(child.path)}`).join('|');
+      const childHashes = await Promise.all(
+        children.map(async (child) => {
+          const hash = await computeNodeHash(child.path);
+          return `${child.path.length}:${child.path}:${hash}`;
+        })
+      );
+      const serialized = childHashes.join('');
+      return computeStringHash(serialized);
     };
 
     const roots = (childMap.get(null) ?? []).sort((left, right) => left.path.localeCompare(right.path));
@@ -176,6 +212,13 @@ export class MerkleTree {
       return null;
     }
 
-    return roots.map((node) => `${node.path}:${computeNodeHash(node.path)}`).join('|');
+    const rootHashes = await Promise.all(
+      roots.map(async (node) => {
+        const hash = await computeNodeHash(node.path);
+        return `${node.path.length}:${node.path}:${hash}`;
+      })
+    );
+    const rootSerialized = rootHashes.join('');
+    return computeStringHash(rootSerialized);
   }
 }
