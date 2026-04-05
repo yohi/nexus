@@ -51,32 +51,32 @@ export const loadConfig = async (options: LoadConfigOptions): Promise<Config> =>
         asString(env.NEXUS_STORAGE_VECTOR_DB_PATH) ?? fileConfig.storage?.vectorDbPath ?? defaults.storage.vectorDbPath,
     },
     watcher: {
-      debounceMs: asPositiveInt(env.NEXUS_WATCHER_DEBOUNCE_MS) ?? fileConfig.watcher?.debounceMs ?? defaults.watcher.debounceMs,
+      debounceMs: asPositiveInt(env.NEXUS_WATCHER_DEBOUNCE_MS) ?? validatePositiveInt(fileConfig.watcher?.debounceMs) ?? defaults.watcher.debounceMs,
       maxQueueSize:
-        asPositiveInt(env.NEXUS_WATCHER_MAX_QUEUE_SIZE) ?? fileConfig.watcher?.maxQueueSize ?? defaults.watcher.maxQueueSize,
+        asPositiveInt(env.NEXUS_WATCHER_MAX_QUEUE_SIZE) ?? validatePositiveInt(fileConfig.watcher?.maxQueueSize) ?? defaults.watcher.maxQueueSize,
       fullScanThreshold:
         asPositiveInt(env.NEXUS_WATCHER_FULL_SCAN_THRESHOLD) ??
-        fileConfig.watcher?.fullScanThreshold ??
+        validatePositiveInt(fileConfig.watcher?.fullScanThreshold) ??
         defaults.watcher.fullScanThreshold,
     },
     embedding: {
-      provider: asProvider(env.NEXUS_EMBEDDING_PROVIDER) ?? fileConfig.embedding?.provider ?? defaults.embedding.provider,
-      model: asString(env.NEXUS_EMBEDDING_MODEL) ?? fileConfig.embedding?.model ?? defaults.embedding.model,
+      provider: asProvider(env.NEXUS_EMBEDDING_PROVIDER) ?? validateProvider(fileConfig.embedding?.provider) ?? defaults.embedding.provider,
+      model: asString(env.NEXUS_EMBEDDING_MODEL) ?? validateString(fileConfig.embedding?.model) ?? defaults.embedding.model,
       dimensions:
-        asPositiveInt(env.NEXUS_EMBEDDING_DIMENSIONS) ?? fileConfig.embedding?.dimensions ?? defaults.embedding.dimensions,
-      baseUrl: asString(env.NEXUS_EMBEDDING_BASE_URL) ?? fileConfig.embedding?.baseUrl ?? defaults.embedding.baseUrl,
-      apiKey: asString(env.NEXUS_EMBEDDING_API_KEY) ?? fileConfig.embedding?.apiKey ?? defaults.embedding.apiKey,
+        asPositiveInt(env.NEXUS_EMBEDDING_DIMENSIONS) ?? validatePositiveInt(fileConfig.embedding?.dimensions) ?? defaults.embedding.dimensions,
+      baseUrl: asString(env.NEXUS_EMBEDDING_BASE_URL) ?? validateString(fileConfig.embedding?.baseUrl) ?? defaults.embedding.baseUrl,
+      apiKey: asString(env.NEXUS_EMBEDDING_API_KEY) ?? validateString(fileConfig.embedding?.apiKey) ?? defaults.embedding.apiKey,
       maxConcurrency:
         asPositiveInt(env.NEXUS_EMBEDDING_MAX_CONCURRENCY) ??
-        fileConfig.embedding?.maxConcurrency ??
+        validatePositiveInt(fileConfig.embedding?.maxConcurrency) ??
         defaults.embedding.maxConcurrency,
       batchSize:
-        asPositiveInt(env.NEXUS_EMBEDDING_BATCH_SIZE) ?? fileConfig.embedding?.batchSize ?? defaults.embedding.batchSize,
+        asPositiveInt(env.NEXUS_EMBEDDING_BATCH_SIZE) ?? validatePositiveInt(fileConfig.embedding?.batchSize) ?? defaults.embedding.batchSize,
       retryCount:
-        asNonNegativeInt(env.NEXUS_EMBEDDING_RETRY_COUNT) ?? fileConfig.embedding?.retryCount ?? defaults.embedding.retryCount,
+        asNonNegativeInt(env.NEXUS_EMBEDDING_RETRY_COUNT) ?? validateNonNegativeInt(fileConfig.embedding?.retryCount) ?? defaults.embedding.retryCount,
       retryBaseDelayMs:
         asPositiveInt(env.NEXUS_EMBEDDING_RETRY_BASE_DELAY_MS) ??
-        fileConfig.embedding?.retryBaseDelayMs ??
+        validatePositiveInt(fileConfig.embedding?.retryBaseDelayMs) ??
         defaults.embedding.retryBaseDelayMs,
     },
   };
@@ -85,17 +85,35 @@ export const loadConfig = async (options: LoadConfigOptions): Promise<Config> =>
 };
 
 const asString = (value: string | undefined): string | undefined => (value && value.trim() !== '' ? value : undefined);
+
+const validateString = (value: unknown): string | undefined => (typeof value === 'string' && value.trim() !== '' ? value : undefined);
+
 const asPositiveInt = (value: string | undefined): number | undefined => {
   if (value === undefined || !/^\d+$/.test(value)) return undefined;
   const parsed = Number.parseInt(value, 10);
   return Number.isInteger(parsed) && parsed > 0 ? parsed : undefined;
 };
+
+const validatePositiveInt = (value: unknown): number | undefined =>
+  typeof value === 'number' && Number.isInteger(value) && value > 0 ? value : undefined;
+
 const asNonNegativeInt = (value: string | undefined): number | undefined => {
   if (value === undefined || !/^\d+$/.test(value)) return undefined;
   const parsed = Number.parseInt(value, 10);
   return Number.isInteger(parsed) && parsed >= 0 ? parsed : undefined;
 };
+
+const validateNonNegativeInt = (value: unknown): number | undefined =>
+  typeof value === 'number' && Number.isInteger(value) && value >= 0 ? value : undefined;
+
 const asProvider = (value: string | undefined): EmbeddingConfig['provider'] | undefined => {
+  if (value === 'ollama' || value === 'openai-compat' || value === 'test') {
+    return value;
+  }
+  return undefined;
+};
+
+const validateProvider = (value: unknown): EmbeddingConfig['provider'] | undefined => {
   if (value === 'ollama' || value === 'openai-compat' || value === 'test') {
     return value;
   }

@@ -97,4 +97,22 @@ describe('loadConfig', () => {
 
     await expect(loadConfig({ projectRoot: tempDir, env: {} })).rejects.toThrow();
   });
+
+  it('ignores invalid types in .nexus.json and uses defaults', async () => {
+    tempDir = await mkdtemp(path.join(os.tmpdir(), 'nexus-config-'));
+    await writeFile(
+      path.join(tempDir, '.nexus.json'),
+      JSON.stringify({
+        embedding: { dimensions: 'invalid', batchSize: -1 },
+        watcher: { debounceMs: 'very-slow' },
+      }),
+      'utf8',
+    );
+
+    const config = await loadConfig({ projectRoot: tempDir, env: {} });
+
+    expect(config.embedding.dimensions).toBe(768);
+    expect(config.embedding.batchSize).toBe(32);
+    expect(config.watcher.debounceMs).toBe(100);
+  });
 });
