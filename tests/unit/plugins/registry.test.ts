@@ -10,6 +10,12 @@ class UnhealthyEmbeddingProvider extends TestEmbeddingProvider {
   }
 }
 
+class CrashingEmbeddingProvider extends TestEmbeddingProvider {
+  override async healthCheck(): Promise<boolean> {
+    throw new Error('Health check failed');
+  }
+}
+
 describe('PluginRegistry', () => {
   it('registers language plugins and resolves by file path', () => {
     const registry = new PluginRegistry();
@@ -43,5 +49,14 @@ describe('PluginRegistry', () => {
   it('returns undefined for active provider name when none is registered', () => {
     const registry = new PluginRegistry();
     expect(registry.embeddings.getActiveName()).toBe(undefined);
+  });
+
+  it('handles provider health check errors gracefully', async () => {
+    const registry = new PluginRegistry();
+    registry.registerEmbeddingProvider('crasher', new CrashingEmbeddingProvider());
+
+    const status = await registry.healthCheck();
+    expect(status.healthy).toBe(false);
+    expect(status.embeddingProvider).toBe('crasher');
   });
 });

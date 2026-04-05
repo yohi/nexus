@@ -85,7 +85,14 @@ export class PluginRegistry {
 
   async healthCheck(): Promise<HealthCheckResult> {
     const provider = this.embeddings.getActive();
-    const healthy = provider ? await provider.healthCheck() : false;
+    let healthy = false;
+    if (provider) {
+      try {
+        healthy = await provider.healthCheck();
+      } catch {
+        healthy = false;
+      }
+    }
 
     return {
       languages: this.languages.list().map((plugin) => plugin.languageId),
