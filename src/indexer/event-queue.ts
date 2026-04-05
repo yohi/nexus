@@ -92,12 +92,53 @@ export class EventQueue {
     this.flushAllDebounced();
 
     const limit = pLimit(this.options.concurrency);
-    const queue = [...this.reindexQueue, ...this.watcherQueue];
+    const results: T[] = [];
 
-    this.reindexQueue.length = 0;
-    this.watcherQueue.length = 0;
+    // Phase 1: Reindex events (sequential phase)
+    if (this.reindexQueue.length > 0) {
+      const events = [...this.reindexQueue];
+      this.reindexQueue.length = 0;
+      const completed = new Set<QueueEvent>();
+      try {
+        const phaseResults = await Promise.all(
+          events.map((event) =>
+            limit(async () => {
+              const result = await handler(event);
+              completed.add(event);
+              return result;
+            })
+          )
+        );
+        results.push(...phaseResults);
+      } catch (error) {
+        const uncompleted = events.filter((e) => !completed.has(e));
+        this.reindexQueue.unshift(...uncompleted);
+        throw error;
+      }
+    }
 
-    const results = await Promise.all(queue.map((event) => limit(() => handler(event))));
+    // Phase 2: Watcher events (sequential phase)
+    if (this.watcherQueue.length > 0) {
+      const events = [...this.watcherQueue];
+      this.watcherQueue.length = 0;
+      const completed = new Set<QueueEvent>();
+      try {
+        const phaseResults = await Promise.all(
+          events.map((event) =>
+            limit(async () => {
+              const result = await handler(event);
+              completed.add(event);
+              return result;
+            })
+          )
+        );
+        results.push(...phaseResults);
+      } catch (error) {
+        const uncompleted = events.filter((e) => !completed.has(e));
+        this.watcherQueue.unshift(...uncompleted);
+        throw error;
+      }
+    }
 
     if (this.watcherQueue.length === 0 && this.reindexQueue.length === 0) {
       this.overflow = false;
@@ -132,8 +173,13 @@ export class EventQueue {
       return;
     }
 
+    const timer = this.timers.get(filePath);
+    if (timer !== undefined) {
+      clearTimeout(timer);
+      this.timers.delete(filePath);
+    }
+
     this.debouncedEvents.delete(filePath);
-    this.timers.delete(filePath);
 
     if (this.watcherQueue.length < this.options.maxQueueSize) {
       this.watcherQueue.push(event);
@@ -153,7 +199,8 @@ export class EventQueue {
   }
 
   private flushAllDebounced(): void {
-    for (const filePath of [...this.debouncedEvents.keys()]) {
+    const filePaths = Array.from(this.debouncedEvents.keys());
+    for (const filePath of filePaths) {
       this.flushDebouncedEvent(filePath);
     }
     this.flushTimers();
