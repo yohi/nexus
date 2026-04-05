@@ -2,7 +2,7 @@ import type { EmbeddingProvider, LanguagePlugin } from '../types/index.js';
 
 export interface HealthCheckResult {
   languages: string[];
-  embeddingProvider: string | null;
+  embeddingProvider: string | undefined;
   healthy: boolean;
 }
 
@@ -30,11 +30,11 @@ export class LanguageRegistry {
 export class EmbeddingProviderRegistry {
   private readonly providers = new Map<string, EmbeddingProvider>();
 
-  private activeProviderName: string | null = null;
+  private activeProviderName: string | undefined = undefined;
 
   register(name: string, provider: EmbeddingProvider): void {
     this.providers.set(name, provider);
-    if (this.activeProviderName === null) {
+    if (this.activeProviderName === undefined) {
       this.activeProviderName = name;
     }
   }
@@ -47,13 +47,13 @@ export class EmbeddingProviderRegistry {
   }
 
   getActive(): EmbeddingProvider | undefined {
-    if (this.activeProviderName === null) {
+    if (this.activeProviderName === undefined) {
       return undefined;
     }
     return this.providers.get(this.activeProviderName);
   }
 
-  getActiveName(): string | null {
+  getActiveName(): string | undefined {
     return this.activeProviderName;
   }
 }

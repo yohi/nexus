@@ -39,4 +39,9 @@ describe('PluginRegistry', () => {
       healthy: true,
     });
   });
+
+  it('returns undefined for active provider name when none is registered', () => {
+    const registry = new PluginRegistry();
+    expect(registry.embeddings.getActiveName()).toBe(undefined);
+  });
 });
