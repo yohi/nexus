@@ -65,13 +65,22 @@ export class LanceVectorStore implements IVectorStore {
 
     for (let i = 0; i < chunks.length; i++) {
       const chunk = chunks[i]!;
+      const vector = embeddings ? embeddings[i]! : this.vectorize(chunk.content);
+
+      if (vector.length !== this.dimensions) {
+        throw new Error(`VectorStore.upsertChunks: vector length mismatch for chunk ${chunk.id} (expected ${this.dimensions}, got ${vector.length})`);
+      }
+      if (!vector.every(Number.isFinite)) {
+        throw new Error(`VectorStore.upsertChunks: vector contains non-finite values for chunk ${chunk.id}`);
+      }
+
       const existing = this.rows.get(chunk.id);
       if (existing?.deleted) {
         this.deletedCount -= 1;
       }
       this.rows.set(chunk.id, {
         chunk,
-        vector: embeddings ? embeddings[i]! : this.vectorize(chunk.content),
+        vector,
         deleted: false,
       });
     }
@@ -106,6 +115,9 @@ export class LanceVectorStore implements IVectorStore {
   async search(queryVector: number[], topK: number, filter?: VectorFilter): Promise<VectorSearchResult[]> {
     if (queryVector.length !== this.dimensions) {
       throw new Error(`queryVector length must be ${this.dimensions}`);
+    }
+    if (!queryVector.every(Number.isFinite)) {
+      throw new TypeError('queryVector contains non-finite values');
     }
     if (!Number.isInteger(topK) || topK <= 0) {
       throw new RangeError('topK must be a positive integer');

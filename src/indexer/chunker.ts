@@ -78,6 +78,10 @@ export class Chunker {
     }
 
     const lines = file.content.split('\n');
+    if (lines.length === 1 && lines[0] === '') {
+      return [];
+    }
+
     if (lines.length > 0 && lines[lines.length - 1] === '' && file.content.endsWith('\n')) {
       lines.pop();
     }

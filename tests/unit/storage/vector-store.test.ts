@@ -154,4 +154,35 @@ describe('LanceVectorStore', () => {
     stats = await store.getStats();
     expect(stats.lastCompactedAt).toBeDefined();
   });
+
+  it('validates embeddings in upsertChunks', async () => {
+    const store = new LanceVectorStore({ dimensions: 3 });
+    await store.initialize();
+
+    const chunk = makeChunk({ id: 'c1' });
+
+    // Length mismatch (top-level array)
+    await expect(store.upsertChunks([chunk], [[1, 0, 0], [0, 1, 0]]))
+      .rejects.toThrow('VectorStore.upsertChunks: embeddings length mismatch');
+
+    // Vector dimension mismatch
+    await expect(store.upsertChunks([chunk], [[1, 0]]))
+      .rejects.toThrow('VectorStore.upsertChunks: vector length mismatch for chunk c1');
+
+    // Non-finite values
+    await expect(store.upsertChunks([chunk], [[1, NaN, 0]]))
+      .rejects.toThrow('VectorStore.upsertChunks: vector contains non-finite values for chunk c1');
+    await expect(store.upsertChunks([chunk], [[1, Infinity, 0]]))
+      .rejects.toThrow('VectorStore.upsertChunks: vector contains non-finite values for chunk c1');
+  });
+
+  it('validates queryVector in search', async () => {
+    const store = new LanceVectorStore({ dimensions: 3 });
+    await store.initialize();
+
+    await expect(store.search([1, NaN, 0], 10))
+      .rejects.toThrow('queryVector contains non-finite values');
+    await expect(store.search([1, Infinity, 0], 10))
+      .rejects.toThrow('queryVector contains non-finite values');
+  });
 });

@@ -107,4 +107,17 @@ describe('Chunker', () => {
 
     expect(yieldMarkers.length).toBeGreaterThanOrEqual(2);
   });
+
+  it('returns an empty array for an empty file', async () => {
+    const chunker = new Chunker(new PluginRegistry());
+    const chunks = await chunker.chunkFiles([
+      {
+        filePath: 'empty.txt',
+        language: 'text',
+        content: '',
+      },
+    ]);
+
+    expect(chunks).toHaveLength(0);
+  });
 });
