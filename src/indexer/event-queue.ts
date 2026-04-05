@@ -22,6 +22,8 @@ export class EventQueue {
 
   private overflow = false;
 
+  private droppedEventCount = 0;
+
   constructor(private readonly options: EventQueueOptions) {}
 
   enqueue(event: IndexEvent): boolean {
@@ -96,6 +98,14 @@ export class EventQueue {
 
     if (this.watcherQueue.length < this.options.maxQueueSize) {
       this.watcherQueue.push(event);
+    } else {
+      this.droppedEventCount += 1;
+      console.warn('Event queue at capacity, dropping event:', {
+        filePath,
+        type: event.type,
+        currentQueueSize: this.watcherQueue.length,
+        totalDropped: this.droppedEventCount,
+      });
     }
 
     if (this.watcherQueue.length > this.options.fullScanThreshold) {

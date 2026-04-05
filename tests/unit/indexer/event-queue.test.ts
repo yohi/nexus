@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import type { IndexEvent } from '../../../src/types/index.js';
 import { EventQueue } from '../../../src/indexer/event-queue.js';
@@ -11,6 +11,9 @@ const makeEvent = (overrides: Partial<IndexEvent> = {}): IndexEvent => ({
 });
 
 describe('EventQueue', () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
   it('debounces consecutive events for the same file within the debounce window', async () => {
     vi.useFakeTimers();
     const queue = new EventQueue({ debounceMs: 100, maxQueueSize: 10, fullScanThreshold: 5, concurrency: 2 });
@@ -29,7 +32,6 @@ describe('EventQueue', () => {
 
     expect(drained).toHaveLength(1);
     expect(drained[0]?.contentHash).toBe('hash-2');
-    vi.useRealTimers();
   });
 
   it('prioritizes reindex events ahead of watcher events', async () => {
@@ -43,7 +45,6 @@ describe('EventQueue', () => {
     const processed = await queue.drain(async (event) => event.type);
 
     expect(processed).toEqual(['reindex', 'modified']);
-    vi.useRealTimers();
   });
 
   it('does not exceed the configured concurrency limit while draining', async () => {
@@ -64,7 +65,6 @@ describe('EventQueue', () => {
     });
 
     expect(running.peak).toBeLessThanOrEqual(2);
-    vi.useRealTimers();
   });
 
   it('sets overflow when the queue size exceeds the full scan threshold', async () => {
@@ -77,7 +77,6 @@ describe('EventQueue', () => {
     vi.runAllTimers();
 
     expect(queue.isOverflowing()).toBe(true);
-    vi.useRealTimers();
   });
 
   it('rejects new watcher events while overflowing', async () => {
@@ -92,7 +91,6 @@ describe('EventQueue', () => {
 
     expect(accepted).toBe(false);
     expect(queue.size()).toBe(2);
-    vi.useRealTimers();
   });
 
   it('clears queued events and resets overflow state', async () => {
@@ -107,6 +105,5 @@ describe('EventQueue', () => {
 
     expect(queue.size()).toBe(0);
     expect(queue.isOverflowing()).toBe(false);
-    vi.useRealTimers();
   });
 });

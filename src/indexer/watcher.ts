@@ -8,13 +8,18 @@ type WatcherFactory = (projectRoot: string, ignored: string[]) => FSWatcher;
 
 const defaultWatcherFactory: WatcherFactory = (projectRoot, ignored) =>
   chokidar.watch(projectRoot, {
-    ignored,
+    ignored: ignored.map((p) => `**/${p}/**`),
     ignoreInitial: true,
   });
 
 export class FileWatcher {
   private watcher: FSWatcher | undefined;
 
+  /**
+   * Separates filesystem event callbacks from the initialization flow.
+   * Ensures that the watcher start process doesn't block and helps isolate
+   * asynchronous operations during testing and event loop management.
+   */
   private readonly asyncBoundary = async (): Promise<void> =>
     new Promise((resolve) => {
       setImmediate(resolve);
@@ -62,14 +67,31 @@ export class FileWatcher {
     }
 
     const filePath = path.relative(this.options.projectRoot, absolutePath);
-    this.eventQueue.enqueue({
+    const detectedAt = new Date().toISOString();
+    const accepted = this.eventQueue.enqueue({
       type,
       filePath,
-      detectedAt: new Date().toISOString(),
+      detectedAt,
     });
+
+    if (!accepted) {
+      console.warn('Event queue rejected event (overflow):', {
+        type,
+        filePath,
+        detectedAt,
+      });
+    }
   }
 
   private shouldIgnore(absolutePath: string): boolean {
-    return (this.options.ignorePaths ?? []).some((ignorePath) => absolutePath.includes(ignorePath));
+    const ignorePaths = this.options.ignorePaths ?? [];
+    if (ignorePaths.length === 0) {
+      return false;
+    }
+
+    const relativePath = path.relative(this.options.projectRoot, absolutePath);
+    const segments = relativePath.split(path.sep);
+
+    return ignorePaths.some((ignorePath) => segments.includes(ignorePath));
   }
 }
