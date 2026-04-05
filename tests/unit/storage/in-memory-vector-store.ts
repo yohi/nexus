@@ -40,6 +40,9 @@ export class InMemoryVectorStore implements IVectorStore {
   private lastCompactedAt: string | undefined;
 
   constructor(options: InMemoryVectorStoreOptions) {
+    if (!Number.isInteger(options.dimensions) || options.dimensions <= 0) {
+      throw new Error('dimensions must be a positive integer');
+    }
     this.dimensions = options.dimensions;
   }
 
@@ -49,6 +52,10 @@ export class InMemoryVectorStore implements IVectorStore {
 
   async upsertChunks(chunks: CodeChunk[]): Promise<void> {
     for (const chunk of chunks) {
+      const prior = this.records.get(chunk.id);
+      if (prior?.deleted) {
+        this.deletedCount -= 1;
+      }
       this.records.set(chunk.id, {
         chunk,
         vector: this.vectorize(chunk.content),

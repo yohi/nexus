@@ -17,6 +17,19 @@ const makeChunk = (overrides: Partial<CodeChunk>): CodeChunk => ({
 });
 
 describe('InMemoryVectorStore', () => {
+  it('throws an error if dimensions is not a positive integer', () => {
+    // @ts-expect-error - Testing invalid inputs
+    expect(() => new InMemoryVectorStore({ dimensions: 0 })).toThrow('dimensions must be a positive integer');
+    // @ts-expect-error - Testing invalid inputs
+    expect(() => new InMemoryVectorStore({ dimensions: -1 })).toThrow('dimensions must be a positive integer');
+    // @ts-expect-error - Testing invalid inputs
+    expect(() => new InMemoryVectorStore({ dimensions: 3.5 })).toThrow('dimensions must be a positive integer');
+    // @ts-expect-error - Testing invalid inputs
+    expect(() => new InMemoryVectorStore({ dimensions: NaN })).toThrow('dimensions must be a positive integer');
+    // @ts-expect-error - Testing invalid inputs
+    expect(() => new InMemoryVectorStore({ dimensions: Infinity })).toThrow('dimensions must be a positive integer');
+  });
+
   it('upserts chunks and returns them by vector similarity search', async () => {
     const store = new InMemoryVectorStore({ dimensions: 3 });
 
@@ -82,6 +95,19 @@ describe('InMemoryVectorStore', () => {
 });
 
 describe('LanceVectorStore', () => {
+  it('throws an error if dimensions is not a positive integer', () => {
+    // @ts-expect-error - Testing invalid inputs
+    expect(() => new LanceVectorStore({ dimensions: 0 })).toThrow('dimensions must be a positive integer');
+    // @ts-expect-error - Testing invalid inputs
+    expect(() => new LanceVectorStore({ dimensions: -1 })).toThrow('dimensions must be a positive integer');
+    // @ts-expect-error - Testing invalid inputs
+    expect(() => new LanceVectorStore({ dimensions: 3.5 })).toThrow('dimensions must be a positive integer');
+    // @ts-expect-error - Testing invalid inputs
+    expect(() => new LanceVectorStore({ dimensions: NaN })).toThrow('dimensions must be a positive integer');
+    // @ts-expect-error - Testing invalid inputs
+    expect(() => new LanceVectorStore({ dimensions: Infinity })).toThrow('dimensions must be a positive integer');
+  });
+
   it('implements the vector store interface shape', async () => {
     const store = new LanceVectorStore({ dimensions: 3 });
 
@@ -113,6 +139,21 @@ describe('LanceVectorStore', () => {
     await store.deleteByFilePath('src/file1.ts');
     const afterDeleteResults = await store.search([1, 0, 0], 10);
     expect(afterDeleteResults).toHaveLength(0);
+    stats = await store.getStats();
+    expect(stats.fragmentationRatio).toBe(1); // 1 deleted / 1 total row
+
+    // Re-upsert the same chunk
+    await store.upsertChunks([
+      makeChunk({ id: 'chunk1', filePath: 'src/file1.ts', content: 'updated content' })
+    ]);
+    stats = await store.getStats();
+    // This should be 0 because the only row is now active again
+    expect(stats.fragmentationRatio).toBe(0);
+
+    // Delete it again to test compaction
+    await store.deleteByFilePath('src/file1.ts');
+    stats = await store.getStats();
+    expect(stats.fragmentationRatio).toBe(1);
     
     const compactResult = await store.compactIfNeeded({ fragmentationThreshold: 0 });
     expect(compactResult.compacted).toBe(true);

@@ -90,7 +90,7 @@ describe('OllamaEmbeddingProvider', () => {
     );
 
     const pendingEmbed = provider.embed(['alpha']);
-    await Promise.resolve();
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalled());
     const healthy = await provider.healthCheck();
     release?.();
     await pendingEmbed;

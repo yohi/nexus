@@ -46,6 +46,9 @@ export class LanceVectorStore implements IVectorStore {
     });
 
   constructor(options: LanceVectorStoreOptions) {
+    if (!Number.isInteger(options.dimensions) || options.dimensions <= 0) {
+      throw new Error('dimensions must be a positive integer');
+    }
     this.dimensions = options.dimensions;
   }
 
@@ -57,6 +60,10 @@ export class LanceVectorStore implements IVectorStore {
   async upsertChunks(chunks: CodeChunk[]): Promise<void> {
     await this.asyncBoundary();
     for (const chunk of chunks) {
+      const existing = this.rows.get(chunk.id);
+      if (existing?.deleted) {
+        this.deletedCount -= 1;
+      }
       this.rows.set(chunk.id, {
         chunk,
         vector: this.vectorize(chunk.content),

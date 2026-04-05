@@ -24,7 +24,11 @@ export class Chunker {
       try {
         const parser = await plugin.createParser();
         const parsed = await parser.parse(file);
-        chunks.push(...(await this.extractChunksWithYield(parsed, file)));
+        if (!parsed.declarations || parsed.declarations.length === 0) {
+          chunks.push(...this.chunkByFixedLines(file));
+        } else {
+          chunks.push(...(await this.extractChunksWithYield(parsed, file)));
+        }
       } catch (error) {
         console.warn('Parser failed, falling back to fixed-line chunking', file.filePath, error);
         chunks.push(...this.chunkByFixedLines(file));
@@ -73,12 +77,17 @@ export class Chunker {
       const slice = lines.slice(start, start + windowSize);
 
       if (slice.length === 0) {
-        continue;
+        break;
       }
 
       const startLine = start + 1;
       const endLine = start + slice.length;
       const content = slice.join('\n');
+
+      const lastChunk = chunks[chunks.length - 1];
+      if (lastChunk && lastChunk.endLine === endLine) {
+        break;
+      }
 
       chunks.push({
         id: this.createChunkId(file.filePath, startLine, endLine, `file-${chunks.length + 1}`),
@@ -91,6 +100,10 @@ export class Chunker {
         endLine,
         hash: this.hashContent(content),
       });
+
+      if (endLine === lines.length) {
+        break;
+      }
     }
 
     return chunks;
