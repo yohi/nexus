@@ -181,7 +181,15 @@ export class EventQueue {
         if (res.status === 'fulfilled') {
           results.push(res.value);
         } else {
-          this.watcherQueue.push(events[i]);
+          if (this.size() >= this.options.maxQueueSize) {
+            this.overflow = true;
+            this.droppedEventCount += 1;
+          } else {
+            this.watcherQueue.push(events[i]);
+            if (this.size() > this.options.fullScanThreshold) {
+              this.overflow = true;
+            }
+          }
           if (!firstError) {
             firstError = res.reason;
           }
