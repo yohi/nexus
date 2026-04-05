@@ -1,7 +1,7 @@
 import path from 'node:path';
-import crypto from 'node:crypto';
 
 import type { IMetadataStore, IndexEvent, MerkleNodeRow } from '../types/index.js';
+import { computeStringHash } from './hash.js';
 
 export interface RenameCandidate {
   oldPath: string;
@@ -23,7 +23,7 @@ export class MerkleTree {
       this.nodes.set(node.path, node);
     }
 
-    this.rootHash = this.computeRootHash();
+    this.rootHash = await this.computeRootHash();
   }
 
   async update(filePath: string, contentHash: string): Promise<void> {
@@ -40,7 +40,7 @@ export class MerkleTree {
       this.nodes.set(directory.path, directory);
     }
 
-    this.rootHash = this.computeRootHash();
+    this.rootHash = await this.computeRootHash();
     await this.persistCurrentState();
   }
 
@@ -69,7 +69,7 @@ export class MerkleTree {
       current = path.dirname(current);
     }
 
-    this.rootHash = this.computeRootHash();
+    this.rootHash = await this.computeRootHash();
     await this.persistCurrentState();
   }
 
@@ -81,8 +81,8 @@ export class MerkleTree {
     return this.nodes.get(nodePath);
   }
 
+  // eslint-disable-next-line @typescript-eslint/require-await
   static async diff(oldTree: MerkleTree, newTree: MerkleTree): Promise<IndexEvent[]> {
-    await Promise.resolve();
     const events: IndexEvent[] = [];
     const seen = new Set<string>();
     const now = new Date().toISOString();
@@ -176,7 +176,7 @@ export class MerkleTree {
     return directories;
   }
 
-  private computeRootHash(): string | null {
+  private async computeRootHash(): Promise<string | null> {
     const childMap = new Map<string | null, MerkleNodeRow[]>();
 
     for (const node of this.nodes.values()) {
@@ -186,7 +186,7 @@ export class MerkleTree {
       childMap.set(key, entries);
     }
 
-    const computeNodeHash = (nodePath: string): string => {
+    const computeNodeHash = async (nodePath: string): Promise<string> => {
       const node = this.nodes.get(nodePath);
       if (node === undefined) {
         return '';
@@ -197,8 +197,14 @@ export class MerkleTree {
       }
 
       const children = (childMap.get(nodePath) ?? []).sort((left, right) => left.path.localeCompare(right.path));
-      const serialized = children.map((child) => `${child.path}:${computeNodeHash(child.path)}`).join('|');
-      return crypto.createHash('sha256').update(serialized).digest('hex');
+      const childHashes = await Promise.all(
+        children.map(async (child) => {
+          const hash = await computeNodeHash(child.path);
+          return `${child.path.length}:${child.path}:${hash}`;
+        })
+      );
+      const serialized = childHashes.join('');
+      return computeStringHash(serialized);
     };
 
     const roots = (childMap.get(null) ?? []).sort((left, right) => left.path.localeCompare(right.path));
@@ -206,7 +212,13 @@ export class MerkleTree {
       return null;
     }
 
-    const rootSerialized = roots.map((node) => `${node.path}:${computeNodeHash(node.path)}`).join('|');
-    return crypto.createHash('sha256').update(rootSerialized).digest('hex');
+    const rootHashes = await Promise.all(
+      roots.map(async (node) => {
+        const hash = await computeNodeHash(node.path);
+        return `${node.path.length}:${node.path}:${hash}`;
+      })
+    );
+    const rootSerialized = rootHashes.join('');
+    return computeStringHash(rootSerialized);
   }
 }

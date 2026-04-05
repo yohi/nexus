@@ -33,6 +33,11 @@ export const computeFileHashStreaming = async (filePath: string): Promise<string
   return toHex(context.digest());
 };
 
+export const computeStringHash = async (content: string): Promise<string> => {
+  const hasher = await getHasher();
+  return toHex(hasher.h64Raw(Buffer.from(content)));
+};
+
 export const computePartialHash = async (filePath: string, fileSize?: number): Promise<string> => {
   const size = fileSize ?? (await stat(filePath)).size;
 
