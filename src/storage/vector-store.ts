@@ -99,6 +99,13 @@ export class LanceVectorStore implements IVectorStore {
   }
 
   async search(queryVector: number[], topK: number, filter?: VectorFilter): Promise<VectorSearchResult[]> {
+    if (queryVector.length !== this.dimensions) {
+      throw new Error(`queryVector length must be ${this.dimensions}`);
+    }
+    if (!Number.isInteger(topK) || topK <= 0) {
+      throw new RangeError('topK must be a positive integer');
+    }
+
     await this.asyncBoundary();
     return [...this.rows.values()]
       .filter((row) => !row.deleted)
@@ -126,8 +133,9 @@ export class LanceVectorStore implements IVectorStore {
     await this.asyncBoundary();
     const fragmentationRatioBefore = this.fragmentationRatio();
     const threshold = config?.fragmentationThreshold ?? 0.2;
+    const minStale = config?.minStaleChunks ?? 1;
 
-    if (fragmentationRatioBefore <= threshold) {
+    if (fragmentationRatioBefore <= threshold || this.deletedCount < minStale) {
       return {
         compacted: false,
         fragmentationRatioBefore,

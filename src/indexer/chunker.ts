@@ -69,7 +69,19 @@ export class Chunker {
   chunkByFixedLines(file: FileToChunk, options: FixedLineChunkOptions = {}): CodeChunk[] {
     const windowSize = options.windowSize ?? 50;
     const overlap = options.overlap ?? 10;
+
+    if (!Number.isInteger(windowSize) || windowSize <= 0) {
+      throw new RangeError('windowSize must be a positive integer');
+    }
+    if (!Number.isInteger(overlap) || overlap < 0 || overlap >= windowSize) {
+      throw new RangeError('overlap must be a non-negative integer less than windowSize');
+    }
+
     const lines = file.content.split('\n');
+    if (lines.length > 0 && lines[lines.length - 1] === '' && file.content.endsWith('\n')) {
+      lines.pop();
+    }
+
     const chunks: CodeChunk[] = [];
     const step = Math.max(1, windowSize - overlap);
 

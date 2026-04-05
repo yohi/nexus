@@ -18,15 +18,10 @@ const makeChunk = (overrides: Partial<CodeChunk>): CodeChunk => ({
 
 describe('InMemoryVectorStore', () => {
   it('throws an error if dimensions is not a positive integer', () => {
-    // @ts-expect-error - Testing invalid inputs
     expect(() => new InMemoryVectorStore({ dimensions: 0 })).toThrow('dimensions must be a positive integer');
-    // @ts-expect-error - Testing invalid inputs
     expect(() => new InMemoryVectorStore({ dimensions: -1 })).toThrow('dimensions must be a positive integer');
-    // @ts-expect-error - Testing invalid inputs
     expect(() => new InMemoryVectorStore({ dimensions: 3.5 })).toThrow('dimensions must be a positive integer');
-    // @ts-expect-error - Testing invalid inputs
     expect(() => new InMemoryVectorStore({ dimensions: NaN })).toThrow('dimensions must be a positive integer');
-    // @ts-expect-error - Testing invalid inputs
     expect(() => new InMemoryVectorStore({ dimensions: Infinity })).toThrow('dimensions must be a positive integer');
   });
 
@@ -39,10 +34,12 @@ describe('InMemoryVectorStore', () => {
       makeChunk({ id: 'b', filePath: 'src/b.ts', content: 'beta' }),
     ]);
 
-    const results = await store.search([1, 0, 0], 2);
+    // 'alpha' maps to [0, 1, 0] when dimensions=3
+    const results = await store.search([0, 1, 0], 2);
 
     expect(results).toHaveLength(2);
     expect(results[0]?.chunk.filePath).toBe('src/a.ts');
+    expect(results[0]?.score).toBeGreaterThan(results[1]?.score ?? 0);
   });
 
   it('deletes vectors by file path', async () => {
@@ -96,15 +93,10 @@ describe('InMemoryVectorStore', () => {
 
 describe('LanceVectorStore', () => {
   it('throws an error if dimensions is not a positive integer', () => {
-    // @ts-expect-error - Testing invalid inputs
     expect(() => new LanceVectorStore({ dimensions: 0 })).toThrow('dimensions must be a positive integer');
-    // @ts-expect-error - Testing invalid inputs
     expect(() => new LanceVectorStore({ dimensions: -1 })).toThrow('dimensions must be a positive integer');
-    // @ts-expect-error - Testing invalid inputs
     expect(() => new LanceVectorStore({ dimensions: 3.5 })).toThrow('dimensions must be a positive integer');
-    // @ts-expect-error - Testing invalid inputs
     expect(() => new LanceVectorStore({ dimensions: NaN })).toThrow('dimensions must be a positive integer');
-    // @ts-expect-error - Testing invalid inputs
     expect(() => new LanceVectorStore({ dimensions: Infinity })).toThrow('dimensions must be a positive integer');
   });
 
@@ -132,12 +124,13 @@ describe('LanceVectorStore', () => {
     expect(stats.totalChunks).toBe(1);
     expect(stats.totalFiles).toBe(1);
 
-    const results = await store.search([1, 0, 0], 10);
+    // 'test content' (t=116) maps to [0, 0, 1] when dimensions=3
+    const results = await store.search([0, 0, 1], 10);
     expect(results).toHaveLength(1);
     expect(results[0]?.chunk.id).toBe('chunk1');
 
     await store.deleteByFilePath('src/file1.ts');
-    const afterDeleteResults = await store.search([1, 0, 0], 10);
+    const afterDeleteResults = await store.search([0, 0, 1], 10);
     expect(afterDeleteResults).toHaveLength(0);
     stats = await store.getStats();
     expect(stats.fragmentationRatio).toBe(1); // 1 deleted / 1 total row
