@@ -69,4 +69,19 @@ describe('loadConfig', () => {
     expect(config.embedding.provider).toBe('ollama');
     expect(config.embedding.dimensions).toBe(64);
   });
+
+  it('rejects integers with trailing characters in environment variables', async () => {
+    tempDir = await mkdtemp(path.join(os.tmpdir(), 'nexus-config-'));
+
+    const config = await loadConfig({
+      projectRoot: tempDir,
+      env: {
+        NEXUS_WATCHER_DEBOUNCE_MS: '250abc',
+        NEXUS_EMBEDDING_BATCH_SIZE: 'abc100',
+      },
+    });
+
+    expect(config.watcher.debounceMs).toBe(100); // Should fallback to default 100, not use 250
+    expect(config.embedding.batchSize).toBe(32); // Should fallback to default 32
+  });
 });

@@ -86,12 +86,12 @@ export const loadConfig = async (options: LoadConfigOptions): Promise<Config> =>
 
 const asString = (value: string | undefined): string | undefined => (value && value.trim() !== '' ? value : undefined);
 const asPositiveInt = (value: string | undefined): number | undefined => {
-  if (value === undefined) return undefined;
+  if (value === undefined || !/^\d+$/.test(value)) return undefined;
   const parsed = Number.parseInt(value, 10);
   return Number.isInteger(parsed) && parsed > 0 ? parsed : undefined;
 };
 const asNonNegativeInt = (value: string | undefined): number | undefined => {
-  if (value === undefined) return undefined;
+  if (value === undefined || !/^\d+$/.test(value)) return undefined;
   const parsed = Number.parseInt(value, 10);
   return Number.isInteger(parsed) && parsed >= 0 ? parsed : undefined;
 };
