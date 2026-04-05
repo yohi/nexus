@@ -129,12 +129,12 @@ export const createNexusServer = (options: NexusServerOptions): McpServer => {
   return server;
 };
 
-const toolResult = (structuredContent: unknown) => ({
+const toolResult = <T extends object>(structuredContent: T) => ({
   content: [
     {
       type: 'text' as const,
       text: JSON.stringify(structuredContent, null, 2),
     },
   ],
-  structuredContent,
+  structuredContent: structuredContent as Record<string, unknown>,
 });

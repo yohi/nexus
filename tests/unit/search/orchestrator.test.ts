@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import { SearchOrchestrator } from '../../../src/search/orchestrator.js';
-import type { SearchResult } from '../../../src/types/index.js';
+import type { RankedResult, SearchResult } from '../../../src/types/index.js';
 import { TestGrepEngine } from './test-grep-engine.js';
 
 class TestSemanticSearch {
@@ -42,12 +42,13 @@ describe('SearchOrchestrator', () => {
     });
 
     const response = await orchestrator.search({ query: 'parseConfig', topK: 5 });
+    const ranked = response.results as RankedResult[];
 
-    expect(response.results).toHaveLength(1);
-    expect(response.results[0]).toMatchObject({
+    expect(ranked).toHaveLength(1);
+    expect(ranked[0]).toMatchObject({
       source: 'hybrid',
       chunk: expect.objectContaining({ filePath: 'src/utils.ts' }),
     });
-    expect(response.results[0]?.reciprocalRankScore).toBeCloseTo(2 / 61, 6);
+    expect(ranked[0]?.reciprocalRankScore).toBeCloseTo(2 / 61, 6);
   });
 });
