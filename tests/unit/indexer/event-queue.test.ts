@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import type { IndexEvent } from '../../../src/types/index.js';
 import { EventQueue } from '../../../src/indexer/event-queue.js';
@@ -11,6 +11,9 @@ const makeEvent = (overrides: Partial<IndexEvent> = {}): IndexEvent => ({
 });
 
 describe('EventQueue', () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
   it('debounces consecutive events for the same file within the debounce window', async () => {
     vi.useFakeTimers();
     const queue = new EventQueue({ debounceMs: 100, maxQueueSize: 10, fullScanThreshold: 5, concurrency: 2 });
@@ -29,7 +32,6 @@ describe('EventQueue', () => {
 
     expect(drained).toHaveLength(1);
     expect(drained[0]?.contentHash).toBe('hash-2');
-    vi.useRealTimers();
   });
 
   it('prioritizes reindex events ahead of watcher events', async () => {
@@ -43,7 +45,6 @@ describe('EventQueue', () => {
     const processed = await queue.drain(async (event) => event.type);
 
     expect(processed).toEqual(['reindex', 'modified']);
-    vi.useRealTimers();
   });
 
   it('does not exceed the configured concurrency limit while draining', async () => {
@@ -64,7 +65,6 @@ describe('EventQueue', () => {
     });
 
     expect(running.peak).toBeLessThanOrEqual(2);
-    vi.useRealTimers();
   });
 
   it('sets overflow when the queue size exceeds the full scan threshold', async () => {
@@ -77,7 +77,6 @@ describe('EventQueue', () => {
     vi.runAllTimers();
 
     expect(queue.isOverflowing()).toBe(true);
-    vi.useRealTimers();
   });
 
   it('rejects new watcher events while overflowing', async () => {
@@ -92,7 +91,6 @@ describe('EventQueue', () => {
 
     expect(accepted).toBe(false);
     expect(queue.size()).toBe(2);
-    vi.useRealTimers();
   });
 
   it('clears queued events and resets overflow state', async () => {
@@ -107,6 +105,142 @@ describe('EventQueue', () => {
 
     expect(queue.size()).toBe(0);
     expect(queue.isOverflowing()).toBe(false);
-    vi.useRealTimers();
+  });
+
+  describe('Event Merging', () => {
+    it('cancels added followed by deleted', async () => {
+      vi.useFakeTimers();
+      const queue = new EventQueue({ debounceMs: 10, maxQueueSize: 10, fullScanThreshold: 5, concurrency: 1 });
+
+      queue.enqueue(makeEvent({ type: 'added', filePath: 'src/new.ts' }));
+      expect(queue.size()).toBe(1);
+
+      queue.enqueue(makeEvent({ type: 'deleted', filePath: 'src/new.ts' }));
+      expect(queue.size()).toBe(0);
+
+      vi.runAllTimers();
+      const processed = await queue.drain(async (e) => e);
+      expect(processed).toHaveLength(0);
+    });
+
+    it('merges added followed by modified into added', async () => {
+      vi.useFakeTimers();
+      const queue = new EventQueue({ debounceMs: 10, maxQueueSize: 10, fullScanThreshold: 5, concurrency: 1 });
+
+      queue.enqueue(makeEvent({ type: 'added', filePath: 'src/new.ts', contentHash: 'h1' }));
+      queue.enqueue(makeEvent({ type: 'modified', filePath: 'src/new.ts', contentHash: 'h2' }));
+
+      vi.runAllTimers();
+      const processed = await queue.drain(async (e) => e);
+      expect(processed).toHaveLength(1);
+      expect(processed[0]?.type).toBe('added');
+      expect((processed[0] as IndexEvent).contentHash).toBe('h2');
+    });
+
+    it('merges modified followed by deleted into deleted', async () => {
+      vi.useFakeTimers();
+      const queue = new EventQueue({ debounceMs: 10, maxQueueSize: 10, fullScanThreshold: 5, concurrency: 1 });
+
+      queue.enqueue(makeEvent({ type: 'modified', filePath: 'src/existing.ts' }));
+      queue.enqueue(makeEvent({ type: 'deleted', filePath: 'src/existing.ts' }));
+
+      vi.runAllTimers();
+      const processed = await queue.drain(async (e) => e);
+      expect(processed).toHaveLength(1);
+      expect(processed[0]?.type).toBe('deleted');
+    });
+
+    it('merges deleted followed by added into modified', async () => {
+      vi.useFakeTimers();
+      const queue = new EventQueue({ debounceMs: 10, maxQueueSize: 10, fullScanThreshold: 5, concurrency: 1 });
+
+      queue.enqueue(makeEvent({ type: 'deleted', filePath: 'src/existing.ts' }));
+      queue.enqueue(makeEvent({ type: 'added', filePath: 'src/existing.ts' }));
+
+      vi.runAllTimers();
+      const processed = await queue.drain(async (e) => e);
+      expect(processed).toHaveLength(1);
+      expect(processed[0]?.type).toBe('modified');
+    });
+  });
+
+  it('exposes droppedEventCount via getter', async () => {
+    vi.useFakeTimers();
+    const queue = new EventQueue({ debounceMs: 0, maxQueueSize: 1, fullScanThreshold: 10, concurrency: 1 });
+
+    // Fill the queue (watcherQueue)
+    queue.enqueue(makeEvent({ filePath: 'src/a.ts' }));
+    vi.runAllTimers();
+    expect(queue.size()).toBe(1);
+
+    // This event should be dropped when flushed
+    queue.enqueue(makeEvent({ filePath: 'src/b.ts' }));
+    vi.runAllTimers();
+
+    expect(queue.getDroppedEventCount()).toBe(1);
+  });
+
+  describe('drain with error handling', () => {
+    it('re-enqueues only failed events when handler rejects', async () => {
+      vi.useFakeTimers();
+      const queue = new EventQueue({ debounceMs: 0, maxQueueSize: 10, fullScanThreshold: 5, concurrency: 2 });
+
+      queue.enqueue(makeEvent({ filePath: 'src/success.ts' }));
+      queue.enqueue(makeEvent({ filePath: 'src/fail.ts' }));
+      vi.runAllTimers();
+
+      let failCalled = 0;
+      const handler = async (event: any) => {
+        if (event.filePath === 'src/fail.ts') {
+          failCalled += 1;
+          throw new Error('processing failed');
+        }
+        return event.filePath;
+      };
+
+      // First drain attempt
+      await expect(queue.drain(handler)).rejects.toThrow('processing failed');
+
+      expect(failCalled).toBe(1);
+      expect(queue.size()).toBe(1); // src/fail.ts should be back in queue
+
+      // Second drain attempt
+      const results = await queue.drain(async (event: any) => event.filePath);
+      expect(results).toEqual(['src/fail.ts']);
+      expect(queue.size()).toBe(0);
+    });
+
+    it('waits for all in-flight tasks even if some fail', async () => {
+      vi.useFakeTimers();
+      const queue = new EventQueue({ debounceMs: 0, maxQueueSize: 10, fullScanThreshold: 5, concurrency: 2 });
+
+      queue.enqueue(makeEvent({ filePath: 'src/slow-success.ts' }));
+      queue.enqueue(makeEvent({ filePath: 'src/fast-fail.ts' }));
+      vi.runAllTimers();
+
+      const order: string[] = [];
+      const handler = async (event: any) => {
+        if (event.filePath === 'src/slow-success.ts') {
+          await new Promise((resolve) => setTimeout(resolve, 100));
+          order.push('slow-success');
+          return 'slow';
+        }
+        if (event.filePath === 'src/fast-fail.ts') {
+          await new Promise((resolve) => setTimeout(resolve, 10));
+          order.push('fast-fail');
+          throw new Error('fast fail');
+        }
+      };
+
+      const drainPromise = queue.drain(handler);
+
+      // Advance timers repeatedly to resolve the internal promises
+      await vi.advanceTimersByTimeAsync(10);
+      await vi.advanceTimersByTimeAsync(100);
+
+      await expect(drainPromise).rejects.toThrow('fast fail');
+      expect(order).toEqual(['fast-fail', 'slow-success']);
+      expect(queue.size()).toBe(1); // fast-fail.ts should be re-enqueued
+    });
   });
 });

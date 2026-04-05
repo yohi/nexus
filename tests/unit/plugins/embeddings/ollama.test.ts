@@ -90,7 +90,7 @@ describe('OllamaEmbeddingProvider', () => {
     );
 
     const pendingEmbed = provider.embed(['alpha']);
-    await Promise.resolve();
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalled());
     const healthy = await provider.healthCheck();
     release?.();
     await pendingEmbed;
@@ -141,8 +141,7 @@ describe('OllamaEmbeddingProvider', () => {
 
     const first = provider.embed(['alpha']);
     const second = provider.embed(['beta']);
-    await Promise.resolve();
-    expect(order).toEqual(['first-start']);
+    await vi.waitFor(() => expect(order).toEqual(['first-start']));
 
     firstRelease?.();
 

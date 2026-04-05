@@ -31,6 +31,7 @@ const cosineSimilarity = (left: number[], right: number[]): number => {
 };
 
 export class LanceVectorStore implements IVectorStore {
+  // TODO: Replace Map with actual LanceDB integration (@lancedb/lancedb) in Phase 2.
   private readonly dimensions: number;
 
   private readonly rows = new Map<string, StoredVectorRow>();
@@ -45,6 +46,9 @@ export class LanceVectorStore implements IVectorStore {
     });
 
   constructor(options: LanceVectorStoreOptions) {
+    if (!Number.isInteger(options.dimensions) || options.dimensions <= 0) {
+      throw new Error('dimensions must be a positive integer');
+    }
     this.dimensions = options.dimensions;
   }
 
@@ -53,12 +57,30 @@ export class LanceVectorStore implements IVectorStore {
     return;
   }
 
-  async upsertChunks(chunks: CodeChunk[]): Promise<void> {
+  async upsertChunks(chunks: CodeChunk[], embeddings?: number[][]): Promise<void> {
     await this.asyncBoundary();
-    for (const chunk of chunks) {
+    if (embeddings && embeddings.length !== chunks.length) {
+      throw new Error(`VectorStore.upsertChunks: embeddings length mismatch (expected ${chunks.length}, got ${embeddings.length})`);
+    }
+
+    for (let i = 0; i < chunks.length; i++) {
+      const chunk = chunks[i]!;
+      const vector = embeddings ? embeddings[i]! : this.vectorize(chunk.content);
+
+      if (vector.length !== this.dimensions) {
+        throw new Error(`VectorStore.upsertChunks: vector length mismatch for chunk ${chunk.id} (expected ${this.dimensions}, got ${vector.length})`);
+      }
+      if (!vector.every(Number.isFinite)) {
+        throw new Error(`VectorStore.upsertChunks: vector contains non-finite values for chunk ${chunk.id}`);
+      }
+
+      const existing = this.rows.get(chunk.id);
+      if (existing?.deleted) {
+        this.deletedCount -= 1;
+      }
       this.rows.set(chunk.id, {
         chunk,
-        vector: this.vectorize(chunk.content),
+        vector,
         deleted: false,
       });
     }
@@ -91,6 +113,16 @@ export class LanceVectorStore implements IVectorStore {
   }
 
   async search(queryVector: number[], topK: number, filter?: VectorFilter): Promise<VectorSearchResult[]> {
+    if (queryVector.length !== this.dimensions) {
+      throw new Error(`queryVector length must be ${this.dimensions}`);
+    }
+    if (!queryVector.every(Number.isFinite)) {
+      throw new TypeError('queryVector contains non-finite values');
+    }
+    if (!Number.isInteger(topK) || topK <= 0) {
+      throw new RangeError('topK must be a positive integer');
+    }
+
     await this.asyncBoundary();
     return [...this.rows.values()]
       .filter((row) => !row.deleted)
@@ -118,8 +150,9 @@ export class LanceVectorStore implements IVectorStore {
     await this.asyncBoundary();
     const fragmentationRatioBefore = this.fragmentationRatio();
     const threshold = config?.fragmentationThreshold ?? 0.2;
+    const minStale = config?.minStaleChunks ?? 1;
 
-    if (fragmentationRatioBefore <= threshold) {
+    if (fragmentationRatioBefore <= threshold || this.deletedCount < minStale) {
       return {
         compacted: false,
         fragmentationRatioBefore,
@@ -145,7 +178,11 @@ export class LanceVectorStore implements IVectorStore {
 
   scheduleIdleCompaction(runCompaction: () => Promise<void>, delayMs = 0): void {
     setTimeout(() => {
-      void runCompaction();
+      Promise.resolve()
+        .then(() => runCompaction())
+        .catch((error) => {
+          console.error('Compaction failed:', error);
+        });
     }, delayMs);
   }
 
@@ -164,6 +201,8 @@ export class LanceVectorStore implements IVectorStore {
   }
 
   private vectorize(content: string): number[] {
+    // TODO: Replace this trivial one-hot vectorization with actual embedding vectors 
+    // from an EmbeddingProvider. This is a temporary scaffold.
     const first = content.charCodeAt(0) || 0;
     return Array.from({ length: this.dimensions }, (_, index) => (index === first % this.dimensions ? 1 : 0));
   }

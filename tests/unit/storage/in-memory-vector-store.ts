@@ -40,6 +40,9 @@ export class InMemoryVectorStore implements IVectorStore {
   private lastCompactedAt: string | undefined;
 
   constructor(options: InMemoryVectorStoreOptions) {
+    if (!Number.isInteger(options.dimensions) || options.dimensions <= 0) {
+      throw new Error('dimensions must be a positive integer');
+    }
     this.dimensions = options.dimensions;
   }
 
@@ -47,11 +50,20 @@ export class InMemoryVectorStore implements IVectorStore {
     return;
   }
 
-  async upsertChunks(chunks: CodeChunk[]): Promise<void> {
-    for (const chunk of chunks) {
+  async upsertChunks(chunks: CodeChunk[], embeddings?: number[][]): Promise<void> {
+    if (embeddings && embeddings.length !== chunks.length) {
+      throw new Error(`InMemoryVectorStore.upsertChunks: embeddings length mismatch (expected ${chunks.length}, got ${embeddings.length})`);
+    }
+
+    for (let i = 0; i < chunks.length; i++) {
+      const chunk = chunks[i]!;
+      const prior = this.records.get(chunk.id);
+      if (prior?.deleted) {
+        this.deletedCount -= 1;
+      }
       this.records.set(chunk.id, {
         chunk,
-        vector: this.vectorize(chunk.content),
+        vector: embeddings ? embeddings[i]! : this.vectorize(chunk.content),
         deleted: false,
       });
     }
@@ -84,6 +96,13 @@ export class InMemoryVectorStore implements IVectorStore {
   }
 
   async search(queryVector: number[], topK: number, filter?: VectorFilter): Promise<VectorSearchResult[]> {
+    if (queryVector.length !== this.dimensions) {
+      throw new Error(`queryVector length must be ${this.dimensions}`);
+    }
+    if (!Number.isInteger(topK) || topK <= 0) {
+      throw new RangeError('topK must be a positive integer');
+    }
+
     return [...this.records.values()]
       .filter((record) => !record.deleted)
       .filter((record) => {
@@ -109,8 +128,9 @@ export class InMemoryVectorStore implements IVectorStore {
   async compactIfNeeded(config?: Partial<CompactionConfig>): Promise<CompactionResult> {
     const fragmentationRatioBefore = this.calculateFragmentationRatio();
     const threshold = config?.fragmentationThreshold ?? 0.2;
+    const minStale = config?.minStaleChunks ?? 1;
 
-    if (fragmentationRatioBefore <= threshold) {
+    if (fragmentationRatioBefore <= threshold || this.deletedCount < minStale) {
       return {
         compacted: false,
         fragmentationRatioBefore,
@@ -136,7 +156,11 @@ export class InMemoryVectorStore implements IVectorStore {
 
   scheduleIdleCompaction(runCompaction: () => Promise<void>, delayMs = 0): void {
     setTimeout(() => {
-      void runCompaction();
+      Promise.resolve()
+        .then(() => runCompaction())
+        .catch((error) => {
+          console.error('Compaction failed:', error);
+        });
     }, delayMs);
   }
 

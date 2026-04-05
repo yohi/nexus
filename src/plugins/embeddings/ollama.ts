@@ -35,14 +35,10 @@ export class OllamaEmbeddingProvider implements EmbeddingProvider {
 
   async embed(texts: string[]): Promise<number[][]> {
     const batches = this.chunkTexts(texts);
-    const results: number[][] = [];
+    const promises = batches.map(async (batch) => this.limit(async () => this.embedBatchWithRetry(batch)));
+    const results = await Promise.all(promises);
 
-    for (const batch of batches) {
-      const vectors = await this.limit(async () => this.embedBatchWithRetry(batch));
-      results.push(...vectors);
-    }
-
-    return results;
+    return results.flat();
   }
 
   async healthCheck(): Promise<boolean> {

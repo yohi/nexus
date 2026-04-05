@@ -27,11 +27,12 @@ const matchAll = (pattern: RegExp, source: string): ParsedDeclaration[] => {
   return declarations;
 };
 
+// TODO: These regex-based patterns are brittle. Migrate to a proper parser (e.g., tree-sitter) in the future.
 const IMPORT_PATTERN = /^import\s+[\s\S]*?from\s+['"][^'"]+['"];?$/gm;
-const INTERFACE_PATTERN = /^export\s+interface\s+(\w+)\s*\{[\s\S]*?^\}/gm;
-const FUNCTION_PATTERN = /\/\*\*[\s\S]*?\*\/\s*export\s+async\s+function\s+(\w+)\s*\([^)]*\)\s*:\s*Promise<[^>]+>\s*\{[\s\S]*?^\}/gm;
-const CLASS_PATTERN = /^export\s+class\s+(\w+)\s*\{[\s\S]*?^\}/gm;
-const METHOD_PATTERN = /^\s{2}(?:async\s+)?(\w+)\([^)]*\):\s*[^\{]+\{[\s\S]*?^\s{2}\}\n?/gm;
+const INTERFACE_PATTERN = /^export\s+interface\s+(\w+)\s*\{[\s\S]*?\s*\}/gm;
+const FUNCTION_PATTERN = /(?:\/\*\*[\s\S]*?\*\/\s*)?(?:export\s+)?(?:async\s+)?function\s+(\w+)\s*\([^)]*\)\s*(?::\s*[^\{]+)?\s*\{[\s\S]*?\s*\}/gm;
+const CLASS_PATTERN = /^(?:export\s+)?class\s+(\w+)\s*\{[\s\S]*?\s*\}/gm;
+const METHOD_PATTERN = /^\s+(?:async\s+)?(\w+)\([^)]*\)(?::\s*[^\{]+)?\s*\{[\s\S]*?\s*\}\n?/gm;
 
 class TypeScriptParser {
   async parse(file: FileToChunk): Promise<ParsedSourceFile> {
@@ -39,16 +40,15 @@ class TypeScriptParser {
     const imports = matchAll(IMPORT_PATTERN, file.content);
 
     if (imports.length > 0) {
-      const [firstImport] = imports;
-      if (firstImport !== undefined) {
-        declarations.push({
-          type: firstImport.type,
-          name: 'imports',
-          startLine: firstImport.startLine,
-          endLine: firstImport.endLine,
-          content: firstImport.content,
-        });
-      }
+      const firstImport = imports[0]!;
+      const lastImport = imports[imports.length - 1]!;
+      declarations.push({
+        type: 'import',
+        name: 'imports',
+        startLine: firstImport.startLine,
+        endLine: lastImport.endLine,
+        content: imports.map((imp) => imp.content).join('\n'),
+      });
     }
 
     declarations.push(...matchAll(INTERFACE_PATTERN, file.content));

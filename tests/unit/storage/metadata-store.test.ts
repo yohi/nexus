@@ -28,8 +28,16 @@ describe('SqliteMetadataStore', () => {
   });
 
   afterEach(async () => {
-    await store.close();
-    await rm(tempDir, { recursive: true, force: true });
+    try {
+      if (store) await store.close();
+    } catch {
+      // ignore
+    }
+    try {
+      if (tempDir) await rm(tempDir, { recursive: true, force: true });
+    } catch {
+      // ignore
+    }
   });
 
   it('bulkUpsertMerkleNodes stores and returns file nodes', async () => {
@@ -102,6 +110,6 @@ describe('SqliteMetadataStore', () => {
     await store.setIndexStats(stats);
 
     await expect(store.getIndexStats()).resolves.toEqual(stats);
-    expect(store.getPragmaValue('wal_autocheckpoint')).toBe(1000);
+    expect(store.getPragmaValue('wal_autocheckpoint') as number).toBe(1000);
   });
 });
