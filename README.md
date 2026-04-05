@@ -1,7 +1,7 @@
 # 🌌 Nexus
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
-[![MCP Protocol](https://img.shields.io/badge/MCP-Supported-green.svg)]()
+[![MCP Protocol](https://img.shields.io/badge/MCP-Supported-green.svg)](https://modelcontextprotocol.io/)
 
 **One local index. Infinite agent possibilities.**
 
