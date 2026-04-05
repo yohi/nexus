@@ -16,20 +16,23 @@ const fixturePath = path.join(process.cwd(), 'tests/fixtures/sample-project/src/
 
 describe('IndexPipeline integration', () => {
   let tempDir: string;
+  let metadataStore: SqliteMetadataStore;
+  let vectorStore: LanceVectorStore;
 
   beforeEach(async () => {
     tempDir = await mkdtemp(path.join(os.tmpdir(), 'nexus-pipeline-integration-'));
   });
 
   afterEach(async () => {
+    await metadataStore?.close();
     await rm(tempDir, { recursive: true, force: true });
   });
 
   it('indexes fixture files with SQLite metadata and vector storage implementations', async () => {
-    const metadataStore = new SqliteMetadataStore({
+    metadataStore = new SqliteMetadataStore({
       databasePath: path.join(tempDir, 'metadata.db'),
     });
-    const vectorStore = new LanceVectorStore({ dimensions: 64 });
+    vectorStore = new LanceVectorStore({ dimensions: 64 });
     const registry = new PluginRegistry();
     registry.registerLanguage(new TypeScriptLanguagePlugin());
     const chunker = new Chunker(registry);
@@ -38,6 +41,7 @@ describe('IndexPipeline integration', () => {
       vectorStore,
       chunker,
       embeddingProvider: new TestEmbeddingProvider(),
+      pluginRegistry: registry,
     });
     const original = await readFile(fixturePath, 'utf8');
     const modified = `${original}\nexport const integrationMarker = true;\n`;
@@ -60,8 +64,12 @@ describe('IndexPipeline integration', () => {
     await expect(metadataStore.getMerkleNode(fixturePath)).resolves.toEqual(
       expect.objectContaining({ hash: 'hash-added', isDirectory: false }),
     );
+
+    // auth.ts currently yields 7 declarations: 
+    // imports (grouped), SessionRecord interface, authenticate function, 
+    // AuthService class, constructor, getIssuer method, and revoke method.
     await expect(vectorStore.getStats()).resolves.toEqual(
-      expect.objectContaining({ totalChunks: 6, totalFiles: 1, dimensions: 64 }),
+      expect.objectContaining({ totalChunks: 7, totalFiles: 1, dimensions: 64 }),
     );
 
     await pipeline.processEvents(
@@ -81,6 +89,7 @@ describe('IndexPipeline integration', () => {
     );
 
     const searchResults = await vectorStore.search(Array(64).fill(0).map((_, index) => (index === 1 ? 1 : 0)), 20);
+    expect(searchResults.length).toBeGreaterThan(0);
     expect(searchResults.every((result) => result.chunk.filePath === fixturePath)).toBe(true);
 
     await pipeline.processEvents([
@@ -96,15 +105,13 @@ describe('IndexPipeline integration', () => {
     await expect(vectorStore.getStats()).resolves.toEqual(
       expect.objectContaining({ totalChunks: 0, totalFiles: 0 }),
     );
-
-    await metadataStore.close();
   });
 
-  it('returns completed for a manual reindex execution', async () => {
-    const metadataStore = new SqliteMetadataStore({
-      databasePath: path.join(tempDir, 'metadata.db'),
+  it('handles manual reindex with observable side-effects', async () => {
+    metadataStore = new SqliteMetadataStore({
+      databasePath: path.join(tempDir, 'reindex-metadata.db'),
     });
-    const vectorStore = new LanceVectorStore({ dimensions: 64 });
+    vectorStore = new LanceVectorStore({ dimensions: 64 });
     const registry = new PluginRegistry();
     registry.registerLanguage(new TypeScriptLanguagePlugin());
     const pipeline = new IndexPipeline({
@@ -112,13 +119,72 @@ describe('IndexPipeline integration', () => {
       vectorStore,
       chunker: new Chunker(registry),
       embeddingProvider: new TestEmbeddingProvider(),
+      pluginRegistry: registry,
     });
 
     await metadataStore.initialize();
     await vectorStore.initialize();
 
-    await expect(pipeline.reindex(async () => [])).resolves.toEqual({ status: 'completed' });
+    const original = await readFile(fixturePath, 'utf8');
 
-    await metadataStore.close();
+    // 1. Initial indexing
+    await pipeline.processEvents(
+      [
+        {
+          type: 'added',
+          filePath: fixturePath,
+          contentHash: 'hash-1',
+          detectedAt: new Date().toISOString(),
+        },
+      ],
+      async () => original,
+    );
+
+    // 2. Perform reindex with empty events (Verify ReindexResult per contract)
+    const emptyResult = await pipeline.reindex(async () => [], async () => '');
+    expect(emptyResult).toMatchObject({
+      chunksIndexed: 0,
+    });
+
+    // 3. Perform reindex that deletes the file
+    const result = await pipeline.reindex(
+      async () => [
+        {
+          type: 'deleted',
+          filePath: fixturePath,
+          contentHash: 'hash-1',
+          detectedAt: new Date().toISOString(),
+        },
+      ],
+      async () => '',
+    );
+
+    // 4. Verify ReindexResult structure and side-effects
+    expect(result).toMatchObject({
+      reconciliation: { added: 0, modified: 0, deleted: 1 },
+      chunksIndexed: 0,
+    });
+
+    await expect(vectorStore.getStats()).resolves.toEqual(
+      expect.objectContaining({ totalChunks: 0, totalFiles: 0 }),
+    );
+
+    // 5. Test lock/already-running case
+    const runReindex = () =>
+      pipeline.reindex(
+        async () => {
+          await new Promise((resolve) => setTimeout(resolve, 50));
+          return [];
+        },
+        async () => '',
+      );
+
+    const [first, second] = await Promise.all([
+      runReindex(),
+      new Promise((resolve) => setTimeout(resolve, 10)).then(() => runReindex()),
+    ]);
+
+    expect(first).not.toEqual({ status: 'already_running' });
+    expect(second).toEqual({ status: 'already_running' });
   });
 });
