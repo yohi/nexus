@@ -44,11 +44,13 @@ export const loadConfig = async (options: LoadConfigOptions): Promise<Config> =>
   const merged: Config = {
     projectRoot: options.projectRoot,
     storage: {
-      rootDir: asString(env.NEXUS_STORAGE_ROOT_DIR) ?? fileConfig.storage?.rootDir ?? defaults.storage.rootDir,
+      rootDir: asString(env.NEXUS_STORAGE_ROOT_DIR) ?? validateString(fileConfig.storage?.rootDir) ?? defaults.storage.rootDir,
       metadataDbPath:
-        asString(env.NEXUS_STORAGE_METADATA_DB_PATH) ?? fileConfig.storage?.metadataDbPath ?? defaults.storage.metadataDbPath,
+        asString(env.NEXUS_STORAGE_METADATA_DB_PATH) ??
+        validateString(fileConfig.storage?.metadataDbPath) ??
+        defaults.storage.metadataDbPath,
       vectorDbPath:
-        asString(env.NEXUS_STORAGE_VECTOR_DB_PATH) ?? fileConfig.storage?.vectorDbPath ?? defaults.storage.vectorDbPath,
+        asString(env.NEXUS_STORAGE_VECTOR_DB_PATH) ?? validateString(fileConfig.storage?.vectorDbPath) ?? defaults.storage.vectorDbPath,
     },
     watcher: {
       debounceMs: asPositiveInt(env.NEXUS_WATCHER_DEBOUNCE_MS) ?? validatePositiveInt(fileConfig.watcher?.debounceMs) ?? defaults.watcher.debounceMs,
@@ -107,23 +109,27 @@ const validateNonNegativeInt = (value: unknown): number | undefined =>
   typeof value === 'number' && Number.isInteger(value) && value >= 0 ? value : undefined;
 
 const asProvider = (value: string | undefined): EmbeddingConfig['provider'] | undefined => {
-  if (value === 'ollama' || value === 'openai-compat' || value === 'test') {
-    return value;
-  }
-  return undefined;
+  return isProvider(value) ? value : undefined;
 };
 
 const validateProvider = (value: unknown): EmbeddingConfig['provider'] | undefined => {
-  if (value === 'ollama' || value === 'openai-compat' || value === 'test') {
-    return value;
-  }
-  return undefined;
+  return isProvider(value) ? value : undefined;
+};
+
+const isProvider = (value: unknown): value is EmbeddingConfig['provider'] => {
+  return value === 'ollama' || value === 'openai-compat' || value === 'test';
 };
 
 const readJsonFile = async (configPath: string): Promise<Partial<Config>> => {
   try {
     const raw = await readFile(configPath, 'utf8');
-    return JSON.parse(raw) as Partial<Config>;
+    const parsed = JSON.parse(raw) as unknown;
+
+    if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      throw new Error(`Configuration file "${configPath}" must contain a top-level object.`);
+    }
+
+    return parsed as Partial<Config>;
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
       return {};

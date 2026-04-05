@@ -39,10 +39,35 @@ describe('PluginRegistry', () => {
     registry.registerLanguage(new TypeScriptLanguagePlugin());
     registry.registerEmbeddingProvider('test', new TestEmbeddingProvider());
 
-    await expect(registry.healthCheck()).resolves.toEqual({
-      languages: ['typescript'],
-      embeddingProvider: 'test',
+    const result = await registry.healthCheck();
+    expect(result).toEqual({
+      languages: {
+        registered: ['typescript'],
+        healthy: true,
+      },
+      embeddings: {
+        provider: 'test',
+        healthy: true,
+      },
       healthy: true,
+      isOperational: true,
+    });
+  });
+
+  it('reports operational even if embeddings are missing', async () => {
+    const registry = new PluginRegistry();
+    registry.registerLanguage(new TypeScriptLanguagePlugin());
+
+    const result = await registry.healthCheck();
+    expect(result).toMatchObject({
+      languages: {
+        healthy: true,
+      },
+      embeddings: {
+        healthy: false,
+      },
+      healthy: false,
+      isOperational: true,
     });
   });
 
@@ -53,10 +78,13 @@ describe('PluginRegistry', () => {
 
   it('handles provider health check errors gracefully', async () => {
     const registry = new PluginRegistry();
+    registry.registerLanguage(new TypeScriptLanguagePlugin());
     registry.registerEmbeddingProvider('crasher', new CrashingEmbeddingProvider());
 
     const status = await registry.healthCheck();
+    expect(status.embeddings.healthy).toBe(false);
+    expect(status.embeddings.provider).toBe('crasher');
     expect(status.healthy).toBe(false);
-    expect(status.embeddingProvider).toBe('crasher');
+    expect(status.isOperational).toBe(true);
   });
 });

@@ -115,4 +115,35 @@ describe('loadConfig', () => {
     expect(config.embedding.batchSize).toBe(32);
     expect(config.watcher.debounceMs).toBe(100);
   });
+
+  it('rejects config files with top-level arrays', async () => {
+    tempDir = await mkdtemp(path.join(os.tmpdir(), 'nexus-config-'));
+    await writeFile(path.join(tempDir, '.nexus.json'), '[1, 2, 3]', 'utf8');
+
+    await expect(loadConfig({ projectRoot: tempDir, env: {} })).rejects.toThrow(/must contain a top-level object/);
+  });
+
+  it('rejects config files that are null', async () => {
+    tempDir = await mkdtemp(path.join(os.tmpdir(), 'nexus-config-'));
+    await writeFile(path.join(tempDir, '.nexus.json'), 'null', 'utf8');
+
+    await expect(loadConfig({ projectRoot: tempDir, env: {} })).rejects.toThrow(/must contain a top-level object/);
+  });
+
+  it('falls back to defaults when storage paths in .nexus.json are not strings', async () => {
+    tempDir = await mkdtemp(path.join(os.tmpdir(), 'nexus-config-'));
+    await writeFile(
+      path.join(tempDir, '.nexus.json'),
+      JSON.stringify({
+        storage: { rootDir: 123, metadataDbPath: true, vectorDbPath: null },
+      }),
+      'utf8',
+    );
+
+    const config = await loadConfig({ projectRoot: tempDir, env: {} });
+
+    expect(config.storage.rootDir).toBe(path.join(tempDir, '.nexus'));
+    expect(config.storage.metadataDbPath).toBe(path.join(tempDir, '.nexus', 'metadata.db'));
+    expect(config.storage.vectorDbPath).toBe(path.join(tempDir, '.nexus', 'vectors'));
+  });
 });
