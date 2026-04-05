@@ -44,7 +44,7 @@ describe('IndexPipeline integration', () => {
       pluginRegistry: registry,
     });
     const original = await readFile(fixturePath, 'utf8');
-    const modified = `${original}\nexport const integrationMarker = true;\n`;
+    const modified = `${original}\nexport function integrationMarker() {}\n`;
 
     await metadataStore.initialize();
     await vectorStore.initialize();
@@ -58,7 +58,10 @@ describe('IndexPipeline integration', () => {
           detectedAt: new Date().toISOString(),
         },
       ],
-      async () => original,
+      async (path) => {
+        expect(path).toBe(fixturePath);
+        return original;
+      },
     );
 
     await expect(metadataStore.getMerkleNode(fixturePath)).resolves.toEqual(
@@ -81,11 +84,19 @@ describe('IndexPipeline integration', () => {
           detectedAt: new Date().toISOString(),
         },
       ],
-      async () => modified,
+      async (path) => {
+        expect(path).toBe(fixturePath);
+        return modified;
+      },
     );
 
     await expect(metadataStore.getMerkleNode(fixturePath)).resolves.toEqual(
       expect.objectContaining({ hash: 'hash-modified' }),
+    );
+
+    // After modification with integrationMarker function, chunk count should be 8.
+    await expect(vectorStore.getStats()).resolves.toEqual(
+      expect.objectContaining({ totalChunks: 8, totalFiles: 1, dimensions: 64 }),
     );
 
     const searchResults = await vectorStore.search(Array(64).fill(0).map((_, index) => (index === 1 ? 1 : 0)), 20);
@@ -170,19 +181,25 @@ describe('IndexPipeline integration', () => {
     );
 
     // 5. Test lock/already-running case
-    const runReindex = () =>
+    let startedResolve: () => void;
+    const startedPromise = new Promise<void>((resolve) => {
+      startedResolve = resolve;
+    });
+
+    const runReindex = (shouldSignal = false) =>
       pipeline.reindex(
         async () => {
+          if (shouldSignal) startedResolve();
           await new Promise((resolve) => setTimeout(resolve, 50));
           return [];
         },
         async () => '',
       );
 
-    const [first, second] = await Promise.all([
-      runReindex(),
-      new Promise((resolve) => setTimeout(resolve, 10)).then(() => runReindex()),
-    ]);
+    const firstPromise = runReindex(true);
+    await startedPromise;
+    const second = await runReindex(false);
+    const first = await firstPromise;
 
     expect(first).not.toEqual({ status: 'already_running' });
     expect(second).toEqual({ status: 'already_running' });
