@@ -14,7 +14,6 @@ interface RipgrepEngineOptions {
 const DEFAULT_MAX_CONCURRENCY = 4;
 const DEFAULT_TIMEOUT_MS = 10_000;
 const DEFAULT_MAX_RESULTS = 100;
-const STOP_WORDS = new Set(['a', 'an', 'the', 'to', 'for', 'of', 'in', 'on', 'with', 'and', 'or']);
 
 export class RipgrepEngine implements IGrepEngine {
   private readonly limit;
@@ -63,15 +62,3 @@ export class RipgrepEngine implements IGrepEngine {
   }
 }
 
-export const extractGrepKeywords = (query: string): string[] => {
-  const literalMatches = query.match(/\b[A-Za-z0-9]+(?:[_-][A-Za-z0-9]+)+\b|\b[a-z]+[A-Z][A-Za-z0-9]*\b/g);
-  if (literalMatches && literalMatches.length > 0) {
-    return literalMatches;
-  }
-
-  return query
-    .split(/\s+/)
-    .map((token) => token.trim())
-    .filter((token) => token.length > 0)
-    .filter((token) => !STOP_WORDS.has(token.toLowerCase()));
-};
