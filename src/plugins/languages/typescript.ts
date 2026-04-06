@@ -59,10 +59,10 @@ class TypeScriptParser {
           type = 'class';
           name = expression.name ? expression.name.text : '<anonymous>';
         } else if (ts.isIdentifier(expression)) {
-          type = 'expression';
+          type = 'unknown';
           name = expression.text;
         } else {
-          type = 'expression';
+          type = 'unknown';
           name = '<anonymous>';
         }
       } else if (ts.isVariableStatement(node)) {

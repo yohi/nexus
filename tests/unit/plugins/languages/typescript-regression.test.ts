@@ -38,37 +38,43 @@ export function commentedFunction() {
     expect(decl!.content).toContain('// First line');
   });
 
-  it('detects anonymous default exports', async () => {
+  it('detects anonymous default function export', async () => {
     const plugin = new TypeScriptLanguagePlugin();
     const parser = await plugin.createParser();
-    const content = `
-export default function() {
-  return "anon function";
-}
+    const content = `export default function() { return "anon function"; }`;
+    const result = await parser.parse({ filePath: 'test.ts', language: 'typescript', content });
+    expect(result.declarations).toContainEqual(expect.objectContaining({ type: 'function', name: '<anonymous>' }));
+  });
 
-export default class {
-  method() {}
-}
+  it('detects anonymous default class export', async () => {
+    const plugin = new TypeScriptLanguagePlugin();
+    const parser = await plugin.createParser();
+    const content = `export default class { method() {} }`;
+    const result = await parser.parse({ filePath: 'test.ts', language: 'typescript', content });
+    expect(result.declarations).toContainEqual(expect.objectContaining({ type: 'class', name: '<anonymous>' }));
+  });
 
-export default () => "arrow";
+  it('detects anonymous default arrow function export', async () => {
+    const plugin = new TypeScriptLanguagePlugin();
+    const parser = await plugin.createParser();
+    const content = `export default () => "arrow";`;
+    const result = await parser.parse({ filePath: 'test.ts', language: 'typescript', content });
+    expect(result.declarations).toContainEqual(expect.objectContaining({ type: 'function', name: '<anonymous>' }));
+  });
 
-export default "expression";
-    `.trim();
+  it('detects default identifier export', async () => {
+    const plugin = new TypeScriptLanguagePlugin();
+    const parser = await plugin.createParser();
+    const content = `const myVar = 1; export default myVar;`;
+    const result = await parser.parse({ filePath: 'test.ts', language: 'typescript', content });
+    expect(result.declarations).toContainEqual(expect.objectContaining({ type: 'unknown', name: 'myVar' }));
+  });
 
-    const result = await parser.parse({
-      filePath: 'test.ts',
-      language: 'typescript',
-      content,
-    });
-
-    const symbols = result.declarations.map(d => ({ type: d.type, name: d.name }));
-    
-    // Using '<anonymous>' as the default name for anonymous exports
-    expect(symbols).toContainEqual({ type: 'function', name: '<anonymous>' });
-    expect(symbols).toContainEqual({ type: 'class', name: '<anonymous>' });
-    expect(symbols).toContainEqual({ type: 'function', name: '<anonymous>' });
-    // For general expressions, we'll see how we handle them.
-    // The instruction says: "detect export default expressions (FunctionExpression, ClassExpression, ArrowFunction, or an Identifier)"
-    // and "map them to a declaration with a proper type ('function'|'class'|'expression') and name ('<anonymous>' or the identifier text)"
+  it('detects default expression export', async () => {
+    const plugin = new TypeScriptLanguagePlugin();
+    const parser = await plugin.createParser();
+    const content = `export default "expression";`;
+    const result = await parser.parse({ filePath: 'test.ts', language: 'typescript', content });
+    expect(result.declarations).toContainEqual(expect.objectContaining({ type: 'unknown', name: '<anonymous>' }));
   });
 });
