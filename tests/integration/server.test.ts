@@ -57,7 +57,7 @@ describe('Nexus MCP server integration', () => {
     });
     await vectorStore.upsertChunks([chunk], await embeddingProvider.embed([chunk.content]));
 
-    const orchestrator = new SearchOrchestrator({ semanticSearch, grepEngine });
+    const orchestrator = new SearchOrchestrator({ semanticSearch, grepEngine, projectRoot: process.cwd() });
     const pipeline = new IndexPipeline({
       metadataStore,
       vectorStore,

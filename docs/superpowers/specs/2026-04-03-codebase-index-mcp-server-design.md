@@ -946,7 +946,7 @@ class PluginRegistry {
   readonly languages: LanguageRegistry;
   readonly embeddings: EmbeddingProviderRegistry;
   async initialize(config: Config): Promise<void>;
-  async healthCheck(): Promise<HealthStatus>;
+  async healthCheck(): Promise<HealthCheckResult>;
 }
 ```
 
