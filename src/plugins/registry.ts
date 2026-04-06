@@ -1,6 +1,11 @@
 import type { EmbeddingProvider, LanguagePlugin } from '../types/index.js';
 
 /**
+ * Default timeout for plugin registry operations (e.g., health checks) in milliseconds.
+ */
+const REGISTRY_TIMEOUT_MS = 5000;
+
+/**
  * Result of the plugin registry health check.
  */
 export interface HealthCheckResult {
@@ -143,11 +148,11 @@ export class PluginRegistry {
     if (activeProvider) {
       let timer: ReturnType<typeof setTimeout> | undefined;
       try {
-        // Race the health check against a 5-second timeout
+        // Race the health check against the timeout
         embeddingHealthy = await Promise.race([
           activeProvider.healthCheck(),
           new Promise<boolean>((resolve) => {
-            timer = setTimeout(() => resolve(false), 5000);
+            timer = setTimeout(() => resolve(false), REGISTRY_TIMEOUT_MS);
           }),
         ]);
       } catch {

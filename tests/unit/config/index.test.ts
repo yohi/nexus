@@ -1,4 +1,4 @@
-import { mkdtemp, writeFile } from 'node:fs/promises';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 
@@ -11,7 +11,7 @@ describe('loadConfig', () => {
 
   afterEach(async () => {
     if (tempDir) {
-      await import('node:fs/promises').then(({ rm }) => rm(tempDir!, { recursive: true, force: true }));
+      await rm(tempDir, { recursive: true, force: true });
       tempDir = undefined;
     }
   });
