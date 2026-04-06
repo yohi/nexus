@@ -11,7 +11,7 @@ export interface EventQueueOptions {
 }
 
 export type QueueEvent = IndexEvent | ReindexQueueEvent;
-export type BackpressureState = 'normal' | 'overflow' | 'full_scan' | 'post_scan';
+export type BackpressureState = 'normal' | 'overflow' | 'full_scan';
 
 export class EventQueue {
   private readonly debouncedEvents = new Map<string, IndexEvent>();
@@ -26,7 +26,11 @@ export class EventQueue {
 
   private droppedEventCount = 0;
 
-  constructor(private readonly options: EventQueueOptions) {}
+  constructor(private readonly options: EventQueueOptions) {
+    if (this.options.fullScanThreshold > this.options.maxQueueSize) {
+      throw new Error('fullScanThreshold must be less than or equal to maxQueueSize');
+    }
+  }
 
   getDroppedEventCount(): number {
     return this.droppedEventCount;
@@ -238,7 +242,6 @@ export class EventQueue {
       return;
     }
 
-    this.state = 'post_scan';
     this.flushTimers();
     this.debouncedEvents.clear();
     this.watcherQueue.length = 0;
