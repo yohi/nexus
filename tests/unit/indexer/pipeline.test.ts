@@ -208,5 +208,13 @@ describe('IndexPipeline', () => {
     );
 
     expect(pipeline.getSkippedFiles().get(fixturePath)).toBe('embed failed');
+    await expect(metadataStore.getDeadLetterEntries()).resolves.toEqual([
+      expect.objectContaining({
+        filePath: fixturePath,
+        contentHash: 'hash-added',
+        errorMessage: 'embed failed',
+        attempts: 3,
+      }),
+    ]);
   });
 });

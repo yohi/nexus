@@ -143,6 +143,9 @@ export interface IMetadataStore {
   getAllPaths(): Promise<string[]>;
   getIndexStats(): Promise<IndexStatsRow | null>;
   setIndexStats(stats: IndexStatsRow): Promise<void>;
+  upsertDeadLetterEntries(entries: DeadLetterEntry[]): Promise<void>;
+  removeDeadLetterEntries(ids: string[]): Promise<void>;
+  getDeadLetterEntries(): Promise<DeadLetterEntry[]>;
 }
 
 export interface GrepParams {
@@ -224,6 +227,17 @@ export interface Config {
   storage: StorageConfig;
   watcher: WatcherConfig;
   embedding: EmbeddingConfig;
+}
+
+export interface DeadLetterEntry {
+  id: string;
+  filePath: string;
+  contentHash: string;
+  errorMessage: string;
+  attempts: number;
+  createdAt: string;
+  updatedAt: string;
+  lastRetryAt: string | null;
 }
 
 export class RetryExhaustedError extends Error {

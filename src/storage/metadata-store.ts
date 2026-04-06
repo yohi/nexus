@@ -1,6 +1,6 @@
 import Database from 'better-sqlite3';
 
-import type { IMetadataStore, IndexStatsRow, MerkleNodeRow } from '../types/index.js';
+import type { DeadLetterEntry, IMetadataStore, IndexStatsRow, MerkleNodeRow } from '../types/index.js';
 import { executeBatchedWithYield } from './batched-transaction.js';
 
 export interface SqliteMetadataStoreOptions {
@@ -46,6 +46,19 @@ export class SqliteMetadataStore implements IMetadataStore {
         last_full_scan_at TEXT,
         overflow_count INTEGER NOT NULL
       );
+
+      CREATE TABLE IF NOT EXISTS dead_letter_queue (
+        id TEXT PRIMARY KEY,
+        file_path TEXT NOT NULL,
+        content_hash TEXT NOT NULL,
+        error_message TEXT NOT NULL,
+        attempts INTEGER NOT NULL,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        last_retry_at TEXT
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_dlq_created ON dead_letter_queue (created_at);
     `);
   }
 
@@ -209,6 +222,78 @@ export class SqliteMetadataStore implements IMetadataStore {
             overflow_count = excluded.overflow_count`,
       )
       .run(stats);
+  }
+
+  async upsertDeadLetterEntries(entries: DeadLetterEntry[]): Promise<void> {
+    const statement = this.db.prepare(`
+      INSERT INTO dead_letter_queue (
+        id, file_path, content_hash, error_message, attempts, created_at, updated_at, last_retry_at
+      ) VALUES (
+        @id, @filePath, @contentHash, @errorMessage, @attempts, @createdAt, @updatedAt, @lastRetryAt
+      )
+      ON CONFLICT(id) DO UPDATE SET
+        file_path = excluded.file_path,
+        content_hash = excluded.content_hash,
+        error_message = excluded.error_message,
+        attempts = excluded.attempts,
+        created_at = excluded.created_at,
+        updated_at = excluded.updated_at,
+        last_retry_at = excluded.last_retry_at
+    `);
+
+    await executeBatchedWithYield({
+      items: entries,
+      batchSize: this.batchSize,
+      executeBatch: async (batch) => {
+        await this.asyncBoundary();
+        const transaction = this.db.transaction((rows: DeadLetterEntry[]) => {
+          for (const entry of rows) {
+            statement.run(entry);
+          }
+        });
+
+        transaction(batch);
+      },
+      yieldAfterBatch: this.asyncBoundary,
+    });
+  }
+
+  async removeDeadLetterEntries(ids: string[]): Promise<void> {
+    const statement = this.db.prepare('DELETE FROM dead_letter_queue WHERE id = ?');
+
+    await executeBatchedWithYield({
+      items: ids,
+      batchSize: this.batchSize,
+      executeBatch: async (batch) => {
+        await this.asyncBoundary();
+        const transaction = this.db.transaction((rows: string[]) => {
+          for (const id of rows) {
+            statement.run(id);
+          }
+        });
+
+        transaction(batch);
+      },
+      yieldAfterBatch: this.asyncBoundary,
+    });
+  }
+
+  async getDeadLetterEntries(): Promise<DeadLetterEntry[]> {
+    await this.asyncBoundary();
+    return this.db
+      .prepare(
+        `SELECT id,
+                file_path AS filePath,
+                content_hash AS contentHash,
+                error_message AS errorMessage,
+                attempts,
+                created_at AS createdAt,
+                updated_at AS updatedAt,
+                last_retry_at AS lastRetryAt
+         FROM dead_letter_queue
+         ORDER BY created_at ASC`,
+      )
+      .all() as DeadLetterEntry[];
   }
 
   getPragmaValue(name: string): unknown {
