@@ -73,6 +73,11 @@ export class MerkleTree {
     await this.persistCurrentState();
   }
 
+  async move(oldPath: string, newPath: string, contentHash: string): Promise<void> {
+    await this.remove(oldPath);
+    await this.update(newPath, contentHash);
+  }
+
   getRootHash(): string | null {
     return this.rootHash;
   }
