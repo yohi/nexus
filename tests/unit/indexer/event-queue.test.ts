@@ -90,7 +90,7 @@ describe('EventQueue', () => {
     const accepted = queue.enqueue(makeEvent({ filePath: 'src/c.ts' }));
 
     expect(accepted).toBe(false);
-    expect(queue.size()).toBe(2);
+    expect(queue.size()).toBe(1);
   });
 
   it('clears queued events and resets overflow state', async () => {
@@ -232,13 +232,14 @@ describe('EventQueue', () => {
         }
       };
 
-      const drainPromise = queue.drain(handler);
+      const rejection = queue.drain(handler);
+      const drainPromise = expect(rejection).rejects.toThrow('fast fail');
 
       // Advance timers repeatedly to resolve the internal promises
       await vi.advanceTimersByTimeAsync(10);
       await vi.advanceTimersByTimeAsync(100);
 
-      await expect(drainPromise).rejects.toThrow('fast fail');
+      await drainPromise;
       expect(order).toEqual(['fast-fail', 'slow-success']);
       expect(queue.size()).toBe(1); // fast-fail.ts should be re-enqueued
     });

@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
 
 import { PluginRegistry } from '../../../src/plugins/registry.js';
+import { GoLanguagePlugin } from '../../../src/plugins/languages/go.js';
+import { PythonLanguagePlugin } from '../../../src/plugins/languages/python.js';
 import { TypeScriptLanguagePlugin } from '../../../src/plugins/languages/typescript.js';
 import { TestEmbeddingProvider } from '../plugins/embeddings/test-embedding-provider.js';
 
@@ -20,8 +22,12 @@ describe('PluginRegistry', () => {
   it('registers language plugins and resolves by file path', () => {
     const registry = new PluginRegistry();
     registry.registerLanguage(new TypeScriptLanguagePlugin());
+    registry.registerLanguage(new PythonLanguagePlugin());
+    registry.registerLanguage(new GoLanguagePlugin());
 
     expect(registry.getLanguagePlugin('src/index.ts')?.languageId).toBe('typescript');
+    expect(registry.getLanguagePlugin('src/utils.py')?.languageId).toBe('python');
+    expect(registry.getLanguagePlugin('src/handler.go')?.languageId).toBe('go');
   });
 
   it('switches the active embedding provider', () => {

@@ -1,4 +1,5 @@
 import { createServer } from 'node:http';
+import path from 'node:path';
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
@@ -87,7 +88,8 @@ describe('Nexus MCP server integration', () => {
         pluginRegistry,
         runReindex: async () => [],
         loadFileContent: async (filePath) => {
-          if (filePath === 'src/auth.ts') {
+          const relativePath = path.relative(process.cwd(), filePath);
+          if (relativePath === 'src/auth.ts' || filePath === 'src/auth.ts') {
             return 'export function authenticate() {}\n';
           }
           throw new Error(`unexpected file: ${filePath}`);
