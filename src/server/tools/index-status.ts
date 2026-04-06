@@ -14,9 +14,20 @@ export const executeIndexStatus = async (
   vectorStore: IVectorStore,
   pipeline: IIndexPipeline,
   pluginRegistry: PluginRegistry,
-): Promise<IndexStatusResult> => ({
-  indexStats: await metadataStore.getIndexStats(),
-  vectorStats: await vectorStore.getStats(),
-  skippedFiles: pipeline.getSkippedFiles().size,
-  pluginHealth: await pluginRegistry.healthCheck(),
-});
+): Promise<IndexStatusResult> => {
+  const [indexStats, vectorStats, deadLetterEntries, pluginHealth] = await Promise.all([
+    metadataStore.getIndexStats(),
+    vectorStore.getStats(),
+    metadataStore.getDeadLetterEntries(),
+    pluginRegistry.healthCheck(),
+  ]);
+
+  void pipeline;
+
+  return {
+    indexStats,
+    vectorStats,
+    skippedFiles: deadLetterEntries.length,
+    pluginHealth,
+  };
+};
