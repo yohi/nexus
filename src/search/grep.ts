@@ -9,11 +9,17 @@ interface RipgrepEngineOptions {
   grepMaxConcurrency?: number;
   grepTimeoutMs?: number;
   spawn?: (params: GrepParams, signal: AbortSignal) => Promise<GrepMatch[]>;
+  createProcessController?: () => ProcessController;
+}
+
+interface ProcessController {
+  kill(signal: NodeJS.Signals): void;
 }
 
 const DEFAULT_MAX_CONCURRENCY = 4;
 const DEFAULT_TIMEOUT_MS = 10_000;
 const DEFAULT_MAX_RESULTS = 100;
+const KILL_GRACE_MS = 1_000;
 
 export class RipgrepEngine implements IGrepEngine {
   private readonly limit;
@@ -21,6 +27,8 @@ export class RipgrepEngine implements IGrepEngine {
   private readonly timeoutMs: number;
 
   private readonly spawnImpl: (params: GrepParams, signal: AbortSignal) => Promise<GrepMatch[]>;
+
+  private readonly createProcessController?: () => ProcessController;
 
   constructor(private readonly options: RipgrepEngineOptions) {
     this.limit = pLimit(options.grepMaxConcurrency ?? DEFAULT_MAX_CONCURRENCY);
@@ -30,6 +38,7 @@ export class RipgrepEngine implements IGrepEngine {
       throw new Error('RipgrepEngine requires a spawn function to be provided in options.');
     }
     this.spawnImpl = options.spawn;
+    this.createProcessController = options.createProcessController;
   }
 
   async search(params: GrepParams): Promise<GrepMatch[]> {
@@ -38,6 +47,7 @@ export class RipgrepEngine implements IGrepEngine {
 
   private async execute(params: GrepParams): Promise<GrepMatch[]> {
     const controller = new AbortController();
+    const processController = this.createProcessController?.();
     const signals = [controller.signal];
 
     if (params.abortSignal) {
@@ -45,9 +55,27 @@ export class RipgrepEngine implements IGrepEngine {
     }
 
     const signal = signals.length === 1 ? controller.signal : AbortSignal.any(signals);
-    const timeoutId = setTimeout(() => controller.abort(), this.timeoutMs);
+    const timeoutId = setTimeout(() => {
+      processController?.kill('SIGTERM');
+      controller.abort();
+    }, this.timeoutMs);
+    let killTimer: ReturnType<typeof setTimeout> | undefined;
 
     try {
+      signal.addEventListener(
+        'abort',
+        () => {
+          if (!controller.signal.aborted || processController === undefined) {
+            return;
+          }
+
+          killTimer = setTimeout(() => {
+            processController.kill('SIGKILL');
+          }, KILL_GRACE_MS);
+        },
+        { once: true },
+      );
+
       return await this.spawnImpl(this.normalizeParams(params), signal);
     } catch (error) {
       if (signal.aborted) {
@@ -56,6 +84,9 @@ export class RipgrepEngine implements IGrepEngine {
       throw error;
     } finally {
       clearTimeout(timeoutId);
+      if (killTimer !== undefined) {
+        clearTimeout(killTimer);
+      }
     }
   }
 
