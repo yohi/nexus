@@ -43,6 +43,10 @@ describe('DeadLetterQueue', () => {
     await queue.enqueue({ filePath: '/repo/c.ts', contentHash: 'c', errorMessage: 'c', attempts: 3 });
 
     expect([...queue.snapshot().keys()]).toEqual(['/repo/b.ts', '/repo/c.ts']);
+    await expect(metadataStore.getDeadLetterEntries()).resolves.toEqual([
+      expect.objectContaining({ filePath: '/repo/b.ts' }),
+      expect.objectContaining({ filePath: '/repo/c.ts' }),
+    ]);
   });
 
   it('purges expired entries from memory and storage', async () => {
