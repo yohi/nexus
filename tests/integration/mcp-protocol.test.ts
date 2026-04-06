@@ -38,7 +38,6 @@ describe('Phase 2 MCP protocol integration', () => {
   let client: Client | null = null;
 
   beforeEach(async () => {
-    // ... (rest of beforeEach is unchanged)
     const metadataStore = new InMemoryMetadataStore();
     const vectorStore = new InMemoryVectorStore({ dimensions: 64 });
     await metadataStore.initialize();

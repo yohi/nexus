@@ -5,7 +5,7 @@ import type { IIndexPipeline } from '../indexer/pipeline.js';
 import type { PluginRegistry } from '../plugins/registry.js';
 import type { SearchOrchestrator } from '../search/orchestrator.js';
 import type { ISemanticSearch } from '../search/semantic.js';
-import type { IMetadataStore, IVectorStore, IGrepEngine, IndexEvent, ReindexOptions } from '../types/index.js';
+import type { IMetadataStore, IVectorStore, IGrepEngine, IndexEvent, IFileWatcher, ReindexOptions } from '../types/index.js';
 import type { PathSanitizer } from './path-sanitizer.js';
 import { executeGetContext } from './tools/get-context.js';
 import { executeGrepSearch } from './tools/grep-search.js';
@@ -26,6 +26,15 @@ export interface NexusServerOptions {
   pluginRegistry: PluginRegistry;
   runReindex: (options?: ReindexOptions) => Promise<IndexEvent[]>;
   loadFileContent: (filePath: string) => Promise<string>;
+}
+
+export interface NexusRuntimeOptions extends NexusServerOptions {
+  watcher: IFileWatcher;
+}
+
+export interface NexusRuntime {
+  server: McpServer;
+  close(): Promise<void>;
 }
 
 export const createNexusServer = (options: NexusServerOptions): McpServer => {
@@ -129,6 +138,23 @@ export const createNexusServer = (options: NexusServerOptions): McpServer => {
   );
 
   return server;
+};
+
+export const initializeNexusRuntime = async (options: NexusRuntimeOptions): Promise<NexusRuntime> => {
+  await options.metadataStore.initialize();
+  await options.vectorStore.initialize();
+  await options.pipeline.reconcileOnStartup();
+  await options.watcher.start();
+
+  const server = createNexusServer(options);
+
+  return {
+    server,
+    close: async () => {
+      await options.watcher.stop();
+      await server.close();
+    },
+  };
 };
 
 const toolResult = <T extends object>(structuredContent: T) => {
