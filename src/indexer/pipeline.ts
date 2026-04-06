@@ -63,8 +63,17 @@ export class IndexPipeline implements IIndexPipeline {
 
     for (const event of events) {
       if (event.type === 'deleted') {
-        await this.options.vectorStore.deleteByFilePath(event.filePath);
-        await this.merkleTree.remove(event.filePath);
+        const existingNode = this.merkleTree.getNode(event.filePath);
+
+        if (existingNode?.isDirectory) {
+          await this.options.vectorStore.deleteByPathPrefix(event.filePath);
+          await this.options.metadataStore.deleteSubtree(event.filePath);
+          await this.merkleTree.load();
+        } else {
+          await this.options.vectorStore.deleteByFilePath(event.filePath);
+          await this.merkleTree.remove(event.filePath);
+        }
+
         continue;
       }
 

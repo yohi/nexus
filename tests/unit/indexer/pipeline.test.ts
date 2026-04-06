@@ -153,6 +153,45 @@ describe('IndexPipeline', () => {
     );
   });
 
+  it('removes subtree metadata and vectors when a directory is deleted', async () => {
+    const { metadataStore, vectorStore, chunker, registry } = await createPipeline();
+    const pipeline = new IndexPipeline({
+      metadataStore,
+      vectorStore,
+      chunker,
+      embeddingProvider: new TestEmbeddingProvider(),
+      pluginRegistry: registry,
+    });
+    const content = await readFile(fixturePath, 'utf8');
+    const nestedFile = 'src/nested/auth.ts';
+
+    await pipeline.processEvents(
+      [
+        {
+          type: 'added',
+          filePath: nestedFile,
+          contentHash: 'hash-nested',
+          detectedAt: new Date().toISOString(),
+        },
+      ],
+      async () => content,
+    );
+
+    await pipeline.processEvents([
+      {
+        type: 'deleted',
+        filePath: 'src/nested',
+        contentHash: 'hash-nested',
+        detectedAt: new Date().toISOString(),
+      },
+    ]);
+
+    await expect(metadataStore.getMerkleNode(nestedFile)).resolves.toBeNull();
+    await expect(vectorStore.getStats()).resolves.toEqual(
+      expect.objectContaining({ totalChunks: 0, totalFiles: 0 }),
+    );
+  });
+
   it('returns already_running when reindex is invoked concurrently', async () => {
     const { metadataStore, vectorStore, chunker, registry } = await createPipeline();
     const pipeline = new IndexPipeline({
