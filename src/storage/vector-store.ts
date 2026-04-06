@@ -204,9 +204,14 @@ export class LanceVectorStore implements IVectorStore {
     };
   }
 
-  scheduleIdleCompaction(runCompaction: () => Promise<void>, delayMs = 0): void {
+  scheduleIdleCompaction(
+    runCompaction: () => Promise<void>,
+    delayMs = 0,
+    mutex?: { waitForUnlock(): Promise<void> },
+  ): void {
     setTimeout(() => {
       Promise.resolve()
+        .then(() => mutex?.waitForUnlock())
         .then(() => runCompaction())
         .catch((error) => {
           console.error('Compaction failed:', error);
