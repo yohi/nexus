@@ -30,14 +30,18 @@ export class PathSanitizer {
   async sanitize(filePath: string): Promise<string> {
     const resolvedPath = path.resolve(this.projectRoot, filePath);
 
-    if (!resolvedPath.startsWith(this.projectRoot)) {
+    const relativePath = path.relative(this.projectRoot, resolvedPath);
+    if (relativePath.startsWith('..') || path.isAbsolute(relativePath)) {
       throw new PathTraversalError(`Access denied: path '${filePath}' is outside project root`);
     }
 
     try {
       const realPath = await fs.realpath(resolvedPath);
-      if (!realPath.startsWith(this.projectRoot)) {
-        throw new PathTraversalError(`Access denied: symlink resolved to '${realPath}' outside project root`);
+      const relativeRealPath = path.relative(this.projectRoot, realPath);
+      if (relativeRealPath.startsWith('..') || path.isAbsolute(relativeRealPath)) {
+        throw new PathTraversalError(
+          `Access denied: symlink resolved to '${realPath}' outside project root`,
+        );
       }
       return realPath;
     } catch (error) {
@@ -45,6 +49,12 @@ export class PathSanitizer {
         // If the file doesn't exist yet, we still return the resolved path
         return resolvedPath;
       }
+      console.error('Error during realpath resolution:', {
+        error,
+        originalInput: filePath,
+        resolvedPath,
+        projectRoot: this.projectRoot,
+      });
       throw error;
     }
   }
