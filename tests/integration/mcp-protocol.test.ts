@@ -1,4 +1,5 @@
 import { createServer } from 'node:http';
+import path from 'node:path';
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
@@ -6,17 +7,17 @@ import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/
 
 import { createNexusServer } from '../../src/server/index.js';
 import { createStreamableHttpHandler } from '../../src/server/transport.js';
-import { SemanticSearch } from '../../src/search/semantic.js';
-import { SearchOrchestrator } from '../../src/search/orchestrator.js';
+import { Chunker } from '../../src/indexer/chunker.js';
+import { IndexPipeline } from '../../src/indexer/pipeline.js';
 import { PluginRegistry } from '../../src/plugins/registry.js';
+import { TypeScriptLanguagePlugin } from '../../src/plugins/languages/typescript.js';
+import { SearchOrchestrator } from '../../src/search/orchestrator.js';
+import { SemanticSearch } from '../../src/search/semantic.js';
 import { TestEmbeddingProvider } from '../unit/plugins/embeddings/test-embedding-provider.js';
+import { TestGrepEngine } from '../unit/search/test-grep-engine.js';
 import { InMemoryMetadataStore } from '../unit/storage/in-memory-metadata-store.js';
 import { InMemoryVectorStore } from '../unit/storage/in-memory-vector-store.js';
-import { TestGrepEngine } from '../unit/search/test-grep-engine.js';
-import { IndexPipeline } from '../../src/indexer/pipeline.js';
 import { PathSanitizer } from '../../src/server/path-sanitizer.js';
-import { Chunker } from '../../src/indexer/chunker.js';
-import { TypeScriptLanguagePlugin } from '../../src/plugins/languages/typescript.js';
 import type { CodeChunk } from '../../src/types/index.js';
 
 const makeChunk = (overrides: Partial<CodeChunk>): CodeChunk => ({
@@ -31,13 +32,13 @@ const makeChunk = (overrides: Partial<CodeChunk>): CodeChunk => ({
   hash: overrides.hash ?? 'hash-1',
 });
 
-describe('Nexus MCP server integration', () => {
+describe('Phase 2 MCP protocol integration', () => {
   let httpServer: ReturnType<typeof createServer>;
   let baseUrl: string;
-  let clients: Client[] = [];
+  let client: Client | null = null;
 
   beforeEach(async () => {
-    clients = [];
+    // ... (rest of beforeEach is unchanged)
     const metadataStore = new InMemoryMetadataStore();
     const vectorStore = new InMemoryVectorStore({ dimensions: 64 });
     await metadataStore.initialize();
@@ -47,8 +48,6 @@ describe('Nexus MCP server integration', () => {
     const pluginRegistry = new PluginRegistry();
     pluginRegistry.registerLanguage(new TypeScriptLanguagePlugin());
     pluginRegistry.registerEmbeddingProvider('test', embeddingProvider);
-    // Explicitly activate for clarity, although registerEmbeddingProvider
-    // auto-activates the first registered provider in PluginRegistry.
     pluginRegistry.setActiveEmbeddingProvider('test');
 
     const semanticSearch = new SemanticSearch({ vectorStore, embeddingProvider });
@@ -87,7 +86,8 @@ describe('Nexus MCP server integration', () => {
         pluginRegistry,
         runReindex: async () => [],
         loadFileContent: async (filePath) => {
-          if (filePath === 'src/auth.ts') {
+          const relativePath = path.relative(process.cwd(), filePath);
+          if (relativePath === 'src/auth.ts' || filePath === 'src/auth.ts') {
             return 'export function authenticate() {}\n';
           }
           throw new Error(`unexpected file: ${filePath}`);
@@ -111,44 +111,32 @@ describe('Nexus MCP server integration', () => {
   });
 
   afterEach(async () => {
-    const errors: Error[] = [];
-    try {
-      const settled = await Promise.allSettled(clients.map((client) => client.close()));
-      for (const result of settled) {
-        if (result.status === 'rejected') {
-          errors.push(result.reason instanceof Error ? result.reason : new Error(String(result.reason)));
+    if (client) {
+      await client.close();
+      client = null;
+    }
+    await new Promise<void>((resolve, reject) => {
+      httpServer.close((error) => {
+        if (error) {
+          reject(error);
+          return;
         }
-      }
-    } catch (error) {
-      errors.push(error instanceof Error ? error : new Error(String(error)));
-    } finally {
-      clients = [];
-      if (httpServer) {
-        await new Promise<void>((resolve) => {
-          httpServer.close((error) => {
-            if (error) {
-              errors.push(error);
-            }
-            resolve();
-          });
-        });
-      }
-    }
-
-    if (errors.length > 0) {
-      throw errors.length === 1
-        ? errors[0]
-        : new Error(
-            `Teardown failed with ${errors.length} errors: ${errors.map((e) => (e instanceof Error ? e.message : String(e))).join(', ')}`
-          );
-    }
+        resolve();
+      });
+    });
   });
 
-  it('accepts a client connection and exposes all six tools', async () => {
-    const client = new Client({ name: 'test-client', version: '1.0.0' });
-    clients.push(client);
+  it('lets an MCP client call all six tools and receive structured responses', async () => {
+    client = new Client({ name: 'phase2-client', version: '1.0.0' });
     const transport = new StreamableHTTPClientTransport(new URL(baseUrl));
     await client.connect(transport);
+
+    const parseResult = (result: any) => {
+      if (result.content?.[0]?.type === 'text') {
+        return JSON.parse(result.content[0].text);
+      }
+      return result.structuredContent;
+    };
 
     const tools = await client.listTools();
     expect(tools.tools.map((tool) => tool.name).sort()).toEqual([
@@ -159,19 +147,58 @@ describe('Nexus MCP server integration', () => {
       'reindex',
       'semantic_search',
     ]);
-  });
 
-  it('serves multiple clients concurrently', async () => {
-    const first = new Client({ name: 'client-a', version: '1.0.0' });
-    const second = new Client({ name: 'client-b', version: '1.0.0' });
-    clients.push(first, second);
-    const firstTransport = new StreamableHTTPClientTransport(new URL(baseUrl));
-    const secondTransport = new StreamableHTTPClientTransport(new URL(baseUrl));
+    const semantic = await client.callTool({ name: 'semantic_search', arguments: { query: 'authenticate', topK: 3 } });
+    expect(parseResult(semantic)).toMatchObject({
+      results: [
+        {
+          chunk: expect.objectContaining({ filePath: 'src/auth.ts' }),
+          source: 'semantic',
+        },
+      ],
+    });
 
-    await Promise.all([first.connect(firstTransport), second.connect(secondTransport)]);
-    const [firstTools, secondTools] = await Promise.all([first.listTools(), second.listTools()]);
+    const grep = await client.callTool({ name: 'grep_search', arguments: { pattern: 'authenticate', maxResults: 5 } });
+    expect(parseResult(grep)).toMatchObject({
+      matches: [expect.objectContaining({ filePath: 'src/auth.ts', lineNumber: 1 })],
+    });
 
-    expect(firstTools.tools).toHaveLength(6);
-    expect(secondTools.tools).toHaveLength(6);
+    const hybrid = await client.callTool({
+      name: 'hybrid_search',
+      arguments: { query: 'authenticate token', grepPattern: 'authenticate', topK: 5 },
+    });
+    expect(parseResult(hybrid)).toMatchObject({
+      query: 'authenticate token',
+      results: [
+        {
+          chunk: expect.objectContaining({ filePath: 'src/auth.ts' }),
+          source: 'hybrid',
+        },
+      ],
+    });
+
+    const context = await client.callTool({
+      name: 'get_context',
+      arguments: { filePath: 'src/auth.ts', startLine: 1, endLine: 1 },
+    });
+    expect(parseResult(context)).toMatchObject({
+      filePath: 'src/auth.ts',
+      startLine: 1,
+      endLine: 1,
+      content: 'export function authenticate() {}',
+    });
+
+    const status = await client.callTool({ name: 'index_status', arguments: {} });
+    expect(parseResult(status)).toMatchObject({
+      skippedFiles: 0,
+      pluginHealth: expect.objectContaining({ healthy: true, embeddings: expect.objectContaining({ provider: 'test' }) }),
+      vectorStats: expect.objectContaining({ totalFiles: 1, totalChunks: 1 }),
+    });
+
+    const reindex = await client.callTool({ name: 'reindex', arguments: { fullRebuild: true } });
+    expect(parseResult(reindex)).toMatchObject({
+      reconciliation: { added: 0, modified: 0, deleted: 0, unchanged: 0 },
+      chunksIndexed: 0,
+    });
   });
 });

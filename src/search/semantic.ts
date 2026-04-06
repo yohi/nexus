@@ -51,14 +51,14 @@ export class SemanticSearch implements ISemanticSearch {
   }
 }
 
-const escapeRegex = (value: string): string => value.replace(/[|\\{}()[\]^$+?.-]/g, '\\$&');
+const escapeRegex = (value: string): string => value.replace(/[|\\{}()[\]^$+.-]/g, '\\$&');
 
 const globToRegExp = (pattern: string): RegExp => {
   const normalized = pattern.replace(/\*\*/g, '__DOUBLE_STAR__');
   const escaped = escapeRegex(normalized)
-    .replace(/__DOUBLE_STAR__/g, '.*')
     .replace(/\*/g, '[^/]*')
-    .replace(/\?/g, '[^/]');
+    .replace(/\?/g, '[^/]')
+    .replace(/__DOUBLE_STAR__/g, '.*');
 
   return new RegExp(`^${escaped}$`);
 };

@@ -32,6 +32,7 @@ export interface IIndexPipeline {
     loadContent: ContentLoader,
     fullRebuild?: boolean,
   ): Promise<ReindexResult | { status: 'already_running' }>;
+  getSkippedFiles(): ReadonlyMap<string, string>;
 }
 
 export class IndexPipeline implements IIndexPipeline {

@@ -15,6 +15,7 @@ const pipeline = {
       chunksIndexed: 2,
     };
   },
+  getSkippedFiles: () => new Map<string, string>(),
 };
 
 describe('executeReindex', () => {
