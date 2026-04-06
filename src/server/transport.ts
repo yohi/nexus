@@ -79,7 +79,9 @@ export const createStreamableHttpHandler = ({
         const transport = new StreamableHTTPServerTransport({
           sessionIdGenerator: () => randomUUID(),
           onsessioninitialized: (createdSessionId) => {
-            sessions.set(createdSessionId, { server, transport, lastActivity: Date.now() });
+            if (entry) {
+              sessions.set(createdSessionId, entry);
+            }
           },
         });
 

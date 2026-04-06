@@ -58,21 +58,32 @@ export class SearchOrchestrator {
       throw new Error('Both semantic and grep searches failed');
     }
 
-    const grepResults = grepMatches.map((match) => ({
-      chunk: {
-        id: `${match.filePath}:${match.lineNumber}`,
-        filePath: match.filePath,
-        content: match.lineText,
-        language: inferLanguage(match.filePath),
-        symbolName: `line_${match.lineNumber}`,
-        symbolKind: 'unknown' as const,
-        startLine: match.lineNumber,
-        endLine: match.lineNumber,
-        hash: `${match.filePath}:${match.lineNumber}:${match.lineText}`,
-      },
-      score: 1,
-      source: 'grep' as const,
-    }));
+    const grepResults = grepMatches.map((match) => {
+      const matchingSemantic = semanticResults.find(
+        (s) =>
+          s.chunk.filePath === match.filePath &&
+          match.lineNumber >= s.chunk.startLine &&
+          match.lineNumber <= s.chunk.endLine,
+      );
+
+      return {
+        chunk: matchingSemantic
+          ? matchingSemantic.chunk
+          : {
+              id: `${match.filePath}:${match.lineNumber}`,
+              filePath: match.filePath,
+              content: match.lineText,
+              language: inferLanguage(match.filePath),
+              symbolName: `line_${match.lineNumber}`,
+              symbolKind: 'unknown' as const,
+              startLine: match.lineNumber,
+              endLine: match.lineNumber,
+              hash: `${match.filePath}:${match.lineNumber}:${match.lineText}`,
+            },
+        score: 1,
+        source: 'grep' as const,
+      };
+    });
 
     return {
       query: params.query,

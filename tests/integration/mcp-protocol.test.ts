@@ -1,4 +1,5 @@
 import { createServer } from 'node:http';
+import path from 'node:path';
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
@@ -34,8 +35,10 @@ const makeChunk = (overrides: Partial<CodeChunk>): CodeChunk => ({
 describe('Phase 2 MCP protocol integration', () => {
   let httpServer: ReturnType<typeof createServer>;
   let baseUrl: string;
+  let client: Client | null = null;
 
   beforeEach(async () => {
+    // ... (rest of beforeEach is unchanged)
     const metadataStore = new InMemoryMetadataStore();
     const vectorStore = new InMemoryVectorStore({ dimensions: 64 });
     await metadataStore.initialize();
@@ -83,7 +86,8 @@ describe('Phase 2 MCP protocol integration', () => {
         pluginRegistry,
         runReindex: async () => [],
         loadFileContent: async (filePath) => {
-          if (filePath === 'src/auth.ts') {
+          const relativePath = path.relative(process.cwd(), filePath);
+          if (relativePath === 'src/auth.ts' || filePath === 'src/auth.ts') {
             return 'export function authenticate() {}\n';
           }
           throw new Error(`unexpected file: ${filePath}`);
@@ -107,6 +111,10 @@ describe('Phase 2 MCP protocol integration', () => {
   });
 
   afterEach(async () => {
+    if (client) {
+      await client.close();
+      client = null;
+    }
     await new Promise<void>((resolve, reject) => {
       httpServer.close((error) => {
         if (error) {
@@ -119,9 +127,16 @@ describe('Phase 2 MCP protocol integration', () => {
   });
 
   it('lets an MCP client call all six tools and receive structured responses', async () => {
-    const client = new Client({ name: 'phase2-client', version: '1.0.0' });
+    client = new Client({ name: 'phase2-client', version: '1.0.0' });
     const transport = new StreamableHTTPClientTransport(new URL(baseUrl));
     await client.connect(transport);
+
+    const parseResult = (result: any) => {
+      if (result.content?.[0]?.type === 'text') {
+        return JSON.parse(result.content[0].text);
+      }
+      return result.structuredContent;
+    };
 
     const tools = await client.listTools();
     expect(tools.tools.map((tool) => tool.name).sort()).toEqual([
@@ -134,7 +149,7 @@ describe('Phase 2 MCP protocol integration', () => {
     ]);
 
     const semantic = await client.callTool({ name: 'semantic_search', arguments: { query: 'authenticate', topK: 3 } });
-    expect(semantic.structuredContent).toMatchObject({
+    expect(parseResult(semantic)).toMatchObject({
       results: [
         {
           chunk: expect.objectContaining({ filePath: 'src/auth.ts' }),
@@ -144,7 +159,7 @@ describe('Phase 2 MCP protocol integration', () => {
     });
 
     const grep = await client.callTool({ name: 'grep_search', arguments: { pattern: 'authenticate', maxResults: 5 } });
-    expect(grep.structuredContent).toMatchObject({
+    expect(parseResult(grep)).toMatchObject({
       matches: [expect.objectContaining({ filePath: 'src/auth.ts', lineNumber: 1 })],
     });
 
@@ -152,7 +167,7 @@ describe('Phase 2 MCP protocol integration', () => {
       name: 'hybrid_search',
       arguments: { query: 'authenticate token', grepPattern: 'authenticate', topK: 5 },
     });
-    expect(hybrid.structuredContent).toMatchObject({
+    expect(parseResult(hybrid)).toMatchObject({
       query: 'authenticate token',
       results: [
         {
@@ -166,7 +181,7 @@ describe('Phase 2 MCP protocol integration', () => {
       name: 'get_context',
       arguments: { filePath: 'src/auth.ts', startLine: 1, endLine: 1 },
     });
-    expect(context.structuredContent).toMatchObject({
+    expect(parseResult(context)).toMatchObject({
       filePath: 'src/auth.ts',
       startLine: 1,
       endLine: 1,
@@ -174,18 +189,16 @@ describe('Phase 2 MCP protocol integration', () => {
     });
 
     const status = await client.callTool({ name: 'index_status', arguments: {} });
-    expect(status.structuredContent).toMatchObject({
+    expect(parseResult(status)).toMatchObject({
       skippedFiles: 0,
       pluginHealth: expect.objectContaining({ healthy: true, embeddings: expect.objectContaining({ provider: 'test' }) }),
       vectorStats: expect.objectContaining({ totalFiles: 1, totalChunks: 1 }),
     });
 
     const reindex = await client.callTool({ name: 'reindex', arguments: { fullRebuild: true } });
-    expect(reindex.structuredContent).toMatchObject({
+    expect(parseResult(reindex)).toMatchObject({
       reconciliation: { added: 0, modified: 0, deleted: 0, unchanged: 0 },
       chunksIndexed: 0,
     });
-
-    await client.close();
   });
 });

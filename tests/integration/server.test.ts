@@ -34,8 +34,10 @@ const makeChunk = (overrides: Partial<CodeChunk>): CodeChunk => ({
 describe('Nexus MCP server integration', () => {
   let httpServer: ReturnType<typeof createServer>;
   let baseUrl: string;
+  let clients: Client[] = [];
 
   beforeEach(async () => {
+    clients = [];
     const metadataStore = new InMemoryMetadataStore();
     const vectorStore = new InMemoryVectorStore({ dimensions: 64 });
     await metadataStore.initialize();
@@ -45,6 +47,7 @@ describe('Nexus MCP server integration', () => {
     const pluginRegistry = new PluginRegistry();
     pluginRegistry.registerLanguage(new TypeScriptLanguagePlugin());
     pluginRegistry.registerEmbeddingProvider('test', embeddingProvider);
+    pluginRegistry.setActiveEmbeddingProvider('test');
 
     const semanticSearch = new SemanticSearch({ vectorStore, embeddingProvider });
     const grepEngine = new TestGrepEngine();
@@ -106,6 +109,8 @@ describe('Nexus MCP server integration', () => {
   });
 
   afterEach(async () => {
+    await Promise.all(clients.map((client) => client.close()));
+    clients = [];
     await new Promise<void>((resolve) => {
       if (!httpServer) {
         return resolve();
@@ -121,6 +126,7 @@ describe('Nexus MCP server integration', () => {
 
   it('accepts a client connection and exposes all six tools', async () => {
     const client = new Client({ name: 'test-client', version: '1.0.0' });
+    clients.push(client);
     const transport = new StreamableHTTPClientTransport(new URL(baseUrl));
     await client.connect(transport);
 
@@ -133,13 +139,12 @@ describe('Nexus MCP server integration', () => {
       'reindex',
       'semantic_search',
     ]);
-
-    await client.close();
   });
 
   it('serves multiple clients concurrently', async () => {
     const first = new Client({ name: 'client-a', version: '1.0.0' });
     const second = new Client({ name: 'client-b', version: '1.0.0' });
+    clients.push(first, second);
     const firstTransport = new StreamableHTTPClientTransport(new URL(baseUrl));
     const secondTransport = new StreamableHTTPClientTransport(new URL(baseUrl));
 
@@ -148,7 +153,5 @@ describe('Nexus MCP server integration', () => {
 
     expect(firstTools.tools).toHaveLength(6);
     expect(secondTools.tools).toHaveLength(6);
-
-    await Promise.all([first.close(), second.close()]);
   });
 });
