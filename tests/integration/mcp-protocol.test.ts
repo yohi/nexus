@@ -1,6 +1,5 @@
 import { createServer } from 'node:http';
 import fs from 'node:fs/promises';
-import os from 'node:os';
 import path from 'node:path';
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -38,13 +37,10 @@ describe('Phase 2 MCP protocol integration', () => {
   let httpServer: ReturnType<typeof createServer>;
   let baseUrl: string;
   let client: Client | null = null;
-  let projectRoot: string;
+  const fixtureRoot = path.resolve(process.cwd(), 'tests/fixtures/sample-project');
+  const authFilePath = path.join(fixtureRoot, 'src/auth.ts');
 
   beforeEach(async () => {
-    projectRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'nexus-mcp-protocol-'));
-    await fs.mkdir(path.join(projectRoot, 'src'), { recursive: true });
-    await fs.writeFile(path.join(projectRoot, 'src', 'auth.ts'), 'export function authenticate() {}\n');
-
     const metadataStore = new InMemoryMetadataStore();
     const vectorStore = new InMemoryVectorStore({ dimensions: 64 });
     await metadataStore.initialize();
@@ -68,7 +64,7 @@ describe('Phase 2 MCP protocol integration', () => {
     });
     await vectorStore.upsertChunks([chunk], await embeddingProvider.embed([chunk.content]));
 
-    const orchestrator = new SearchOrchestrator({ semanticSearch, grepEngine, projectRoot });
+    const orchestrator = new SearchOrchestrator({ semanticSearch, grepEngine, projectRoot: fixtureRoot });
     const pipeline = new IndexPipeline({
       metadataStore,
       vectorStore,
@@ -77,11 +73,11 @@ describe('Phase 2 MCP protocol integration', () => {
       pluginRegistry,
     });
 
-    const sanitizer = await PathSanitizer.create(projectRoot);
+    const sanitizer = await PathSanitizer.create(fixtureRoot);
 
     const createTestServer = () =>
       createNexusServer({
-        projectRoot,
+        projectRoot: fixtureRoot,
         sanitizer,
         semanticSearch,
         grepEngine,
@@ -91,7 +87,7 @@ describe('Phase 2 MCP protocol integration', () => {
         pipeline,
         pluginRegistry,
         runReindex: async () => [],
-        loadFileContent: async (filePath) => fs.readFile(filePath, 'utf8'),
+        loadFileContent: async (filePath) => fs.readFile(filePath === 'src/auth.ts' ? authFilePath : filePath, 'utf8'),
       });
     const handler = createStreamableHttpHandler({ createServer: createTestServer });
 
@@ -124,7 +120,6 @@ describe('Phase 2 MCP protocol integration', () => {
         resolve();
       });
     });
-    await fs.rm(projectRoot, { recursive: true, force: true });
   });
 
   it('lets an MCP client call all six tools and receive structured responses', async () => {
@@ -186,7 +181,7 @@ describe('Phase 2 MCP protocol integration', () => {
       filePath: 'src/auth.ts',
       startLine: 1,
       endLine: 1,
-      content: 'export function authenticate() {}',
+      content: "import { randomUUID } from 'node:crypto';",
     });
 
     const status = await client.callTool({ name: 'index_status', arguments: {} });
