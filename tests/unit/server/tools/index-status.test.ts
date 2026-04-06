@@ -14,6 +14,13 @@ describe('executeIndexStatus', () => {
     const registry = new PluginRegistry();
     const pipeline = {
       getSkippedFiles: () => new Map(),
+      reconcileOnStartup: async () => ({
+        startedAt: '',
+        finishedAt: '',
+        durationMs: 0,
+        reconciliation: { added: 0, modified: 0, deleted: 0, unchanged: 0 },
+        chunksIndexed: 0,
+      }),
       reindex: async () => ({ startedAt: '', finishedAt: '', durationMs: 0, reconciliation: { added: 0, modified: 0, deleted: 0, unchanged: 0 }, chunksIndexed: 0 }),
     };
     registry.registerLanguage(new TypeScriptLanguagePlugin());
