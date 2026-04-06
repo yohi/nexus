@@ -26,6 +26,7 @@ export class PathSanitizer {
    *     verifies with path.relative to ensure the resolved path stays inside projectRoot.
    * (2) Uses fs.realpath to resolve symlinks and verify the real path also remains
    *     under projectRoot via another path.relative check.
+   * If realpath fails with ENOENT, it propagates the error so callers can distinguish missing files.
    */
   async sanitize(filePath: string): Promise<string> {
     const resolvedPath = path.resolve(this.projectRoot, filePath);
@@ -54,8 +55,8 @@ export class PathSanitizer {
       return realPath;
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
-        // If the file doesn't exist yet, we still return the resolved path
-        return resolvedPath;
+        // Propagate ENOENT so callers can distinguish missing files from security violations
+        throw error;
       }
       console.error('Error during realpath resolution:', {
         error,
@@ -65,5 +66,23 @@ export class PathSanitizer {
       });
       throw error;
     }
+  }
+
+  /**
+   * Validates and normalizes a glob pattern.
+   * Rejects patterns containing directory traversal (..) by tokenizing on all possible path separators and brace expansion characters.
+   * Normalizes backslashes to forward slashes for cross-platform compatibility.
+   */
+  validateGlob(pattern: string): string {
+    const normalized = pattern.replace(/\\/g, '/');
+
+    // Tokenize on path separators, braces, and commas to prevent bypasses like "{src,../secret}"
+    const tokens = normalized.split(/[\/{},]+/);
+
+    if (tokens.includes('..')) {
+      throw new PathTraversalError(`Glob pattern '${pattern}' contains directory traversal`);
+    }
+
+    return normalized;
   }
 }
