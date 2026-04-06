@@ -76,6 +76,7 @@ export class FileWatcher {
 
     if (!accepted) {
       console.warn('Event queue rejected event (overflow):', {
+      this.options.onFullScanRequired?.();
         type,
         filePath,
         detectedAt,

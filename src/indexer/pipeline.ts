@@ -12,6 +12,7 @@ import type {
 } from '../types/index.js';
 import { RetryExhaustedError } from '../types/index.js';
 import type { PluginRegistry } from '../plugins/registry.js';
+import type { EventQueue } from './event-queue.js';
 
 interface IndexPipelineOptions {
   metadataStore: IMetadataStore;
@@ -19,6 +20,7 @@ interface IndexPipelineOptions {
   chunker: Chunker;
   embeddingProvider: EmbeddingProvider;
   pluginRegistry: PluginRegistry;
+  eventQueue?: EventQueue;
 }
 
 interface ProcessEventsResult {
@@ -82,7 +84,7 @@ export class IndexPipeline implements IIndexPipeline {
         const existingNode = this.merkleTree.getNode(event.filePath);
 
         if (existingNode?.isDirectory) {
-          await this.options.vectorStore.deleteByPathPrefix(event.filePath);
+          await this.options.vectorStore.deleteByPathPrefix(event.filePath.endsWith('/') ? event.filePath : event.filePath + '/');
           await this.options.metadataStore.deleteSubtree(event.filePath);
           await this.merkleTree.load();
         } else {
@@ -142,6 +144,10 @@ export class IndexPipeline implements IIndexPipeline {
 
         const finishedAt = new Date().toISOString();
         const durationMs = Date.now() - startTime;
+
+        if (fullRebuild && this.options.eventQueue) {
+          this.options.eventQueue.markFullScanComplete();
+        }
 
         // 計算ロジックを簡略化（必要に応じて詳細な集計を実装可能）
         const reconciliation = {
