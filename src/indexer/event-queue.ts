@@ -145,6 +145,7 @@ export class EventQueue {
 
       for (let i = 0; i < settled.length; i += 1) {
         const res = settled[i];
+        const event = events[i];
         if (res.status === 'fulfilled') {
           results.push(res.value);
         } else {
@@ -152,7 +153,7 @@ export class EventQueue {
             this.overflow = true;
             this.droppedEventCount += 1;
           } else {
-            this.reindexQueue.push(events[i]);
+            this.reindexQueue.push(event);
             if (this.size() > this.options.fullScanThreshold) {
               this.overflow = true;
             }
@@ -178,6 +179,7 @@ export class EventQueue {
 
       for (let i = 0; i < settled.length; i += 1) {
         const res = settled[i];
+        const event = events[i];
         if (res.status === 'fulfilled') {
           results.push(res.value);
         } else {
@@ -185,7 +187,7 @@ export class EventQueue {
             this.overflow = true;
             this.droppedEventCount += 1;
           } else {
-            this.watcherQueue.push(events[i]);
+            this.watcherQueue.push(event);
             if (this.size() > this.options.fullScanThreshold) {
               this.overflow = true;
             }
@@ -202,7 +204,7 @@ export class EventQueue {
     }
 
     if (firstError) {
-      throw firstError;
+      throw firstError instanceof Error ? firstError : new Error(String(firstError));
     }
 
     return results;

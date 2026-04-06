@@ -17,7 +17,11 @@ export interface SemanticSearchOptions {
   embeddingProvider: EmbeddingProvider;
 }
 
-export class SemanticSearch {
+export interface ISemanticSearch {
+  search(params: SemanticSearchParams): Promise<SearchResult[]>;
+}
+
+export class SemanticSearch implements ISemanticSearch {
   constructor(private readonly options: SemanticSearchOptions) {}
 
   async search(params: SemanticSearchParams): Promise<SearchResult[]> {

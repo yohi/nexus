@@ -61,4 +61,3 @@ export class RipgrepEngine implements IGrepEngine {
     };
   }
 }
-
