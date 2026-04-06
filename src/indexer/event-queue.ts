@@ -146,9 +146,6 @@ export class EventQueue {
       for (let i = 0; i < settled.length; i += 1) {
         const res = settled[i];
         const event = events[i];
-        if (res === undefined || event === undefined) {
-          continue;
-        }
         if (res.status === 'fulfilled') {
           results.push(res.value);
         } else {
@@ -183,9 +180,6 @@ export class EventQueue {
       for (let i = 0; i < settled.length; i += 1) {
         const res = settled[i];
         const event = events[i];
-        if (res === undefined || event === undefined) {
-          continue;
-        }
         if (res.status === 'fulfilled') {
           results.push(res.value);
         } else {
@@ -210,7 +204,7 @@ export class EventQueue {
     }
 
     if (firstError) {
-      throw firstError;
+      throw firstError instanceof Error ? firstError : new Error(String(firstError));
     }
 
     return results;

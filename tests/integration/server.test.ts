@@ -14,6 +14,7 @@ import { InMemoryMetadataStore } from '../unit/storage/in-memory-metadata-store.
 import { InMemoryVectorStore } from '../unit/storage/in-memory-vector-store.js';
 import { TestGrepEngine } from '../unit/search/test-grep-engine.js';
 import { IndexPipeline } from '../../src/indexer/pipeline.js';
+import { PathSanitizer } from '../../src/server/path-sanitizer.js';
 import { Chunker } from '../../src/indexer/chunker.js';
 import { TypeScriptLanguagePlugin } from '../../src/plugins/languages/typescript.js';
 import type { CodeChunk } from '../../src/types/index.js';
@@ -66,9 +67,12 @@ describe('Nexus MCP server integration', () => {
       pluginRegistry,
     });
 
+    const sanitizer = await PathSanitizer.create(process.cwd());
+
     const createTestServer = () =>
       createNexusServer({
         projectRoot: process.cwd(),
+        sanitizer,
         semanticSearch,
         grepEngine,
         orchestrator,
@@ -102,11 +106,13 @@ describe('Nexus MCP server integration', () => {
   });
 
   afterEach(async () => {
-    await new Promise<void>((resolve, reject) => {
+    await new Promise<void>((resolve) => {
+      if (!httpServer) {
+        return resolve();
+      }
       httpServer.close((error) => {
         if (error) {
-          reject(error);
-          return;
+          console.error('Failed to close test HTTP server:', error);
         }
         resolve();
       });

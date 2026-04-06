@@ -1,10 +1,10 @@
 import type { SearchResult } from '../../types/index.js';
-import type { SemanticSearch, SemanticSearchParams } from '../../search/semantic.js';
+import type { ISemanticSearch, SemanticSearchParams } from '../../search/semantic.js';
 
 export interface SemanticSearchToolArgs extends SemanticSearchParams {}
 
 export const executeSemanticSearch = async (
-  semanticSearch: SemanticSearch,
+  semanticSearch: ISemanticSearch,
   args: SemanticSearchToolArgs,
 ): Promise<{ results: SearchResult[] }> => ({
   results: await semanticSearch.search(args),

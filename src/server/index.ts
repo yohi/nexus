@@ -1,11 +1,12 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
-import * as z from 'zod/v4';
+import { z } from 'zod';
 
-import type { IndexPipeline } from '../indexer/pipeline.js';
+import type { IIndexPipeline } from '../indexer/pipeline.js';
 import type { PluginRegistry } from '../plugins/registry.js';
 import type { SearchOrchestrator } from '../search/orchestrator.js';
-import type { SemanticSearch } from '../search/semantic.js';
-import type { IMetadataStore, IVectorStore, IGrepEngine, IndexEvent } from '../types/index.js';
+import type { ISemanticSearch } from '../search/semantic.js';
+import type { IMetadataStore, IVectorStore, IGrepEngine, IndexEvent, ReindexOptions } from '../types/index.js';
+import type { PathSanitizer } from './path-sanitizer.js';
 import { executeGetContext } from './tools/get-context.js';
 import { executeGrepSearch } from './tools/grep-search.js';
 import { executeHybridSearch } from './tools/hybrid-search.js';
@@ -15,14 +16,15 @@ import { executeSemanticSearch } from './tools/semantic-search.js';
 
 export interface NexusServerOptions {
   projectRoot: string;
-  semanticSearch: SemanticSearch;
+  sanitizer: PathSanitizer;
+  semanticSearch: ISemanticSearch;
   grepEngine: IGrepEngine;
   orchestrator: SearchOrchestrator;
   vectorStore: IVectorStore;
   metadataStore: IMetadataStore;
-  pipeline: IndexPipeline;
+  pipeline: IIndexPipeline;
   pluginRegistry: PluginRegistry;
-  runReindex: () => Promise<IndexEvent[]>;
+  runReindex: (options?: ReindexOptions) => Promise<IndexEvent[]>;
   loadFileContent: (filePath: string) => Promise<string>;
 }
 
@@ -94,7 +96,7 @@ export const createNexusServer = (options: NexusServerOptions): McpServer => {
         endLine: z.number().int().positive().optional(),
       },
     },
-    async (args) => toolResult(await executeGetContext(options.loadFileContent, args)),
+    async (args) => toolResult(await executeGetContext(options.loadFileContent, options.sanitizer, args)),
   );
 
   server.registerTool(
@@ -129,12 +131,27 @@ export const createNexusServer = (options: NexusServerOptions): McpServer => {
   return server;
 };
 
-const toolResult = <T extends object>(structuredContent: T) => ({
-  content: [
-    {
-      type: 'text' as const,
-      text: JSON.stringify(structuredContent, null, 2),
-    },
-  ],
-  structuredContent: structuredContent as Record<string, unknown>,
-});
+const toolResult = <T extends object>(structuredContent: T) => {
+  try {
+    return {
+      content: [
+        {
+          type: 'text' as const,
+          text: JSON.stringify(structuredContent, null, 2),
+        },
+      ],
+      structuredContent: structuredContent as Record<string, unknown>,
+    };
+  } catch (error) {
+    const errorMessage = error instanceof Error ? error.message : String(error);
+    return {
+      content: [
+        {
+          type: 'text' as const,
+          text: `Failed to serialize structuredContent: ${errorMessage}`,
+        },
+      ],
+      structuredContent: { error: true, message: errorMessage, originalType: typeof structuredContent },
+    };
+  }
+};
