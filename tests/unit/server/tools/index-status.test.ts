@@ -7,16 +7,15 @@ import { TestEmbeddingProvider } from '../../../unit/plugins/embeddings/test-emb
 import { InMemoryMetadataStore } from '../../../unit/storage/in-memory-metadata-store.js';
 import { InMemoryVectorStore } from '../../../unit/storage/in-memory-vector-store.js';
 
-const pipeline = {
-  getSkippedFiles: () => new Map([['src/auth.ts', 'embed failed']]),
-  reindex: async () => ({ startedAt: '', finishedAt: '', durationMs: 0, reconciliation: { added: 0, modified: 0, deleted: 0, unchanged: 0 }, chunksIndexed: 0 }),
-};
-
 describe('executeIndexStatus', () => {
-  it('aggregates metadata, vector stats, skipped files, and plugin health', async () => {
+  it('aggregates metadata, vector stats, DLQ-backed skipped files, and plugin health', async () => {
     const metadataStore = new InMemoryMetadataStore();
     const vectorStore = new InMemoryVectorStore({ dimensions: 64 });
     const registry = new PluginRegistry();
+    const pipeline = {
+      getSkippedFiles: () => new Map(),
+      reindex: async () => ({ startedAt: '', finishedAt: '', durationMs: 0, reconciliation: { added: 0, modified: 0, deleted: 0, unchanged: 0 }, chunksIndexed: 0 }),
+    };
     registry.registerLanguage(new TypeScriptLanguagePlugin());
     registry.registerEmbeddingProvider('test', new TestEmbeddingProvider());
 
@@ -30,6 +29,18 @@ describe('executeIndexStatus', () => {
       lastFullScanAt: null,
       overflowCount: 0,
     });
+    await metadataStore.upsertDeadLetterEntries([
+      {
+        id: 'dlq-1',
+        filePath: 'src/auth.ts',
+        contentHash: 'hash-1',
+        errorMessage: 'embed failed',
+        attempts: 3,
+        createdAt: '2026-04-07T00:00:00.000Z',
+        updatedAt: '2026-04-07T00:00:00.000Z',
+        lastRetryAt: null,
+      },
+    ]);
 
     const result = await executeIndexStatus(metadataStore, vectorStore, pipeline, registry);
 
