@@ -12,7 +12,7 @@
     "test": "vitest run --passWithNoTests",
     "license:check": "node scripts/license-check.mjs",
     "license:report": "license-checker --production --json --out reports/licenses.json",
-    "license:notice": "generate-license-file --input package-lock.json --output notices/THIRD_PARTY_LICENSES.txt"
+    "license:notice": "generate-license-file --input package-lock.json --output NOTICE"
   },
   "dependencies": {
     "@lancedb/lancedb": "^0.18.2",
