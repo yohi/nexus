@@ -152,6 +152,7 @@ export interface GrepParams {
   caseSensitive?: boolean;
   contextLines?: number;
   maxResults?: number;
+  abortSignal?: AbortSignal;
 }
 
 export interface GrepMatch {

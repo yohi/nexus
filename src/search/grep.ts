@@ -38,12 +38,19 @@ export class RipgrepEngine implements IGrepEngine {
 
   private async execute(params: GrepParams): Promise<GrepMatch[]> {
     const controller = new AbortController();
+    const signals = [controller.signal];
+
+    if (params.abortSignal) {
+      signals.push(params.abortSignal);
+    }
+
+    const signal = signals.length === 1 ? controller.signal : AbortSignal.any(signals);
     const timeoutId = setTimeout(() => controller.abort(), this.timeoutMs);
 
     try {
-      return await this.spawnImpl(this.normalizeParams(params), controller.signal);
+      return await this.spawnImpl(this.normalizeParams(params), signal);
     } catch (error) {
-      if (controller.signal.aborted) {
+      if (signal.aborted) {
         return [];
       }
       throw error;
@@ -58,6 +65,7 @@ export class RipgrepEngine implements IGrepEngine {
       cwd: this.options.projectRoot,
       query: params.query,
       maxResults: params.maxResults ?? DEFAULT_MAX_RESULTS,
+      abortSignal: params.abortSignal,
     };
   }
 }
