@@ -97,7 +97,7 @@ class TypeScriptParser {
             if (ts.isIdentifier(declaration.name)) {
               const varName = declaration.name.text;
               const { startLine, endLine } = getLineRange(sourceFile, declaration);
-              const content = sourceFile.getFullText().slice(declaration.getStart(), declaration.getEnd()).trim();
+              const content = sourceFile.getFullText().slice(declaration.getFullStart(), declaration.getEnd()).trim();
 
               let varType: SymbolKind = 'variable';
               if (declaration.initializer) {
