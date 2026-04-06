@@ -61,6 +61,7 @@ export class RipgrepEngine implements IGrepEngine {
     const processController = this.createProcessController?.() ?? this.processController;
     const timeoutController = new AbortController();
     let timedOut = false;
+    let settledViaAbort = false;
     let escalationId: ReturnType<typeof setTimeout> | undefined;
     const timeoutId = setTimeout(() => {
       timedOut = true;
@@ -78,15 +79,13 @@ export class RipgrepEngine implements IGrepEngine {
       return await this.spawnImpl(this.normalizeParams(params), combinedSignal);
     } catch (error) {
       if (combinedSignal.aborted) {
+        settledViaAbort = true;
         return [];
       }
       throw error;
     } finally {
       clearTimeout(timeoutId);
-      if (!timedOut && escalationId) {
-        clearTimeout(escalationId);
-      }
-      if (!timedOut && combinedSignal.aborted && escalationId) {
+      if (escalationId && (!timedOut || !settledViaAbort)) {
         clearTimeout(escalationId);
       }
     }
