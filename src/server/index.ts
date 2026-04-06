@@ -150,15 +150,20 @@ export const createNexusServer = (options: NexusServerOptions): McpServer => {
       description: 'Return index state and statistics',
       inputSchema: {},
     },
-    async () =>
-      toolResult(
-        await executeIndexStatus(
-          options.metadataStore,
-          options.vectorStore,
-          options.pipeline,
-          options.pluginRegistry,
-        ),
-      ),
+    async () => {
+      try {
+        return toolResult(
+          await executeIndexStatus(
+            options.metadataStore,
+            options.vectorStore,
+            options.pipeline,
+            options.pluginRegistry,
+          ),
+        );
+      } catch (error) {
+        return errorResult(error);
+      }
+    },
   );
 
   server.registerTool(
