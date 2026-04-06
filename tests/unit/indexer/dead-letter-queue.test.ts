@@ -127,4 +127,20 @@ describe('DeadLetterQueue', () => {
     );
     await expect(metadataStore.getDeadLetterEntries()).resolves.toEqual([]);
   });
+
+  it('returns a no-op stopper when recovery loop is started twice', () => {
+    vi.useFakeTimers();
+    const metadataStore = new InMemoryMetadataStore();
+    const queue = new DeadLetterQueue({
+      metadataStore,
+    });
+
+    const stopFirst = queue.startRecoveryLoop(60_000);
+    const stopSecond = queue.startRecoveryLoop(60_000);
+
+    expect(stopSecond).not.toBe(stopFirst);
+    stopSecond();
+    stopFirst();
+    vi.useRealTimers();
+  });
 });

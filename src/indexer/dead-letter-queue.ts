@@ -39,6 +39,8 @@ export class DeadLetterQueue {
 
   private loaded = false;
 
+  private recoveryInterval: ReturnType<typeof setInterval> | undefined;
+
   constructor(private readonly options: DeadLetterQueueOptions) {
     this.maxEntries = options.maxEntries ?? 1000;
     this.ttlMs = options.ttlMs ?? 24 * 60 * 60 * 1000;
@@ -143,6 +145,25 @@ export class DeadLetterQueue {
     }
 
     return { retried, removed, skipped };
+  }
+
+  startRecoveryLoop(intervalMs = 60_000): () => void {
+    if (this.recoveryInterval !== undefined) {
+      return () => undefined;
+    }
+
+    this.recoveryInterval = setInterval(() => {
+      void this.recoverySweep().catch((error) => {
+        this.logger.error('DLQ recovery sweep failed', error);
+      });
+    }, intervalMs);
+
+    return () => {
+      if (this.recoveryInterval !== undefined) {
+        clearInterval(this.recoveryInterval);
+        this.recoveryInterval = undefined;
+      }
+    };
   }
 
   private async removeEntries(ids: string[]): Promise<void> {
