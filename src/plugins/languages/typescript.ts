@@ -52,9 +52,12 @@ class TypeScriptParser {
       } else if (ts.isExportAssignment(node)) {
         // Handle export default expressions
         const expression = node.expression;
-        if (ts.isFunctionExpression(expression) || ts.isArrowFunction(expression)) {
+        if (ts.isFunctionExpression(expression)) {
           type = 'function';
           name = expression.name ? expression.name.text : '<anonymous>';
+        } else if (ts.isArrowFunction(expression)) {
+          type = 'function';
+          name = '<anonymous>';
         } else if (ts.isClassExpression(expression)) {
           type = 'class';
           name = expression.name ? expression.name.text : '<anonymous>';
@@ -117,20 +120,23 @@ class TypeScriptParser {
     visit(sourceFile);
 
     if (importNodes.length > 0) {
-      const firstImport = importNodes[0]!;
-      const lastImport = importNodes[importNodes.length - 1]!;
-      const { startLine } = getLineRange(sourceFile, firstImport);
-      const { endLine } = getLineRange(sourceFile, lastImport);
+      const firstImport = importNodes[0];
+      const lastImport = importNodes[importNodes.length - 1];
 
-      declarations.push({
-        type: 'import',
-        name: 'imports',
-        startLine,
-        endLine,
-        content: importNodes
-          .map((n) => sourceFile.getFullText().slice(n.getFullStart(), n.getEnd()).trim())
-          .join('\n'),
-      });
+      if (firstImport && lastImport) {
+        const { startLine } = getLineRange(sourceFile, firstImport);
+        const { endLine } = getLineRange(sourceFile, lastImport);
+
+        declarations.push({
+          type: 'import',
+          name: 'imports',
+          startLine,
+          endLine,
+          content: importNodes
+            .map((n) => sourceFile.getFullText().slice(n.getFullStart(), n.getEnd()).trim())
+            .join('\n'),
+        });
+      }
     }
 
     declarations.sort((left, right) => left.startLine - right.startLine);

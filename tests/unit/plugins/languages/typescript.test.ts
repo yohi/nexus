@@ -55,4 +55,41 @@ describe('TypeScriptLanguagePlugin', () => {
     const symbols = result.declarations.map(d => ({ type: d.type, name: d.name }));
     expect(symbols).toContainEqual({ type: 'function', name: 'myHOC' });
   });
+
+  it('handles ExportAssignment with function expressions and arrow functions', async () => {
+    const plugin = new TypeScriptLanguagePlugin();
+    const parser = await plugin.createParser();
+    
+    const content = `
+      export default () => { return 2; };
+    `;
+    const result = await parser.parse({ filePath: 'test.ts', language: 'typescript', content });
+    expect(result.declarations).toContainEqual(expect.objectContaining({ type: 'function', name: '<anonymous>' }));
+
+    const content2 = `
+      export default function() { return 3; };
+    `;
+    const result2 = await parser.parse({ filePath: 'test.ts', language: 'typescript', content: content2 });
+    expect(result2.declarations).toContainEqual(expect.objectContaining({ type: 'function', name: '<anonymous>' }));
+  });
+
+  it('aggregates imports into a single declaration safely', async () => {
+    const plugin = new TypeScriptLanguagePlugin();
+    const parser = await plugin.createParser();
+    
+    const content = `
+      import { a } from 'a';
+      import { b } from 'b';
+      
+      export const x = 1;
+      
+      import { c } from 'c';
+    `;
+    const result = await parser.parse({ filePath: 'test.ts', language: 'typescript', content });
+    const importSymbol = result.declarations.find(d => d.type === 'import');
+    expect(importSymbol).toBeDefined();
+    expect(importSymbol?.name).toBe('imports');
+    expect(importSymbol?.content).toContain("import { a } from 'a';");
+    expect(importSymbol?.content).toContain("import { c } from 'c';");
+  });
 });
