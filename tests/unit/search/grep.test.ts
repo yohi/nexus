@@ -71,12 +71,44 @@ describe('RipgrepEngine', () => {
       projectRoot: process.cwd(),
       grepMaxConcurrency: 1,
       grepTimeoutMs: 50,
+      killGraceMs: 1000,
       spawn: spawnImpl,
     });
 
-    const searchPromise = engine.search({ query: 'alpha', cwd: process.cwd() });
+    const searchPromise = engine.search({ query: 'alpha', cwd: process.cwd() } as any);
     await vi.advanceTimersByTimeAsync(50);
 
     await expect(searchPromise).resolves.toEqual([]);
+  });
+
+  it('propagates client abort signals to the spawned grep process', async () => {
+    const spawnImpl = vi.fn(async (_params, signal: AbortSignal) => {
+      await new Promise<void>((resolve) => {
+        signal.addEventListener('abort', () => resolve(), { once: true });
+      });
+
+      return [];
+    });
+
+    const engine = new RipgrepEngine({
+      projectRoot: process.cwd(),
+      grepMaxConcurrency: 1,
+      grepTimeoutMs: 1_000,
+      spawn: spawnImpl,
+    });
+
+    const controller = new AbortController();
+    const searchPromise = engine.search({
+      query: 'alpha',
+      cwd: process.cwd(),
+      abortSignal: controller.signal,
+    });
+
+    await vi.waitFor(() => expect(spawnImpl).toHaveBeenCalledOnce());
+    controller.abort();
+
+    await expect(searchPromise).resolves.toEqual([]);
+    expect(spawnImpl).toHaveBeenCalledOnce();
+    expect(spawnImpl.mock.calls[0]?.[1].aborted).toBe(true);
   });
 });

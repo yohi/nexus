@@ -1,4 +1,5 @@
 import { createServer } from 'node:http';
+import fs from 'node:fs/promises';
 import path from 'node:path';
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -36,9 +37,10 @@ describe('Phase 2 MCP protocol integration', () => {
   let httpServer: ReturnType<typeof createServer>;
   let baseUrl: string;
   let client: Client | null = null;
+  const fixtureRoot = path.resolve(process.cwd(), 'tests/fixtures/sample-project');
+  const authFilePath = path.join(fixtureRoot, 'src/auth.ts');
 
   beforeEach(async () => {
-    // ... (rest of beforeEach is unchanged)
     const metadataStore = new InMemoryMetadataStore();
     const vectorStore = new InMemoryVectorStore({ dimensions: 64 });
     await metadataStore.initialize();
@@ -62,7 +64,7 @@ describe('Phase 2 MCP protocol integration', () => {
     });
     await vectorStore.upsertChunks([chunk], await embeddingProvider.embed([chunk.content]));
 
-    const orchestrator = new SearchOrchestrator({ semanticSearch, grepEngine, projectRoot: process.cwd() });
+    const orchestrator = new SearchOrchestrator({ semanticSearch, grepEngine, projectRoot: fixtureRoot });
     const pipeline = new IndexPipeline({
       metadataStore,
       vectorStore,
@@ -71,11 +73,11 @@ describe('Phase 2 MCP protocol integration', () => {
       pluginRegistry,
     });
 
-    const sanitizer = await PathSanitizer.create(process.cwd());
+    const sanitizer = await PathSanitizer.create(fixtureRoot);
 
     const createTestServer = () =>
       createNexusServer({
-        projectRoot: process.cwd(),
+        projectRoot: fixtureRoot,
         sanitizer,
         semanticSearch,
         grepEngine,
@@ -85,13 +87,7 @@ describe('Phase 2 MCP protocol integration', () => {
         pipeline,
         pluginRegistry,
         runReindex: async () => [],
-        loadFileContent: async (filePath) => {
-          const relativePath = path.relative(process.cwd(), filePath);
-          if (relativePath === 'src/auth.ts' || filePath === 'src/auth.ts') {
-            return 'export function authenticate() {}\n';
-          }
-          throw new Error(`unexpected file: ${filePath}`);
-        },
+        loadFileContent: async (filePath) => fs.readFile(filePath === 'src/auth.ts' ? authFilePath : filePath, 'utf8'),
       });
     const handler = createStreamableHttpHandler({ createServer: createTestServer });
 
@@ -185,7 +181,7 @@ describe('Phase 2 MCP protocol integration', () => {
       filePath: 'src/auth.ts',
       startLine: 1,
       endLine: 1,
-      content: 'export function authenticate() {}',
+      content: "import { randomUUID } from 'node:crypto';",
     });
 
     const status = await client.callTool({ name: 'index_status', arguments: {} });
