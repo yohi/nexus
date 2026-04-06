@@ -160,12 +160,12 @@ describe('loadConfig', () => {
     const config = await loadConfig({
       projectRoot: tempDir,
       env: {
-        NEXUS_EMBEDDING_PROVIDER: '  ollama  ',
+        NEXUS_EMBEDDING_PROVIDER: '  test  ',
         NEXUS_EMBEDDING_MODEL: '  nomic-embed-text  ',
       },
     });
 
-    expect(config.embedding.provider).toBe('ollama');
+    expect(config.embedding.provider).toBe('test');
     expect(config.embedding.model).toBe('nomic-embed-text');
     expect(config.embedding.apiKey).toBe('secret-key');
   });

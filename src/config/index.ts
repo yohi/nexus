@@ -117,11 +117,15 @@ const validateNonNegativeInt = (value: unknown): number | undefined =>
   typeof value === 'number' && Number.isInteger(value) && value >= 0 ? value : undefined;
 
 const asProvider = (value: string | undefined): EmbeddingConfig['provider'] | undefined => {
-  return isProvider(value) ? value : undefined;
+  if (typeof value !== 'string') return undefined;
+  const trimmed = value.trim();
+  return isProvider(trimmed) ? trimmed : undefined;
 };
 
 const validateProvider = (value: unknown): EmbeddingConfig['provider'] | undefined => {
-  return isProvider(value) ? value : undefined;
+  if (typeof value !== 'string') return undefined;
+  const trimmed = value.trim();
+  return isProvider(trimmed) ? trimmed : undefined;
 };
 
 const isProvider = (value: unknown): value is EmbeddingConfig['provider'] => {

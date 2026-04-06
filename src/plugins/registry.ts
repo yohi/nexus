@@ -100,9 +100,9 @@ export class EmbeddingProviderRegistry {
 }
 
 export class PluginRegistry {
-  readonly languages = new LanguageRegistry();
+  private readonly languages = new LanguageRegistry();
 
-  readonly embeddings = new EmbeddingProviderRegistry();
+  private readonly embeddings = new EmbeddingProviderRegistry();
 
   registerLanguage(plugin: LanguagePlugin): void {
     this.languages.register(plugin);
@@ -124,17 +124,36 @@ export class PluginRegistry {
     this.embeddings.setActive(name);
   }
 
+  getActiveEmbeddingProviderName(): string | undefined {
+    return this.embeddings.getActiveName();
+  }
+
+  getRegisteredEmbeddingProviderNames(): string[] {
+    return this.embeddings.getRegisteredProviderNames();
+  }
+
   /**
    * Performs a health check on all registered plugins and providers.
    */
   async healthCheck(): Promise<HealthCheckResult> {
-    const provider = this.embeddings.getActive();
+    const activeProvider = this.embeddings.getActive();
+    const activeProviderName = this.embeddings.getActiveName();
     let embeddingHealthy = false;
-    if (provider) {
+
+    if (activeProvider) {
+      let timer: ReturnType<typeof setTimeout> | undefined;
       try {
-        embeddingHealthy = await provider.healthCheck();
+        // Race the health check against a 5-second timeout
+        embeddingHealthy = await Promise.race([
+          activeProvider.healthCheck(),
+          new Promise<boolean>((resolve) => {
+            timer = setTimeout(() => resolve(false), 5000);
+          }),
+        ]);
       } catch {
         embeddingHealthy = false;
+      } finally {
+        if (timer) clearTimeout(timer);
       }
     }
 
@@ -147,7 +166,7 @@ export class PluginRegistry {
         healthy: languagesHealthy,
       },
       embeddings: {
-        provider: this.embeddings.getActiveName(),
+        provider: activeProviderName,
         healthy: embeddingHealthy,
       },
       healthy: languagesHealthy && embeddingHealthy,

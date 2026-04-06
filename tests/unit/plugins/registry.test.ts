@@ -73,7 +73,7 @@ describe('PluginRegistry', () => {
 
   it('returns undefined for active provider name when none is registered', () => {
     const registry = new PluginRegistry();
-    expect(registry.embeddings.getActiveName()).toBe(undefined);
+    expect(registry.getActiveEmbeddingProviderName()).toBe(undefined);
   });
 
   it('lists registered embedding provider names', () => {
@@ -81,7 +81,7 @@ describe('PluginRegistry', () => {
     registry.registerEmbeddingProvider('ollama', new TestEmbeddingProvider());
     registry.registerEmbeddingProvider('openai', new TestEmbeddingProvider());
 
-    const names = registry.embeddings.getRegisteredProviderNames();
+    const names = registry.getRegisteredEmbeddingProviderNames();
     expect(names).toContain('ollama');
     expect(names).toContain('openai');
     expect(names.length).toBe(2);
