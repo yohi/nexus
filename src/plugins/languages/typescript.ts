@@ -2,7 +2,7 @@ import ts from 'typescript';
 import type { FileToChunk, LanguagePlugin, ParsedDeclaration, ParsedSourceFile, SymbolKind } from '../../types/index.js';
 
 const getLineRange = (sourceFile: ts.SourceFile, node: ts.Node): { startLine: number; endLine: number } => {
-  const startLine = sourceFile.getLineAndCharacterOfPosition(node.getStart(sourceFile, true)).line + 1;
+  const startLine = sourceFile.getLineAndCharacterOfPosition(node.getFullStart()).line + 1;
   const endLine = sourceFile.getLineAndCharacterOfPosition(node.getEnd()).line + 1;
   return { startLine, endLine };
 };
@@ -22,12 +22,12 @@ class TypeScriptParser {
       } else if (ts.isInterfaceDeclaration(node)) {
         type = 'interface';
         name = node.name.text;
-      } else if (ts.isFunctionDeclaration(node) && node.name && node.body) {
+      } else if (ts.isFunctionDeclaration(node) && node.body) {
         type = 'function';
-        name = node.name.text;
-      } else if (ts.isClassDeclaration(node) && node.name) {
+        name = node.name ? node.name.text : '<anonymous>';
+      } else if (ts.isClassDeclaration(node)) {
         type = 'class';
-        name = node.name.text;
+        name = node.name ? node.name.text : '<anonymous>';
       } else if (ts.isMethodDeclaration(node) && ts.isIdentifier(node.name) && node.body) {
         type = 'method';
         name = node.name.text;
@@ -49,6 +49,22 @@ class TypeScriptParser {
       } else if (ts.isModuleDeclaration(node)) {
         type = 'namespace';
         name = node.name.text;
+      } else if (ts.isExportAssignment(node)) {
+        // Handle export default expressions
+        const expression = node.expression;
+        if (ts.isFunctionExpression(expression) || ts.isArrowFunction(expression)) {
+          type = 'function';
+          name = expression.name ? expression.name.text : '<anonymous>';
+        } else if (ts.isClassExpression(expression)) {
+          type = 'class';
+          name = expression.name ? expression.name.text : '<anonymous>';
+        } else if (ts.isIdentifier(expression)) {
+          type = 'expression';
+          name = expression.text;
+        } else {
+          type = 'expression';
+          name = '<anonymous>';
+        }
       } else if (ts.isVariableStatement(node)) {
         const isExported = node.modifiers?.some((m) => m.kind === ts.SyntaxKind.ExportKeyword);
         if (isExported) {
