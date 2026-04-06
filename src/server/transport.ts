@@ -25,6 +25,7 @@ interface SessionEntry {
   server: McpServer;
   transport: StreamableHTTPServerTransport;
   lastActivity: number;
+  closed: boolean;
 }
 
 export const createStreamableHttpHandler = ({
@@ -34,12 +35,22 @@ export const createStreamableHttpHandler = ({
 }: StreamableHttpHandlerOptions) => {
   const sessions = new Map<string, SessionEntry>();
 
+  const closeEntry = async (sessionId: string, entry: SessionEntry): Promise<void> => {
+    if (entry.closed) {
+      sessions.delete(sessionId);
+      return;
+    }
+
+    entry.closed = true;
+    sessions.delete(sessionId);
+    await entry.server.close();
+  };
+
   const interval = setInterval(() => {
     const now = Date.now();
     for (const [sessionId, entry] of sessions.entries()) {
       if (now - entry.lastActivity > sessionIdleTimeoutMs) {
-        sessions.delete(sessionId);
-        void entry.server.close();
+        void closeEntry(sessionId, entry);
       }
     }
   }, sessionCleanupIntervalMs);
@@ -66,7 +77,12 @@ export const createStreamableHttpHandler = ({
       let entry = sessionId ? sessions.get(sessionId) : undefined;
 
       if (entry) {
+        if (entry.closed) {
+          sessions.delete(sessionId!);
+          entry = undefined;
+        } else {
         entry.lastActivity = Date.now();
+        }
       } else {
         if (!isInitializeRequest(body)) {
           res.statusCode = 400;
@@ -76,28 +92,45 @@ export const createStreamableHttpHandler = ({
         }
 
         const server = createServer();
+        let createdEntry: SessionEntry | undefined;
         const transport = new StreamableHTTPServerTransport({
           sessionIdGenerator: () => randomUUID(),
           onsessioninitialized: (createdSessionId) => {
-            if (entry) {
-              sessions.set(createdSessionId, entry);
+            if (createdEntry) {
+              sessions.set(createdSessionId, createdEntry);
             }
           },
         });
 
+        createdEntry = {
+          server,
+          transport,
+          lastActivity: Date.now(),
+          closed: false,
+        };
+
         transport.onclose = () => {
+          createdEntry.closed = true;
           const activeId = transport.sessionId;
           if (activeId) {
             sessions.delete(activeId);
           }
-          void server.close();
         };
 
         await server.connect(transport);
-        entry = { server, transport, lastActivity: Date.now() };
+        entry = createdEntry;
+      }
+
+      if (!entry) {
+        throw new HttpError(400, 'invalid session');
       }
 
       await entry.transport.handleRequest(req, res, body);
+
+      const activeSessionId = entry.transport.sessionId;
+      if (activeSessionId && !entry.closed) {
+        sessions.set(activeSessionId, entry);
+      }
     } catch (error) {
       const statusCode = error instanceof HttpError ? error.statusCode : 500;
       res.statusCode = statusCode;
