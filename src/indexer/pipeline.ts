@@ -66,7 +66,7 @@ export class IndexPipeline implements IIndexPipeline {
 
     for (const candidate of renameCandidates) {
       await this.options.vectorStore.renameFilePath(candidate.oldPath, candidate.newPath);
-      await this.options.metadataStore.renamePath(candidate.oldPath, candidate.newPath, candidate.hash);
+      await this.merkleTree.move(candidate.oldPath, candidate.newPath, candidate.hash);
     }
 
     if (renameCandidates.length > 0) {
