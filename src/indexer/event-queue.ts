@@ -7,6 +7,7 @@ export interface EventQueueOptions {
   maxQueueSize: number;
   fullScanThreshold: number;
   concurrency: number;
+  onFullScanRequired?: () => void;
 }
 
 export type QueueEvent = IndexEvent | ReindexQueueEvent;
@@ -214,6 +215,7 @@ export class EventQueue {
       this.flushTimers();
       this.debouncedEvents.clear();
       this.state = 'full_scan';
+      this.options.onFullScanRequired?.();
     }
 
     if (firstError) {
