@@ -110,6 +110,7 @@ export interface IVectorStore {
   upsertChunks(chunks: CodeChunk[], embeddings?: number[][]): Promise<void>;
   deleteByFilePath(filePath: string): Promise<number>;
   deleteByPathPrefix(pathPrefix: string): Promise<number>;
+  renameFilePath(oldPath: string, newPath: string): Promise<number>;
   search(queryVector: number[], topK: number, filter?: VectorFilter): Promise<VectorSearchResult[]>;
   compactIfNeeded(config?: Partial<CompactionConfig>): Promise<CompactionResult>;
   scheduleIdleCompaction(runCompaction: () => Promise<void>, delayMs?: number): void;
@@ -137,6 +138,7 @@ export interface IMetadataStore {
   bulkUpsertMerkleNodes(nodes: MerkleNodeRow[]): Promise<void>;
   bulkDeleteMerkleNodes(paths: string[]): Promise<void>;
   deleteSubtree(pathPrefix: string): Promise<number>;
+  renamePath(oldPath: string, newPath: string, hash: string): Promise<void>;
   getMerkleNode(path: string): Promise<MerkleNodeRow | null>;
   getAllNodes(): Promise<MerkleNodeRow[]>;
   getAllFileNodes(): Promise<MerkleNodeRow[]>;

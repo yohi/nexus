@@ -112,6 +112,34 @@ export class LanceVectorStore implements IVectorStore {
     return deleted;
   }
 
+  async renameFilePath(oldPath: string, newPath: string): Promise<number> {
+    await this.asyncBoundary();
+    let renamed = 0;
+
+    for (const [id, row] of [...this.rows.entries()]) {
+      if (row.chunk.filePath !== oldPath || row.deleted) {
+        continue;
+      }
+
+      const nextChunk = {
+        ...row.chunk,
+        id: row.chunk.id.replace(oldPath, newPath),
+        filePath: newPath,
+        hash: row.chunk.hash.replace(oldPath, newPath),
+      };
+
+      this.rows.delete(id);
+      this.rows.set(nextChunk.id, {
+        chunk: nextChunk,
+        vector: row.vector,
+        deleted: false,
+      });
+      renamed += 1;
+    }
+
+    return renamed;
+  }
+
   async search(queryVector: number[], topK: number, filter?: VectorFilter): Promise<VectorSearchResult[]> {
     if (queryVector.length !== this.dimensions) {
       throw new Error(`queryVector length must be ${this.dimensions}`);
