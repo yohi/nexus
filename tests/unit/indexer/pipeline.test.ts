@@ -337,4 +337,64 @@ describe('IndexPipeline', () => {
       expect.objectContaining({ hash: 'hash-same', isDirectory: false }),
     );
   });
+
+  it('rebuilds merkle directories when a rename moves a file across directories', async () => {
+    const { metadataStore, vectorStore, chunker, registry } = await createPipeline();
+    const embeddingProvider = new CountingEmbeddingProvider();
+    const pipeline = new IndexPipeline({
+      metadataStore,
+      vectorStore,
+      chunker,
+      embeddingProvider,
+      pluginRegistry: registry,
+    });
+    const content = await readFile(fixturePath, 'utf8');
+    const oldPath = 'src/legacy/auth.ts';
+    const newPath = 'packages/auth/index.ts';
+
+    await pipeline.processEvents(
+      [
+        {
+          type: 'added',
+          filePath: oldPath,
+          contentHash: 'hash-cross-dir',
+          detectedAt: new Date().toISOString(),
+        },
+      ],
+      async () => content,
+    );
+
+    await pipeline.processEvents(
+      [
+        {
+          type: 'deleted',
+          filePath: oldPath,
+          contentHash: 'hash-cross-dir',
+          detectedAt: new Date().toISOString(),
+        },
+        {
+          type: 'added',
+          filePath: newPath,
+          contentHash: 'hash-cross-dir',
+          detectedAt: new Date().toISOString(),
+        },
+      ],
+      async () => content,
+    );
+
+    expect(embeddingProvider.calls).toBe(1);
+    await expect(metadataStore.getMerkleNode(oldPath)).resolves.toBeNull();
+    await expect(metadataStore.getMerkleNode('src/legacy')).resolves.toBeNull();
+    await expect(metadataStore.getMerkleNode('packages')).resolves.toEqual(
+      expect.objectContaining({ path: 'packages', isDirectory: true }),
+    );
+    await expect(metadataStore.getMerkleNode('packages/auth')).resolves.toEqual(
+      expect.objectContaining({ path: 'packages/auth', isDirectory: true }),
+    );
+    await expect(metadataStore.getMerkleNode(newPath)).resolves.toEqual(
+      expect.objectContaining({ hash: 'hash-cross-dir', isDirectory: false }),
+    );
+    const results = await vectorStore.search(ONE_HOT_64, 20);
+    expect(results.every((result) => result.chunk.filePath === newPath)).toBe(true);
+  });
 });
