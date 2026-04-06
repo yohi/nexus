@@ -36,6 +36,37 @@ describe('RipgrepEngine zombie prevention', () => {
     await expect(promise).resolves.toEqual([]);
   });
 
+  it('sends SIGTERM on timeout but cancels SIGKILL if resolving within grace period', async () => {
+    vi.useFakeTimers();
+
+    const kill = vi.fn();
+    let resolveSearch: (() => void) | undefined;
+    const spawnImpl = vi.fn(async () => {
+      await new Promise<void>((resolve) => {
+        resolveSearch = resolve;
+      });
+      return [];
+    });
+
+    const engine = new RipgrepEngine({
+      projectRoot: process.cwd(),
+      grepTimeoutMs: 50,
+      spawn: spawnImpl,
+      createProcessController: () => ({ kill }),
+    });
+
+    const searchPromise = engine.search({ query: 'alpha', cwd: process.cwd() });
+
+    await vi.advanceTimersByTimeAsync(50);
+    expect(kill).toHaveBeenCalledWith('SIGTERM');
+
+    resolveSearch?.();
+    await expect(searchPromise).resolves.toEqual([]);
+
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(kill).not.toHaveBeenCalledWith('SIGKILL');
+  });
+
   it('propagates client abort signals to the spawned search', async () => {
     const observedSignals: AbortSignal[] = [];
     const spawnImpl = vi.fn(async (_params, signal: AbortSignal) => {

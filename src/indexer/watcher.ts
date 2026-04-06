@@ -80,6 +80,7 @@ export class FileWatcher {
         filePath,
         detectedAt,
       });
+      this.options.onFullScanRequired?.();
     }
   }
 
