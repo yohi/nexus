@@ -69,11 +69,12 @@ describe('IndexPipeline integration', () => {
     );
 
     // auth.ts currently yields some declarations depending on chunking heuristics.
-    await expect(vectorStore.getStats()).resolves.toEqual(
+    const initialStats = await vectorStore.getStats();
+    expect(initialStats).toEqual(
       expect.objectContaining({ totalFiles: 1, dimensions: 64 }),
     );
-    await expect((await vectorStore.getStats()).totalChunks).toBeGreaterThan(0);
-    const initialChunks = (await vectorStore.getStats()).totalChunks;
+    expect(initialStats.totalChunks).toBeGreaterThan(0);
+    const initialChunks = initialStats.totalChunks;
 
     await pipeline.processEvents(
       [
@@ -95,10 +96,11 @@ describe('IndexPipeline integration', () => {
     );
 
     // After modification with integrationMarker function, chunk count should increase.
-    await expect(vectorStore.getStats()).resolves.toEqual(
+    const modifiedStats = await vectorStore.getStats();
+    expect(modifiedStats).toEqual(
       expect.objectContaining({ totalFiles: 1, dimensions: 64 }),
     );
-    await expect((await vectorStore.getStats()).totalChunks).toBeGreaterThan(initialChunks);
+    expect(modifiedStats.totalChunks).toBeGreaterThan(initialChunks);
     const searchResults = await vectorStore.search(Array(64).fill(0).map((_, index) => (index === 1 ? 1 : 0)), 20);
     expect(searchResults.length).toBeGreaterThan(0);
     expect(searchResults.every((result) => result.chunk.filePath === fixturePath)).toBe(true);

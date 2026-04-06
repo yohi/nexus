@@ -109,19 +109,22 @@ describe('Nexus MCP server integration', () => {
   });
 
   afterEach(async () => {
-    await Promise.all(clients.map((client) => client.close()));
-    clients = [];
-    await new Promise<void>((resolve) => {
-      if (!httpServer) {
-        return resolve();
-      }
-      httpServer.close((error) => {
-        if (error) {
-          console.error('Failed to close test HTTP server:', error);
+    try {
+      await Promise.allSettled(clients.map((client) => client.close()));
+    } finally {
+      clients = [];
+      await new Promise<void>((resolve) => {
+        if (!httpServer) {
+          return resolve();
         }
-        resolve();
+        httpServer.close((error) => {
+          if (error) {
+            console.error('Failed to close test HTTP server:', error);
+          }
+          resolve();
+        });
       });
-    });
+    }
   });
 
   it('accepts a client connection and exposes all six tools', async () => {

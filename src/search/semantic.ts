@@ -51,7 +51,7 @@ export class SemanticSearch implements ISemanticSearch {
   }
 }
 
-const escapeRegex = (value: string): string => value.replace(/[|\\{}()[\]^$+?.-]/g, '\\$&');
+const escapeRegex = (value: string): string => value.replace(/[|\\{}()[\]^$+.-]/g, '\\$&');
 
 const globToRegExp = (pattern: string): RegExp => {
   const normalized = pattern.replace(/\*\*/g, '__DOUBLE_STAR__');

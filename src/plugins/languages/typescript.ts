@@ -1,60 +1,86 @@
-import type { FileToChunk, LanguagePlugin, ParsedDeclaration, ParsedSourceFile } from '../../types/index.js';
+import ts from 'typescript';
+import type { FileToChunk, LanguagePlugin, ParsedDeclaration, ParsedSourceFile, SymbolKind } from '../../types/index.js';
 
-const getLineRange = (source: string, startOffset: number, endOffset: number): { startLine: number; endLine: number } => {
-  const startLine = source.slice(0, startOffset).split('\n').length;
-  const endLine = source.slice(0, endOffset).split('\n').length;
+const getLineRange = (sourceFile: ts.SourceFile, node: ts.Node): { startLine: number; endLine: number } => {
+  const startLine = sourceFile.getLineAndCharacterOfPosition(node.getStart()).line + 1;
+  const endLine = sourceFile.getLineAndCharacterOfPosition(node.getEnd()).line + 1;
   return { startLine, endLine };
 };
 
-const matchAll = (pattern: RegExp, source: string): ParsedDeclaration[] => {
-  const declarations: ParsedDeclaration[] = [];
-
-  for (const match of source.matchAll(pattern)) {
-    const fullMatch = match[0];
-    const name = match[1] ?? 'anonymous';
-    const start = match.index ?? 0;
-    const end = start + fullMatch.length;
-    const { startLine, endLine } = getLineRange(source, start, end);
-    declarations.push({
-      type: pattern === IMPORT_PATTERN ? 'import' : pattern === INTERFACE_PATTERN ? 'interface' : pattern === FUNCTION_PATTERN ? 'function' : pattern === CLASS_PATTERN ? 'class' : 'method',
-      name,
-      startLine,
-      endLine,
-      content: fullMatch.trim(),
-    });
-  }
-
-  return declarations;
-};
-
-// TODO: These regex-based patterns are brittle. Migrate to a proper parser (e.g., tree-sitter) in the future.
-const IMPORT_PATTERN = /^import\s+[\s\S]*?from\s+['"][^'"]+['"];?$/gm;
-const INTERFACE_PATTERN = /^export\s+interface\s+(\w+)\s*\{[\s\S]*?\n\}/gm;
-const FUNCTION_PATTERN = /(?:\/\*\*[\s\S]*?\*\/\s*)?(?:export\s+)?(?:async\s+)?function\s+(\w+)\s*\([^)]*\)\s*(?::\s*[^\{]+)?\s*\{[\s\S]*?\n\}/gm;
-const CLASS_PATTERN = /^(?:export\s+)?class\s+(\w+)\s*\{[\s\S]*?\n\}/gm;
-const METHOD_PATTERN = /^\s+(?:async\s+)?(\w+)\([^)]*\)(?::\s*[^\{]+)?\s*\{[\s\S]*?\n\s*\}/gm;
-
 class TypeScriptParser {
   async parse(file: FileToChunk): Promise<ParsedSourceFile> {
+    const sourceFile = ts.createSourceFile(file.filePath, file.content, ts.ScriptTarget.Latest, true);
     const declarations: ParsedDeclaration[] = [];
-    const imports = matchAll(IMPORT_PATTERN, file.content);
+    const importNodes: ts.ImportDeclaration[] = [];
 
-    if (imports.length > 0) {
-      const firstImport = imports[0]!;
-      const lastImport = imports[imports.length - 1]!;
+    const visit = (node: ts.Node) => {
+      let type: SymbolKind | undefined;
+      let name: string | undefined;
+
+      if (ts.isImportDeclaration(node)) {
+        importNodes.push(node);
+      } else if (ts.isInterfaceDeclaration(node)) {
+        type = 'interface';
+        name = node.name.text;
+      } else if (ts.isFunctionDeclaration(node) && node.name) {
+        type = 'function';
+        name = node.name.text;
+      } else if (ts.isClassDeclaration(node) && node.name) {
+        type = 'class';
+        name = node.name.text;
+      } else if (ts.isMethodDeclaration(node) && ts.isIdentifier(node.name)) {
+        type = 'method';
+        name = node.name.text;
+      } else if (ts.isConstructorDeclaration(node)) {
+        type = 'constructor';
+        name = 'constructor';
+      } else if (ts.isGetAccessorDeclaration(node) && ts.isIdentifier(node.name)) {
+        type = 'method';
+        name = `get ${node.name.text}`;
+      } else if (ts.isSetAccessorDeclaration(node) && ts.isIdentifier(node.name)) {
+        type = 'method';
+        name = `set ${node.name.text}`;
+      } else if (ts.isEnumDeclaration(node)) {
+        type = 'enum';
+        name = node.name.text;
+      } else if (ts.isTypeAliasDeclaration(node)) {
+        type = 'typeAlias';
+        name = node.name.text;
+      } else if (ts.isModuleDeclaration(node)) {
+        type = 'namespace';
+        name = node.name.text;
+      }
+
+      if (type && name) {
+        const { startLine, endLine } = getLineRange(sourceFile, node);
+        declarations.push({
+          type,
+          name,
+          startLine,
+          endLine,
+          content: node.getText(sourceFile).trim(),
+        });
+      }
+
+      ts.forEachChild(node, visit);
+    };
+
+    visit(sourceFile);
+
+    if (importNodes.length > 0) {
+      const firstImport = importNodes[0]!;
+      const lastImport = importNodes[importNodes.length - 1]!;
+      const { startLine } = getLineRange(sourceFile, firstImport);
+      const { endLine } = getLineRange(sourceFile, lastImport);
+
       declarations.push({
         type: 'import',
         name: 'imports',
-        startLine: firstImport.startLine,
-        endLine: lastImport.endLine,
-        content: imports.map((imp) => imp.content).join('\n'),
+        startLine,
+        endLine,
+        content: importNodes.map((n) => n.getText(sourceFile).trim()).join('\n'),
       });
     }
-
-    declarations.push(...matchAll(INTERFACE_PATTERN, file.content));
-    declarations.push(...matchAll(FUNCTION_PATTERN, file.content));
-    declarations.push(...matchAll(CLASS_PATTERN, file.content));
-    declarations.push(...matchAll(METHOD_PATTERN, file.content));
 
     declarations.sort((left, right) => left.startLine - right.startLine);
 

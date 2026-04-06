@@ -30,7 +30,7 @@ describe('Chunker', () => {
       ['interface', 'SessionRecord'],
       ['function', 'authenticate'],
       ['class', 'AuthService'],
-      ['method', 'constructor'],
+      ['constructor', 'constructor'],
       ['method', 'getIssuer'],
       ['method', 'revoke'],
     ]);
