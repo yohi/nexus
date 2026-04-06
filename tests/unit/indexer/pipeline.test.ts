@@ -19,6 +19,15 @@ class FailingEmbeddingProvider extends TestEmbeddingProvider {
   }
 }
 
+class CountingEmbeddingProvider extends TestEmbeddingProvider {
+  calls = 0;
+
+  override async embed(texts: string[]): Promise<number[][]> {
+    this.calls += 1;
+    return super.embed(texts);
+  }
+}
+
 const fixturePath = path.join(process.cwd(), 'tests/fixtures/sample-project/src/auth.ts');
 const ONE_HOT_64 = new Array(64).fill(0).map((_, i) => (i === 0 ? 1 : 0));
 
@@ -153,6 +162,45 @@ describe('IndexPipeline', () => {
     );
   });
 
+  it('removes subtree metadata and vectors when a directory is deleted', async () => {
+    const { metadataStore, vectorStore, chunker, registry } = await createPipeline();
+    const pipeline = new IndexPipeline({
+      metadataStore,
+      vectorStore,
+      chunker,
+      embeddingProvider: new TestEmbeddingProvider(),
+      pluginRegistry: registry,
+    });
+    const content = await readFile(fixturePath, 'utf8');
+    const nestedFile = 'src/nested/auth.ts';
+
+    await pipeline.processEvents(
+      [
+        {
+          type: 'added',
+          filePath: nestedFile,
+          contentHash: 'hash-nested',
+          detectedAt: new Date().toISOString(),
+        },
+      ],
+      async () => content,
+    );
+
+    await pipeline.processEvents([
+      {
+        type: 'deleted',
+        filePath: 'src/nested',
+        contentHash: 'hash-nested',
+        detectedAt: new Date().toISOString(),
+      },
+    ]);
+
+    await expect(metadataStore.getMerkleNode(nestedFile)).resolves.toBeNull();
+    await expect(vectorStore.getStats()).resolves.toEqual(
+      expect.objectContaining({ totalChunks: 0, totalFiles: 0 }),
+    );
+  });
+
   it('returns already_running when reindex is invoked concurrently', async () => {
     const { metadataStore, vectorStore, chunker, registry } = await createPipeline();
     const pipeline = new IndexPipeline({
@@ -216,5 +264,62 @@ describe('IndexPipeline', () => {
         attempts: 3,
       }),
     ]);
+  });
+
+  it('reuses existing vectors when a delete/add pair is detected as a rename', async () => {
+    const { metadataStore, vectorStore, chunker, registry } = await createPipeline();
+    const embeddingProvider = new CountingEmbeddingProvider();
+    const pipeline = new IndexPipeline({
+      metadataStore,
+      vectorStore,
+      chunker,
+      embeddingProvider,
+      pluginRegistry: registry,
+    });
+    const content = await readFile(fixturePath, 'utf8');
+    const oldPath = 'src/old-name.ts';
+    const newPath = 'src/new-name.ts';
+
+    await pipeline.processEvents(
+      [
+        {
+          type: 'added',
+          filePath: oldPath,
+          contentHash: 'hash-same',
+          detectedAt: new Date().toISOString(),
+        },
+      ],
+      async () => content,
+    );
+
+    expect(embeddingProvider.calls).toBe(1);
+
+    await pipeline.processEvents(
+      [
+        {
+          type: 'deleted',
+          filePath: oldPath,
+          contentHash: 'hash-same',
+          detectedAt: new Date().toISOString(),
+        },
+        {
+          type: 'added',
+          filePath: newPath,
+          contentHash: 'hash-same',
+          detectedAt: new Date().toISOString(),
+        },
+      ],
+      async () => content,
+    );
+
+    expect(embeddingProvider.calls).toBe(1);
+    const stats = await vectorStore.getStats();
+    expect(stats.totalFiles).toBe(1);
+    const results = await vectorStore.search(ONE_HOT_64, 20);
+    expect(results.every((result) => result.chunk.filePath === newPath)).toBe(true);
+    await expect(metadataStore.getMerkleNode(oldPath)).resolves.toBeNull();
+    await expect(metadataStore.getMerkleNode(newPath)).resolves.toEqual(
+      expect.objectContaining({ hash: 'hash-same', isDirectory: false }),
+    );
   });
 });
