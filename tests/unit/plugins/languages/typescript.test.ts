@@ -35,6 +35,10 @@ describe('TypeScriptLanguagePlugin', () => {
     
     // Check that internal (non-exported) is not included
     expect(symbols).not.toContainEqual({ type: 'variable', name: 'internal' });
+
+    // Assert that destructured exports are currently skipped (as expected per implementation)
+    expect(symbols).not.toContainEqual({ type: 'variable', name: 'a' });
+    expect(symbols).not.toContainEqual({ type: 'variable', name: 'b' });
   });
 
   it('identifies call expressions returning functions as functions', async () => {
@@ -93,11 +97,10 @@ describe('TypeScriptLanguagePlugin', () => {
     expect(importSymbol?.content).toContain("import { c } from 'c';");
   });
 
-  it('correctly ignores abstract members and declaration files', async () => {
+  it('ignores abstract methods and accessors but includes implementation', async () => {
     const plugin = new TypeScriptLanguagePlugin();
     const parser = await plugin.createParser();
     
-    // Abstract class and members
     const abstractContent = `
       export abstract class MyAbstractClass {
         abstract myAbstractMethod(): void;
@@ -121,8 +124,12 @@ describe('TypeScriptLanguagePlugin', () => {
     
     expect(abstractSymbols).not.toContain('myAbstractMethod');
     expect(abstractSymbols).not.toContain('get myAbstractAccessor');
+  });
 
-    // Declaration file
+  it('ignores functions and methods in .d.ts files but includes classes', async () => {
+    const plugin = new TypeScriptLanguagePlugin();
+    const parser = await plugin.createParser();
+
     const dtsContent = `
       export function declaredFunction(): void;
       export class DeclaredClass {
