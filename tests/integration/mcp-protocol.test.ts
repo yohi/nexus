@@ -16,6 +16,7 @@ import { TestEmbeddingProvider } from '../unit/plugins/embeddings/test-embedding
 import { TestGrepEngine } from '../unit/search/test-grep-engine.js';
 import { InMemoryMetadataStore } from '../unit/storage/in-memory-metadata-store.js';
 import { InMemoryVectorStore } from '../unit/storage/in-memory-vector-store.js';
+import { PathSanitizer } from '../../src/server/path-sanitizer.js';
 import type { CodeChunk } from '../../src/types/index.js';
 
 const makeChunk = (overrides: Partial<CodeChunk>): CodeChunk => ({
@@ -58,7 +59,7 @@ describe('Phase 2 MCP protocol integration', () => {
     });
     await vectorStore.upsertChunks([chunk], await embeddingProvider.embed([chunk.content]));
 
-    const orchestrator = new SearchOrchestrator({ semanticSearch, grepEngine });
+    const orchestrator = new SearchOrchestrator({ semanticSearch, grepEngine, projectRoot: process.cwd() });
     const pipeline = new IndexPipeline({
       metadataStore,
       vectorStore,
@@ -67,9 +68,12 @@ describe('Phase 2 MCP protocol integration', () => {
       pluginRegistry,
     });
 
+    const sanitizer = await PathSanitizer.create(process.cwd());
+
     const createTestServer = () =>
       createNexusServer({
         projectRoot: process.cwd(),
+        sanitizer,
         semanticSearch,
         grepEngine,
         orchestrator,
@@ -172,7 +176,7 @@ describe('Phase 2 MCP protocol integration', () => {
     const status = await client.callTool({ name: 'index_status', arguments: {} });
     expect(status.structuredContent).toMatchObject({
       skippedFiles: 0,
-      pluginHealth: expect.objectContaining({ healthy: true, embeddingProvider: 'test' }),
+      pluginHealth: expect.objectContaining({ healthy: true, embeddings: expect.objectContaining({ provider: 'test' }) }),
       vectorStats: expect.objectContaining({ totalFiles: 1, totalChunks: 1 }),
     });
 

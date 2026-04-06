@@ -1,3 +1,4 @@
+import * as path from 'node:path';
 import type { SearchResponse } from '../types/index.js';
 import type { IGrepEngine } from './grep-interface.js';
 import type { SemanticSearch, SemanticSearchParams } from './semantic.js';
@@ -7,17 +8,25 @@ export interface HybridSearchParams extends SemanticSearchParams {
   grepPattern?: string;
 }
 
-interface SearchOrchestratorOptions {
+export interface ILogger {
+  error(message: string, ...args: any[]): void;
+}
+
+export interface SearchOrchestratorOptions {
   semanticSearch: SemanticSearch;
   grepEngine: IGrepEngine;
+  projectRoot: string;
   rrfK?: number;
+  logger?: ILogger;
 }
 
 export class SearchOrchestrator {
   private readonly rrfK: number;
+  private readonly logger: ILogger;
 
   constructor(private readonly options: SearchOrchestratorOptions) {
     this.rrfK = options.rrfK ?? 60;
+    this.logger = options.logger ?? console;
   }
 
   async search(params: HybridSearchParams): Promise<SearchResponse> {
@@ -25,15 +34,29 @@ export class SearchOrchestrator {
     const topK = params.topK ?? 20;
     const grepQuery = params.grepPattern ?? params.query;
 
-    const [semanticResults, grepMatches] = await Promise.all([
+    const [semanticResult, grepResult] = await Promise.allSettled([
       this.options.semanticSearch.search(params),
       this.options.grepEngine.search({
         query: grepQuery,
-        cwd: process.cwd(),
+        cwd: this.options.projectRoot,
         glob: params.filePattern ? [params.filePattern] : undefined,
         maxResults: topK,
       }),
     ]);
+
+    const semanticResults = semanticResult.status === 'fulfilled' ? semanticResult.value : [];
+    if (semanticResult.status === 'rejected') {
+      this.logger.error('Semantic search failed:', semanticResult.reason);
+    }
+
+    const grepMatches = grepResult.status === 'fulfilled' ? grepResult.value : [];
+    if (grepResult.status === 'rejected') {
+      this.logger.error('Grep search failed:', grepResult.reason);
+    }
+
+    if (semanticResult.status === 'rejected' && grepResult.status === 'rejected') {
+      throw new Error('Both semantic and grep searches failed');
+    }
 
     const grepResults = grepMatches.map((match) => ({
       chunk: {
@@ -59,15 +82,27 @@ export class SearchOrchestrator {
   }
 }
 
+const extensionToLang: Record<string, string> = {
+  '.ts': 'typescript',
+  '.tsx': 'typescript',
+  '.js': 'javascript',
+  '.jsx': 'javascript',
+  '.py': 'python',
+  '.go': 'go',
+  '.rs': 'rust',
+  '.rb': 'ruby',
+  '.php': 'php',
+  '.java': 'java',
+  '.c': 'c',
+  '.cpp': 'cpp',
+  '.h': 'c',
+  '.hpp': 'cpp',
+  '.cs': 'csharp',
+  '.sh': 'shell',
+  '.md': 'markdown',
+};
+
 const inferLanguage = (filePath: string): string => {
-  if (filePath.endsWith('.ts') || filePath.endsWith('.tsx')) {
-    return 'typescript';
-  }
-  if (filePath.endsWith('.js') || filePath.endsWith('.jsx')) {
-    return 'javascript';
-  }
-  if (filePath.endsWith('.py')) {
-    return 'python';
-  }
-  return 'unknown';
+  const ext = path.extname(filePath).toLowerCase();
+  return extensionToLang[ext] || 'unknown';
 };

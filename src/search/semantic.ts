@@ -12,12 +12,16 @@ export interface SemanticSearchParams {
   language?: string;
 }
 
-interface SemanticSearchOptions {
+export interface SemanticSearchOptions {
   vectorStore: IVectorStore;
   embeddingProvider: EmbeddingProvider;
 }
 
-export class SemanticSearch {
+export interface ISemanticSearch {
+  search(params: SemanticSearchParams): Promise<SearchResult[]>;
+}
+
+export class SemanticSearch implements ISemanticSearch {
   constructor(private readonly options: SemanticSearchOptions) {}
 
   async search(params: SemanticSearchParams): Promise<SearchResult[]> {
@@ -33,7 +37,7 @@ export class SemanticSearch {
       filter.language = params.language;
     }
 
-    const candidateLimit = params.filePattern ? Math.max(topK * 5, topK) : topK;
+    const candidateLimit = params.filePattern ? topK * 5 : topK;
     const results = await this.options.vectorStore.search(queryVector, candidateLimit, filter);
 
     return results
@@ -47,13 +51,14 @@ export class SemanticSearch {
   }
 }
 
-const escapeRegex = (value: string): string => value.replace(/[|\\{}()[\]^$+?.]/g, '\\$&');
+const escapeRegex = (value: string): string => value.replace(/[|\\{}()[\]^$+?.-]/g, '\\$&');
 
 const globToRegExp = (pattern: string): RegExp => {
   const normalized = pattern.replace(/\*\*/g, '__DOUBLE_STAR__');
   const escaped = escapeRegex(normalized)
     .replace(/__DOUBLE_STAR__/g, '.*')
-    .replace(/\*/g, '[^/]*');
+    .replace(/\*/g, '[^/]*')
+    .replace(/\?/g, '[^/]');
 
   return new RegExp(`^${escaped}$`);
 };

@@ -49,7 +49,7 @@ describe('Phase 2 search flow integration', () => {
 
     grepEngine = new TestGrepEngine();
     const semanticSearch = new SemanticSearch({ vectorStore, embeddingProvider });
-    orchestrator = new SearchOrchestrator({ semanticSearch, grepEngine });
+    orchestrator = new SearchOrchestrator({ semanticSearch, grepEngine, projectRoot: process.cwd() });
 
     const content = await readFile(fixturePath, 'utf8');
     grepEngine.addFile(fixturePath, content);

@@ -17,8 +17,19 @@ export class TestGrepEngine implements IGrepEngine {
       for (let index = 0; index < lines.length; index += 1) {
         const line = lines[index] ?? '';
         const haystack = params.caseSensitive ? line : line.toLowerCase();
-        const start = haystack.indexOf(needle);
-        if (start === -1) {
+
+        const submatches: { start: number; end: number; match: string }[] = [];
+        let pos = haystack.indexOf(needle);
+        while (pos !== -1) {
+          submatches.push({
+            start: pos,
+            end: pos + needle.length,
+            match: line.slice(pos, pos + needle.length),
+          });
+          pos = haystack.indexOf(needle, pos + needle.length);
+        }
+
+        if (submatches.length === 0) {
           continue;
         }
 
@@ -26,13 +37,7 @@ export class TestGrepEngine implements IGrepEngine {
           filePath,
           lineNumber: index + 1,
           lineText: line,
-          submatches: [
-            {
-              start,
-              end: start + needle.length,
-              match: line.slice(start, start + needle.length),
-            },
-          ],
+          submatches,
         });
 
         if (results.length >= (params.maxResults ?? 100)) {

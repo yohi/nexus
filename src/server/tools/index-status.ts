@@ -1,4 +1,4 @@
-import type { IndexPipeline } from '../../indexer/pipeline.js';
+import type { IIndexPipeline } from '../../indexer/pipeline.js';
 import type { PluginRegistry } from '../../plugins/registry.js';
 import type { IMetadataStore, IVectorStore } from '../../types/index.js';
 
@@ -12,7 +12,7 @@ export interface IndexStatusResult {
 export const executeIndexStatus = async (
   metadataStore: IMetadataStore,
   vectorStore: IVectorStore,
-  pipeline: IndexPipeline,
+  pipeline: IIndexPipeline,
   pluginRegistry: PluginRegistry,
 ): Promise<IndexStatusResult> => ({
   indexStats: await metadataStore.getIndexStats(),

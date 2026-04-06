@@ -26,7 +26,16 @@ interface ProcessEventsResult {
 
 type ContentLoader = (filePath: string) => Promise<string>;
 
-export class IndexPipeline {
+export interface IIndexPipeline {
+  reindex(
+    run: (options?: { fullScan?: boolean; reason?: 'manual' }) => Promise<IndexEvent[]>,
+    loadContent: ContentLoader,
+    fullRebuild?: boolean,
+  ): Promise<ReindexResult | { status: 'already_running' }>;
+  getSkippedFiles(): ReadonlyMap<string, string>;
+}
+
+export class IndexPipeline implements IIndexPipeline {
   private readonly merkleTree: MerkleTree;
 
   private readonly mutex = new Mutex();
@@ -92,15 +101,16 @@ export class IndexPipeline {
   }
 
   async reindex(
-    run: () => Promise<IndexEvent[]>,
+    run: (options?: { fullScan?: boolean; reason?: 'manual' }) => Promise<IndexEvent[]>,
     loadContent: ContentLoader,
+    fullRebuild?: boolean,
   ): Promise<ReindexResult | { status: 'already_running' }> {
     const startedAt = new Date().toISOString();
     const startTime = Date.now();
 
     try {
       return await tryAcquire(this.mutex).runExclusive(async () => {
-        const events = await run();
+        const events = await run({ fullScan: fullRebuild, reason: 'manual' });
         const { chunksIndexed } = await this.processEvents(events, loadContent);
 
         const finishedAt = new Date().toISOString();
