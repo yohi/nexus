@@ -2,7 +2,7 @@ import ts from 'typescript';
 import type { FileToChunk, LanguagePlugin, ParsedDeclaration, ParsedSourceFile, SymbolKind } from '../../types/index.js';
 
 const getLineRange = (sourceFile: ts.SourceFile, node: ts.Node): { startLine: number; endLine: number } => {
-  const startLine = sourceFile.getLineAndCharacterOfPosition(node.getFullStart()).line + 1;
+  const startLine = sourceFile.getLineAndCharacterOfPosition(node.getStart(sourceFile, true)).line + 1;
   const endLine = sourceFile.getLineAndCharacterOfPosition(node.getEnd()).line + 1;
   return { startLine, endLine };
 };
@@ -52,6 +52,9 @@ class TypeScriptParser {
       } else if (ts.isVariableStatement(node)) {
         const isExported = node.modifiers?.some((m) => m.kind === ts.SyntaxKind.ExportKeyword);
         if (isExported) {
+          const { startLine, endLine } = getLineRange(sourceFile, node);
+          const content = sourceFile.getFullText().slice(node.getFullStart(), node.getEnd()).trim();
+
           for (const declaration of node.declarationList.declarations) {
             if (ts.isIdentifier(declaration.name)) {
               const varName = declaration.name.text;
@@ -69,13 +72,12 @@ class TypeScriptParser {
                 }
               }
 
-              const { startLine, endLine } = getLineRange(sourceFile, declaration);
               declarations.push({
                 type: varType,
                 name: varName,
                 startLine,
                 endLine,
-                content: sourceFile.getFullText().slice(declaration.getFullStart(), declaration.getEnd()).trim(),
+                content,
               });
             }
           }
