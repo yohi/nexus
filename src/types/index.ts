@@ -208,6 +208,8 @@ export interface WatcherConfig {
 export interface FileWatcherOptions {
   projectRoot: string;
   ignorePaths?: string[];
+  onFullScanRequired?: () => Promise<void>;
+  onFullScanRequired?: () => Promise<void>;
 }
 
 export interface IFileWatcher {
