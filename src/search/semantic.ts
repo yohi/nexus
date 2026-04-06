@@ -10,6 +10,7 @@ export interface SemanticSearchParams {
   topK?: number;
   filePattern?: string;
   language?: string;
+  abortSignal?: AbortSignal;
 }
 
 export interface SemanticSearchOptions {
@@ -26,7 +27,16 @@ export class SemanticSearch implements ISemanticSearch {
 
   async search(params: SemanticSearchParams): Promise<SearchResult[]> {
     const topK = params.topK ?? 20;
+
+    if (params.abortSignal?.aborted) {
+      return [];
+    }
+
     const [queryVector] = await this.options.embeddingProvider.embed([params.query]);
+
+    if (params.abortSignal?.aborted) {
+      return [];
+    }
 
     if (queryVector === undefined) {
       return [];
@@ -39,6 +49,10 @@ export class SemanticSearch implements ISemanticSearch {
 
     const candidateLimit = params.filePattern ? topK * 5 : topK;
     const results = await this.options.vectorStore.search(queryVector, candidateLimit, filter);
+
+    if (params.abortSignal?.aborted) {
+      return [];
+    }
 
     return results
       .filter((result) => matchesFilePattern(result.chunk.filePath, params.filePattern))

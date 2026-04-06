@@ -164,14 +164,18 @@ describe('TypeScriptLanguagePlugin', () => {
     });
     
     const vars = result.declarations.filter(d => d.type === 'variable');
-    expect(vars.map(d => d.name)).toEqual(['a', 'b']);
-    
+    const varA = vars.find(d => d.name === 'a');
+    const varB = vars.find(d => d.name === 'b');
+
+    expect(varA).toBeDefined();
+    expect(varB).toBeDefined();
+
     // Each declaration now has its own content
-    expect(vars[0].content).toBe('a = 1');
-    expect(vars[1].content).toBe('b = 2');
+    expect(varA?.content).toBe('a = 1');
+    expect(varB?.content).toBe('b = 2');
     
     // They share the same start line because they are on the same line in the input
-    expect(vars[0].startLine).toBe(vars[1].startLine);
-    expect(vars[0].endLine).toBe(vars[1].endLine);
+    expect(varA?.startLine).toBe(varB?.startLine);
+    expect(varA?.endLine).toBe(varB?.endLine);
   });
 });

@@ -5,7 +5,7 @@ import type { IIndexPipeline } from '../indexer/pipeline.js';
 import type { PluginRegistry } from '../plugins/registry.js';
 import type { SearchOrchestrator } from '../search/orchestrator.js';
 import type { ISemanticSearch } from '../search/semantic.js';
-import type { IMetadataStore, IVectorStore, IGrepEngine, IndexEvent, ReindexOptions } from '../types/index.js';
+import type { IMetadataStore, IVectorStore, IGrepEngine, IndexEvent, IFileWatcher, ReindexOptions } from '../types/index.js';
 import type { PathSanitizer } from './path-sanitizer.js';
 import { executeGetContext } from './tools/get-context.js';
 import { executeGrepSearch } from './tools/grep-search.js';
@@ -28,6 +28,15 @@ export interface NexusServerOptions {
   loadFileContent: (filePath: string) => Promise<string>;
 }
 
+export interface NexusRuntimeOptions extends NexusServerOptions {
+  watcher: IFileWatcher;
+}
+
+export interface NexusRuntime {
+  server: McpServer;
+  close(): Promise<void>;
+}
+
 export const createNexusServer = (options: NexusServerOptions): McpServer => {
   const server = new McpServer(
     {
@@ -45,7 +54,7 @@ export const createNexusServer = (options: NexusServerOptions): McpServer => {
   server.registerTool(
     'semantic_search',
     {
-      description: 'Vector similarity search only',
+      description: 'Search the codebase using natural language (embeddings)',
       inputSchema: {
         query: z.string(),
         topK: z.number().int().positive().optional(),
@@ -53,7 +62,15 @@ export const createNexusServer = (options: NexusServerOptions): McpServer => {
         language: z.string().optional(),
       },
     },
-    async (args) => toolResult(await executeSemanticSearch(options.semanticSearch, args)),
+    async (args, extra) => {
+      try {
+        return toolResult(
+          await executeSemanticSearch(options.semanticSearch, options.sanitizer, args, extra?.signal),
+        );
+      } catch (error) {
+        return errorResult(error);
+      }
+    },
   );
 
   server.registerTool(
@@ -67,7 +84,21 @@ export const createNexusServer = (options: NexusServerOptions): McpServer => {
         maxResults: z.number().int().positive().optional(),
       },
     },
-    async (args) => toolResult(await executeGrepSearch(options.grepEngine, options.projectRoot, args)),
+    async (args, extra) => {
+      try {
+        return toolResult(
+          await executeGrepSearch(
+            options.grepEngine,
+            options.projectRoot,
+            options.sanitizer,
+            args,
+            extra?.signal,
+          ),
+        );
+      } catch (error) {
+        return errorResult(error);
+      }
+    },
   );
 
   server.registerTool(
@@ -82,7 +113,15 @@ export const createNexusServer = (options: NexusServerOptions): McpServer => {
         grepPattern: z.string().optional(),
       },
     },
-    async (args) => toolResult(await executeHybridSearch(options.orchestrator, args)),
+    async (args, extra) => {
+      try {
+        return toolResult(
+          await executeHybridSearch(options.orchestrator, options.sanitizer, args, extra?.signal),
+        );
+      } catch (error) {
+        return errorResult(error);
+      }
+    },
   );
 
   server.registerTool(
@@ -96,7 +135,13 @@ export const createNexusServer = (options: NexusServerOptions): McpServer => {
         endLine: z.number().int().positive().optional(),
       },
     },
-    async (args) => toolResult(await executeGetContext(options.loadFileContent, options.sanitizer, args)),
+    async (args) => {
+      try {
+        return toolResult(await executeGetContext(options.loadFileContent, options.sanitizer, args));
+      } catch (error) {
+        return errorResult(error);
+      }
+    },
   );
 
   server.registerTool(
@@ -105,15 +150,20 @@ export const createNexusServer = (options: NexusServerOptions): McpServer => {
       description: 'Return index state and statistics',
       inputSchema: {},
     },
-    async () =>
-      toolResult(
-        await executeIndexStatus(
-          options.metadataStore,
-          options.vectorStore,
-          options.pipeline,
-          options.pluginRegistry,
-        ),
-      ),
+    async () => {
+      try {
+        return toolResult(
+          await executeIndexStatus(
+            options.metadataStore,
+            options.vectorStore,
+            options.pipeline,
+            options.pluginRegistry,
+          ),
+        );
+      } catch (error) {
+        return errorResult(error);
+      }
+    },
   );
 
   server.registerTool(
@@ -124,11 +174,79 @@ export const createNexusServer = (options: NexusServerOptions): McpServer => {
         fullRebuild: z.boolean().optional(),
       },
     },
-    async (args) =>
-      toolResult(await executeReindex(options.pipeline, options.runReindex, options.loadFileContent, args)),
+    async (args) => {
+      try {
+        return toolResult(
+          await executeReindex(options.pipeline, options.runReindex, options.loadFileContent, args),
+        );
+      } catch (error) {
+        return errorResult(error);
+      }
+    },
   );
 
   return server;
+};
+
+export const initializeNexusRuntime = async (options: NexusRuntimeOptions): Promise<NexusRuntime> => {
+  await options.metadataStore.initialize();
+  await options.vectorStore.initialize();
+  await options.pipeline.reconcileOnStartup();
+  await options.watcher.start();
+
+  try {
+    const server = createNexusServer(options);
+
+    return {
+      server,
+      close: async () => {
+        let watcherError: unknown;
+        let serverError: unknown;
+        try {
+          await options.watcher.stop();
+        } catch (error) {
+          watcherError = error;
+        }
+
+        try {
+          await server.close();
+        } catch (error) {
+          serverError = error;
+        }
+
+        if (watcherError) {
+          throw watcherError;
+        }
+        if (serverError) {
+          throw serverError;
+        }
+      },
+    };
+  } catch (error) {
+    await options.watcher.stop().catch((stopError) => {
+      console.error('Failed to stop watcher during initialization rollback:', stopError);
+    });
+    throw error;
+  }
+};
+
+export const errorResult = (error: unknown) => {
+  const isSafeError = error instanceof Error && error.name === 'PathTraversalError';
+
+  const publicMessage = isSafeError ? (error as Error).message : 'Internal server error';
+
+  const structuredMessage = isSafeError ? (error as Error).message : 'An unexpected error occurred';
+
+  return {
+    content: [
+      {
+        type: 'text' as const,
+        text: `Error: ${publicMessage}`,
+      },
+    ],
+    isError: true,
+    structuredContent: { error: true, message: structuredMessage },
+  };
 };
 
 const toolResult = <T extends object>(structuredContent: T) => {

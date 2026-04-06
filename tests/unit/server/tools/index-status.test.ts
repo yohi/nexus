@@ -10,6 +10,7 @@ import { InMemoryVectorStore } from '../../../unit/storage/in-memory-vector-stor
 const pipeline = {
   getSkippedFiles: () => new Map([['src/auth.ts', 'embed failed']]),
   reindex: async () => ({ startedAt: '', finishedAt: '', durationMs: 0, reconciliation: { added: 0, modified: 0, deleted: 0, unchanged: 0 }, chunksIndexed: 0 }),
+  reconcileOnStartup: async () => ({ startedAt: '', finishedAt: '', durationMs: 0, reconciliation: { added: 0, modified: 0, deleted: 0, unchanged: 0 }, chunksIndexed: 0 }),
 };
 
 describe('executeIndexStatus', () => {

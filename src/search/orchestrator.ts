@@ -1,4 +1,5 @@
 import * as path from 'node:path';
+
 import type { SearchResponse } from '../types/index.js';
 import type { IGrepEngine } from './grep-interface.js';
 import type { SemanticSearch, SemanticSearchParams } from './semantic.js';
@@ -41,6 +42,7 @@ export class SearchOrchestrator {
         cwd: this.options.projectRoot,
         glob: params.filePattern ? [params.filePattern] : undefined,
         maxResults: topK,
+        abortSignal: params.abortSignal,
       }),
     ]);
 

@@ -37,13 +37,24 @@ export class RipgrepEngine implements IGrepEngine {
   }
 
   private async execute(params: GrepParams): Promise<GrepMatch[]> {
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), this.timeoutMs);
+    const signals: AbortSignal[] = [];
+
+    // Internal timeout signal
+    const timeoutController = new AbortController();
+    const timeoutId = setTimeout(() => timeoutController.abort(), this.timeoutMs);
+    signals.push(timeoutController.signal);
+
+    // Optional external abort signal
+    if (params.abortSignal) {
+      signals.push(params.abortSignal);
+    }
+
+    const combinedSignal = AbortSignal.any(signals);
 
     try {
-      return await this.spawnImpl(this.normalizeParams(params), controller.signal);
+      return await this.spawnImpl(this.normalizeParams(params), combinedSignal);
     } catch (error) {
-      if (controller.signal.aborted) {
+      if (combinedSignal.aborted) {
         return [];
       }
       throw error;
