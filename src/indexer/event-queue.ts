@@ -210,7 +210,7 @@ export class EventQueue {
     }
 
     if (firstError) {
-      throw firstError;
+      throw firstError instanceof Error ? firstError : new Error(String(firstError));
     }
 
     return results;

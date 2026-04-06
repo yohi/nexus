@@ -388,12 +388,14 @@ license-checker, generate-license-file
 
 **目的:** LanceDB の ANN 検索をラップし、セマンティック検索を提供。
 
+**進捗:** 完了（`feature/phase2-1`, PR #10）
+
 **成果物:**
 
-- [ ] `src/search/semantic.ts` — `SemanticSearch` クラス
+- [x] `src/search/semantic.ts` — `SemanticSearch` クラス
   - クエリテキスト → embedding → LanceDB ANN 検索 → top-K 結果
   - `filePattern` / `language` フィルタ
-- [ ] `tests/unit/search/semantic.test.ts`
+- [x] `tests/unit/search/semantic.test.ts`
 
 **検証:**
 
@@ -407,16 +409,18 @@ license-checker, generate-license-file
 
 **目的:** ripgrep による高速テキスト検索。`IGrepEngine` インターフェースの具象実装。
 
+**進捗:** 完了（`feature/phase2-1`, PR #10）
+
 **成果物:**
 
-- [ ] `src/search/grep-interface.ts` — `IGrepEngine` インターフェース（型定義から re-export）
-- [ ] `src/search/grep.ts` — `RipgrepEngine implements IGrepEngine`
+- [x] `src/search/grep-interface.ts` — `IGrepEngine` インターフェース（型定義から re-export）
+- [x] `src/search/grep.ts` — `RipgrepEngine implements IGrepEngine`
   - `p-limit` セマフォ（デフォルト: 4並列）
   - `AbortController` + `AbortSignal.any()` による timeout/client disconnect 対応
   - ripgrep `cwd: projectRoot` による暗黙パスジェイル
   - キーワード抽出（camelCase/snake_case リテラル検出、NL フォールバック）
-- [ ] `tests/unit/search/grep.test.ts`
-- [ ] `tests/unit/search/test-grep-engine.ts` — `TestGrepEngine implements IGrepEngine`
+- [x] `tests/unit/search/grep.test.ts`
+- [x] `tests/unit/search/test-grep-engine.ts` — `TestGrepEngine implements IGrepEngine`
   - インメモリ文字列パターンマッチング
   - プロセス spawn なし
 
@@ -434,15 +438,17 @@ license-checker, generate-license-file
 
 **目的:** Semantic + Grep 結果を RRF アルゴリズムで統合。
 
+**進捗:** 完了（`feature/phase2-1`, PR #10）
+
 **成果物:**
 
-- [ ] `src/search/rrf.ts` — `fuseResults()` 関数
+- [x] `src/search/rrf.ts` — `fuseResults()` 関数
   - `RRFscore(d) = SUM 1/(k + rank_r(d))` (k=60)
-- [ ] `src/search/orchestrator.ts` — `SearchOrchestrator`
+- [x] `src/search/orchestrator.ts` — `SearchOrchestrator`
   - Semantic + Grep を並列実行 → RRF 統合 → top-K 返却
   - DI: `SemanticSearch` + `IGrepEngine` を受け取る
-- [ ] `tests/unit/search/rrf.test.ts`
-- [ ] `tests/unit/search/orchestrator.test.ts` — `TestGrepEngine` + `TestSemanticSearch` 注入
+- [x] `tests/unit/search/rrf.test.ts`
+- [x] `tests/unit/search/orchestrator.test.ts` — `TestGrepEngine` + `TestSemanticSearch` 注入
 
 **テストケース:**
 
@@ -459,14 +465,16 @@ license-checker, generate-license-file
 
 **目的:** MCP プロトコルによるサーバー起動とマルチクライアント対応。
 
+**進捗:** 実装済み。基本サーバー/transport は `feature/phase2-3`（PR #12）、runtime 初期化フローは `feature/phase2-5` で追加済み（PR 未作成）。
+
 **成果物:**
 
-- [ ] `src/server/index.ts` — MCP サーバーエントリポイント
+- [x] `src/server/index.ts` — MCP サーバーエントリポイント
   - `@modelcontextprotocol/sdk` を使用
   - サーバー起動 → パイプライン初期化 → Reconciliation → Watcher 開始
-- [ ] `src/server/transport.ts` — SSE/StreamableHTTP トランスポート設定
+- [x] `src/server/transport.ts` — SSE/StreamableHTTP トランスポート設定
   - マルチクライアント同時接続対応
-- [ ] `tests/integration/server.test.ts`
+- [x] `tests/integration/server.test.ts`
 
 **検証:**
 
@@ -481,15 +489,17 @@ license-checker, generate-license-file
 
 **目的:** 6つの MCP ツールの実装。
 
+**進捗:** 完了（`feature/phase2-3`, PR #12）。Phase 3 向け `PathSanitizer` TODO は `feature/phase2-5` で追記済み（PR 未作成）。
+
 **成果物:**
 
-- [ ] `src/server/tools/hybrid-search.ts` — `hybrid_search` ツール
-- [ ] `src/server/tools/semantic-search.ts` — `semantic_search` ツール
-- [ ] `src/server/tools/grep-search.ts` — `grep_search` ツール
-- [ ] `src/server/tools/get-context.ts` — `get_context` ツール
-- [ ] `src/server/tools/index-status.ts` — `index_status` ツール（`skippedFiles` カウンタ含む）
-- [ ] `src/server/tools/reindex.ts` — `reindex` ツール
-- [ ] `tests/unit/server/tools/*.test.ts`
+- [x] `src/server/tools/hybrid-search.ts` — `hybrid_search` ツール
+- [x] `src/server/tools/semantic-search.ts` — `semantic_search` ツール
+- [x] `src/server/tools/grep-search.ts` — `grep_search` ツール
+- [x] `src/server/tools/get-context.ts` — `get_context` ツール
+- [x] `src/server/tools/index-status.ts` — `index_status` ツール（`skippedFiles` カウンタ含む）
+- [x] `src/server/tools/reindex.ts` — `reindex` ツール
+- [x] `tests/unit/server/tools/*.test.ts`
 
 **各ツールの入力パス検証:**
 
@@ -504,13 +514,15 @@ license-checker, generate-license-file
 
 **目的:** 言語プラグインと Embedding プロバイダーの動的登録。
 
+**進捗:** 完了（`feature/phase2-2`, PR #11）
+
 **成果物:**
 
-- [ ] `src/plugins/registry.ts` — `PluginRegistry`（Step 1.5 で作成した registry を拡張）
+- [x] `src/plugins/registry.ts` — `PluginRegistry`（Step 1.5 で作成した registry を拡張）
   - `LanguageRegistry` — 拡張子マッピング + 動的登録
   - `EmbeddingProviderRegistry` — プロバイダー切り替え
   - `healthCheck()` — 全プラグインのヘルスチェック
-- [ ] `tests/unit/plugins/registry.test.ts`
+- [x] `tests/unit/plugins/registry.test.ts`
 
 **ブロック:** Step 1.5, 1.6
 
@@ -520,12 +532,14 @@ license-checker, generate-license-file
 
 **目的:** 設定のロード・バリデーション。
 
+**進捗:** 完了（`feature/phase2-2`, PR #11）
+
 **成果物:**
 
-- [ ] `src/config/index.ts` — `Config` ロード
+- [x] `src/config/index.ts` — `Config` ロード
   - 優先度: 環境変数 (`NEXUS_*`) → `.nexus.json` → デフォルト値
   - バリデーション（不正値の検出とデフォルトへのフォールバック）
-- [ ] `tests/unit/config/index.test.ts`
+- [x] `tests/unit/config/index.test.ts`
 
 **ブロック:** Step 1.2
 
@@ -535,11 +549,13 @@ license-checker, generate-license-file
 
 **目的:** Phase 2 全体の統合テスト。
 
+**進捗:** 完了（`feature/phase2-4`, PR #13）
+
 **成果物:**
 
-- [ ] `tests/integration/search-flow.test.ts` — Pipeline → Search E2E
-- [ ] `tests/integration/mcp-protocol.test.ts` — MCP クライアント → ツール呼び出し → レスポンス検証
-- [ ] テストフィクスチャの拡充（`tests/fixtures/sample-project/`）
+- [x] `tests/integration/search-flow.test.ts` — Pipeline → Search E2E
+- [x] `tests/integration/mcp-protocol.test.ts` — MCP クライアント → ツール呼び出し → レスポンス検証
+- [x] テストフィクスチャの拡充（`tests/fixtures/sample-project/`）
 
 **検証:**
 
@@ -552,10 +568,22 @@ license-checker, generate-license-file
 
 ## Phase 2 Exit Criteria
 
-- [ ] MCP クライアントが接続し、全6ツールを呼び出せる
-- [ ] `hybrid_search` がランキング付き結果を返す
-- [ ] `TestGrepEngine` を用いたオーケストレーター単体テストが ripgrep なしで動作
-- [ ] 全 integration テストが通過
+- [x] MCP クライアントが接続し、全6ツールを呼び出せる
+- [x] `hybrid_search` がランキング付き結果を返す
+- [x] `TestGrepEngine` を用いたオーケストレーター単体テストが ripgrep なしで動作
+- [x] 全 integration テストが通過
+
+**PR / ブランチ対応:**
+
+- `master <- feature/phase2-1` / PR #10 — search foundations
+- `master <- feature/phase2-2` / PR #11 — config + plugin registry
+- `master <- feature/phase2-3` / PR #12 — MCP server + tool handlers + build fix
+- `master <- feature/phase2-4` / PR #13 — integration tests
+- `master <- feature/phase2-5` — runtime initialization flow 実装済み、PR 未作成
+
+**注意:**
+
+- `feature/phase2-3` 以降のブランチは `master` に対して単独で build/test 可能にするため、先行 Phase 2 コミットを取り込んでおり、PR 間で履歴が重複している。
 
 ---
 

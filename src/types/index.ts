@@ -41,7 +41,7 @@ export interface RankedResult extends SearchResult {
 
 export interface SearchResponse {
   query: string;
-  results: SearchResult[];
+  results: RankedResult[];
   tookMs: number;
 }
 

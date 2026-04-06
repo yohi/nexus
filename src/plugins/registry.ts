@@ -1,9 +1,51 @@
 import type { EmbeddingProvider, LanguagePlugin } from '../types/index.js';
 
+/**
+ * Default timeout for plugin registry operations (e.g., health checks) in milliseconds.
+ */
+const REGISTRY_TIMEOUT_MS = 5000;
+
+/**
+ * Result of the plugin registry health check.
+ */
 export interface HealthCheckResult {
-  languages: string[];
-  embeddingProvider: string | null;
+  /**
+   * Details about language plugins.
+   */
+  languages: {
+    /**
+     * List of registered language plugin IDs.
+     */
+    registered: string[];
+    /**
+     * True if at least one language plugin is registered.
+     */
+    healthy: boolean;
+  };
+  /**
+   * Details about the embedding provider.
+   */
+  embeddings: {
+    /**
+     * Name of the active embedding provider, if any.
+     */
+    provider: string | undefined;
+    /**
+     * True if the active provider is registered and its health check passed.
+     */
+    healthy: boolean;
+  };
+  /**
+   * Overall health status.
+   * True if both language plugins and the embedding provider are healthy.
+   */
   healthy: boolean;
+  /**
+   * Indicates if the registry is operational.
+   * True if at least one language plugin is registered, which allows for basic
+   * indexing and grep-based search even if semantic search is unavailable.
+   */
+  isOperational: boolean;
 }
 
 export class LanguageRegistry {
@@ -30,11 +72,11 @@ export class LanguageRegistry {
 export class EmbeddingProviderRegistry {
   private readonly providers = new Map<string, EmbeddingProvider>();
 
-  private activeProviderName: string | null = null;
+  private activeProviderName: string | undefined = undefined;
 
   register(name: string, provider: EmbeddingProvider): void {
     this.providers.set(name, provider);
-    if (this.activeProviderName === null) {
+    if (this.activeProviderName === undefined) {
       this.activeProviderName = name;
     }
   }
@@ -47,21 +89,25 @@ export class EmbeddingProviderRegistry {
   }
 
   getActive(): EmbeddingProvider | undefined {
-    if (this.activeProviderName === null) {
+    if (this.activeProviderName === undefined) {
       return undefined;
     }
     return this.providers.get(this.activeProviderName);
   }
 
-  getActiveName(): string | null {
+  getActiveName(): string | undefined {
     return this.activeProviderName;
+  }
+
+  getRegisteredProviderNames(): string[] {
+    return Array.from(this.providers.keys());
   }
 }
 
 export class PluginRegistry {
-  readonly languages = new LanguageRegistry();
+  private readonly languages = new LanguageRegistry();
 
-  readonly embeddings = new EmbeddingProviderRegistry();
+  private readonly embeddings = new EmbeddingProviderRegistry();
 
   registerLanguage(plugin: LanguagePlugin): void {
     this.languages.register(plugin);
@@ -83,14 +129,53 @@ export class PluginRegistry {
     this.embeddings.setActive(name);
   }
 
+  getActiveEmbeddingProviderName(): string | undefined {
+    return this.embeddings.getActiveName();
+  }
+
+  getRegisteredEmbeddingProviderNames(): string[] {
+    return this.embeddings.getRegisteredProviderNames();
+  }
+
+  /**
+   * Performs a health check on all registered plugins and providers.
+   */
   async healthCheck(): Promise<HealthCheckResult> {
-    const provider = this.embeddings.getActive();
-    const healthy = provider ? await provider.healthCheck() : false;
+    const activeProvider = this.embeddings.getActive();
+    const activeProviderName = this.embeddings.getActiveName();
+    let embeddingHealthy = false;
+
+    if (activeProvider) {
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      try {
+        // Race the health check against the timeout
+        embeddingHealthy = await Promise.race([
+          activeProvider.healthCheck(),
+          new Promise<boolean>((resolve) => {
+            timer = setTimeout(() => resolve(false), REGISTRY_TIMEOUT_MS);
+          }),
+        ]);
+      } catch {
+        embeddingHealthy = false;
+      } finally {
+        if (timer) clearTimeout(timer);
+      }
+    }
+
+    const registeredLanguages = this.languages.list().map((plugin) => plugin.languageId);
+    const languagesHealthy = registeredLanguages.length > 0;
 
     return {
-      languages: this.languages.list().map((plugin) => plugin.languageId),
-      embeddingProvider: this.embeddings.getActiveName(),
-      healthy,
+      languages: {
+        registered: registeredLanguages,
+        healthy: languagesHealthy,
+      },
+      embeddings: {
+        provider: activeProviderName,
+        healthy: embeddingHealthy,
+      },
+      healthy: languagesHealthy && embeddingHealthy,
+      isOperational: languagesHealthy,
     };
   }
 }

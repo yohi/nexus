@@ -14,6 +14,7 @@ import { InMemoryMetadataStore } from '../unit/storage/in-memory-metadata-store.
 import { InMemoryVectorStore } from '../unit/storage/in-memory-vector-store.js';
 import { TestGrepEngine } from '../unit/search/test-grep-engine.js';
 import { IndexPipeline } from '../../src/indexer/pipeline.js';
+import { PathSanitizer } from '../../src/server/path-sanitizer.js';
 import { Chunker } from '../../src/indexer/chunker.js';
 import { TypeScriptLanguagePlugin } from '../../src/plugins/languages/typescript.js';
 import type { CodeChunk } from '../../src/types/index.js';
@@ -33,8 +34,10 @@ const makeChunk = (overrides: Partial<CodeChunk>): CodeChunk => ({
 describe('Nexus MCP server integration', () => {
   let httpServer: ReturnType<typeof createServer>;
   let baseUrl: string;
+  let clients: Client[] = [];
 
   beforeEach(async () => {
+    clients = [];
     const metadataStore = new InMemoryMetadataStore();
     const vectorStore = new InMemoryVectorStore({ dimensions: 64 });
     await metadataStore.initialize();
@@ -44,6 +47,9 @@ describe('Nexus MCP server integration', () => {
     const pluginRegistry = new PluginRegistry();
     pluginRegistry.registerLanguage(new TypeScriptLanguagePlugin());
     pluginRegistry.registerEmbeddingProvider('test', embeddingProvider);
+    // Explicitly activate for clarity, although registerEmbeddingProvider
+    // auto-activates the first registered provider in PluginRegistry.
+    pluginRegistry.setActiveEmbeddingProvider('test');
 
     const semanticSearch = new SemanticSearch({ vectorStore, embeddingProvider });
     const grepEngine = new TestGrepEngine();
@@ -57,7 +63,7 @@ describe('Nexus MCP server integration', () => {
     });
     await vectorStore.upsertChunks([chunk], await embeddingProvider.embed([chunk.content]));
 
-    const orchestrator = new SearchOrchestrator({ semanticSearch, grepEngine });
+    const orchestrator = new SearchOrchestrator({ semanticSearch, grepEngine, projectRoot: process.cwd() });
     const pipeline = new IndexPipeline({
       metadataStore,
       vectorStore,
@@ -66,9 +72,12 @@ describe('Nexus MCP server integration', () => {
       pluginRegistry,
     });
 
+    const sanitizer = await PathSanitizer.create(process.cwd());
+
     const createTestServer = () =>
       createNexusServer({
         projectRoot: process.cwd(),
+        sanitizer,
         semanticSearch,
         grepEngine,
         orchestrator,
@@ -102,19 +111,42 @@ describe('Nexus MCP server integration', () => {
   });
 
   afterEach(async () => {
-    await new Promise<void>((resolve, reject) => {
-      httpServer.close((error) => {
-        if (error) {
-          reject(error);
-          return;
+    const errors: Error[] = [];
+    try {
+      const settled = await Promise.allSettled(clients.map((client) => client.close()));
+      for (const result of settled) {
+        if (result.status === 'rejected') {
+          errors.push(result.reason instanceof Error ? result.reason : new Error(String(result.reason)));
         }
-        resolve();
-      });
-    });
+      }
+    } catch (error) {
+      errors.push(error instanceof Error ? error : new Error(String(error)));
+    } finally {
+      clients = [];
+      if (httpServer) {
+        await new Promise<void>((resolve) => {
+          httpServer.close((error) => {
+            if (error) {
+              errors.push(error);
+            }
+            resolve();
+          });
+        });
+      }
+    }
+
+    if (errors.length > 0) {
+      throw errors.length === 1
+        ? errors[0]
+        : new Error(
+            `Teardown failed with ${errors.length} errors: ${errors.map((e) => (e instanceof Error ? e.message : String(e))).join(', ')}`
+          );
+    }
   });
 
   it('accepts a client connection and exposes all six tools', async () => {
     const client = new Client({ name: 'test-client', version: '1.0.0' });
+    clients.push(client);
     const transport = new StreamableHTTPClientTransport(new URL(baseUrl));
     await client.connect(transport);
 
@@ -127,13 +159,12 @@ describe('Nexus MCP server integration', () => {
       'reindex',
       'semantic_search',
     ]);
-
-    await client.close();
   });
 
   it('serves multiple clients concurrently', async () => {
     const first = new Client({ name: 'client-a', version: '1.0.0' });
     const second = new Client({ name: 'client-b', version: '1.0.0' });
+    clients.push(first, second);
     const firstTransport = new StreamableHTTPClientTransport(new URL(baseUrl));
     const secondTransport = new StreamableHTTPClientTransport(new URL(baseUrl));
 
@@ -142,7 +173,5 @@ describe('Nexus MCP server integration', () => {
 
     expect(firstTools.tools).toHaveLength(6);
     expect(secondTools.tools).toHaveLength(6);
-
-    await Promise.all([first.close(), second.close()]);
   });
 });
