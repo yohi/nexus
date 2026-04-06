@@ -54,7 +54,7 @@ export const createNexusServer = (options: NexusServerOptions): McpServer => {
   server.registerTool(
     'semantic_search',
     {
-      description: 'Vector similarity search only',
+      description: 'Search the codebase using natural language (embeddings)',
       inputSchema: {
         query: z.string(),
         topK: z.number().int().positive().optional(),
@@ -62,7 +62,15 @@ export const createNexusServer = (options: NexusServerOptions): McpServer => {
         language: z.string().optional(),
       },
     },
-    async (args) => toolResult(await executeSemanticSearch(options.semanticSearch, args)),
+    async (args, extra) => {
+      try {
+        return toolResult(
+          await executeSemanticSearch(options.semanticSearch, options.sanitizer, args, extra?.signal),
+        );
+      } catch (error) {
+        return errorResult(error);
+      }
+    },
   );
 
   server.registerTool(
@@ -76,7 +84,21 @@ export const createNexusServer = (options: NexusServerOptions): McpServer => {
         maxResults: z.number().int().positive().optional(),
       },
     },
-    async (args) => toolResult(await executeGrepSearch(options.grepEngine, options.projectRoot, args)),
+    async (args, extra) => {
+      try {
+        return toolResult(
+          await executeGrepSearch(
+            options.grepEngine,
+            options.projectRoot,
+            options.sanitizer,
+            args,
+            extra?.signal,
+          ),
+        );
+      } catch (error) {
+        return errorResult(error);
+      }
+    },
   );
 
   server.registerTool(
@@ -91,7 +113,15 @@ export const createNexusServer = (options: NexusServerOptions): McpServer => {
         grepPattern: z.string().optional(),
       },
     },
-    async (args) => toolResult(await executeHybridSearch(options.orchestrator, args)),
+    async (args, extra) => {
+      try {
+        return toolResult(
+          await executeHybridSearch(options.orchestrator, options.sanitizer, args, extra?.signal),
+        );
+      } catch (error) {
+        return errorResult(error);
+      }
+    },
   );
 
   server.registerTool(
@@ -105,7 +135,13 @@ export const createNexusServer = (options: NexusServerOptions): McpServer => {
         endLine: z.number().int().positive().optional(),
       },
     },
-    async (args) => toolResult(await executeGetContext(options.loadFileContent, options.sanitizer, args)),
+    async (args) => {
+      try {
+        return toolResult(await executeGetContext(options.loadFileContent, options.sanitizer, args));
+      } catch (error) {
+        return errorResult(error);
+      }
+    },
   );
 
   server.registerTool(
@@ -114,15 +150,20 @@ export const createNexusServer = (options: NexusServerOptions): McpServer => {
       description: 'Return index state and statistics',
       inputSchema: {},
     },
-    async () =>
-      toolResult(
-        await executeIndexStatus(
-          options.metadataStore,
-          options.vectorStore,
-          options.pipeline,
-          options.pluginRegistry,
-        ),
-      ),
+    async () => {
+      try {
+        return toolResult(
+          await executeIndexStatus(
+            options.metadataStore,
+            options.vectorStore,
+            options.pipeline,
+            options.pluginRegistry,
+          ),
+        );
+      } catch (error) {
+        return errorResult(error);
+      }
+    },
   );
 
   server.registerTool(
@@ -133,8 +174,15 @@ export const createNexusServer = (options: NexusServerOptions): McpServer => {
         fullRebuild: z.boolean().optional(),
       },
     },
-    async (args) =>
-      toolResult(await executeReindex(options.pipeline, options.runReindex, options.loadFileContent, args)),
+    async (args) => {
+      try {
+        return toolResult(
+          await executeReindex(options.pipeline, options.runReindex, options.loadFileContent, args),
+        );
+      } catch (error) {
+        return errorResult(error);
+      }
+    },
   );
 
   return server;
@@ -146,14 +194,44 @@ export const initializeNexusRuntime = async (options: NexusRuntimeOptions): Prom
   await options.pipeline.reconcileOnStartup();
   await options.watcher.start();
 
-  const server = createNexusServer(options);
+  try {
+    const server = createNexusServer(options);
 
+    return {
+      server,
+      close: async () => {
+        let watcherError: unknown;
+        try {
+          await options.watcher.stop();
+        } catch (error) {
+          watcherError = error;
+        } finally {
+          await server.close();
+          if (watcherError) {
+            throw watcherError;
+          }
+        }
+      },
+    };
+  } catch (error) {
+    await options.watcher.stop().catch((stopError) => {
+      console.error('Failed to stop watcher during initialization rollback:', stopError);
+    });
+    throw error;
+  }
+};
+
+export const errorResult = (error: unknown) => {
+  const errorMessage = error instanceof Error ? error.message : String(error);
   return {
-    server,
-    close: async () => {
-      await options.watcher.stop();
-      await server.close();
-    },
+    content: [
+      {
+        type: 'text' as const,
+        text: `Error: ${errorMessage}`,
+      },
+    ],
+    isError: true,
+    structuredContent: { error: true, message: errorMessage },
   };
 };
 

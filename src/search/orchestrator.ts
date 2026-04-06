@@ -42,6 +42,7 @@ export class SearchOrchestrator {
         cwd: this.options.projectRoot,
         glob: params.filePattern ? [params.filePattern] : undefined,
         maxResults: topK,
+        abortSignal: params.abortSignal,
       }),
     ]);
 
