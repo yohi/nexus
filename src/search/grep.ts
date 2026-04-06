@@ -72,18 +72,13 @@ export class RipgrepEngine implements IGrepEngine {
           if (processController === undefined) {
             return;
           }
-
-          // If not already killed by timeout, send SIGTERM
-          if (!timeoutController.signal.aborted) {
-            processController.kill('SIGTERM');
+          // If this was a timeout abort, schedule SIGKILL as a last resort
+          if (timeoutController.signal.aborted) {
+            killTimer = setTimeout(() => {
+              processController.kill('SIGKILL');
+            }, KILL_GRACE_MS);
           }
-
-          // Schedule SIGKILL as a last resort
-          killTimer = setTimeout(() => {
-            processController.kill('SIGKILL');
-          }, KILL_GRACE_MS);
         },
-        { once: true },
       );
 
       return await this.spawnImpl(this.normalizeParams(params), combinedSignal);

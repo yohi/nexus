@@ -211,6 +211,8 @@ export class EventQueue {
     }
 
     if (this.state === 'overflow' && this.watcherQueue.length === 0 && this.reindexQueue.length === 0) {
+      this.flushTimers();
+      this.debouncedEvents.clear();
       this.state = 'full_scan';
     }
 

@@ -66,7 +66,7 @@ export class IndexPipeline implements IIndexPipeline {
         const existingNode = this.merkleTree.getNode(event.filePath);
 
         if (existingNode?.isDirectory) {
-          await this.options.vectorStore.deleteByPathPrefix(event.filePath);
+          await this.options.vectorStore.deleteByPathPrefix(event.filePath.endsWith('/') ? event.filePath : event.filePath + '/');
           await this.options.metadataStore.deleteSubtree(event.filePath);
           await this.merkleTree.load();
         } else {
