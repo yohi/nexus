@@ -1,12 +1,18 @@
 import { describe, expect, it } from 'vitest';
 
-import { initializeNexusRuntime } from '../../../src/server/index.js';
+import { initializeNexusRuntime, type NexusRuntimeOptions } from '../../../src/server/index.js';
 
-const makeServerOptions = () => ({
+import { PathSanitizer } from '../../../src/server/path-sanitizer.js';
+
+const makeServerOptions = (): Omit<NexusRuntimeOptions, 'watcher'> => ({
   projectRoot: process.cwd(),
+  sanitizer: {
+    sanitize: async (p: string) => p,
+    validateGlob: (p: string) => p,
+  } as unknown as PathSanitizer,
   semanticSearch: { search: async () => [] },
   grepEngine: { search: async () => [] },
-  orchestrator: { search: async () => ({ query: 'q', results: [], tookMs: 1 }) },
+  orchestrator: { search: async () => ({ query: 'q', results: [], tookMs: 1 }) } as any,
   vectorStore: {
     initialize: async () => undefined,
     upsertChunks: async () => undefined,
@@ -17,7 +23,7 @@ const makeServerOptions = () => ({
     compactIfNeeded: async () => ({ compacted: false, fragmentationRatioBefore: 0, fragmentationRatioAfter: 0, chunksRemoved: 0 }),
     scheduleIdleCompaction: () => undefined,
     getStats: async () => ({ totalChunks: 0, totalFiles: 0, dimensions: 64, fragmentationRatio: 0 }),
-  },
+  } as any,
   metadataStore: {
     initialize: async () => undefined,
     bulkUpsertMerkleNodes: async () => undefined,
@@ -30,7 +36,7 @@ const makeServerOptions = () => ({
     getAllPaths: async () => [],
     getIndexStats: async () => null,
     setIndexStats: async () => undefined,
-  },
+  } as any,
   pipeline: {
     reconcileOnStartup: async () => ({
       startedAt: '2026-04-05T00:00:00.000Z',
@@ -40,10 +46,10 @@ const makeServerOptions = () => ({
       chunksIndexed: 0,
     }),
     getSkippedFiles: () => new Map(),
-  },
+  } as any,
   pluginRegistry: {
     healthCheck: async () => ({ languages: ['typescript'], embeddingProvider: 'test', healthy: true }),
-  },
+  } as any,
   runReindex: async () => [],
   loadFileContent: async () => '',
 });
@@ -79,7 +85,7 @@ describe('initializeNexusRuntime', () => {
       },
     };
 
-    const runtime = await initializeNexusRuntime({ ...options, watcher } as never);
+    const runtime = await initializeNexusRuntime({ ...options, watcher } as unknown as NexusRuntimeOptions);
 
     expect(calls).toEqual([
       'metadata.initialize',

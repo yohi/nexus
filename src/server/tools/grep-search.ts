@@ -1,5 +1,5 @@
 import type { GrepMatch, IGrepEngine } from '../../types/index.js';
-import { PathSanitizer } from '../path-sanitizer.js';
+import type { PathSanitizer } from '../path-sanitizer.js';
 
 export interface GrepSearchToolArgs {
   pattern: string;
@@ -11,9 +11,11 @@ export interface GrepSearchToolArgs {
 export const executeGrepSearch = async (
   grepEngine: IGrepEngine,
   projectRoot: string,
+  sanitizer: PathSanitizer,
   args: GrepSearchToolArgs,
+  abortSignal?: AbortSignal,
 ): Promise<{ matches: GrepMatch[] }> => {
-  const glob = args.filePattern ? [PathSanitizer.validateGlob(args.filePattern)] : undefined;
+  const glob = args.filePattern ? [sanitizer.validateGlob(args.filePattern)] : undefined;
 
   return {
     matches: await grepEngine.search({
@@ -22,6 +24,7 @@ export const executeGrepSearch = async (
       glob,
       caseSensitive: args.caseSensitive,
       maxResults: args.maxResults,
+      abortSignal,
     }),
   };
 };
