@@ -1,69 +1,63 @@
-import path from 'node:path';
 import fs from 'node:fs/promises';
+import path from 'node:path';
 
-export class PathTraversalError extends Error {
-  constructor(message: string) {
-    super(message);
-    this.name = 'PathTraversalError';
+import { PathTraversalError } from '../types/index.js';
+
+const validateWithinRoot = (projectRoot: string, candidatePath: string, attemptedPath: string): void => {
+  const relativePath = path.relative(projectRoot, candidatePath);
+
+  if (
+    relativePath === '..' ||
+    relativePath.startsWith(`..${path.sep}`) ||
+    path.isAbsolute(relativePath)
+  ) {
+    throw new PathTraversalError(attemptedPath);
   }
-}
+};
 
 export class PathSanitizer {
   private constructor(private readonly projectRoot: string) {}
 
-  /**
-   * Create a PathSanitizer.
-   * It resolves the projectRoot via realpath to ensure the root itself is absolute and canonical.
-   */
   static async create(projectRoot: string): Promise<PathSanitizer> {
     const resolvedRoot = await fs.realpath(path.resolve(projectRoot));
     return new PathSanitizer(resolvedRoot);
   }
 
-  /**
-   * Sanitizes and validates a file path.
-   * (1) Resolves the candidate via path.resolve(this.projectRoot, filePath) and
-   *     verifies with path.relative to ensure the resolved path stays inside projectRoot.
-   * (2) Uses fs.realpath to resolve symlinks and verify the real path also remains
-   *     under projectRoot via another path.relative check.
-   */
-  async sanitize(filePath: string): Promise<string> {
-    const resolvedPath = path.resolve(this.projectRoot, filePath);
+  async resolve(userPath: string): Promise<string> {
+    const resolvedPath = path.resolve(this.projectRoot, userPath);
+    validateWithinRoot(this.projectRoot, resolvedPath, userPath);
 
-    const relativePath = path.relative(this.projectRoot, resolvedPath);
-    if (
-      relativePath === '..' ||
-      relativePath.startsWith('..' + path.sep) ||
-      path.isAbsolute(relativePath)
-    ) {
-      throw new PathTraversalError(`Access denied: path '${filePath}' is outside project root`);
-    }
-
+    let realPath: string;
     try {
-      const realPath = await fs.realpath(resolvedPath);
-      const relativeRealPath = path.relative(this.projectRoot, realPath);
-      if (
-        relativeRealPath === '..' ||
-        relativeRealPath.startsWith('..' + path.sep) ||
-        path.isAbsolute(relativeRealPath)
-      ) {
-        throw new PathTraversalError(
-          `Access denied: symlink resolved to '${realPath}' outside project root`,
-        );
-      }
-      return realPath;
+      realPath = await fs.realpath(resolvedPath);
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
-        // If the file doesn't exist yet, we still return the resolved path
-        return resolvedPath;
+        throw new PathTraversalError(userPath, { cause: error });
       }
-      console.error('Error during realpath resolution:', {
-        error,
-        originalInput: filePath,
-        resolvedPath,
-        projectRoot: this.projectRoot,
-      });
       throw error;
     }
+
+    validateWithinRoot(this.projectRoot, realPath, userPath);
+    return realPath;
+  }
+
+  async resolveRelative(userPath: string): Promise<string> {
+    const resolvedPath = await this.resolve(userPath);
+    return path.relative(this.projectRoot, resolvedPath);
+  }
+
+  static validateGlob(pattern: string): string {
+    const normalized = pattern.replace(/\\/g, '/');
+    const segments = normalized.split('/');
+
+    if (segments.includes('..')) {
+      throw new PathTraversalError(pattern);
+    }
+
+    return pattern;
+  }
+
+  async sanitize(filePath: string): Promise<string> {
+    return this.resolve(filePath);
   }
 }

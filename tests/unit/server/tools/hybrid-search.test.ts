@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import { executeHybridSearch } from '../../../../src/server/tools/hybrid-search.js';
 import type { SearchResponse } from '../../../../src/types/index.js';
+import { PathTraversalError } from '../../../../src/types/index.js';
 
 class StubOrchestrator {
   constructor(private readonly response: SearchResponse) {}
@@ -20,5 +21,20 @@ describe('executeHybridSearch', () => {
     };
 
     await expect(executeHybridSearch(new StubOrchestrator(response) as never, { query: 'authenticate' })).resolves.toEqual(response);
+  });
+
+  it('rejects filePattern with parent traversal', async () => {
+    const response: SearchResponse = {
+      query: 'authenticate',
+      tookMs: 3,
+      results: [],
+    };
+
+    await expect(
+      executeHybridSearch(new StubOrchestrator(response) as never, {
+        query: 'authenticate',
+        filePattern: '../*.ts',
+      }),
+    ).rejects.toBeInstanceOf(PathTraversalError);
   });
 });

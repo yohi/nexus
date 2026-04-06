@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import { executeSemanticSearch } from '../../../../src/server/tools/semantic-search.js';
 import type { SearchResult } from '../../../../src/types/index.js';
 import type { SemanticSearchParams } from '../../../../src/search/semantic.js';
+import { PathTraversalError } from '../../../../src/types/index.js';
 
 class StubSemanticSearch {
   public lastSearchArgs?: SemanticSearchParams;
@@ -41,5 +42,17 @@ describe('executeSemanticSearch', () => {
 
     expect(searchResult).toEqual({ results });
     expect(stub.lastSearchArgs).toEqual(args);
+  });
+
+  it('rejects filePattern with parent traversal', async () => {
+    const stub = new StubSemanticSearch([]);
+
+    await expect(
+      executeSemanticSearch(stub, {
+        query: 'authenticate',
+        filePattern: '../*.ts',
+      }),
+    ).rejects.toBeInstanceOf(PathTraversalError);
+    expect(stub.lastSearchArgs).toBeUndefined();
   });
 });
