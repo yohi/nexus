@@ -55,7 +55,7 @@ export class DeadLetterQueue {
     for (const entry of persisted) {
       this.entries.set(entry.id, entry);
     }
-    this.trimMemory();
+    await this.trimToCapacity();
     this.loaded = true;
   }
 
@@ -74,7 +74,7 @@ export class DeadLetterQueue {
 
     await this.options.metadataStore.upsertDeadLetterEntries([entry]);
     this.entries.set(entry.id, entry);
-    this.trimMemory();
+    await this.trimToCapacity();
     return entry;
   }
 
@@ -162,13 +162,20 @@ export class DeadLetterQueue {
     }
   }
 
-  private trimMemory(): void {
+  private async trimToCapacity(): Promise<void> {
+    const removedIds: string[] = [];
+
     while (this.entries.size > this.maxEntries) {
       const oldestId = this.entries.keys().next().value as string | undefined;
       if (oldestId === undefined) {
         break;
       }
       this.entries.delete(oldestId);
+      removedIds.push(oldestId);
+    }
+
+    if (removedIds.length > 0) {
+      await this.options.metadataStore.removeDeadLetterEntries(removedIds);
     }
   }
 }
