@@ -144,4 +144,27 @@ describe('TypeScriptLanguagePlugin', () => {
     expect(dtsSymbols).not.toContain('declaredFunction');
     expect(dtsSymbols).not.toContain('method');
   });
+
+  it('handles multiple declarations in a single statement', async () => {
+    const plugin = new TypeScriptLanguagePlugin();
+    const parser = await plugin.createParser();
+    
+    const content = 'export const a = 1, b = 2;';
+    const result = await parser.parse({
+      filePath: 'multiple.ts',
+      language: 'typescript',
+      content: content,
+    });
+    
+    const vars = result.declarations.filter(d => d.type === 'variable');
+    expect(vars.map(d => d.name)).toEqual(['a', 'b']);
+    
+    // Each declaration now has its own content
+    expect(vars[0].content).toBe('a = 1');
+    expect(vars[1].content).toBe('b = 2');
+    
+    // They share the same start line because they are on the same line in the input
+    expect(vars[0].startLine).toBe(vars[1].startLine);
+    expect(vars[0].endLine).toBe(vars[1].endLine);
+  });
 });

@@ -93,12 +93,12 @@ class TypeScriptParser {
       } else if (ts.isVariableStatement(node)) {
         const isExported = node.modifiers?.some((m) => m.kind === ts.SyntaxKind.ExportKeyword);
         if (isExported) {
-          const { startLine, endLine } = getLineRange(sourceFile, node);
-          const content = sourceFile.getFullText().slice(node.getFullStart(), node.getEnd()).trim();
-
           for (const declaration of node.declarationList.declarations) {
             if (ts.isIdentifier(declaration.name)) {
               const varName = declaration.name.text;
+              const { startLine, endLine } = getLineRange(sourceFile, declaration);
+              const content = sourceFile.getFullText().slice(declaration.getStart(), declaration.getEnd()).trim();
+
               let varType: SymbolKind = 'variable';
               if (declaration.initializer) {
                 if (ts.isArrowFunction(declaration.initializer) || ts.isFunctionExpression(declaration.initializer)) {
