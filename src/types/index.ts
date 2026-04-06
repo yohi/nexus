@@ -110,9 +110,15 @@ export interface IVectorStore {
   upsertChunks(chunks: CodeChunk[], embeddings?: number[][]): Promise<void>;
   deleteByFilePath(filePath: string): Promise<number>;
   deleteByPathPrefix(pathPrefix: string): Promise<number>;
+  renameFilePath(oldPath: string, newPath: string): Promise<number>;
   search(queryVector: number[], topK: number, filter?: VectorFilter): Promise<VectorSearchResult[]>;
   compactIfNeeded(config?: Partial<CompactionConfig>): Promise<CompactionResult>;
-  scheduleIdleCompaction(runCompaction: () => Promise<void>, delayMs?: number): void;
+  compactAfterReindex(config?: Partial<CompactionConfig>): Promise<CompactionResult>;
+  scheduleIdleCompaction(
+    runCompaction: () => Promise<void>,
+    delayMs?: number,
+    mutex?: { waitForUnlock(): Promise<void> },
+  ): void;
   getStats(): Promise<VectorStoreStats>;
 }
 
@@ -137,6 +143,7 @@ export interface IMetadataStore {
   bulkUpsertMerkleNodes(nodes: MerkleNodeRow[]): Promise<void>;
   bulkDeleteMerkleNodes(paths: string[]): Promise<void>;
   deleteSubtree(pathPrefix: string): Promise<number>;
+  renamePath(oldPath: string, newPath: string, hash: string): Promise<void>;
   getMerkleNode(path: string): Promise<MerkleNodeRow | null>;
   getAllNodes(): Promise<MerkleNodeRow[]>;
   getAllFileNodes(): Promise<MerkleNodeRow[]>;
@@ -155,6 +162,7 @@ export interface GrepParams {
   caseSensitive?: boolean;
   contextLines?: number;
   maxResults?: number;
+  abortSignal?: AbortSignal;
 }
 
 export interface GrepMatch {
@@ -210,6 +218,11 @@ export interface FileWatcherOptions {
   ignorePaths?: string[];
 }
 
+export interface IFileWatcher {
+  start(): Promise<void>;
+  stop(): Promise<void>;
+}
+
 export interface StorageConfig {
   rootDir: string;
   metadataDbPath: string;
@@ -259,6 +272,14 @@ export interface ReconciliationResult {
   modified: number;
   deleted: number;
   unchanged: number;
+}
+
+export interface RuntimeInitializationResult {
+  startedAt: string;
+  finishedAt: string;
+  durationMs: number;
+  reconciliation: ReconciliationResult;
+  chunksIndexed: number;
 }
 
 export interface ReindexOptions {

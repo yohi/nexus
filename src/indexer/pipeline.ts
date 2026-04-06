@@ -8,6 +8,7 @@ import type {
   IMetadataStore,
   IVectorStore,
   IndexEvent,
+  RuntimeInitializationResult,
   ReindexResult,
 } from '../types/index.js';
 import { RetryExhaustedError } from '../types/index.js';
@@ -34,6 +35,7 @@ export interface IIndexPipeline {
     fullRebuild?: boolean,
   ): Promise<ReindexResult | { status: 'already_running' }>;
   getSkippedFiles(): ReadonlyMap<string, string>;
+  reconcileOnStartup(): Promise<RuntimeInitializationResult>;
 }
 
 export class IndexPipeline implements IIndexPipeline {
@@ -62,11 +64,34 @@ export class IndexPipeline implements IIndexPipeline {
     }
 
     let chunksIndexed = 0;
+    const renameCandidates = MerkleTree.detectRenameCandidates(events);
+    const renamedOldPaths = new Set(renameCandidates.map((candidate) => candidate.oldPath));
+    const renamedNewPaths = new Set(renameCandidates.map((candidate) => candidate.newPath));
+
+    for (const candidate of renameCandidates) {
+      await this.options.vectorStore.renameFilePath(candidate.oldPath, candidate.newPath);
+      await this.options.metadataStore.renamePath(candidate.oldPath, candidate.newPath, candidate.hash);
+    }
+
+    if (renameCandidates.length > 0) {
+      await this.merkleTree.load();
+    }
 
     for (const event of events) {
+      if (renamedOldPaths.has(event.filePath) || renamedNewPaths.has(event.filePath)) {
+        continue;
+      }
+
       if (event.type === 'deleted') {
-        await this.options.vectorStore.deleteByFilePath(event.filePath);
-        await this.merkleTree.remove(event.filePath);
+        const existingNode = await this.options.metadataStore.getMerkleNode(event.filePath);
+        if (existingNode?.isDirectory) {
+          await this.options.vectorStore.deleteByPathPrefix(event.filePath);
+          await this.options.metadataStore.deleteSubtree(event.filePath);
+          await this.merkleTree.load();
+        } else {
+          await this.options.vectorStore.deleteByFilePath(event.filePath);
+          await this.merkleTree.remove(event.filePath);
+        }
         continue;
       }
 
@@ -148,6 +173,31 @@ export class IndexPipeline implements IIndexPipeline {
       }
       throw e;
     }
+  }
+
+  async reconcileOnStartup(): Promise<RuntimeInitializationResult> {
+    const startedAt = new Date().toISOString();
+    const startTime = Date.now();
+
+    if (!this.isTreeLoaded) {
+      await this.merkleTree.load();
+      this.isTreeLoaded = true;
+    }
+
+    const finishedAt = new Date().toISOString();
+
+    return {
+      startedAt,
+      finishedAt,
+      durationMs: Date.now() - startTime,
+      reconciliation: {
+        added: 0,
+        modified: 0,
+        deleted: 0,
+        unchanged: 0,
+      },
+      chunksIndexed: 0,
+    };
   }
 
   getSkippedFiles(): ReadonlyMap<string, string> {
