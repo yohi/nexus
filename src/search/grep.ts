@@ -10,6 +10,9 @@ interface RipgrepEngineOptions {
   grepTimeoutMs?: number;
   killGraceMs?: number;
   spawn?: (params: GrepParams, signal: AbortSignal) => Promise<GrepMatch[]>;
+  createProcessController?: () => {
+    kill(signal: 'SIGTERM' | 'SIGKILL'): void;
+  };
   processController?: {
     kill(signal: 'SIGTERM' | 'SIGKILL'): void;
   };
@@ -29,6 +32,10 @@ export class RipgrepEngine implements IGrepEngine {
 
   private readonly spawnImpl: (params: GrepParams, signal: AbortSignal) => Promise<GrepMatch[]>;
 
+  private readonly createProcessController?: () => {
+    kill(signal: 'SIGTERM' | 'SIGKILL'): void;
+  };
+
   private readonly processController?: {
     kill(signal: 'SIGTERM' | 'SIGKILL'): void;
   };
@@ -37,6 +44,7 @@ export class RipgrepEngine implements IGrepEngine {
     this.limit = pLimit(options.grepMaxConcurrency ?? DEFAULT_MAX_CONCURRENCY);
     this.timeoutMs = options.grepTimeoutMs ?? DEFAULT_TIMEOUT_MS;
     this.killGraceMs = options.killGraceMs ?? DEFAULT_KILL_GRACE_MS;
+    this.createProcessController = options.createProcessController;
     this.processController = options.processController;
 
     if (!options.spawn) {
@@ -50,15 +58,16 @@ export class RipgrepEngine implements IGrepEngine {
   }
 
   private async execute(params: GrepParams): Promise<GrepMatch[]> {
+    const processController = this.createProcessController?.() ?? this.processController;
     const timeoutController = new AbortController();
     let timedOut = false;
     let escalationId: ReturnType<typeof setTimeout> | undefined;
     const timeoutId = setTimeout(() => {
       timedOut = true;
-      this.processController?.kill('SIGTERM');
+      processController?.kill('SIGTERM');
       timeoutController.abort();
       escalationId = setTimeout(() => {
-        this.processController?.kill('SIGKILL');
+        processController?.kill('SIGKILL');
       }, this.killGraceMs);
     }, this.timeoutMs);
     const combinedSignal = params.abortSignal
