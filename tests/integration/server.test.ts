@@ -111,21 +111,36 @@ describe('Nexus MCP server integration', () => {
   });
 
   afterEach(async () => {
+    const errors: Error[] = [];
     try {
-      await Promise.allSettled(clients.map((client) => client.close()));
+      const settled = await Promise.allSettled(clients.map((client) => client.close()));
+      for (const result of settled) {
+        if (result.status === 'rejected') {
+          errors.push(result.reason instanceof Error ? result.reason : new Error(String(result.reason)));
+        }
+      }
+    } catch (error) {
+      errors.push(error instanceof Error ? error : new Error(String(error)));
     } finally {
       clients = [];
-      await new Promise<void>((resolve) => {
-        if (!httpServer) {
-          return resolve();
-        }
-        httpServer.close((error) => {
-          if (error) {
-            console.error('Failed to close test HTTP server:', error);
-          }
-          resolve();
+      if (httpServer) {
+        await new Promise<void>((resolve) => {
+          httpServer.close((error) => {
+            if (error) {
+              errors.push(error);
+            }
+            resolve();
+          });
         });
-      });
+      }
+    }
+
+    if (errors.length > 0) {
+      throw errors.length === 1
+        ? errors[0]
+        : new Error(
+            `Teardown failed with ${errors.length} errors: ${errors.map((e) => (e instanceof Error ? e.message : String(e))).join(', ')}`
+          );
     }
   });
 

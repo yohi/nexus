@@ -2,7 +2,7 @@ import ts from 'typescript';
 import type { FileToChunk, LanguagePlugin, ParsedDeclaration, ParsedSourceFile, SymbolKind } from '../../types/index.js';
 
 const getLineRange = (sourceFile: ts.SourceFile, node: ts.Node): { startLine: number; endLine: number } => {
-  const startLine = sourceFile.getLineAndCharacterOfPosition(node.getStart()).line + 1;
+  const startLine = sourceFile.getLineAndCharacterOfPosition(node.getFullStart()).line + 1;
   const endLine = sourceFile.getLineAndCharacterOfPosition(node.getEnd()).line + 1;
   return { startLine, endLine };
 };
@@ -22,22 +22,22 @@ class TypeScriptParser {
       } else if (ts.isInterfaceDeclaration(node)) {
         type = 'interface';
         name = node.name.text;
-      } else if (ts.isFunctionDeclaration(node) && node.name) {
+      } else if (ts.isFunctionDeclaration(node) && node.name && node.body) {
         type = 'function';
         name = node.name.text;
       } else if (ts.isClassDeclaration(node) && node.name) {
         type = 'class';
         name = node.name.text;
-      } else if (ts.isMethodDeclaration(node) && ts.isIdentifier(node.name)) {
+      } else if (ts.isMethodDeclaration(node) && ts.isIdentifier(node.name) && node.body) {
         type = 'method';
         name = node.name.text;
-      } else if (ts.isConstructorDeclaration(node)) {
+      } else if (ts.isConstructorDeclaration(node) && node.body) {
         type = 'constructor';
         name = 'constructor';
-      } else if (ts.isGetAccessorDeclaration(node) && ts.isIdentifier(node.name)) {
+      } else if (ts.isGetAccessorDeclaration(node) && ts.isIdentifier(node.name) && node.body) {
         type = 'method';
         name = `get ${node.name.text}`;
-      } else if (ts.isSetAccessorDeclaration(node) && ts.isIdentifier(node.name)) {
+      } else if (ts.isSetAccessorDeclaration(node) && ts.isIdentifier(node.name) && node.body) {
         type = 'method';
         name = `set ${node.name.text}`;
       } else if (ts.isEnumDeclaration(node)) {
@@ -55,19 +55,27 @@ class TypeScriptParser {
           for (const declaration of node.declarationList.declarations) {
             if (ts.isIdentifier(declaration.name)) {
               const varName = declaration.name.text;
-              const isFunction =
-                declaration.initializer &&
-                (ts.isArrowFunction(declaration.initializer) ||
-                  ts.isFunctionExpression(declaration.initializer) ||
-                  ts.isCallExpression(declaration.initializer));
+              let varType: SymbolKind = 'variable';
+              if (declaration.initializer) {
+                if (ts.isArrowFunction(declaration.initializer) || ts.isFunctionExpression(declaration.initializer)) {
+                  varType = 'function';
+                } else if (ts.isCallExpression(declaration.initializer)) {
+                  const hasFunctionArg = declaration.initializer.arguments.some(
+                    (arg) => ts.isArrowFunction(arg) || ts.isFunctionExpression(arg)
+                  );
+                  if (hasFunctionArg) {
+                    varType = 'function';
+                  }
+                }
+              }
 
               const { startLine, endLine } = getLineRange(sourceFile, declaration);
               declarations.push({
-                type: isFunction ? 'function' : 'variable',
+                type: varType,
                 name: varName,
                 startLine,
                 endLine,
-                content: declaration.getText(sourceFile).trim(),
+                content: sourceFile.getFullText().slice(declaration.getFullStart(), declaration.getEnd()).trim(),
               });
             }
           }
@@ -81,7 +89,7 @@ class TypeScriptParser {
           name,
           startLine,
           endLine,
-          content: node.getText(sourceFile).trim(),
+          content: sourceFile.getFullText().slice(node.getFullStart(), node.getEnd()).trim(),
         });
       }
 
@@ -101,7 +109,9 @@ class TypeScriptParser {
         name: 'imports',
         startLine,
         endLine,
-        content: importNodes.map((n) => n.getText(sourceFile).trim()).join('\n'),
+        content: importNodes
+          .map((n) => sourceFile.getFullText().slice(n.getFullStart(), n.getEnd()).trim())
+          .join('\n'),
       });
     }
 
