@@ -22,23 +22,31 @@ export class PathSanitizer {
 
   /**
    * Sanitizes and validates a file path.
-   * (1) Resolves the candidate via path.resolve(projectRoot, filePath) and verifies the
-   *     resolved path startsWith the projectRoot.
+   * (1) Resolves the candidate via path.resolve(this.projectRoot, filePath) and
+   *     verifies with path.relative to ensure the resolved path stays inside projectRoot.
    * (2) Uses fs.realpath to resolve symlinks and verify the real path also remains
-   *     under projectRoot.
+   *     under projectRoot via another path.relative check.
    */
   async sanitize(filePath: string): Promise<string> {
     const resolvedPath = path.resolve(this.projectRoot, filePath);
 
     const relativePath = path.relative(this.projectRoot, resolvedPath);
-    if (relativePath.startsWith('..') || path.isAbsolute(relativePath)) {
+    if (
+      relativePath === '..' ||
+      relativePath.startsWith('..' + path.sep) ||
+      path.isAbsolute(relativePath)
+    ) {
       throw new PathTraversalError(`Access denied: path '${filePath}' is outside project root`);
     }
 
     try {
       const realPath = await fs.realpath(resolvedPath);
       const relativeRealPath = path.relative(this.projectRoot, realPath);
-      if (relativeRealPath.startsWith('..') || path.isAbsolute(relativeRealPath)) {
+      if (
+        relativeRealPath === '..' ||
+        relativeRealPath.startsWith('..' + path.sep) ||
+        path.isAbsolute(relativeRealPath)
+      ) {
         throw new PathTraversalError(
           `Access denied: symlink resolved to '${realPath}' outside project root`,
         );
