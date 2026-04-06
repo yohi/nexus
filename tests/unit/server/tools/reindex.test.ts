@@ -16,6 +16,7 @@ const pipeline = {
     };
   },
   getSkippedFiles: () => new Map<string, string>(),
+  reconcileOnStartup: async () => ({ startedAt: '', finishedAt: '', durationMs: 0, reconciliation: { added: 0, modified: 0, deleted: 0, unchanged: 0 }, chunksIndexed: 0 }),
 };
 
 describe('executeReindex', () => {
