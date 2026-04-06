@@ -35,6 +35,16 @@ export class InMemoryMetadataStore implements IMetadataStore {
     return deleted;
   }
 
+  async renamePath(oldPath: string, newPath: string, hash: string): Promise<void> {
+    this.nodes.delete(oldPath);
+    this.nodes.set(newPath, {
+      path: newPath,
+      hash,
+      parentPath: newPath.includes('/') ? newPath.split('/').slice(0, -1).join('/') : null,
+      isDirectory: false,
+    });
+  }
+
   async getMerkleNode(path: string): Promise<MerkleNodeRow | null> {
     return this.nodes.get(path) ?? null;
   }

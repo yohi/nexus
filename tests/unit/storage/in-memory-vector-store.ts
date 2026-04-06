@@ -95,6 +95,25 @@ export class InMemoryVectorStore implements IVectorStore {
     return deleted;
   }
 
+  async renameFilePath(oldPath: string, newPath: string): Promise<number> {
+    let renamed = 0;
+    for (const record of this.records.values()) {
+      if (record.chunk.filePath !== oldPath || record.deleted) {
+        continue;
+      }
+
+      record.chunk = {
+        ...record.chunk,
+        id: record.chunk.id.replace(oldPath, newPath),
+        filePath: newPath,
+        hash: record.chunk.hash.replace(oldPath, newPath),
+      };
+      renamed += 1;
+    }
+
+    return renamed;
+  }
+
   async search(queryVector: number[], topK: number, filter?: VectorFilter): Promise<VectorSearchResult[]> {
     if (queryVector.length !== this.dimensions) {
       throw new Error(`queryVector length must be ${this.dimensions}`);
@@ -154,9 +173,14 @@ export class InMemoryVectorStore implements IVectorStore {
     };
   }
 
-  scheduleIdleCompaction(runCompaction: () => Promise<void>, delayMs = 0): void {
+  scheduleIdleCompaction(
+    runCompaction: () => Promise<void>,
+    delayMs = 0,
+    mutex?: { waitForUnlock(): Promise<void> },
+  ): void {
     setTimeout(() => {
       Promise.resolve()
+        .then(() => mutex?.waitForUnlock())
         .then(() => runCompaction())
         .catch((error) => {
           console.error('Compaction failed:', error);
