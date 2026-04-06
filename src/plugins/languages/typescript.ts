@@ -7,6 +7,28 @@ const getLineRange = (sourceFile: ts.SourceFile, node: ts.Node): { startLine: nu
   return { startLine, endLine };
 };
 
+/**
+ * Defensive helper that correctly detects whether a node has an implementation.
+ * Returns true only when node.body exists, the source file is not a declaration file,
+ * and the node does not have an abstract modifier.
+ */
+const hasImplementation = (node: ts.Node): boolean => {
+  const anyNode = node as any;
+  if (!anyNode.body) {
+    return false;
+  }
+
+  if (node.getSourceFile().isDeclarationFile === true) {
+    return false;
+  }
+
+  if (anyNode.modifiers?.some((m: any) => m.kind === ts.SyntaxKind.AbstractKeyword)) {
+    return false;
+  }
+
+  return true;
+};
+
 class TypeScriptParser {
   async parse(file: FileToChunk): Promise<ParsedSourceFile> {
     const sourceFile = ts.createSourceFile(file.filePath, file.content, ts.ScriptTarget.Latest, true);
@@ -22,22 +44,22 @@ class TypeScriptParser {
       } else if (ts.isInterfaceDeclaration(node)) {
         type = 'interface';
         name = node.name.text;
-      } else if (ts.isFunctionDeclaration(node) && node.body) {
+      } else if (ts.isFunctionDeclaration(node) && hasImplementation(node)) {
         type = 'function';
         name = node.name ? node.name.text : '<anonymous>';
       } else if (ts.isClassDeclaration(node)) {
         type = 'class';
         name = node.name ? node.name.text : '<anonymous>';
-      } else if (ts.isMethodDeclaration(node) && ts.isIdentifier(node.name) && node.body) {
+      } else if (ts.isMethodDeclaration(node) && ts.isIdentifier(node.name) && hasImplementation(node)) {
         type = 'method';
         name = node.name.text;
-      } else if (ts.isConstructorDeclaration(node) && node.body) {
+      } else if (ts.isConstructorDeclaration(node) && hasImplementation(node)) {
         type = 'constructor';
         name = 'constructor';
-      } else if (ts.isGetAccessorDeclaration(node) && ts.isIdentifier(node.name) && node.body) {
+      } else if (ts.isGetAccessorDeclaration(node) && ts.isIdentifier(node.name) && hasImplementation(node)) {
         type = 'method';
         name = `get ${node.name.text}`;
-      } else if (ts.isSetAccessorDeclaration(node) && ts.isIdentifier(node.name) && node.body) {
+      } else if (ts.isSetAccessorDeclaration(node) && ts.isIdentifier(node.name) && hasImplementation(node)) {
         type = 'method';
         name = `set ${node.name.text}`;
       } else if (ts.isEnumDeclaration(node)) {

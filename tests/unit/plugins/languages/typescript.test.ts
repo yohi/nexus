@@ -92,4 +92,56 @@ describe('TypeScriptLanguagePlugin', () => {
     expect(importSymbol?.content).toContain("import { a } from 'a';");
     expect(importSymbol?.content).toContain("import { c } from 'c';");
   });
+
+  it('correctly ignores abstract members and declaration files', async () => {
+    const plugin = new TypeScriptLanguagePlugin();
+    const parser = await plugin.createParser();
+    
+    // Abstract class and members
+    const abstractContent = `
+      export abstract class MyAbstractClass {
+        abstract myAbstractMethod(): void;
+        myImplementedMethod() { return 1; }
+        
+        abstract get myAbstractAccessor(): string;
+        get myImplementedAccessor() { return 'a'; }
+      }
+    `;
+    
+    const abstractResult = await parser.parse({
+      filePath: 'abstract.ts',
+      language: 'typescript',
+      content: abstractContent,
+    });
+    
+    const abstractSymbols = abstractResult.declarations.map(d => d.name);
+    expect(abstractSymbols).toContain('MyAbstractClass');
+    expect(abstractSymbols).toContain('myImplementedMethod');
+    expect(abstractSymbols).toContain('get myImplementedAccessor');
+    
+    expect(abstractSymbols).not.toContain('myAbstractMethod');
+    expect(abstractSymbols).not.toContain('get myAbstractAccessor');
+
+    // Declaration file
+    const dtsContent = `
+      export function declaredFunction(): void;
+      export class DeclaredClass {
+        method(): void;
+      }
+    `;
+    
+    const dtsResult = await parser.parse({
+      filePath: 'test.d.ts',
+      language: 'typescript',
+      content: dtsContent,
+    });
+    
+    const dtsSymbols = dtsResult.declarations.map(d => d.name);
+    // Classes are still included
+    expect(dtsSymbols).toContain('DeclaredClass');
+    
+    // Functions and methods in .d.ts should be ignored
+    expect(dtsSymbols).not.toContain('declaredFunction');
+    expect(dtsSymbols).not.toContain('method');
+  });
 });
