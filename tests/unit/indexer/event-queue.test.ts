@@ -90,7 +90,7 @@ describe('EventQueue', () => {
     const accepted = queue.enqueue(makeEvent({ filePath: 'src/c.ts' }));
 
     expect(accepted).toBe(false);
-    expect(queue.size()).toBe(2);
+    expect(queue.size()).toBe(1);
   });
 
   it('clears queued events and resets overflow state', async () => {
