@@ -49,6 +49,29 @@ class TypeScriptParser {
       } else if (ts.isModuleDeclaration(node)) {
         type = 'namespace';
         name = node.name.text;
+      } else if (ts.isVariableStatement(node)) {
+        const isExported = node.modifiers?.some((m) => m.kind === ts.SyntaxKind.ExportKeyword);
+        if (isExported) {
+          for (const declaration of node.declarationList.declarations) {
+            if (ts.isIdentifier(declaration.name)) {
+              const varName = declaration.name.text;
+              const isFunction =
+                declaration.initializer &&
+                (ts.isArrowFunction(declaration.initializer) ||
+                  ts.isFunctionExpression(declaration.initializer) ||
+                  ts.isCallExpression(declaration.initializer));
+
+              const { startLine, endLine } = getLineRange(sourceFile, declaration);
+              declarations.push({
+                type: isFunction ? 'function' : 'variable',
+                name: varName,
+                startLine,
+                endLine,
+                content: declaration.getText(sourceFile).trim(),
+              });
+            }
+          }
+        }
       }
 
       if (type && name) {

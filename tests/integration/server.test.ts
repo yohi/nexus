@@ -47,6 +47,8 @@ describe('Nexus MCP server integration', () => {
     const pluginRegistry = new PluginRegistry();
     pluginRegistry.registerLanguage(new TypeScriptLanguagePlugin());
     pluginRegistry.registerEmbeddingProvider('test', embeddingProvider);
+    // Explicitly activate for clarity, although registerEmbeddingProvider
+    // auto-activates the first registered provider in PluginRegistry.
     pluginRegistry.setActiveEmbeddingProvider('test');
 
     const semanticSearch = new SemanticSearch({ vectorStore, embeddingProvider });
