@@ -1,9 +1,11 @@
-import type { IMetadataStore, IndexStatsRow, MerkleNodeRow } from '../../../src/types/index.js';
+import type { DeadLetterEntry, IMetadataStore, IndexStatsRow, MerkleNodeRow } from '../../../src/types/index.js';
 
 export class InMemoryMetadataStore implements IMetadataStore {
   private readonly nodes = new Map<string, MerkleNodeRow>();
 
   private stats: IndexStatsRow | null = null;
+
+  private readonly deadLetterEntries = new Map<string, DeadLetterEntry>();
 
   async initialize(): Promise<void> {
     return;
@@ -59,5 +61,21 @@ export class InMemoryMetadataStore implements IMetadataStore {
 
   async setIndexStats(stats: IndexStatsRow): Promise<void> {
     this.stats = stats;
+  }
+
+  async upsertDeadLetterEntries(entries: DeadLetterEntry[]): Promise<void> {
+    for (const entry of entries) {
+      this.deadLetterEntries.set(entry.id, entry);
+    }
+  }
+
+  async removeDeadLetterEntries(ids: string[]): Promise<void> {
+    for (const id of ids) {
+      this.deadLetterEntries.delete(id);
+    }
+  }
+
+  async getDeadLetterEntries(): Promise<DeadLetterEntry[]> {
+    return [...this.deadLetterEntries.values()].sort((left, right) => left.createdAt.localeCompare(right.createdAt));
   }
 }

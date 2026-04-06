@@ -1,5 +1,6 @@
 import { Mutex, E_ALREADY_LOCKED, tryAcquire } from 'async-mutex';
 
+import { DeadLetterQueue } from './dead-letter-queue.js';
 import { MerkleTree } from './merkle-tree.js';
 import type { Chunker } from './chunker.js';
 import type {
@@ -42,10 +43,13 @@ export class IndexPipeline implements IIndexPipeline {
 
   private readonly skippedFiles = new Map<string, string>();
 
+  private readonly deadLetterQueue: DeadLetterQueue;
+
   private isTreeLoaded = false;
 
   constructor(private readonly options: IndexPipelineOptions) {
     this.merkleTree = new MerkleTree(options.metadataStore);
+    this.deadLetterQueue = new DeadLetterQueue({ metadataStore: options.metadataStore });
   }
 
   async processEvents(
@@ -90,6 +94,12 @@ export class IndexPipeline implements IIndexPipeline {
       } catch (error) {
         if (error instanceof Error && error.name === 'RetryExhaustedError') {
           this.skippedFiles.set(event.filePath, error.message);
+          await this.deadLetterQueue.enqueue({
+            filePath: event.filePath,
+            contentHash: event.contentHash ?? '',
+            errorMessage: error.message,
+            attempts: error instanceof RetryExhaustedError ? error.attempts : 0,
+          });
           continue;
         }
 

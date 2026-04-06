@@ -3,7 +3,7 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
 
-import type { IndexStatsRow, MerkleNodeRow } from '../../../src/types/index.js';
+import type { DeadLetterEntry, IndexStatsRow, MerkleNodeRow } from '../../../src/types/index.js';
 import { SqliteMetadataStore } from '../../../src/storage/metadata-store.js';
 
 const makeNode = (overrides: Partial<MerkleNodeRow>): MerkleNodeRow => ({
@@ -11,6 +11,17 @@ const makeNode = (overrides: Partial<MerkleNodeRow>): MerkleNodeRow => ({
   hash: overrides.hash ?? 'hash',
   parentPath: overrides.parentPath ?? 'src',
   isDirectory: overrides.isDirectory ?? false,
+});
+
+const makeDeadLetterEntry = (overrides: Partial<DeadLetterEntry>): DeadLetterEntry => ({
+  id: overrides.id ?? 'dlq-1',
+  filePath: overrides.filePath ?? '/repo/src/auth.ts',
+  contentHash: overrides.contentHash ?? 'hash-1',
+  errorMessage: overrides.errorMessage ?? 'embed failed',
+  attempts: overrides.attempts ?? 3,
+  createdAt: overrides.createdAt ?? '2026-04-07T00:00:00.000Z',
+  updatedAt: overrides.updatedAt ?? '2026-04-07T00:00:00.000Z',
+  lastRetryAt: overrides.lastRetryAt ?? null,
 });
 
 describe('SqliteMetadataStore', () => {
@@ -111,5 +122,25 @@ describe('SqliteMetadataStore', () => {
 
     await expect(store.getIndexStats()).resolves.toEqual(stats);
     expect(store.getPragmaValue('wal_autocheckpoint') as number).toBe(1000);
+  });
+
+  it('stores, updates, and removes dead letter entries', async () => {
+    const first = makeDeadLetterEntry({ id: 'dlq-1' });
+    const second = makeDeadLetterEntry({ id: 'dlq-2', filePath: '/repo/src/other.ts', contentHash: 'hash-2' });
+
+    await store.upsertDeadLetterEntries([first, second]);
+    await expect(store.getDeadLetterEntries()).resolves.toEqual([first, second]);
+
+    const updated = makeDeadLetterEntry({
+      id: 'dlq-1',
+      errorMessage: 'embed failed again',
+      attempts: 4,
+      updatedAt: '2026-04-07T00:01:00.000Z',
+      lastRetryAt: '2026-04-07T00:01:00.000Z',
+    });
+    await store.upsertDeadLetterEntries([updated]);
+    await store.removeDeadLetterEntries(['dlq-2']);
+
+    await expect(store.getDeadLetterEntries()).resolves.toEqual([updated]);
   });
 });
