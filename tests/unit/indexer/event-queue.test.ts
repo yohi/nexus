@@ -166,7 +166,7 @@ describe('EventQueue', () => {
 
   it('exposes droppedEventCount via getter', async () => {
     vi.useFakeTimers();
-    const queue = new EventQueue({ debounceMs: 0, maxQueueSize: 1, fullScanThreshold: 10, concurrency: 1 });
+    const queue = new EventQueue({ debounceMs: 0, maxQueueSize: 10, fullScanThreshold: 1, concurrency: 1 });
 
     // Fill the queue (watcherQueue)
     queue.enqueue(makeEvent({ filePath: 'src/a.ts' }));
