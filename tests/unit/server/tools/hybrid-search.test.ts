@@ -2,39 +2,78 @@ import { describe, expect, it } from 'vitest';
 
 import { executeHybridSearch } from '../../../../src/server/tools/hybrid-search.js';
 import type { SearchResponse } from '../../../../src/types/index.js';
-import { PathTraversalError } from '../../../../src/types/index.js';
+import { PathTraversalError } from '../../../../src/server/path-sanitizer.js';
 
 class StubOrchestrator {
+  public lastSearchArgs?: Record<string, unknown>;
+
   constructor(private readonly response: SearchResponse) {}
 
-  async search(): Promise<SearchResponse> {
+  async search(args: Record<string, unknown>): Promise<SearchResponse> {
+    this.lastSearchArgs = args;
     return this.response;
   }
 }
 
 describe('executeHybridSearch', () => {
-  it('delegates to the orchestrator and returns the response', async () => {
-    const response: SearchResponse = {
-      query: 'authenticate',
-      tookMs: 3,
-      results: [],
-    };
+  const response: SearchResponse = {
+    query: 'authenticate',
+    tookMs: 3,
+    results: [],
+  };
 
-    await expect(executeHybridSearch(new StubOrchestrator(response) as never, { query: 'authenticate' })).resolves.toEqual(response);
-  });
+  const sanitizer = {
+    validateGlob: (pattern: string) => {
+      if (pattern.includes('..')) {
+        throw new PathTraversalError(pattern);
+      }
+      return pattern;
+    },
+  };
 
-  it('rejects filePattern with parent traversal', async () => {
-    const response: SearchResponse = {
-      query: 'authenticate',
-      tookMs: 3,
-      results: [],
-    };
+  it('delegates to the orchestrator and validates filePattern', async () => {
+    const orchestrator = new StubOrchestrator(response);
 
     await expect(
-      executeHybridSearch(new StubOrchestrator(response) as never, {
+      executeHybridSearch(orchestrator as never, sanitizer as never, {
         query: 'authenticate',
-        filePattern: '../*.ts',
+        filePattern: 'src/*.ts',
       }),
-    ).rejects.toBeInstanceOf(PathTraversalError);
+    ).resolves.toEqual(response);
+
+    expect(orchestrator.lastSearchArgs).toMatchObject({
+      query: 'authenticate',
+      filePattern: 'src/*.ts',
+    });
+  });
+
+  it('forwards abortSignal to the orchestrator', async () => {
+    const controller = new AbortController();
+    const orchestrator = new StubOrchestrator(response);
+
+    await executeHybridSearch(
+      orchestrator as never,
+      sanitizer as never,
+      { query: 'authenticate' },
+      controller.signal,
+    );
+
+    expect(orchestrator.lastSearchArgs).toEqual({
+      query: 'authenticate',
+      abortSignal: controller.signal,
+    });
+  });
+
+  it('rejects directory traversal in filePattern before calling the orchestrator', async () => {
+    const orchestrator = new StubOrchestrator(response);
+
+    await expect(
+      executeHybridSearch(orchestrator as never, sanitizer as never, {
+        query: 'authenticate',
+        filePattern: '../outside',
+      }),
+    ).rejects.toThrow(PathTraversalError);
+
+    expect(orchestrator.lastSearchArgs).toBeUndefined();
   });
 });
