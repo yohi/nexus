@@ -1,5 +1,7 @@
 import path from 'node:path';
+import fs from 'node:fs/promises';
 import { createServer } from 'node:http';
+import os from 'node:os';
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
@@ -39,9 +41,17 @@ describe('stress: concurrent MCP agents', () => {
   let httpServer: ReturnType<typeof createServer>;
   let baseUrl: string;
   let clients: Client[] = [];
+  let projectRoot: string;
 
   beforeEach(async () => {
     clients = [];
+    projectRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'nexus-concurrent-agents-'));
+    await fs.mkdir(path.join(projectRoot, 'src'), { recursive: true });
+    await fs.writeFile(
+      path.join(projectRoot, 'src/auth.ts'),
+      'export function authenticate() {}\n',
+      'utf8',
+    );
 
     const metadataStore = new InMemoryMetadataStore();
     const vectorStore = new InMemoryVectorStore({ dimensions: 64 });
@@ -66,7 +76,7 @@ describe('stress: concurrent MCP agents', () => {
     });
     await vectorStore.upsertChunks([chunk], await embeddingProvider.embed([chunk.content]));
 
-    const orchestrator = new SearchOrchestrator({ semanticSearch, grepEngine, projectRoot: process.cwd() });
+    const orchestrator = new SearchOrchestrator({ semanticSearch, grepEngine, projectRoot });
     const pipeline = new IndexPipeline({
       metadataStore,
       vectorStore,
@@ -74,12 +84,12 @@ describe('stress: concurrent MCP agents', () => {
       embeddingProvider,
       pluginRegistry,
     });
-    const sanitizer = await PathSanitizer.create(process.cwd());
+    const sanitizer = await PathSanitizer.create(projectRoot);
 
     const handler = createStreamableHttpHandler({
       createServer: () =>
         createNexusServer({
-          projectRoot: process.cwd(),
+          projectRoot,
           sanitizer,
           semanticSearch,
           grepEngine,
@@ -90,7 +100,7 @@ describe('stress: concurrent MCP agents', () => {
           pluginRegistry,
           runReindex: async () => [],
           loadFileContent: async (filePath) => {
-            const relativePath = path.relative(process.cwd(), filePath);
+            const relativePath = path.relative(projectRoot, filePath);
             if (relativePath === 'src/auth.ts' || filePath === 'src/auth.ts') {
               return 'export function authenticate() {}\n';
             }
@@ -138,6 +148,10 @@ describe('stress: concurrent MCP agents', () => {
           resolve();
         });
       });
+    }
+
+    if (projectRoot) {
+      await fs.rm(projectRoot, { recursive: true, force: true });
     }
 
     if (errors.length > 0) {
