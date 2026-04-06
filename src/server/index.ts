@@ -196,15 +196,24 @@ export const initializeNexusRuntime = async (options: NexusRuntimeOptions): Prom
       server,
       close: async () => {
         let watcherError: unknown;
+        let serverError: unknown;
         try {
           await options.watcher.stop();
         } catch (error) {
           watcherError = error;
-        } finally {
+        }
+
+        try {
           await server.close();
-          if (watcherError) {
-            throw watcherError;
-          }
+        } catch (error) {
+          serverError = error;
+        }
+
+        if (watcherError) {
+          throw watcherError;
+        }
+        if (serverError) {
+          throw serverError;
         }
       },
     };
@@ -217,16 +226,23 @@ export const initializeNexusRuntime = async (options: NexusRuntimeOptions): Prom
 };
 
 export const errorResult = (error: unknown) => {
-  const errorMessage = error instanceof Error ? error.message : String(error);
+  const isSafeError =
+    error instanceof Error &&
+    (error.name === 'PathTraversalError' || (error as NodeJS.ErrnoException).code === 'ENOENT');
+
+  const publicMessage = isSafeError ? (error as Error).message : 'Internal server error';
+
+  const structuredMessage = isSafeError ? (error as Error).message : 'An unexpected error occurred';
+
   return {
     content: [
       {
         type: 'text' as const,
-        text: `Error: ${errorMessage}`,
+        text: `Error: ${publicMessage}`,
       },
     ],
     isError: true,
-    structuredContent: { error: true, message: errorMessage },
+    structuredContent: { error: true, message: structuredMessage },
   };
 };
 
