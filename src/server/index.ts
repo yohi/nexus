@@ -226,9 +226,7 @@ export const initializeNexusRuntime = async (options: NexusRuntimeOptions): Prom
 };
 
 export const errorResult = (error: unknown) => {
-  const isSafeError =
-    error instanceof Error &&
-    (error.name === 'PathTraversalError' || (error as NodeJS.ErrnoException).code === 'ENOENT');
+  const isSafeError = error instanceof Error && error.name === 'PathTraversalError';
 
   const publicMessage = isSafeError ? (error as Error).message : 'Internal server error';
 
