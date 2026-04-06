@@ -85,4 +85,48 @@ describe('RipgrepEngine zombie prevention', () => {
 
     expect(kill).not.toHaveBeenCalled();
   });
+
+  it('uses a fresh process controller for each concurrent search', async () => {
+    vi.useFakeTimers();
+    const firstKill = vi.fn();
+    const secondKill = vi.fn();
+    const controllers = [firstKill, secondKill];
+    const spawnImpl = vi.fn(async (_params, signal: AbortSignal) => {
+      await new Promise<void>((resolve) => {
+        signal.addEventListener('abort', () => resolve(), { once: true });
+      });
+      throw new Error('aborted');
+    });
+
+    const engine = new RipgrepEngine({
+      projectRoot: process.cwd(),
+      grepMaxConcurrency: 2,
+      grepTimeoutMs: 50,
+      killGraceMs: 1000,
+      spawn: spawnImpl,
+      createProcessController: () => {
+        const kill = controllers.shift();
+        if (!kill) {
+          throw new Error('missing controller');
+        }
+        return { kill };
+      },
+    });
+
+    const first = engine.search({ query: 'alpha', cwd: process.cwd() });
+    const second = engine.search({ query: 'beta', cwd: process.cwd() });
+
+    await vi.advanceTimersByTimeAsync(50);
+
+    expect(firstKill).toHaveBeenCalledWith('SIGTERM');
+    expect(secondKill).toHaveBeenCalledWith('SIGTERM');
+    expect(firstKill).toHaveBeenCalledTimes(1);
+    expect(secondKill).toHaveBeenCalledTimes(1);
+
+    await vi.advanceTimersByTimeAsync(1000);
+
+    expect(firstKill).toHaveBeenNthCalledWith(2, 'SIGKILL');
+    expect(secondKill).toHaveBeenNthCalledWith(2, 'SIGKILL');
+    await expect(Promise.all([first, second])).resolves.toEqual([[], []]);
+  });
 });
