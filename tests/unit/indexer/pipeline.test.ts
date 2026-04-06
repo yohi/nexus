@@ -153,6 +153,60 @@ describe('IndexPipeline', () => {
     );
   });
 
+  it('removes subtree metadata and vectors when a directory is deleted', async () => {
+    const { metadataStore, vectorStore, chunker, registry } = await createPipeline();
+    const pipeline = new IndexPipeline({
+      metadataStore,
+      vectorStore,
+      chunker,
+      embeddingProvider: new TestEmbeddingProvider(),
+      pluginRegistry: registry,
+    });
+
+    await metadataStore.bulkUpsertMerkleNodes([
+      { path: 'src', hash: 'dir-hash', parentPath: null, isDirectory: true },
+      { path: 'src/auth.ts', hash: 'hash-auth', parentPath: 'src', isDirectory: false },
+      { path: 'src/nested', hash: 'hash-nested', parentPath: 'src', isDirectory: true },
+      { path: 'src/nested/deep.ts', hash: 'hash-deep', parentPath: 'src/nested', isDirectory: false },
+    ]);
+    await vectorStore.upsertChunks([
+      {
+        id: 'src/auth.ts:1-1:file-1',
+        filePath: 'src/auth.ts',
+        content: 'export const auth = true;',
+        language: 'typescript',
+        symbolKind: 'file',
+        startLine: 1,
+        endLine: 1,
+        hash: 'chunk-auth',
+      },
+      {
+        id: 'src/nested/deep.ts:1-1:file-1',
+        filePath: 'src/nested/deep.ts',
+        content: 'export const deep = true;',
+        language: 'typescript',
+        symbolKind: 'file',
+        startLine: 1,
+        endLine: 1,
+        hash: 'chunk-deep',
+      },
+    ]);
+
+    await pipeline.processEvents([
+      {
+        type: 'deleted',
+        filePath: 'src',
+        contentHash: 'dir-hash',
+        detectedAt: new Date().toISOString(),
+      },
+    ]);
+
+    await expect(metadataStore.getAllPaths()).resolves.toEqual([]);
+    await expect(vectorStore.getStats()).resolves.toEqual(
+      expect.objectContaining({ totalChunks: 0, totalFiles: 0 }),
+    );
+  });
+
   it('returns already_running when reindex is invoked concurrently', async () => {
     const { metadataStore, vectorStore, chunker, registry } = await createPipeline();
     const pipeline = new IndexPipeline({
