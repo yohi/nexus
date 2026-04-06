@@ -43,16 +43,19 @@ describe('stress: branch switch watcher load', () => {
     await new Promise((resolve) => setTimeout(resolve, 50));
 
     expect(queue.isOverflowing()).toBe(true);
-    expect(queue.size()).toBe(5_001);
+    expect(queue.size()).toBe(5_000);
     expect(queue.getDroppedEventCount()).toBeGreaterThan(0);
     expect(fakeWatcher.closeCalls).toBe(0);
 
     const drained = await queue.drain(async (event) => event);
 
-    expect(drained).toHaveLength(5_001);
+    expect(drained).toHaveLength(5_000);
     expect(queue.size()).toBe(0);
-    expect(queue.isOverflowing()).toBe(false);
+    expect(queue.getState()).toBe('full_scan');
     expect(fakeWatcher.closeCalls).toBe(0);
+
+    queue.markFullScanComplete();
+    expect(queue.isOverflowing()).toBe(false);
 
     await watcher.stop();
 

@@ -25,6 +25,7 @@ interface SessionEntry {
   server: McpServer;
   transport: StreamableHTTPServerTransport;
   lastActivity: number;
+  inFlightRequests: number;
   closed: boolean;
 }
 
@@ -49,7 +50,7 @@ export const createStreamableHttpHandler = ({
   const interval = setInterval(() => {
     const now = Date.now();
     for (const [sessionId, entry] of sessions.entries()) {
-      if (now - entry.lastActivity > sessionIdleTimeoutMs) {
+      if (entry.inFlightRequests === 0 && now - entry.lastActivity > sessionIdleTimeoutMs) {
         void closeEntry(sessionId, entry);
       }
     }
@@ -106,6 +107,7 @@ export const createStreamableHttpHandler = ({
           server,
           transport,
           lastActivity: Date.now(),
+          inFlightRequests: 0,
           closed: false,
         };
 
@@ -125,11 +127,17 @@ export const createStreamableHttpHandler = ({
         throw new HttpError(400, 'invalid session');
       }
 
-      await entry.transport.handleRequest(req, res, body);
+      entry.inFlightRequests += 1;
+      try {
+        await entry.transport.handleRequest(req, res, body);
+      } finally {
+        entry.inFlightRequests = Math.max(0, entry.inFlightRequests - 1);
+        entry.lastActivity = Date.now();
 
-      const activeSessionId = entry.transport.sessionId;
-      if (activeSessionId && !entry.closed) {
-        sessions.set(activeSessionId, entry);
+        const activeSessionId = entry.transport.sessionId;
+        if (activeSessionId && !entry.closed) {
+          sessions.set(activeSessionId, entry);
+        }
       }
     } catch (error) {
       const statusCode = error instanceof HttpError ? error.statusCode : 500;
