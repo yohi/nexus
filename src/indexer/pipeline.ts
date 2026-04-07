@@ -127,7 +127,7 @@ export class IndexPipeline implements IIndexPipeline {
             filePath: event.filePath,
             contentHash: event.contentHash ?? '',
             errorMessage: error.message,
-            attempts: error instanceof RetryExhaustedError ? error.attempts : 0,
+            attempts: (error as RetryExhaustedError).attempts ?? 0,
           });
           continue;
         }

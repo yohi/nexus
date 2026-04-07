@@ -236,7 +236,6 @@ export class SqliteMetadataStore implements IMetadataStore {
         content_hash = excluded.content_hash,
         error_message = excluded.error_message,
         attempts = excluded.attempts,
-        created_at = excluded.created_at,
         updated_at = excluded.updated_at,
         last_retry_at = excluded.last_retry_at
     `);

@@ -131,4 +131,46 @@ describe('DeadLetterQueue', () => {
     );
     await expect(metadataStore.getDeadLetterEntries()).resolves.toEqual([]);
   });
+
+  it('updates existing entries with the same filePath instead of creating new ones', async () => {
+    const metadataStore = new InMemoryMetadataStore();
+    await metadataStore.initialize();
+    const queue = new DeadLetterQueue({
+      metadataStore,
+      now: () => new Date('2026-04-07T00:00:00.000Z'),
+    });
+
+    const firstEntry = await queue.enqueue({
+      filePath: '/repo/src/auth.ts',
+      contentHash: 'hash-1',
+      errorMessage: 'error 1',
+      attempts: 1,
+    });
+
+    // 1時間後
+    const secondNow = new Date('2026-04-07T01:00:00.000Z');
+    const queue2 = new DeadLetterQueue({
+      metadataStore,
+      now: () => secondNow,
+    });
+    await queue2.load();
+
+    const secondEntry = await queue2.enqueue({
+      filePath: '/repo/src/auth.ts',
+      contentHash: 'hash-2',
+      errorMessage: 'error 2',
+      attempts: 2,
+    });
+
+    expect(secondEntry.id).toBe(firstEntry.id);
+    expect(secondEntry.createdAt).toBe(firstEntry.createdAt);
+    expect(secondEntry.updatedAt).toBe(secondNow.toISOString());
+    expect(secondEntry.contentHash).toBe('hash-2');
+    expect(secondEntry.errorMessage).toBe('error 2');
+    expect(secondEntry.attempts).toBe(2);
+
+    const persisted = await metadataStore.getDeadLetterEntries();
+    expect(persisted).toHaveLength(1);
+    expect(persisted[0]).toEqual(secondEntry);
+  });
 });

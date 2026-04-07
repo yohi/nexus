@@ -156,7 +156,6 @@ export const createNexusServer = (options: NexusServerOptions): McpServer => {
           await executeIndexStatus(
             options.metadataStore,
             options.vectorStore,
-            options.pipeline,
             options.pluginRegistry,
           ),
         );
