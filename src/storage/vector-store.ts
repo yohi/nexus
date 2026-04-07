@@ -114,6 +114,17 @@ export class LanceVectorStore implements IVectorStore {
 
   async renameFilePath(oldPath: string, newPath: string): Promise<number> {
     await this.asyncBoundary();
+
+    // Clear any existing chunks at newPath to avoid mixing old/new data
+    for (const [id, row] of [...this.rows.entries()]) {
+      if (row.chunk.filePath === newPath) {
+        if (row.deleted) {
+          this.deletedCount -= 1;
+        }
+        this.rows.delete(id);
+      }
+    }
+
     let renamed = 0;
 
     for (const [id, row] of [...this.rows.entries()]) {
