@@ -71,10 +71,6 @@ export class IndexPipeline implements IIndexPipeline {
       await this.merkleTree.move(candidate.oldPath, candidate.newPath, candidate.hash);
     }
 
-    if (renameCandidates.length > 0) {
-      await this.merkleTree.load();
-    }
-
     for (const event of events) {
       if (renamedOldPaths.has(event.filePath) || renamedNewPaths.has(event.filePath)) {
         continue;

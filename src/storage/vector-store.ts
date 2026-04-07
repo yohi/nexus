@@ -125,7 +125,6 @@ export class LanceVectorStore implements IVectorStore {
         ...row.chunk,
         id: row.chunk.id.replace(oldPath, newPath),
         filePath: newPath,
-        hash: row.chunk.hash.replace(oldPath, newPath),
       };
 
       this.rows.delete(id);

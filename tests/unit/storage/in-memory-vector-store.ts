@@ -97,18 +97,27 @@ export class InMemoryVectorStore implements IVectorStore {
 
   async renameFilePath(oldPath: string, newPath: string): Promise<number> {
     let renamed = 0;
-    for (const record of this.records.values()) {
+    const toAdd: [string, StoredVector][] = [];
+
+    for (const [id, record] of this.records.entries()) {
       if (record.chunk.filePath !== oldPath || record.deleted) {
         continue;
       }
 
-      record.chunk = {
+      this.records.delete(id);
+
+      const nextChunk = {
         ...record.chunk,
         id: record.chunk.id.replace(oldPath, newPath),
         filePath: newPath,
-        hash: record.chunk.hash.replace(oldPath, newPath),
       };
+
+      toAdd.push([nextChunk.id, { ...record, chunk: nextChunk }]);
       renamed += 1;
+    }
+
+    for (const [newId, newRecord] of toAdd) {
+      this.records.set(newId, newRecord);
     }
 
     return renamed;
