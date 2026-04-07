@@ -123,31 +123,33 @@ export class IndexPipeline implements IIndexPipeline {
 
     try {
       return await tryAcquire(this.mutex).runExclusive(async () => {
-        const events = await run({ fullScan: fullRebuild, reason: 'manual' });
-        const { chunksIndexed } = await this.processEvents(events, loadContent);
+        try {
+          const events = await run({ fullScan: fullRebuild, reason: 'manual' });
+          const { chunksIndexed } = await this.processEvents(events, loadContent);
 
-        const finishedAt = new Date().toISOString();
-        const durationMs = Date.now() - startTime;
+          const finishedAt = new Date().toISOString();
+          const durationMs = Date.now() - startTime;
 
-        if (fullRebuild && this.options.eventQueue) {
-          this.options.eventQueue.markFullScanComplete();
+          // 計算ロジックを簡略化（必要に応じて詳細な集計を実装可能）
+          const reconciliation = {
+            added: events.filter((e) => e.type === 'added').length,
+            modified: events.filter((e) => e.type === 'modified').length,
+            deleted: events.filter((e) => e.type === 'deleted').length,
+            unchanged: 0, // フルスキャン時に判明するが、ここではeventsに含まれないものとする
+          };
+
+          return {
+            startedAt,
+            finishedAt,
+            durationMs,
+            reconciliation,
+            chunksIndexed,
+          };
+        } finally {
+          if (fullRebuild && this.options.eventQueue) {
+            this.options.eventQueue.markFullScanComplete();
+          }
         }
-
-        // 計算ロジックを簡略化（必要に応じて詳細な集計を実装可能）
-        const reconciliation = {
-          added: events.filter((e) => e.type === 'added').length,
-          modified: events.filter((e) => e.type === 'modified').length,
-          deleted: events.filter((e) => e.type === 'deleted').length,
-          unchanged: 0, // フルスキャン時に判明するが、ここではeventsに含まれないものとする
-        };
-
-        return {
-          startedAt,
-          finishedAt,
-          durationMs,
-          reconciliation,
-          chunksIndexed,
-        };
       });
     } catch (e) {
       if (e === E_ALREADY_LOCKED) {
