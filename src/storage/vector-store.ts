@@ -112,6 +112,65 @@ export class LanceVectorStore implements IVectorStore {
     return deleted;
   }
 
+  async renameFilePath(oldPath: string, newPath: string): Promise<number> {
+    await this.asyncBoundary();
+
+    if (oldPath === newPath) {
+      return 0;
+    }
+
+    // Check if oldPath exists first to avoid unnecessary mutations
+    let exists = false;
+    for (const row of this.rows.values()) {
+      if (row.chunk.filePath === oldPath && !row.deleted) {
+        exists = true;
+        break;
+      }
+    }
+
+    if (!exists) {
+      return 0;
+    }
+
+    // Clear any existing chunks at newPath to avoid mixing old/new data
+    for (const [id, row] of [...this.rows.entries()]) {
+      if (row.chunk.filePath === newPath) {
+        if (row.deleted) {
+          this.deletedCount -= 1;
+        }
+        this.rows.delete(id);
+      }
+    }
+
+    let renamed = 0;
+
+    for (const [id, row] of [...this.rows.entries()]) {
+      if (row.chunk.filePath !== oldPath || row.deleted) {
+        continue;
+      }
+
+      const nextChunk = {
+        ...row.chunk,
+        id: row.chunk.id.replaceAll(oldPath, newPath),
+        filePath: newPath,
+      };
+
+      this.rows.delete(id);
+      const existingAtTarget = this.rows.get(nextChunk.id);
+      if (existingAtTarget?.deleted) {
+        this.deletedCount -= 1;
+      }
+      this.rows.set(nextChunk.id, {
+        chunk: nextChunk,
+        vector: row.vector,
+        deleted: false,
+      });
+      renamed += 1;
+    }
+
+    return renamed;
+  }
+
   async search(queryVector: number[], topK: number, filter?: VectorFilter): Promise<VectorSearchResult[]> {
     if (queryVector.length !== this.dimensions) {
       throw new Error(`queryVector length must be ${this.dimensions}`);

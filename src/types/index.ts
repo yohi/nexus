@@ -110,6 +110,7 @@ export interface IVectorStore {
   upsertChunks(chunks: CodeChunk[], embeddings?: number[][]): Promise<void>;
   deleteByFilePath(filePath: string): Promise<number>;
   deleteByPathPrefix(pathPrefix: string): Promise<number>;
+  renameFilePath(oldPath: string, newPath: string): Promise<number>;
   search(queryVector: number[], topK: number, filter?: VectorFilter): Promise<VectorSearchResult[]>;
   compactIfNeeded(config?: Partial<CompactionConfig>): Promise<CompactionResult>;
   scheduleIdleCompaction(runCompaction: () => Promise<void>, delayMs?: number): void;

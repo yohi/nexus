@@ -46,8 +46,40 @@ export class MerkleTree {
 
   async remove(filePath: string): Promise<void> {
     this.nodes.delete(filePath);
+    this.pruneEmptyDirectories(path.dirname(filePath));
 
-    let current = path.dirname(filePath);
+    this.rootHash = await this.computeRootHash();
+    await this.persistCurrentState();
+  }
+
+  async move(oldPath: string, newPath: string, contentHash: string): Promise<void> {
+    // 1. Remove old path in memory
+    this.nodes.delete(oldPath);
+    this.pruneEmptyDirectories(path.dirname(oldPath));
+
+    // 2. Add new path in memory
+    const directories = this.collectDirectories(newPath);
+    const fileNode: MerkleNodeRow = {
+      path: newPath,
+      hash: contentHash,
+      parentPath: path.dirname(newPath) === '.' ? null : path.dirname(newPath),
+      isDirectory: false,
+    };
+
+    this.nodes.set(newPath, fileNode);
+    for (const directory of directories) {
+      if (!this.nodes.has(directory.path)) {
+        this.nodes.set(directory.path, directory);
+      }
+    }
+
+    // 3. Recompute hash and persist once
+    this.rootHash = await this.computeRootHash();
+    await this.persistCurrentState();
+  }
+
+  private pruneEmptyDirectories(dirPath: string): void {
+    let current = dirPath;
     while (current !== '.' && current !== path.sep) {
       const parentNode = this.nodes.get(current);
       if (parentNode !== undefined && parentNode.isDirectory) {
@@ -68,9 +100,6 @@ export class MerkleTree {
       }
       current = path.dirname(current);
     }
-
-    this.rootHash = await this.computeRootHash();
-    await this.persistCurrentState();
   }
 
   getRootHash(): string | null {

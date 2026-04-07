@@ -95,6 +95,65 @@ export class InMemoryVectorStore implements IVectorStore {
     return deleted;
   }
 
+  async renameFilePath(oldPath: string, newPath: string): Promise<number> {
+    if (oldPath === newPath) {
+      return 0;
+    }
+
+    // Check if oldPath exists first to avoid unnecessary mutations
+    let exists = false;
+    for (const record of this.records.values()) {
+      if (record.chunk.filePath === oldPath && !record.deleted) {
+        exists = true;
+        break;
+      }
+    }
+
+    if (!exists) {
+      return 0;
+    }
+
+    // Clear any existing chunks at newPath to avoid mixing old/new data
+    for (const [id, record] of [...this.records.entries()]) {
+      if (record.chunk.filePath === newPath) {
+        if (record.deleted) {
+          this.deletedCount -= 1;
+        }
+        this.records.delete(id);
+      }
+    }
+
+    let renamed = 0;
+    const toAdd: [string, StoredVector][] = [];
+
+    for (const [id, record] of this.records.entries()) {
+      if (record.chunk.filePath !== oldPath || record.deleted) {
+        continue;
+      }
+
+      this.records.delete(id);
+
+      const nextChunk = {
+        ...record.chunk,
+        id: record.chunk.id.replaceAll(oldPath, newPath),
+        filePath: newPath,
+      };
+
+      toAdd.push([nextChunk.id, { ...record, chunk: nextChunk }]);
+      renamed += 1;
+    }
+
+    for (const [newId, newRecord] of toAdd) {
+      const prior = this.records.get(newId);
+      if (prior?.deleted) {
+        this.deletedCount -= 1;
+      }
+      this.records.set(newId, newRecord);
+    }
+
+    return renamed;
+  }
+
   async search(queryVector: number[], topK: number, filter?: VectorFilter): Promise<VectorSearchResult[]> {
     if (queryVector.length !== this.dimensions) {
       throw new Error(`queryVector length must be ${this.dimensions}`);

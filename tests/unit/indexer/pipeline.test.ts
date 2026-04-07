@@ -19,6 +19,15 @@ class FailingEmbeddingProvider extends TestEmbeddingProvider {
   }
 }
 
+class CountingEmbeddingProvider extends TestEmbeddingProvider {
+  calls = 0;
+
+  override async embed(texts: string[]): Promise<number[][]> {
+    this.calls += 1;
+    return super.embed(texts);
+  }
+}
+
 const fixturePath = path.join(process.cwd(), 'tests/fixtures/sample-project/src/auth.ts');
 const ONE_HOT_64 = new Array(64).fill(0).map((_, i) => (i === 0 ? 1 : 0));
 
@@ -247,5 +256,122 @@ describe('IndexPipeline', () => {
     );
 
     expect(pipeline.getSkippedFiles().get(fixturePath)).toBe('embed failed');
+  });
+
+  it('reuses existing vectors when a delete/add pair is detected as a rename', async () => {
+    const { metadataStore, vectorStore, chunker, registry } = await createPipeline();
+    const embeddingProvider = new CountingEmbeddingProvider();
+    const pipeline = new IndexPipeline({
+      metadataStore,
+      vectorStore,
+      chunker,
+      embeddingProvider,
+      pluginRegistry: registry,
+    });
+    const content = await readFile(fixturePath, 'utf8');
+    const oldPath = 'src/old-name.ts';
+    const newPath = 'src/new-name.ts';
+
+    await pipeline.processEvents(
+      [
+        {
+          type: 'added',
+          filePath: oldPath,
+          contentHash: 'hash-same',
+          detectedAt: new Date().toISOString(),
+        },
+      ],
+      async () => content,
+    );
+
+    expect(embeddingProvider.calls).toBe(1);
+
+    await pipeline.processEvents(
+      [
+        {
+          type: 'deleted',
+          filePath: oldPath,
+          contentHash: 'hash-same',
+          detectedAt: new Date().toISOString(),
+        },
+        {
+          type: 'added',
+          filePath: newPath,
+          contentHash: 'hash-same',
+          detectedAt: new Date().toISOString(),
+        },
+      ],
+      async () => content,
+    );
+
+    expect(embeddingProvider.calls).toBe(1);
+    const stats = await vectorStore.getStats();
+    expect(stats.totalFiles).toBe(1);
+    const results = await vectorStore.search(ONE_HOT_64, 20);
+    expect(results.every((result) => result.chunk.filePath === newPath)).toBe(true);
+    await expect(metadataStore.getMerkleNode(oldPath)).resolves.toBeNull();
+    await expect(metadataStore.getMerkleNode(newPath)).resolves.toEqual(
+      expect.objectContaining({ hash: 'hash-same', isDirectory: false }),
+    );
+  });
+
+  it('rebuilds merkle directories when a rename moves a file across directories', async () => {
+    const { metadataStore, vectorStore, chunker, registry } = await createPipeline();
+    const embeddingProvider = new CountingEmbeddingProvider();
+    const pipeline = new IndexPipeline({
+      metadataStore,
+      vectorStore,
+      chunker,
+      embeddingProvider,
+      pluginRegistry: registry,
+    });
+    const content = await readFile(fixturePath, 'utf8');
+    const oldPath = 'src/legacy/auth.ts';
+    const newPath = 'packages/auth/index.ts';
+
+    await pipeline.processEvents(
+      [
+        {
+          type: 'added',
+          filePath: oldPath,
+          contentHash: 'hash-cross-dir',
+          detectedAt: new Date().toISOString(),
+        },
+      ],
+      async () => content,
+    );
+
+    await pipeline.processEvents(
+      [
+        {
+          type: 'deleted',
+          filePath: oldPath,
+          contentHash: 'hash-cross-dir',
+          detectedAt: new Date().toISOString(),
+        },
+        {
+          type: 'added',
+          filePath: newPath,
+          contentHash: 'hash-cross-dir',
+          detectedAt: new Date().toISOString(),
+        },
+      ],
+      async () => content,
+    );
+
+    expect(embeddingProvider.calls).toBe(1);
+    await expect(metadataStore.getMerkleNode(oldPath)).resolves.toBeNull();
+    await expect(metadataStore.getMerkleNode('src/legacy')).resolves.toBeNull();
+    await expect(metadataStore.getMerkleNode('packages')).resolves.toEqual(
+      expect.objectContaining({ path: 'packages', isDirectory: true }),
+    );
+    await expect(metadataStore.getMerkleNode('packages/auth')).resolves.toEqual(
+      expect.objectContaining({ path: 'packages/auth', isDirectory: true }),
+    );
+    await expect(metadataStore.getMerkleNode(newPath)).resolves.toEqual(
+      expect.objectContaining({ hash: 'hash-cross-dir', isDirectory: false }),
+    );
+    const results = await vectorStore.search(ONE_HOT_64, 20);
+    expect(results.every((result) => result.chunk.filePath === newPath)).toBe(true);
   });
 });

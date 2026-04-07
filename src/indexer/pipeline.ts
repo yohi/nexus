@@ -62,8 +62,24 @@ export class IndexPipeline implements IIndexPipeline {
     }
 
     let chunksIndexed = 0;
+    const renameCandidates = MerkleTree.detectRenameCandidates(events);
+    const renamedOldPaths = new Set<string>();
+    const renamedNewPaths = new Set<string>();
+
+    for (const candidate of renameCandidates) {
+      const affected = await this.options.vectorStore.renameFilePath(candidate.oldPath, candidate.newPath);
+      if (affected > 0) {
+        await this.merkleTree.move(candidate.oldPath, candidate.newPath, candidate.hash);
+        renamedOldPaths.add(candidate.oldPath);
+        renamedNewPaths.add(candidate.newPath);
+      }
+    }
 
     for (const event of events) {
+      if (renamedOldPaths.has(event.filePath) || renamedNewPaths.has(event.filePath)) {
+        continue;
+      }
+
       if (event.type === 'deleted') {
         const existingNode = this.merkleTree.getNode(event.filePath);
 
