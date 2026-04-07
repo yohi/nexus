@@ -8,16 +8,30 @@ const buildDeclaration = (
   type: ParsedDeclaration['type'],
   name: string,
 ): ParsedDeclaration => {
-  const baseIndent = leadingSpaces(lines[startIndex] ?? '');
+  const startLineContent = lines[startIndex];
+  if (typeof startLineContent !== 'string') {
+    throw new Error('Invalid start index for declaration');
+  }
+  const baseIndent = leadingSpaces(startLineContent);
   let endIndex = startIndex;
+  let balance = 0;
 
-  for (let i = startIndex + 1; i < lines.length; i += 1) {
-    const line = lines[i] ?? '';
+  for (let i = startIndex; i < lines.length; i += 1) {
+    const line = lines[i];
+    if (typeof line !== 'string') continue;
+
+    // Update balance based on brackets in the current line
+    balance += (line.match(/\(/g) ?? []).length - (line.match(/\)/g) ?? []).length;
+    balance += (line.match(/\[/g) ?? []).length - (line.match(/\]/g) ?? []).length;
+    balance += (line.match(/\{/g) ?? []).length - (line.match(/\}/g) ?? []).length;
+
+    if (i === startIndex) continue;
+
     if (line.trim() === '') {
       continue;
     }
 
-    if (leadingSpaces(line) <= baseIndent) {
+    if (balance === 0 && leadingSpaces(line) <= baseIndent) {
       break;
     }
 
@@ -39,29 +53,37 @@ class PythonParser {
     const declarations: ParsedDeclaration[] = [];
 
     for (let i = 0; i < lines.length; i += 1) {
-      const line = lines[i]?.trim() ?? '';
-      if (line.startsWith('import ') || line.startsWith('from ')) {
+      const line = lines[i];
+      if (typeof line !== 'string') continue;
+      const trimmedLine = line.trim();
+
+      if (trimmedLine.startsWith('import ') || trimmedLine.startsWith('from ')) {
         const startLine = i;
         const currentImportLines: number[] = [];
 
         // Continue collecting imports as long as they are contiguous or part of a parenthesized block
         while (i < lines.length) {
-          const currentLine = lines[i]?.trim() ?? '';
-          if (currentLine.startsWith('import ') || currentLine.startsWith('from ')) {
+          const currentLine = lines[i];
+          if (typeof currentLine !== 'string') break;
+          const currentLineTrimmed = currentLine.trim();
+
+          if (currentLineTrimmed.startsWith('import ') || currentLineTrimmed.startsWith('from ')) {
             currentImportLines.push(i);
             
             // Check brace balance to handle parenthesized imports across lines
-            let braceBalance = (currentLine.match(/\(/g) ?? []).length - (currentLine.match(/\)/g) ?? []).length;
-            let hasBackslash = /\\\s*$/.test(currentLine);
+            let braceBalance = (currentLineTrimmed.match(/\(/g) ?? []).length - (currentLineTrimmed.match(/\)/g) ?? []).length;
+            let hasBackslash = currentLineTrimmed.endsWith('\\');
 
             while ((braceBalance > 0 || hasBackslash) && i + 1 < lines.length) {
               i += 1;
-              const nextLine = lines[i]?.trim() ?? '';
+              const nextLine = lines[i];
+              if (typeof nextLine !== 'string') break;
+              const nextLineTrimmed = nextLine.trim();
               currentImportLines.push(i);
-              braceBalance += (nextLine.match(/\(/g) ?? []).length - (nextLine.match(/\)/g) ?? []).length;
-              hasBackslash = /\\\s*$/.test(nextLine);
+              braceBalance += (nextLineTrimmed.match(/\(/g) ?? []).length - (nextLineTrimmed.match(/\)/g) ?? []).length;
+              hasBackslash = nextLineTrimmed.endsWith('\\');
             }
-          } else if (currentLine === '') {
+          } else if (currentLineTrimmed === '') {
             // Skip empty lines within an import block if needed, 
             // but for now we follow the suggestion of contiguous imports.
             break;
@@ -70,8 +92,8 @@ class PythonParser {
           }
           
           // Peek at the next line to see if it's still an import
-          const nextLine = lines[i + 1]?.trim() ?? '';
-          if (nextLine.startsWith('import ') || nextLine.startsWith('from ')) {
+          const nextLine = lines[i + 1];
+          if (typeof nextLine === 'string' && (nextLine.trim().startsWith('import ') || nextLine.trim().startsWith('from '))) {
             i += 1;
           } else {
             break;
@@ -90,25 +112,43 @@ class PythonParser {
         continue;
       }
 
-      const classMatch = /^class\s+([A-Za-z_][A-Za-z0-9_]*)/.exec(line);
+      const classMatch = /^class\s+([A-Za-z_][A-Za-z0-9_]*)/.exec(trimmedLine);
       const className = classMatch?.[1];
       if (className) {
-        const decl = buildDeclaration(lines, i, 'class', className);
+        let actualStartIndex = i;
+        const currentIndent = leadingSpaces(lines[i] ?? '');
+        
+        // Backtrack to find decorators
+        for (let j = i - 1; j >= 0; j -= 1) {
+          const prevLine = lines[j];
+          if (typeof prevLine !== 'string') break;
+          const prevLineTrimmed = prevLine.trim();
+          if (prevLineTrimmed === '') break;
+          if (leadingSpaces(prevLine) === currentIndent && prevLineTrimmed.startsWith('@')) {
+            actualStartIndex = j;
+          } else {
+            break;
+          }
+        }
+
+        const decl = buildDeclaration(lines, actualStartIndex, 'class', className);
         declarations.push(decl);
         i = decl.endLine - 1;
         continue;
       }
 
-      const functionMatch = /^(?:async\s+)?def\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(/.exec(line);
+      const functionMatch = /^(?:async\s+)?def\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(/.exec(trimmedLine);
       const functionName = functionMatch?.[1];
       if (functionName) {
-        const currentIndent = leadingSpaces(lines[i] ?? '');
+        const currentLineForIndent = lines[i] ?? '';
+        const currentIndent = leadingSpaces(currentLineForIndent);
         let isMethod = false;
 
         if (currentIndent > 0) {
           let checkIndent = currentIndent;
           for (let j = i - 1; j >= 0; j -= 1) {
-            const prevLine = lines[j] ?? '';
+            const prevLine = lines[j];
+            if (typeof prevLine !== 'string') continue;
             const prevLineTrimmed = prevLine.trim();
             if (prevLineTrimmed === '') {
               continue;
@@ -129,8 +169,22 @@ class PythonParser {
           }
         }
 
+        let actualStartIndex = i;
+        // Backtrack to find decorators
+        for (let j = i - 1; j >= 0; j -= 1) {
+          const prevLine = lines[j];
+          if (typeof prevLine !== 'string') break;
+          const prevLineTrimmed = prevLine.trim();
+          if (prevLineTrimmed === '') break;
+          if (leadingSpaces(prevLine) === currentIndent && prevLineTrimmed.startsWith('@')) {
+            actualStartIndex = j;
+          } else {
+            break;
+          }
+        }
+
         const type = isMethod ? 'method' : 'function';
-        declarations.push(buildDeclaration(lines, i, type, functionName));
+        declarations.push(buildDeclaration(lines, actualStartIndex, type, functionName));
         continue;
       }
     }

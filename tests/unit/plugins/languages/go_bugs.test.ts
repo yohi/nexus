@@ -66,6 +66,10 @@ package sample
 func ComplexFunc() {
     // This is a comment with a brace {
     /* Multi-line comment { */
+    /*
+     * Multi-line block comment
+     * with brace { here
+     */
     s := "string with brace {"
     r := \`raw string with brace {\`
     c := '{'
@@ -88,10 +92,10 @@ func AnotherFunc() {}
     
     expect(functions[0]!.name).toBe('ComplexFunc');
     expect(functions[0]!.startLine).toBe(3);
-    expect(functions[0]!.endLine).toBe(12);
+    expect(functions[0]!.endLine).toBe(16);
     
     expect(functions[1]!.name).toBe('AnotherFunc');
-    expect(functions[1]!.startLine).toBe(14);
-    expect(functions[1]!.endLine).toBe(14);
+    expect(functions[1]!.startLine).toBe(18);
+    expect(functions[1]!.endLine).toBe(18);
   });
 });

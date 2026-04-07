@@ -13,7 +13,8 @@ const buildGoDeclaration = (
   let inRawString = false;
 
   for (let i = startIndex; i < lines.length; i += 1) {
-    const line = lines[i] ?? '';
+    const line = lines[i];
+    if (typeof line !== 'string') continue;
     let stripped = '';
     
     // Process character by character to handle multi-line comments and strings correctly
@@ -95,12 +96,18 @@ class GoParser {
     const declarations: ParsedDeclaration[] = [];
 
     for (let i = 0; i < lines.length; i += 1) {
-      const line = lines[i]?.trim() ?? '';
+      const line = lines[i];
+      if (typeof line !== 'string') continue;
+      const trimmedLine = line.trim();
 
-      if (line === 'import (' || /^import\s+/.test(line)) {
+      if (trimmedLine === 'import (' || /^import\s+/.test(trimmedLine)) {
         let endIndex = i;
-        if (line === 'import (') {
-          while (endIndex < lines.length && (lines[endIndex]?.trim() ?? '') !== ')') {
+        if (trimmedLine === 'import (') {
+          while (endIndex < lines.length) {
+            const currentLine = lines[endIndex];
+            if (typeof currentLine === 'string' && currentLine.trim() === ')') {
+              break;
+            }
             endIndex += 1;
           }
         }
