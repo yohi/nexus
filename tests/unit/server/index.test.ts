@@ -29,7 +29,7 @@ describe('NexusServer helpers', () => {
       const error = new PathTraversalError('Access denied: path /etc/passwd is outside project root');
       const result = errorResult(error);
       expect(result.structuredContent.message).toBe('Access denied: path is outside project root');
-      expect(result.content[0].text).toBe('Error: Access denied: path is outside project root');
+      expect(result.content[0]!.text).toBe('Error: Access denied: path is outside project root');
     });
 
     it('sanitizes messages containing absolute paths', () => {
@@ -80,8 +80,8 @@ describe('NexusServer helpers', () => {
       const result = toolResult(input as any);
       
       expect(result.isError).toBe(true);
-      expect(result.content[0].text).toContain('Failed to serialize structuredContent');
-      expect(result.content[0].text).toContain('BigInt');
+      expect(result.content[0]!.text).toContain('Failed to serialize structuredContent');
+      expect(result.content[0]!.text).toContain('BigInt');
       expect(result.structuredContent.error).toBe(true);
       expect(result.structuredContent.originalType).toBe('object');
     });
