@@ -12,8 +12,14 @@ const buildGoDeclaration = (
 
   for (let i = startIndex; i < lines.length; i += 1) {
     const line = lines[i] ?? '';
-    const opens = (line.match(/\{/g) ?? []).length;
-    const closes = (line.match(/\}/g) ?? []).length;
+    const stripped = line
+      .replace(/`[^`]*`/g, '``')
+      .replace(/"(?:[^"\\]|\\.)*"/g, '""')
+      .replace(/'[^']'/g, "''")
+      .replace(/\/\*.*?\*\//g, '')
+      .replace(/\/\/.*$/, '');
+    const opens = (stripped.match(/\{/g) ?? []).length;
+    const closes = (stripped.match(/\}/g) ?? []).length;
 
     if (opens > 0) {
       seenOpeningBrace = true;
@@ -44,7 +50,7 @@ class GoParser {
     for (let i = 0; i < lines.length; i += 1) {
       const line = lines[i]?.trim() ?? '';
 
-      if (line === 'import (' || line.startsWith('import "')) {
+      if (line === 'import (' || /^import\s+/.test(line)) {
         let endIndex = i;
         if (line === 'import (') {
           while (endIndex < lines.length && (lines[endIndex]?.trim() ?? '') !== ')') {
@@ -81,6 +87,7 @@ class GoParser {
       const functionName = functionMatch?.[1];
       if (functionName) {
         declarations.push(buildGoDeclaration(lines, i, 'function', functionName));
+        continue;
       }
     }
 

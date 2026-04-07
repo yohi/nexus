@@ -37,12 +37,54 @@ class PythonParser {
   async parse(file: FileToChunk): Promise<ParsedSourceFile> {
     const lines = file.content.split('\n');
     const declarations: ParsedDeclaration[] = [];
-    const importLines: number[] = [];
 
     for (let i = 0; i < lines.length; i += 1) {
       const line = lines[i]?.trim() ?? '';
       if (line.startsWith('import ') || line.startsWith('from ')) {
-        importLines.push(i);
+        const startLine = i;
+        const currentImportLines: number[] = [];
+
+        // Continue collecting imports as long as they are contiguous or part of a parenthesized block
+        while (i < lines.length) {
+          const currentLine = lines[i]?.trim() ?? '';
+          if (currentLine.startsWith('import ') || currentLine.startsWith('from ')) {
+            currentImportLines.push(i);
+            if (currentLine.includes('(')) {
+              while (i + 1 < lines.length && !(lines[i + 1]?.trim() ?? '').startsWith(')')) {
+                i += 1;
+                currentImportLines.push(i);
+              }
+              if (i + 1 < lines.length) {
+                i += 1;
+                currentImportLines.push(i);
+              }
+            }
+          } else if (currentLine === '') {
+            // Skip empty lines within an import block if needed, 
+            // but for now we follow the suggestion of contiguous imports.
+            break;
+          } else {
+            break;
+          }
+          
+          // Peek at the next line to see if it's still an import
+          const nextLine = lines[i + 1]?.trim() ?? '';
+          if (nextLine.startsWith('import ') || nextLine.startsWith('from ')) {
+            i += 1;
+          } else {
+            break;
+          }
+        }
+
+        if (currentImportLines.length > 0) {
+          declarations.push({
+            type: 'import',
+            name: 'imports',
+            startLine: startLine + 1,
+            endLine: i + 1,
+            content: currentImportLines.map((index) => lines[index]?.trim() ?? '').join('\n'),
+          });
+        }
         continue;
       }
 
@@ -59,23 +101,6 @@ class PythonParser {
         const type = leadingSpaces(lines[i] ?? '') > 0 ? 'method' : 'function';
         declarations.push(buildDeclaration(lines, i, type, functionName));
       }
-    }
-
-    if (importLines.length > 0) {
-      const firstImport = importLines[0];
-      const lastImport = importLines[importLines.length - 1];
-
-      if (firstImport === undefined || lastImport === undefined) {
-        throw new Error('importLines should not be empty');
-      }
-
-      declarations.push({
-        type: 'import',
-        name: 'imports',
-        startLine: firstImport + 1,
-        endLine: lastImport + 1,
-        content: importLines.map((index) => lines[index]?.trim() ?? '').join('\n'),
-      });
     }
 
     declarations.sort((left, right) => left.startLine - right.startLine);
