@@ -91,6 +91,8 @@ class PythonParser {
       const classMatch = /^class\s+([A-Za-z_][A-Za-z0-9_]*)/.exec(line);
       const className = classMatch?.[1];
       if (className) {
+        // We do not skip the class body because we want to extract inner methods
+        // as separate declarations for better searchability and context.
         declarations.push(buildDeclaration(lines, i, 'class', className));
         continue;
       }
@@ -98,7 +100,34 @@ class PythonParser {
       const functionMatch = /^(?:async\s+)?def\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(/.exec(line);
       const functionName = functionMatch?.[1];
       if (functionName) {
-        const type = leadingSpaces(lines[i] ?? '') > 0 ? 'method' : 'function';
+        const currentIndent = leadingSpaces(lines[i] ?? '');
+        let isMethod = false;
+
+        if (currentIndent > 0) {
+          let checkIndent = currentIndent;
+          for (let j = i - 1; j >= 0; j -= 1) {
+            const prevLine = lines[j] ?? '';
+            const prevLineTrimmed = prevLine.trim();
+            if (prevLineTrimmed === '') {
+              continue;
+            }
+
+            const prevIndent = leadingSpaces(prevLine);
+            if (prevIndent < checkIndent) {
+              if (prevLineTrimmed.startsWith('class ')) {
+                isMethod = true;
+                break;
+              }
+              if (prevLineTrimmed.startsWith('def ') || prevLineTrimmed.startsWith('async def ')) {
+                isMethod = false;
+                break;
+              }
+              checkIndent = prevIndent;
+            }
+          }
+        }
+
+        const type = isMethod ? 'method' : 'function';
         declarations.push(buildDeclaration(lines, i, type, functionName));
         continue;
       }
