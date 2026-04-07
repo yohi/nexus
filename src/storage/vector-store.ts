@@ -115,6 +115,10 @@ export class LanceVectorStore implements IVectorStore {
   async renameFilePath(oldPath: string, newPath: string): Promise<number> {
     await this.asyncBoundary();
 
+    if (oldPath === newPath) {
+      return 0;
+    }
+
     // Check if oldPath exists first to avoid unnecessary mutations
     let exists = false;
     for (const row of this.rows.values()) {
