@@ -142,7 +142,6 @@ export interface IMetadataStore {
   bulkUpsertMerkleNodes(nodes: MerkleNodeRow[]): Promise<void>;
   bulkDeleteMerkleNodes(paths: string[]): Promise<void>;
   deleteSubtree(pathPrefix: string): Promise<number>;
-  renamePath(oldPath: string, newPath: string, hash: string): Promise<void>;
   getMerkleNode(path: string): Promise<MerkleNodeRow | null>;
   getAllNodes(): Promise<MerkleNodeRow[]>;
   getAllFileNodes(): Promise<MerkleNodeRow[]>;

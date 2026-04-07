@@ -96,19 +96,59 @@ export class InMemoryVectorStore implements IVectorStore {
   }
 
   async renameFilePath(oldPath: string, newPath: string): Promise<number> {
-    let renamed = 0;
+    if (oldPath === newPath) {
+      return 0;
+    }
+
+    // Check if oldPath exists first to avoid unnecessary mutations
+    let exists = false;
     for (const record of this.records.values()) {
+      if (record.chunk.filePath === oldPath && !record.deleted) {
+        exists = true;
+        break;
+      }
+    }
+
+    if (!exists) {
+      return 0;
+    }
+
+    // Clear any existing chunks at newPath to avoid mixing old/new data
+    for (const [id, record] of [...this.records.entries()]) {
+      if (record.chunk.filePath === newPath) {
+        if (record.deleted) {
+          this.deletedCount -= 1;
+        }
+        this.records.delete(id);
+      }
+    }
+
+    let renamed = 0;
+    const toAdd: [string, StoredVector][] = [];
+
+    for (const [id, record] of this.records.entries()) {
       if (record.chunk.filePath !== oldPath || record.deleted) {
         continue;
       }
 
-      record.chunk = {
+      this.records.delete(id);
+
+      const nextChunk = {
         ...record.chunk,
-        id: record.chunk.id.replace(oldPath, newPath),
+        id: record.chunk.id.replaceAll(oldPath, newPath),
         filePath: newPath,
-        hash: record.chunk.hash.replace(oldPath, newPath),
       };
+
+      toAdd.push([nextChunk.id, { ...record, chunk: nextChunk }]);
       renamed += 1;
+    }
+
+    for (const [newId, newRecord] of toAdd) {
+      const prior = this.records.get(newId);
+      if (prior?.deleted) {
+        this.deletedCount -= 1;
+      }
+      this.records.set(newId, newRecord);
     }
 
     return renamed;
