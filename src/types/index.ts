@@ -105,6 +105,10 @@ export interface CompactionConfig {
   idleDelayMs: number;
 }
 
+export interface CompactionMutex {
+  waitForUnlock(): Promise<void>;
+}
+
 export interface IVectorStore {
   initialize(): Promise<void>;
   upsertChunks(chunks: CodeChunk[], embeddings?: number[][]): Promise<void>;
@@ -116,8 +120,8 @@ export interface IVectorStore {
   scheduleIdleCompaction(
     runCompaction: () => Promise<void>,
     delayMs?: number,
-    mutex?: { waitForUnlock(): Promise<void> },
-  ): void;
+    mutex?: CompactionMutex,
+  ): NodeJS.Timeout;
   getStats(): Promise<VectorStoreStats>;
 }
 
@@ -142,7 +146,6 @@ export interface IMetadataStore {
   bulkUpsertMerkleNodes(nodes: MerkleNodeRow[]): Promise<void>;
   bulkDeleteMerkleNodes(paths: string[]): Promise<void>;
   deleteSubtree(pathPrefix: string): Promise<number>;
-  renamePath(oldPath: string, newPath: string, hash: string): Promise<void>;
   getMerkleNode(path: string): Promise<MerkleNodeRow | null>;
   getAllNodes(): Promise<MerkleNodeRow[]>;
   getAllFileNodes(): Promise<MerkleNodeRow[]>;
