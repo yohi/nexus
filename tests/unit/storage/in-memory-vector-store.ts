@@ -100,6 +100,19 @@ export class InMemoryVectorStore implements IVectorStore {
       return 0;
     }
 
+    // Check if oldPath exists first to avoid unnecessary mutations
+    let exists = false;
+    for (const record of this.records.values()) {
+      if (record.chunk.filePath === oldPath && !record.deleted) {
+        exists = true;
+        break;
+      }
+    }
+
+    if (!exists) {
+      return 0;
+    }
+
     // Clear any existing chunks at newPath to avoid mixing old/new data
     for (const [id, record] of [...this.records.entries()]) {
       if (record.chunk.filePath === newPath) {

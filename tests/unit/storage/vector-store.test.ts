@@ -89,6 +89,42 @@ describe('InMemoryVectorStore', () => {
       chunksRemoved: 0,
     });
   });
+
+  it('renames file paths and handles conflicts correctly', async () => {
+    const store = new InMemoryVectorStore({ dimensions: 3 });
+    await store.initialize();
+
+    // 1. Basic rename
+    await store.upsertChunks([
+      makeChunk({ id: 'src/file1.ts:0', filePath: 'src/file1.ts' }),
+      makeChunk({ id: 'src/file1.ts:1', filePath: 'src/file1.ts' }),
+    ]);
+
+    const renamedCount = await store.renameFilePath('src/file1.ts', 'src/moved.ts');
+    expect(renamedCount).toBe(2);
+
+    const results = await store.search([1, 0, 0], 10);
+    expect(results.every((r) => r.chunk.filePath === 'src/moved.ts')).toBe(true);
+
+    // 2. Behavior when newPath already contains chunks (should be cleared)
+    await store.upsertChunks([makeChunk({ id: 'src/target.ts:0', filePath: 'src/target.ts' })]);
+    
+    // Rename moved.ts to target.ts. Pre-existing target.ts:0 should be cleared.
+    await store.renameFilePath('src/moved.ts', 'src/target.ts');
+    
+    const targetResults = await store.search([1, 0, 0], 10);
+    expect(targetResults).toHaveLength(2);
+    expect(targetResults.every((r) => r.chunk.filePath === 'src/target.ts')).toBe(true);
+
+    // 3. Does not mutate if oldPath does not exist
+    await store.upsertChunks([makeChunk({ id: 'src/another.ts:0', filePath: 'src/another.ts' })]);
+    // If we try to rename a non-existent file to src/another.ts, it should NOT clear src/another.ts
+    const count = await store.renameFilePath('src/non-existent.ts', 'src/another.ts');
+    expect(count).toBe(0);
+    
+    const anotherResults = await store.search([1, 0, 0], 10);
+    expect(anotherResults.some(r => r.chunk.filePath === 'src/another.ts')).toBe(true);
+  });
 });
 
 describe('LanceVectorStore', () => {
@@ -247,6 +283,13 @@ describe('LanceVectorStore', () => {
     // deletedCount should decrement correctly when replacing a deleted chunk.
     expect(stats.totalChunks).toBe(1);
     expect(stats.fragmentationRatio).toBe(0);
+
+    // 4. Does not mutate if oldPath does not exist
+    await store.upsertChunks([makeChunk({ id: 'src/another.ts:0', filePath: 'src/another.ts' })]);
+    const count = await store.renameFilePath('src/non-existent.ts', 'src/another.ts');
+    expect(count).toBe(0);
+    const anotherResults = await store.search([1, 0, 0], 10);
+    expect(anotherResults.some(r => r.chunk.filePath === 'src/another.ts')).toBe(true);
   });
 
   it('handles multiple occurrences of the path in the ID during rename', async () => {
