@@ -240,8 +240,8 @@ export class LanceVectorStore implements IVectorStore {
     runCompaction: () => Promise<void>,
     delayMs = 0,
     mutex?: CompactionMutex,
-  ): void {
-    setTimeout(() => {
+  ): NodeJS.Timeout {
+    return setTimeout(() => {
       Promise.resolve()
         .then(() => mutex?.waitForUnlock())
         .then(() => runCompaction())

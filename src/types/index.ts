@@ -121,7 +121,7 @@ export interface IVectorStore {
     runCompaction: () => Promise<void>,
     delayMs?: number,
     mutex?: CompactionMutex,
-  ): void;
+  ): NodeJS.Timeout;
   getStats(): Promise<VectorStoreStats>;
 }
 

@@ -17,7 +17,7 @@ const makeChunk = (overrides: Partial<CodeChunk>): CodeChunk => ({
 
 describe('LanceVectorStore compaction integration', () => {
   beforeEach(() => {
-    vi.useFakeTimers();
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
   });
 
   afterEach(() => {
