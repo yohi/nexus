@@ -13,14 +13,12 @@ const buildGoDeclaration = (
   let inRawString = false;
 
   for (let i = startIndex; i < lines.length; i += 1) {
-    if (!Number.isInteger(i)) continue;
     const line = lines[i];
     if (typeof line !== 'string') continue;
     let stripped = '';
     
     // Process character by character to handle multi-line comments and strings correctly
     for (let j = 0; j < line.length; j += 1) {
-      if (!Number.isInteger(j)) continue;
       if (inBlockComment) {
         if (line.charAt(j) === '*' && line.charAt(j + 1) === '/') {
           inBlockComment = false;
@@ -98,7 +96,6 @@ class GoParser {
     const declarations: ParsedDeclaration[] = [];
 
     for (let i = 0; i < lines.length; i += 1) {
-      if (!Number.isInteger(i)) continue;
       const line = lines[i];
       if (typeof line !== 'string') continue;
       const trimmedLine = line.trim();
@@ -107,7 +104,6 @@ class GoParser {
         let endIndex = i;
         if (trimmedLine === 'import (') {
           while (endIndex < lines.length) {
-            if (!Number.isInteger(endIndex)) break;
             const currentLine = lines[endIndex];
             if (typeof currentLine === 'string' && currentLine.trim() === ')') {
               break;
@@ -127,7 +123,7 @@ class GoParser {
         continue;
       }
 
-      const typeMatch = /^type\s+([A-Za-z_][A-Za-z0-9_]*)\s+struct\b/.exec(line);
+      const typeMatch = /^type\s+([A-Za-z_][A-Za-z0-9_]*)(?:\[[^\]]+\])?\s+(?:struct|interface)\b/.exec(trimmedLine);
       const typeName = typeMatch?.[1];
       if (typeName) {
         const decl = buildGoDeclaration(lines, i, 'class', typeName);

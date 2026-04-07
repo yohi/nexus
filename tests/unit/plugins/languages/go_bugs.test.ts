@@ -126,8 +126,12 @@ func (c *Container[T]) Set[V any](x V) {}
       content,
     });
 
+    const structs = result.declarations.filter(d => d.type === 'class');
     const functions = result.declarations.filter(d => d.type === 'function');
     const methods = result.declarations.filter(d => d.type === 'method');
+
+    expect(structs).toHaveLength(1);
+    expect(structs[0]!.name).toBe('Container');
 
     expect(functions).toHaveLength(1);
     expect(functions[0]!.name).toBe('GenericFunc');
