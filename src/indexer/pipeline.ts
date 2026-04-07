@@ -63,16 +63,16 @@ export class IndexPipeline implements IIndexPipeline {
 
     let chunksIndexed = 0;
     const renameCandidates = MerkleTree.detectRenameCandidates(events);
-    const renamedOldPaths = new Set(renameCandidates.map((candidate) => candidate.oldPath));
-    const renamedNewPaths = new Set(renameCandidates.map((candidate) => candidate.newPath));
+    const renamedOldPaths = new Set<string>();
+    const renamedNewPaths = new Set<string>();
 
     for (const candidate of renameCandidates) {
-      await this.options.vectorStore.renameFilePath(candidate.oldPath, candidate.newPath);
-      await this.merkleTree.move(candidate.oldPath, candidate.newPath, candidate.hash);
-    }
-
-    if (renameCandidates.length > 0) {
-      await this.merkleTree.load();
+      const affected = await this.options.vectorStore.renameFilePath(candidate.oldPath, candidate.newPath);
+      if (affected > 0) {
+        await this.merkleTree.move(candidate.oldPath, candidate.newPath, candidate.hash);
+        renamedOldPaths.add(candidate.oldPath);
+        renamedNewPaths.add(candidate.newPath);
+      }
     }
 
     for (const event of events) {
@@ -139,31 +139,33 @@ export class IndexPipeline implements IIndexPipeline {
 
     try {
       return await tryAcquire(this.mutex).runExclusive(async () => {
-        const events = await run({ fullScan: fullRebuild, reason: 'manual' });
-        const { chunksIndexed } = await this.processEvents(events, loadContent);
+        try {
+          const events = await run({ fullScan: fullRebuild, reason: 'manual' });
+          const { chunksIndexed } = await this.processEvents(events, loadContent);
 
-        const finishedAt = new Date().toISOString();
-        const durationMs = Date.now() - startTime;
+          const finishedAt = new Date().toISOString();
+          const durationMs = Date.now() - startTime;
 
-        if (fullRebuild && this.options.eventQueue) {
-          this.options.eventQueue.markFullScanComplete();
+          // 計算ロジックを簡略化（必要に応じて詳細な集計を実装可能）
+          const reconciliation = {
+            added: events.filter((e) => e.type === 'added').length,
+            modified: events.filter((e) => e.type === 'modified').length,
+            deleted: events.filter((e) => e.type === 'deleted').length,
+            unchanged: 0, // フルスキャン時に判明するが、ここではeventsに含まれないものとする
+          };
+
+          return {
+            startedAt,
+            finishedAt,
+            durationMs,
+            reconciliation,
+            chunksIndexed,
+          };
+        } finally {
+          if (fullRebuild && this.options.eventQueue) {
+            this.options.eventQueue.markFullScanComplete();
+          }
         }
-
-        // 計算ロジックを簡略化（必要に応じて詳細な集計を実装可能）
-        const reconciliation = {
-          added: events.filter((e) => e.type === 'added').length,
-          modified: events.filter((e) => e.type === 'modified').length,
-          deleted: events.filter((e) => e.type === 'deleted').length,
-          unchanged: 0, // フルスキャン時に判明するが、ここではeventsに含まれないものとする
-        };
-
-        return {
-          startedAt,
-          finishedAt,
-          durationMs,
-          reconciliation,
-          chunksIndexed,
-        };
       });
     } catch (e) {
       if (e === E_ALREADY_LOCKED) {
