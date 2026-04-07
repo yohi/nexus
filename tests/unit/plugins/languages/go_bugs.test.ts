@@ -153,5 +153,10 @@ func main() {}
     const a = classes.find(c => c.name === 'A');
     expect(a!.startLine).toBe(4);
     expect(a!.endLine).toBe(6);
+
+    const cDecl = classes.find(c => c.name === 'C');
+    expect(cDecl).toBeDefined();
+    expect(cDecl!.startLine).toBe(10);
+    expect(cDecl!.endLine).toBe(10); // C int should be a single line
   });
 });

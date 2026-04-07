@@ -3,6 +3,7 @@ import type { FileToChunk, LanguagePlugin, ParsedDeclaration, ParsedSourceFile }
 /**
  * Builds a Go declaration by scanning lines until the braces are balanced.
  * Handles block comments, raw strings, and regular strings.
+ * If the starting line doesn't contain an opening brace, it treats it as a single-line declaration.
  */
 const buildGoDeclaration = (
   lines: string[],
@@ -80,6 +81,12 @@ const buildGoDeclaration = (
     braceDepth += opens - closes;
     endIndex = i;
 
+    // If we've seen an opening brace, wait for balance.
+    // If it's the first line and there's NO opening brace, it's likely a type alias or simple decl.
+    if (i === startIndex && !seenOpeningBrace) {
+      break;
+    }
+
     if (seenOpeningBrace && braceDepth <= 0) {
       break;
     }
@@ -147,7 +154,9 @@ class GoParser {
           const currentLine = lines[j];
           if (currentLine === undefined) continue;
           const innerLine = currentLine.trim();
-          const innerTypeMatch = /^([A-Za-z_][A-Za-z0-9_]*)(?:\[[^\]]*\])?\s+(?:struct|interface|func|map|chan|\[\])?/.exec(innerLine);
+          
+          // Pattern for identifiers in type blocks
+          const innerTypeMatch = /^([A-Za-z_][A-Za-z0-9_]*)(?:\[[^\]]*\])?\s+(?:struct|interface|func|map|chan|\[\]|[A-Za-z_][A-Za-z0-9_]*)?/.exec(innerLine);
           if (innerTypeMatch) {
             const typeName = innerTypeMatch[1]!;
             const decl = buildGoDeclaration(lines, j, 'class', typeName);
@@ -161,7 +170,7 @@ class GoParser {
       }
 
       // Handle single type declarations
-      const typeMatch = /^type\s+([A-Za-z_][A-Za-z0-9_]*)(?:\[[^\]]*\])?\s+(?:struct|interface)\b/.exec(trimmedLine);
+      const typeMatch = /^type\s+([A-Za-z_][A-Za-z0-9_]*)(?:\[[^\]]*\])?\s+(?:struct|interface|[A-Za-z_][A-Za-z0-9_]*)\b/.exec(trimmedLine);
       const typeName = typeMatch?.[1];
       if (typeName) {
         const decl = buildGoDeclaration(lines, i, 'class', typeName);
