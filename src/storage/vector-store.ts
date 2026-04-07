@@ -1,6 +1,7 @@
 import type {
   CodeChunk,
   CompactionConfig,
+  CompactionMutex,
   CompactionResult,
   IVectorStore,
   VectorFilter,
@@ -235,9 +236,14 @@ export class LanceVectorStore implements IVectorStore {
     };
   }
 
-  scheduleIdleCompaction(runCompaction: () => Promise<void>, delayMs = 0): void {
-    setTimeout(() => {
+  scheduleIdleCompaction(
+    runCompaction: () => Promise<void>,
+    delayMs = 0,
+    mutex?: CompactionMutex,
+  ): NodeJS.Timeout {
+    return setTimeout(() => {
       Promise.resolve()
+        .then(() => mutex?.waitForUnlock())
         .then(() => runCompaction())
         .catch((error) => {
           console.error('Compaction failed:', error);

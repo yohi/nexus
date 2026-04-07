@@ -1,6 +1,7 @@
 import type {
   CodeChunk,
   CompactionConfig,
+  CompactionMutex,
   CompactionResult,
   IVectorStore,
   VectorFilter,
@@ -57,13 +58,22 @@ export class InMemoryVectorStore implements IVectorStore {
 
     for (let i = 0; i < chunks.length; i++) {
       const chunk = chunks[i]!;
+      const vector = embeddings ? embeddings[i]! : this.vectorize(chunk.content);
+
+      if (vector.length !== this.dimensions) {
+        throw new Error(`InMemoryVectorStore.upsertChunks: vector length mismatch for chunk ${chunk.id} (expected ${this.dimensions}, got ${vector.length})`);
+      }
+      if (!vector.every(Number.isFinite)) {
+        throw new Error(`InMemoryVectorStore.upsertChunks: vector contains non-finite values for chunk ${chunk.id}`);
+      }
+
       const prior = this.records.get(chunk.id);
       if (prior?.deleted) {
         this.deletedCount -= 1;
       }
       this.records.set(chunk.id, {
         chunk,
-        vector: embeddings ? embeddings[i]! : this.vectorize(chunk.content),
+        vector,
         deleted: false,
       });
     }
@@ -213,9 +223,14 @@ export class InMemoryVectorStore implements IVectorStore {
     };
   }
 
-  scheduleIdleCompaction(runCompaction: () => Promise<void>, delayMs = 0): void {
-    setTimeout(() => {
+  scheduleIdleCompaction(
+    runCompaction: () => Promise<void>,
+    delayMs = 0,
+    mutex?: CompactionMutex,
+  ): NodeJS.Timeout {
+    return setTimeout(() => {
       Promise.resolve()
+        .then(() => mutex?.waitForUnlock())
         .then(() => runCompaction())
         .catch((error) => {
           console.error('Compaction failed:', error);
