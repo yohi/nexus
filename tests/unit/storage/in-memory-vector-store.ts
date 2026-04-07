@@ -96,6 +96,10 @@ export class InMemoryVectorStore implements IVectorStore {
   }
 
   async renameFilePath(oldPath: string, newPath: string): Promise<number> {
+    if (oldPath === newPath) {
+      return 0;
+    }
+
     // Clear any existing chunks at newPath to avoid mixing old/new data
     for (const [id, record] of [...this.records.entries()]) {
       if (record.chunk.filePath === newPath) {

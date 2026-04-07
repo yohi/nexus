@@ -253,13 +253,17 @@ describe('LanceVectorStore', () => {
     const store = new LanceVectorStore({ dimensions: 3 });
     await store.initialize();
 
-    const complexPath = 'src/src/file.ts';
-    await store.upsertChunks([makeChunk({ id: `${complexPath}:0`, filePath: complexPath })]);
+    // The ID contains 'src/path' twice to verify replaceAll.
+    const oldPath = 'src/path';
+    const newPath = 'dist/moved';
+    const multiOccurId = `${oldPath}:${oldPath}:0`;
 
-    await store.renameFilePath(complexPath, 'dist/file.ts');
+    await store.upsertChunks([makeChunk({ id: multiOccurId, filePath: oldPath })]);
+
+    await store.renameFilePath(oldPath, newPath);
 
     const results = await store.search([1, 0, 0], 10);
-    expect(results[0]?.chunk.id).toBe('dist/file.ts:0');
-    expect(results[0]?.chunk.filePath).toBe('dist/file.ts');
+    expect(results[0]?.chunk.id).toBe(`${newPath}:${newPath}:0`);
+    expect(results[0]?.chunk.filePath).toBe(newPath);
   });
 });
