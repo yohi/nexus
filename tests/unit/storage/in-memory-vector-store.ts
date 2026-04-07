@@ -1,6 +1,7 @@
 import type {
   CodeChunk,
   CompactionConfig,
+  CompactionMutex,
   CompactionResult,
   IVectorStore,
   VectorFilter,
@@ -216,7 +217,7 @@ export class InMemoryVectorStore implements IVectorStore {
   scheduleIdleCompaction(
     runCompaction: () => Promise<void>,
     delayMs = 0,
-    mutex?: { waitForUnlock(): Promise<void> },
+    mutex?: CompactionMutex,
   ): void {
     setTimeout(() => {
       Promise.resolve()
