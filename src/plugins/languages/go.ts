@@ -13,14 +13,16 @@ const buildGoDeclaration = (
   let inRawString = false;
 
   for (let i = startIndex; i < lines.length; i += 1) {
+    if (!Number.isInteger(i)) continue;
     const line = lines[i];
     if (typeof line !== 'string') continue;
     let stripped = '';
     
     // Process character by character to handle multi-line comments and strings correctly
     for (let j = 0; j < line.length; j += 1) {
+      if (!Number.isInteger(j)) continue;
       if (inBlockComment) {
-        if (line[j] === '*' && line[j + 1] === '/') {
+        if (line.charAt(j) === '*' && line.charAt(j + 1) === '/') {
           inBlockComment = false;
           j += 1;
         }
@@ -28,14 +30,14 @@ const buildGoDeclaration = (
       }
 
       if (inRawString) {
-        if (line[j] === '`') {
+        if (line.charAt(j) === '`') {
           inRawString = false;
         }
         continue;
       }
 
-      const char = line[j];
-      const nextChar = line[j + 1];
+      const char = line.charAt(j);
+      const nextChar = line.charAt(j + 1);
 
       if (char === '/' && nextChar === '*') {
         inBlockComment = true;
@@ -50,8 +52,8 @@ const buildGoDeclaration = (
       if (char === '"' || char === '\'') {
         const quote = char;
         j += 1;
-        while (j < line.length && line[j] !== quote) {
-          if (line[j] === '\\') j += 1; // skip escaped
+        while (j < line.length && line.charAt(j) !== quote) {
+          if (line.charAt(j) === '\\') j += 1; // skip escaped
           j += 1;
         }
         continue;
@@ -96,6 +98,7 @@ class GoParser {
     const declarations: ParsedDeclaration[] = [];
 
     for (let i = 0; i < lines.length; i += 1) {
+      if (!Number.isInteger(i)) continue;
       const line = lines[i];
       if (typeof line !== 'string') continue;
       const trimmedLine = line.trim();
@@ -104,6 +107,7 @@ class GoParser {
         let endIndex = i;
         if (trimmedLine === 'import (') {
           while (endIndex < lines.length) {
+            if (!Number.isInteger(endIndex)) break;
             const currentLine = lines[endIndex];
             if (typeof currentLine === 'string' && currentLine.trim() === ')') {
               break;

@@ -8,6 +8,9 @@ const buildDeclaration = (
   type: ParsedDeclaration['type'],
   name: string,
 ): ParsedDeclaration => {
+  if (!Number.isInteger(startIndex)) {
+    throw new Error('Start index must be an integer');
+  }
   const startLineContent = lines[startIndex];
   if (typeof startLineContent !== 'string') {
     throw new Error('Invalid start index for declaration');
@@ -17,6 +20,7 @@ const buildDeclaration = (
   let balance = 0;
 
   for (let i = startIndex; i < lines.length; i += 1) {
+    if (!Number.isInteger(i)) continue;
     const line = lines[i];
     if (typeof line !== 'string') continue;
 
@@ -53,6 +57,7 @@ class PythonParser {
     const declarations: ParsedDeclaration[] = [];
 
     for (let i = 0; i < lines.length; i += 1) {
+      if (!Number.isInteger(i)) continue;
       const line = lines[i];
       if (typeof line !== 'string') continue;
       const trimmedLine = line.trim();
@@ -63,6 +68,7 @@ class PythonParser {
 
         // Continue collecting imports as long as they are contiguous or part of a parenthesized block
         while (i < lines.length) {
+          if (!Number.isInteger(i)) break;
           const currentLine = lines[i];
           if (typeof currentLine !== 'string') break;
           const currentLineTrimmed = currentLine.trim();
@@ -76,6 +82,7 @@ class PythonParser {
 
             while ((braceBalance > 0 || hasBackslash) && i + 1 < lines.length) {
               i += 1;
+              if (!Number.isInteger(i)) break;
               const nextLine = lines[i];
               if (typeof nextLine !== 'string') break;
               const nextLineTrimmed = nextLine.trim();
@@ -92,7 +99,8 @@ class PythonParser {
           }
           
           // Peek at the next line to see if it's still an import
-          const nextLine = lines[i + 1];
+          const nextLineIdx = i + 1;
+          const nextLine = Number.isInteger(nextLineIdx) ? lines[nextLineIdx] : undefined;
           if (typeof nextLine === 'string' && (nextLine.trim().startsWith('import ') || nextLine.trim().startsWith('from '))) {
             i += 1;
           } else {
@@ -106,7 +114,7 @@ class PythonParser {
             name: 'imports',
             startLine: startLine + 1,
             endLine: i + 1,
-            content: currentImportLines.map((index) => lines[index]?.trim() ?? '').join('\n'),
+            content: currentImportLines.map((index) => Number.isInteger(index) ? lines[index]?.trim() ?? '' : '').join('\n'),
           });
         }
         continue;
@@ -116,10 +124,11 @@ class PythonParser {
       const className = classMatch?.[1];
       if (className) {
         let actualStartIndex = i;
-        const currentIndent = leadingSpaces(lines[i] ?? '');
+        const currentIndent = leadingSpaces(line);
         
         // Backtrack to find decorators
         for (let j = i - 1; j >= 0; j -= 1) {
+          if (!Number.isInteger(j)) break;
           const prevLine = lines[j];
           if (typeof prevLine !== 'string') break;
           const prevLineTrimmed = prevLine.trim();
@@ -140,13 +149,13 @@ class PythonParser {
       const functionMatch = /^(?:async\s+)?def\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(/.exec(trimmedLine);
       const functionName = functionMatch?.[1];
       if (functionName) {
-        const currentLineForIndent = lines[i] ?? '';
-        const currentIndent = leadingSpaces(currentLineForIndent);
+        const currentIndent = leadingSpaces(line);
         let isMethod = false;
 
         if (currentIndent > 0) {
           let checkIndent = currentIndent;
           for (let j = i - 1; j >= 0; j -= 1) {
+            if (!Number.isInteger(j)) break;
             const prevLine = lines[j];
             if (typeof prevLine !== 'string') continue;
             const prevLineTrimmed = prevLine.trim();
@@ -172,6 +181,7 @@ class PythonParser {
         let actualStartIndex = i;
         // Backtrack to find decorators
         for (let j = i - 1; j >= 0; j -= 1) {
+          if (!Number.isInteger(j)) break;
           const prevLine = lines[j];
           if (typeof prevLine !== 'string') break;
           const prevLineTrimmed = prevLine.trim();
