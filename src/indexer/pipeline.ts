@@ -1,7 +1,9 @@
+import { readFile } from 'node:fs/promises';
 import { Mutex, E_ALREADY_LOCKED, tryAcquire } from 'async-mutex';
 
 import { DeadLetterQueue } from './dead-letter-queue.js';
 import { MerkleTree } from './merkle-tree.js';
+import { computeFileHashStreaming } from './hash.js';
 import type { Chunker } from './chunker.js';
 import type {
   EmbeddingProvider,
@@ -10,6 +12,7 @@ import type {
   IndexEvent,
   RuntimeInitializationResult,
   ReindexResult,
+  DeadLetterEntry,
 } from '../types/index.js';
 import { RetryExhaustedError } from '../types/index.js';
 import type { PluginRegistry } from '../plugins/registry.js';
@@ -53,7 +56,12 @@ export class IndexPipeline implements IIndexPipeline {
 
   constructor(private readonly options: IndexPipelineOptions) {
     this.merkleTree = new MerkleTree(options.metadataStore);
-    this.deadLetterQueue = new DeadLetterQueue({ metadataStore: options.metadataStore });
+    this.deadLetterQueue = new DeadLetterQueue({
+      metadataStore: options.metadataStore,
+      embeddingHealthy: () => this.embeddingHealthy(),
+      computeFileHash: (path) => this.computeFileHash(path),
+      reprocess: (entry) => this.reprocess(entry),
+    });
   }
 
   async processEvents(
@@ -106,20 +114,8 @@ export class IndexPipeline implements IIndexPipeline {
       const content = await loadContent(event.filePath);
 
       try {
-        const chunks = await this.options.chunker.chunkFiles([
-          {
-            filePath: event.filePath,
-            language: this.detectLanguage(event.filePath),
-            content,
-          },
-        ]);
-
-        const embeddings = await this.embedWithRetry(chunks.map((chunk) => chunk.content));
-        await this.options.vectorStore.deleteByFilePath(event.filePath);
-        await this.options.vectorStore.upsertChunks(chunks, embeddings);
-        await this.merkleTree.update(event.filePath, event.contentHash ?? '');
-        this.skippedFiles.delete(event.filePath);
-        chunksIndexed += chunks.length;
+        const count = await this.indexFile(event.filePath, content, event.contentHash ?? '');
+        chunksIndexed += count;
       } catch (error) {
         if (error instanceof Error && error.name === 'RetryExhaustedError') {
           this.skippedFiles.set(event.filePath, error.message);
@@ -127,7 +123,7 @@ export class IndexPipeline implements IIndexPipeline {
             filePath: event.filePath,
             contentHash: event.contentHash ?? '',
             errorMessage: error.message,
-            attempts: (error as RetryExhaustedError).attempts ?? 0,
+            attempts: (error as RetryExhaustedError).attempts,
           });
           continue;
         }
@@ -212,6 +208,36 @@ export class IndexPipeline implements IIndexPipeline {
 
   getSkippedFiles(): ReadonlyMap<string, string> {
     return this.skippedFiles;
+  }
+
+  private async indexFile(filePath: string, content: string, contentHash: string): Promise<number> {
+    const chunks = await this.options.chunker.chunkFiles([
+      {
+        filePath,
+        language: this.detectLanguage(filePath),
+        content,
+      },
+    ]);
+
+    const embeddings = await this.embedWithRetry(chunks.map((chunk) => chunk.content));
+    await this.options.vectorStore.deleteByFilePath(filePath);
+    await this.options.vectorStore.upsertChunks(chunks, embeddings);
+    await this.merkleTree.update(filePath, contentHash);
+    this.skippedFiles.delete(filePath);
+    return chunks.length;
+  }
+
+  private async embeddingHealthy(): Promise<boolean> {
+    return this.options.embeddingProvider.healthCheck();
+  }
+
+  private async computeFileHash(filePath: string): Promise<string> {
+    return computeFileHashStreaming(filePath);
+  }
+
+  private async reprocess(entry: DeadLetterEntry): Promise<void> {
+    const content = await readFile(entry.filePath, 'utf8');
+    await this.indexFile(entry.filePath, content, entry.contentHash);
   }
 
   private async embedWithRetry(texts: string[]): Promise<number[][]> {
