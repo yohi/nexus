@@ -98,4 +98,42 @@ func AnotherFunc() {}
     expect(functions[1]!.startLine).toBe(18);
     expect(functions[1]!.endLine).toBe(18);
   });
+
+  it('detects functions and methods with generics', async () => {
+    const plugin = new GoLanguagePlugin();
+    const parser = await plugin.createParser();
+    const content = `
+package sample
+
+func GenericFunc[T any](x T) T {
+    return x
+}
+
+type Container[T any] struct {
+    value T
+}
+
+func (c *Container[T]) Get() T {
+    return c.value
+}
+
+func (c *Container[T]) Set[V any](x V) {}
+`.trim();
+
+    const result = await parser.parse({
+      filePath: 'src/generics.go',
+      language: 'go',
+      content,
+    });
+
+    const functions = result.declarations.filter(d => d.type === 'function');
+    const methods = result.declarations.filter(d => d.type === 'method');
+
+    expect(functions).toHaveLength(1);
+    expect(functions[0]!.name).toBe('GenericFunc');
+    
+    expect(methods).toHaveLength(2);
+    expect(methods[0]!.name).toBe('Get');
+    expect(methods[1]!.name).toBe('Set');
+  });
 });

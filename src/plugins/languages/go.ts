@@ -136,7 +136,7 @@ class GoParser {
         continue;
       }
 
-      const methodMatch = /^func\s*\([^)]*\)\s*([A-Za-z_][A-Za-z0-9_]*)\s*\(/.exec(line);
+      const methodMatch = /^func\s*\([^)]*\)\s*([A-Za-z_][A-Za-z0-9_]*)(?:\[[^\]]*\])?\s*\(/.exec(trimmedLine);
       const methodName = methodMatch?.[1];
       if (methodName) {
         const decl = buildGoDeclaration(lines, i, 'method', methodName);
@@ -145,7 +145,7 @@ class GoParser {
         continue;
       }
 
-      const functionMatch = /^func\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(/.exec(line);
+      const functionMatch = /^func\s+([A-Za-z_][A-Za-z0-9_]*)(?:\[[^\]]*\])?\s*\(/.exec(trimmedLine);
       const functionName = functionMatch?.[1];
       if (functionName) {
         const decl = buildGoDeclaration(lines, i, 'function', functionName);
