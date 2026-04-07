@@ -76,6 +76,11 @@ export class PathSanitizer {
   validateGlob(pattern: string): string {
     const normalized = pattern.replace(/\\/g, '/');
 
+    // Reject absolute paths
+    if (normalized.startsWith('/') || /^[A-Za-z]:[\\/]/.test(normalized)) {
+      throw new PathTraversalError(`Glob pattern '${pattern}' contains absolute path`);
+    }
+
     // Tokenize on path separators, braces, and commas to prevent bypasses like "{src,../secret}"
     const tokens = normalized.split(/[/{},]+/);
 

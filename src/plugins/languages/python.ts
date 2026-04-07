@@ -151,7 +151,7 @@ export class PythonLanguagePlugin implements LanguagePlugin {
     return this.fileExtensions.some((extension) => filePath.endsWith(extension));
   }
 
-  createParser(): Promise<PythonParser> {
+  createParser(): Promise<{ parse(file: FileToChunk): Promise<ParsedSourceFile> }> {
     return Promise.resolve(new PythonParser());
   }
 }

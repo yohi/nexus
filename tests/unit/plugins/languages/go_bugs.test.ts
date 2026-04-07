@@ -26,7 +26,14 @@ func main() {}
 
     const imports = result.declarations.filter(d => d.type === 'import');
     expect(imports).toHaveLength(4);
-    
+
+    expect(imports[0]).toEqual(expect.objectContaining({
+      type: 'import',
+      name: 'imports',
+      startLine: 3,
+      endLine: 5,
+      content: 'import (\n    "context"\n)',
+    }));
     expect(imports[1]).toEqual(expect.objectContaining({
       type: 'import',
       name: 'imports',
@@ -84,5 +91,7 @@ func AnotherFunc() {}
     expect(functions[0]!.endLine).toBe(12);
     
     expect(functions[1]!.name).toBe('AnotherFunc');
+    expect(functions[1]!.startLine).toBe(14);
+    expect(functions[1]!.endLine).toBe(14);
   });
 });
