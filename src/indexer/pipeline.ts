@@ -12,6 +12,7 @@ import type {
 } from '../types/index.js';
 import { RetryExhaustedError } from '../types/index.js';
 import type { PluginRegistry } from '../plugins/registry.js';
+import type { EventQueue } from './event-queue.js';
 
 interface IndexPipelineOptions {
   metadataStore: IMetadataStore;
@@ -19,6 +20,7 @@ interface IndexPipelineOptions {
   chunker: Chunker;
   embeddingProvider: EmbeddingProvider;
   pluginRegistry: PluginRegistry;
+  eventQueue?: EventQueue;
 }
 
 interface ProcessEventsResult {
@@ -63,8 +65,17 @@ export class IndexPipeline implements IIndexPipeline {
 
     for (const event of events) {
       if (event.type === 'deleted') {
-        await this.options.vectorStore.deleteByFilePath(event.filePath);
-        await this.merkleTree.remove(event.filePath);
+        const existingNode = this.merkleTree.getNode(event.filePath);
+
+        if (existingNode?.isDirectory) {
+          await this.options.vectorStore.deleteByPathPrefix(event.filePath.endsWith('/') ? event.filePath : event.filePath + '/');
+          await this.options.metadataStore.deleteSubtree(event.filePath);
+          await this.merkleTree.load();
+        } else {
+          await this.options.vectorStore.deleteByFilePath(event.filePath);
+          await this.merkleTree.remove(event.filePath);
+        }
+
         continue;
       }
 
@@ -112,27 +123,33 @@ export class IndexPipeline implements IIndexPipeline {
 
     try {
       return await tryAcquire(this.mutex).runExclusive(async () => {
-        const events = await run({ fullScan: fullRebuild, reason: 'manual' });
-        const { chunksIndexed } = await this.processEvents(events, loadContent);
+        try {
+          const events = await run({ fullScan: fullRebuild, reason: 'manual' });
+          const { chunksIndexed } = await this.processEvents(events, loadContent);
 
-        const finishedAt = new Date().toISOString();
-        const durationMs = Date.now() - startTime;
+          const finishedAt = new Date().toISOString();
+          const durationMs = Date.now() - startTime;
 
-        // 計算ロジックを簡略化（必要に応じて詳細な集計を実装可能）
-        const reconciliation = {
-          added: events.filter((e) => e.type === 'added').length,
-          modified: events.filter((e) => e.type === 'modified').length,
-          deleted: events.filter((e) => e.type === 'deleted').length,
-          unchanged: 0, // フルスキャン時に判明するが、ここではeventsに含まれないものとする
-        };
+          // 計算ロジックを簡略化（必要に応じて詳細な集計を実装可能）
+          const reconciliation = {
+            added: events.filter((e) => e.type === 'added').length,
+            modified: events.filter((e) => e.type === 'modified').length,
+            deleted: events.filter((e) => e.type === 'deleted').length,
+            unchanged: 0, // フルスキャン時に判明するが、ここではeventsに含まれないものとする
+          };
 
-        return {
-          startedAt,
-          finishedAt,
-          durationMs,
-          reconciliation,
-          chunksIndexed,
-        };
+          return {
+            startedAt,
+            finishedAt,
+            durationMs,
+            reconciliation,
+            chunksIndexed,
+          };
+        } finally {
+          if (fullRebuild && this.options.eventQueue) {
+            this.options.eventQueue.markFullScanComplete();
+          }
+        }
       });
     } catch (e) {
       if (e === E_ALREADY_LOCKED) {

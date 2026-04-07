@@ -7,9 +7,11 @@ export interface EventQueueOptions {
   maxQueueSize: number;
   fullScanThreshold: number;
   concurrency: number;
+  onFullScanRequired?: () => Promise<void>;
 }
 
 export type QueueEvent = IndexEvent | ReindexQueueEvent;
+export type BackpressureState = 'normal' | 'overflow' | 'full_scan';
 
 export class EventQueue {
   private readonly debouncedEvents = new Map<string, IndexEvent>();
@@ -20,18 +22,26 @@ export class EventQueue {
 
   private readonly timers = new Map<string, ReturnType<typeof setTimeout>>();
 
-  private overflow = false;
+  private state: BackpressureState = 'normal';
 
   private droppedEventCount = 0;
 
-  constructor(private readonly options: EventQueueOptions) {}
+  constructor(private readonly options: EventQueueOptions) {
+    if (this.options.fullScanThreshold > this.options.maxQueueSize) {
+      throw new Error('fullScanThreshold must be less than or equal to maxQueueSize');
+    }
+  }
 
   getDroppedEventCount(): number {
     return this.droppedEventCount;
   }
 
+  getState(): BackpressureState {
+    return this.state;
+  }
+
   enqueue(event: IndexEvent): boolean {
-    if (this.overflow) {
+    if (this.state !== 'normal') {
       this.droppedEventCount += 1;
       return false;
     }
@@ -70,7 +80,7 @@ export class EventQueue {
 
     const nextSize = this.size() + sizeDelta;
     if (nextSize > this.options.maxQueueSize) {
-      this.overflow = true;
+      this.enterOverflow();
       this.droppedEventCount += 1;
       return false;
     }
@@ -91,21 +101,21 @@ export class EventQueue {
       this.debouncedEvents.delete(event.filePath);
     }
 
-    if (this.size() > this.options.fullScanThreshold) {
-      this.overflow = true;
+    if (this.size() >= this.options.fullScanThreshold) {
+      this.enterOverflow();
     }
 
     return true;
   }
 
   enqueueReindex(options: ReindexOptions): boolean {
-    if (this.overflow) {
+    if (this.state !== 'normal') {
       this.droppedEventCount += 1;
       return false;
     }
 
     if (this.size() >= this.options.maxQueueSize) {
-      this.overflow = true;
+      this.enterOverflow();
       this.droppedEventCount += 1;
       return false;
     }
@@ -117,8 +127,8 @@ export class EventQueue {
       detectedAt: new Date().toISOString(),
     });
 
-    if (this.size() > this.options.fullScanThreshold) {
-      this.overflow = true;
+    if (this.size() >= this.options.fullScanThreshold) {
+      this.enterOverflow();
     }
 
     return true;
@@ -153,12 +163,12 @@ export class EventQueue {
           results.push(res.value);
         } else {
           if (this.size() >= this.options.maxQueueSize) {
-            this.overflow = true;
+            this.enterOverflow();
             this.droppedEventCount += 1;
           } else {
             this.reindexQueue.push(event);
-            if (this.size() > this.options.fullScanThreshold) {
-              this.overflow = true;
+            if (this.size() >= this.options.fullScanThreshold) {
+              this.enterOverflow();
             }
           }
           if (!firstError) {
@@ -190,12 +200,12 @@ export class EventQueue {
           results.push(res.value);
         } else {
           if (this.size() >= this.options.maxQueueSize) {
-            this.overflow = true;
+            this.enterOverflow();
             this.droppedEventCount += 1;
           } else {
             this.watcherQueue.push(event);
-            if (this.size() > this.options.fullScanThreshold) {
-              this.overflow = true;
+            if (this.size() >= this.options.fullScanThreshold) {
+              this.enterOverflow();
             }
           }
           if (!firstError) {
@@ -205,8 +215,11 @@ export class EventQueue {
       }
     }
 
-    if (this.watcherQueue.length === 0 && this.reindexQueue.length === 0) {
-      this.overflow = false;
+    if (this.state === 'overflow' && this.watcherQueue.length === 0 && this.reindexQueue.length === 0) {
+      this.flushTimers();
+      this.debouncedEvents.clear();
+      this.state = 'full_scan';
+      await this.options.onFullScanRequired?.();
     }
 
     if (firstError) {
@@ -221,7 +234,19 @@ export class EventQueue {
     this.debouncedEvents.clear();
     this.watcherQueue.length = 0;
     this.reindexQueue.length = 0;
-    this.overflow = false;
+    this.state = 'normal';
+  }
+
+  markFullScanComplete(): void {
+    if (this.state !== 'full_scan') {
+      return;
+    }
+
+    this.flushTimers();
+    this.debouncedEvents.clear();
+    this.watcherQueue.length = 0;
+    this.reindexQueue.length = 0;
+    this.state = 'normal';
   }
 
   /**
@@ -233,7 +258,7 @@ export class EventQueue {
   }
 
   isOverflowing(): boolean {
-    return this.overflow;
+    return this.state !== 'normal';
   }
 
   private flushDebouncedEvent(filePath: string): void {
@@ -262,8 +287,8 @@ export class EventQueue {
       });
     }
 
-    if (this.size() > this.options.fullScanThreshold) {
-      this.overflow = true;
+    if (this.size() >= this.options.fullScanThreshold) {
+      this.enterOverflow();
     }
   }
 
@@ -280,5 +305,13 @@ export class EventQueue {
       clearTimeout(timer);
     }
     this.timers.clear();
+  }
+
+  private enterOverflow(): void {
+    if (this.state !== 'normal') {
+      return;
+    }
+
+    this.state = 'overflow';
   }
 }
