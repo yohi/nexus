@@ -118,7 +118,7 @@ export class InMemoryVectorStore implements IVectorStore {
 
       const nextChunk = {
         ...record.chunk,
-        id: record.chunk.id.replace(oldPath, newPath),
+        id: record.chunk.id.replaceAll(oldPath, newPath),
         filePath: newPath,
       };
 

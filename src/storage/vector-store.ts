@@ -134,7 +134,7 @@ export class LanceVectorStore implements IVectorStore {
 
       const nextChunk = {
         ...row.chunk,
-        id: row.chunk.id.replace(oldPath, newPath),
+        id: row.chunk.id.replaceAll(oldPath, newPath),
         filePath: newPath,
       };
 
