@@ -158,4 +158,61 @@ func main() {}
     expect(dDecl!.startLine).toBe(11);
     expect(dDecl!.endLine).toBe(13);
   });
+
+  it('handles multi-line function signatures', async () => {
+    const plugin = new GoLanguagePlugin();
+    const parser = await plugin.createParser();
+    const content = `
+package sample
+
+func MultiLine(
+    a int,
+    b string,
+) {
+    println(a, b)
+}
+
+func SingleLine() {}
+`.trim();
+
+    const result = await parser.parse({
+      filePath: 'src/multiline.go',
+      language: 'go',
+      content,
+    });
+
+    const func = result.declarations.find(d => d.name === 'MultiLine');
+    expect(func).toBeDefined();
+    expect(func!.startLine).toBe(3);
+    expect(func!.endLine).toBe(8);
+  });
+
+  it('detects slice and array type definitions', async () => {
+    const plugin = new GoLanguagePlugin();
+    const parser = await plugin.createParser();
+    const content = `
+package sample
+
+type IntSlice []int
+type StringArray [10]string
+type PointerType *int
+type MapType map[string]int
+
+func main() {}
+`.trim();
+
+    const result = await parser.parse({
+      filePath: 'src/types.go',
+      language: 'go',
+      content,
+    });
+
+    const classes = result.declarations.filter(d => d.type === 'class');
+    const names = classes.map(c => c.name);
+
+    expect(names).toContain('IntSlice');
+    expect(names).toContain('StringArray');
+    expect(names).toContain('PointerType');
+    expect(names).toContain('MapType');
+  });
 });

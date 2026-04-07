@@ -3,7 +3,8 @@ import type { FileToChunk, LanguagePlugin, ParsedDeclaration, ParsedSourceFile }
 /**
  * Builds a Go declaration by scanning lines until the braces are balanced.
  * Handles block comments, raw strings, and regular strings.
- * If the starting line doesn't contain an opening brace, it treats it as a single-line declaration.
+ * For functions and methods, it continues scanning until an opening brace is found.
+ * For type aliases, it terminates if no brace is found on the first line.
  */
 const buildGoDeclaration = (
   lines: string[],
@@ -81,9 +82,9 @@ const buildGoDeclaration = (
     braceDepth += opens - closes;
     endIndex = i;
 
-    // If we've seen an opening brace, wait for balance.
-    // If it's the first line and there's NO opening brace, it's likely a type alias or simple decl.
-    if (i === startIndex && !seenOpeningBrace) {
+    // For non-function declarations (like type aliases), 
+    // if we don't see an opening brace on the first line, we assume it's a single-line declaration.
+    if (i === startIndex && !seenOpeningBrace && type !== 'function' && type !== 'method') {
       break;
     }
 
@@ -149,14 +150,14 @@ class GoParser {
           endIndex += 1;
         }
 
-        // Extract individual types within the block for better indexing
+        // Extract individual types within the block
         for (let j = startLine + 1; j < endIndex; j += 1) {
           const currentLine = lines[j];
           if (currentLine === undefined) continue;
           const innerLine = currentLine.trim();
           
-          // Pattern for identifiers in type blocks
-          const innerTypeMatch = /^([A-Za-z_][A-Za-z0-9_]*)(?:\[[^\]]*\])?\s+(?:struct|interface|func|map|chan|\[\]|[A-Za-z_][A-Za-z0-9_]*)?/.exec(innerLine);
+          // Pattern for identifiers in type blocks - broadened to support more types
+          const innerTypeMatch = /^([A-Za-z_][A-Za-z0-9_]*)(?:\[[^\]]*\])?\s+([A-Za-z_\[*].*)/.exec(innerLine);
           const typeName = innerTypeMatch?.[1];
           if (typeName) {
             const decl = buildGoDeclaration(lines, j, 'class', typeName);
@@ -170,7 +171,7 @@ class GoParser {
       }
 
       // Handle single type declarations
-      const typeMatch = /^type\s+([A-Za-z_][A-Za-z0-9_]*)(?:\[[^\]]*\])?\s+(?:struct|interface|[A-Za-z_][A-Za-z0-9_]*)\b/.exec(trimmedLine);
+      const typeMatch = /^type\s+([A-Za-z_][A-Za-z0-9_]*)(?:\[[^\]]*\])?\s+([A-Za-z_\[*].*)/.exec(trimmedLine);
       const typeName = typeMatch?.[1];
       if (typeName) {
         const decl = buildGoDeclaration(lines, i, 'class', typeName);
