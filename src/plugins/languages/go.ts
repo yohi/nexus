@@ -157,8 +157,8 @@ class GoParser {
           
           // Pattern for identifiers in type blocks
           const innerTypeMatch = /^([A-Za-z_][A-Za-z0-9_]*)(?:\[[^\]]*\])?\s+(?:struct|interface|func|map|chan|\[\]|[A-Za-z_][A-Za-z0-9_]*)?/.exec(innerLine);
-          if (innerTypeMatch) {
-            const typeName = innerTypeMatch[1]!;
+          const typeName = innerTypeMatch?.[1];
+          if (typeName) {
             const decl = buildGoDeclaration(lines, j, 'class', typeName);
             declarations.push(decl);
             j = decl.endLine - 1;

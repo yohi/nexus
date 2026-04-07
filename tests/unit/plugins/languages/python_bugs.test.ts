@@ -129,4 +129,57 @@ class MyClass:
     expect(classDecl!.endLine).toBe(14);
     expect(methodDecl!.startLine).toBe(13);
   });
+
+  it('supports Python 3.12 generics in functions', async () => {
+    const plugin = new PythonLanguagePlugin();
+    const parser = await plugin.createParser();
+    const content = `
+def generic_func[T](x: T) -> T:
+    return x
+
+async def async_generic[T, U](x: T, y: U):
+    pass
+`.trim();
+
+    const result = await parser.parse({
+      filePath: 'src/generics.py',
+      language: 'python',
+      content,
+    });
+
+    const func1 = result.declarations.find(d => d.name === 'generic_func');
+    const func2 = result.declarations.find(d => d.name === 'async_generic');
+
+    expect(func1).toBeDefined();
+    expect(func2).toBeDefined();
+  });
+
+  it('collects only top-level classes but extracts their methods', async () => {
+    const plugin = new PythonLanguagePlugin();
+    const parser = await plugin.createParser();
+    const content = `
+class TopLevel:
+    class Nested:
+        def nested_method(self):
+            pass
+    def top_method(self):
+        pass
+`.trim();
+
+    const result = await parser.parse({
+      filePath: 'src/nested.py',
+      language: 'python',
+      content,
+    });
+
+    const classDecls = result.declarations.filter(d => d.type === 'class');
+    const methodDecls = result.declarations.filter(d => d.type === 'method');
+
+    expect(classDecls).toHaveLength(1);
+    expect(classDecls[0]!.name).toBe('TopLevel');
+    
+    // nested_method should be extracted, top_method should be extracted
+    expect(methodDecls.map(m => m.name)).toContain('nested_method');
+    expect(methodDecls.map(m => m.name)).toContain('top_method');
+  });
 });

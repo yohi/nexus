@@ -238,16 +238,19 @@ class PythonParser {
       if (classMatch) {
         const className = classMatch[1]!;
         const currentIndent = leadingSpaces(line);
-        const startIndex = this.findDecoratorStartIndex(lines, i, currentIndent);
-        const decl = buildDeclaration(lines, startIndex, i, 'class', className);
-        declarations.push(decl);
-        // Do NOT skip body entirely here to allow method extraction, 
-        // but we will advance the loop once we finish top-level processing if needed.
+        // Only collect top-level classes as explicit declarations.
+        // We still allow the loop to continue to scan the body for methods.
+        if (currentIndent === 0) {
+          const startIndex = this.findDecoratorStartIndex(lines, i, currentIndent);
+          const decl = buildDeclaration(lines, startIndex, i, 'class', className);
+          declarations.push(decl);
+        }
         continue;
       }
 
       // Handle Functions and Methods
-      const functionMatch = /^(?:async\s+)?def\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(/.exec(trimmedLine);
+      // Updated regex to support PEP 695 generics (e.g. def foo[T](...):)
+      const functionMatch = /^(?:async\s+)?def\s+([A-Za-z_][A-Za-z0-9_]*)(?:\s*\[[^\]]+\])?\s*\(/.exec(trimmedLine);
       if (functionMatch) {
         const functionName = functionMatch[1]!;
         const currentIndent = leadingSpaces(line);
