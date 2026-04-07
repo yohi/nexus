@@ -79,10 +79,10 @@ func AnotherFunc() {}
     const functions = result.declarations.filter(d => d.type === 'function');
     expect(functions).toHaveLength(2);
     
-    expect(functions[0].name).toBe('ComplexFunc');
-    expect(functions[0].startLine).toBe(3);
-    expect(functions[0].endLine).toBe(12);
+    expect(functions[0]!.name).toBe('ComplexFunc');
+    expect(functions[0]!.startLine).toBe(3);
+    expect(functions[0]!.endLine).toBe(12);
     
-    expect(functions[1].name).toBe('AnotherFunc');
+    expect(functions[1]!.name).toBe('AnotherFunc');
   });
 });

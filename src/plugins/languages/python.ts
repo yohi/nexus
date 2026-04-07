@@ -34,7 +34,7 @@ const buildDeclaration = (
 };
 
 class PythonParser {
-  async parse(file: FileToChunk): Promise<ParsedSourceFile> {
+  parse(file: FileToChunk): Promise<ParsedSourceFile> {
     const lines = file.content.split('\n');
     const declarations: ParsedDeclaration[] = [];
 
@@ -135,10 +135,10 @@ class PythonParser {
 
     declarations.sort((left, right) => left.startLine - right.startLine);
 
-    return {
+    return Promise.resolve({
       rootType: 'module',
       declarations,
-    };
+    });
   }
 }
 
@@ -151,7 +151,7 @@ export class PythonLanguagePlugin implements LanguagePlugin {
     return this.fileExtensions.some((extension) => filePath.endsWith(extension));
   }
 
-  async createParser(): Promise<PythonParser> {
-    return new PythonParser();
+  createParser(): Promise<PythonParser> {
+    return Promise.resolve(new PythonParser());
   }
 }
