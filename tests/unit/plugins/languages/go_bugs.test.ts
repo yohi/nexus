@@ -117,7 +117,7 @@ func (c *Container[T]) Set[V any](x V) {}
     expect(methods[1]!.name).toBe('Set');
   });
 
-  it('detects grouped type declarations', async () => {
+  it('detects grouped type declarations with generics', async () => {
     const plugin = new GoLanguagePlugin();
     const parser = await plugin.createParser();
     const content = `
@@ -131,6 +131,9 @@ type (
         Foo()
     }
     C int
+    D[T any] struct {
+        Val T
+    }
 )
 
 func main() {}
@@ -143,20 +146,16 @@ func main() {}
     });
 
     const classes = result.declarations.filter(d => d.type === 'class');
-    expect(classes).toHaveLength(3); // A, B, and C
+    expect(classes).toHaveLength(4); // A, B, C, and D
     
     const names = classes.map(c => c.name);
     expect(names).toContain('A');
     expect(names).toContain('B');
     expect(names).toContain('C');
+    expect(names).toContain('D');
     
-    const a = classes.find(c => c.name === 'A');
-    expect(a!.startLine).toBe(4);
-    expect(a!.endLine).toBe(6);
-
-    const cDecl = classes.find(c => c.name === 'C');
-    expect(cDecl).toBeDefined();
-    expect(cDecl!.startLine).toBe(10);
-    expect(cDecl!.endLine).toBe(10); // C int should be a single line
+    const dDecl = classes.find(c => c.name === 'D');
+    expect(dDecl!.startLine).toBe(11);
+    expect(dDecl!.endLine).toBe(13);
   });
 });

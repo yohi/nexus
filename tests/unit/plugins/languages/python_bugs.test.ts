@@ -94,4 +94,39 @@ async def my_func():
     expect(methodDecl!.startLine).toBe(4); // Should start at @property (Line 4)
     expect(funcDecl!.startLine).toBe(8); // Should start at @async_dec (Line 8)
   });
+
+  it('correctly handles multi-line docstrings with nested brackets', async () => {
+    const plugin = new PythonLanguagePlugin();
+    const parser = await plugin.createParser();
+    const content = `
+def func_with_complex_doc():
+    """
+    This docstring contains unbalanced brackets: { ( [
+    to test if the parser correctly ignores them.
+    """
+    return 1
+
+class MyClass:
+    '''
+    Another docstring with } ) ]
+    spanning multiple lines.
+    '''
+    def method(self):
+        pass
+`.trim();
+
+    const result = await parser.parse({
+      filePath: 'src/docstrings.py',
+      language: 'python',
+      content,
+    });
+
+    const funcDecl = result.declarations.find(d => d.name === 'func_with_complex_doc');
+    const classDecl = result.declarations.find(d => d.name === 'MyClass');
+    const methodDecl = result.declarations.find(d => d.name === 'method');
+
+    expect(funcDecl!.endLine).toBe(6);
+    expect(classDecl!.endLine).toBe(14);
+    expect(methodDecl!.startLine).toBe(13);
+  });
 });
