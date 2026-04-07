@@ -52,12 +52,14 @@ class PythonParser {
             
             // Check brace balance to handle parenthesized imports across lines
             let braceBalance = (currentLine.match(/\(/g) ?? []).length - (currentLine.match(/\)/g) ?? []).length;
-            
-            while (braceBalance > 0 && i + 1 < lines.length) {
+            let hasBackslash = /\\\s*$/.test(currentLine);
+
+            while ((braceBalance > 0 || hasBackslash) && i + 1 < lines.length) {
               i += 1;
               const nextLine = lines[i]?.trim() ?? '';
               currentImportLines.push(i);
               braceBalance += (nextLine.match(/\(/g) ?? []).length - (nextLine.match(/\)/g) ?? []).length;
+              hasBackslash = /\\\s*$/.test(nextLine);
             }
           } else if (currentLine === '') {
             // Skip empty lines within an import block if needed, 
@@ -91,9 +93,9 @@ class PythonParser {
       const classMatch = /^class\s+([A-Za-z_][A-Za-z0-9_]*)/.exec(line);
       const className = classMatch?.[1];
       if (className) {
-        // We do not skip the class body because we want to extract inner methods
-        // as separate declarations for better searchability and context.
-        declarations.push(buildDeclaration(lines, i, 'class', className));
+        const decl = buildDeclaration(lines, i, 'class', className);
+        declarations.push(decl);
+        i = decl.endLine - 1;
         continue;
       }
 
