@@ -1,7 +1,9 @@
+import { readFile } from 'node:fs/promises';
 import { Mutex, E_ALREADY_LOCKED, tryAcquire } from 'async-mutex';
 
 import { DeadLetterQueue } from './dead-letter-queue.js';
 import { MerkleTree } from './merkle-tree.js';
+import { computeFileHashStreaming } from './hash.js';
 import type { Chunker } from './chunker.js';
 import type {
   EmbeddingProvider,
@@ -10,6 +12,7 @@ import type {
   IndexEvent,
   RuntimeInitializationResult,
   ReindexResult,
+  DeadLetterEntry,
 } from '../types/index.js';
 import { RetryExhaustedError } from '../types/index.js';
 import type { PluginRegistry } from '../plugins/registry.js';
@@ -53,7 +56,12 @@ export class IndexPipeline implements IIndexPipeline {
 
   constructor(private readonly options: IndexPipelineOptions) {
     this.merkleTree = new MerkleTree(options.metadataStore);
-    this.deadLetterQueue = new DeadLetterQueue({ metadataStore: options.metadataStore });
+    this.deadLetterQueue = new DeadLetterQueue({
+      metadataStore: options.metadataStore,
+      embeddingHealthy: () => this.embeddingHealthy(),
+      computeFileHash: (path) => this.computeFileHash(path),
+      reprocess: (entry) => this.reprocess(entry),
+    });
   }
 
   async processEvents(
@@ -67,16 +75,16 @@ export class IndexPipeline implements IIndexPipeline {
 
     let chunksIndexed = 0;
     const renameCandidates = MerkleTree.detectRenameCandidates(events);
-    const renamedOldPaths = new Set(renameCandidates.map((candidate) => candidate.oldPath));
-    const renamedNewPaths = new Set(renameCandidates.map((candidate) => candidate.newPath));
+    const renamedOldPaths = new Set<string>();
+    const renamedNewPaths = new Set<string>();
 
     for (const candidate of renameCandidates) {
-      await this.options.vectorStore.renameFilePath(candidate.oldPath, candidate.newPath);
-      await this.merkleTree.move(candidate.oldPath, candidate.newPath, candidate.hash);
-    }
-
-    if (renameCandidates.length > 0) {
-      await this.merkleTree.load();
+      const affected = await this.options.vectorStore.renameFilePath(candidate.oldPath, candidate.newPath);
+      if (affected > 0) {
+        await this.merkleTree.move(candidate.oldPath, candidate.newPath, candidate.hash);
+        renamedOldPaths.add(candidate.oldPath);
+        renamedNewPaths.add(candidate.newPath);
+      }
     }
 
     for (const event of events) {
@@ -106,20 +114,8 @@ export class IndexPipeline implements IIndexPipeline {
       const content = await loadContent(event.filePath);
 
       try {
-        const chunks = await this.options.chunker.chunkFiles([
-          {
-            filePath: event.filePath,
-            language: this.detectLanguage(event.filePath),
-            content,
-          },
-        ]);
-
-        const embeddings = await this.embedWithRetry(chunks.map((chunk) => chunk.content));
-        await this.options.vectorStore.deleteByFilePath(event.filePath);
-        await this.options.vectorStore.upsertChunks(chunks, embeddings);
-        await this.merkleTree.update(event.filePath, event.contentHash ?? '');
-        this.skippedFiles.delete(event.filePath);
-        chunksIndexed += chunks.length;
+        const count = await this.indexFile(event.filePath, content, event.contentHash ?? '');
+        chunksIndexed += count;
       } catch (error) {
         if (error instanceof Error && error.name === 'RetryExhaustedError') {
           this.skippedFiles.set(event.filePath, error.message);
@@ -127,7 +123,7 @@ export class IndexPipeline implements IIndexPipeline {
             filePath: event.filePath,
             contentHash: event.contentHash ?? '',
             errorMessage: error.message,
-            attempts: error instanceof RetryExhaustedError ? error.attempts : 0,
+            attempts: (error as RetryExhaustedError).attempts,
           });
           continue;
         }
@@ -149,31 +145,33 @@ export class IndexPipeline implements IIndexPipeline {
 
     try {
       return await tryAcquire(this.mutex).runExclusive(async () => {
-        const events = await run({ fullScan: fullRebuild, reason: 'manual' });
-        const { chunksIndexed } = await this.processEvents(events, loadContent);
+        try {
+          const events = await run({ fullScan: fullRebuild, reason: 'manual' });
+          const { chunksIndexed } = await this.processEvents(events, loadContent);
 
-        const finishedAt = new Date().toISOString();
-        const durationMs = Date.now() - startTime;
+          const finishedAt = new Date().toISOString();
+          const durationMs = Date.now() - startTime;
 
-        if (fullRebuild && this.options.eventQueue) {
-          this.options.eventQueue.markFullScanComplete();
+          // 計算ロジックを簡略化（必要に応じて詳細な集計を実装可能）
+          const reconciliation = {
+            added: events.filter((e) => e.type === 'added').length,
+            modified: events.filter((e) => e.type === 'modified').length,
+            deleted: events.filter((e) => e.type === 'deleted').length,
+            unchanged: 0, // フルスキャン時に判明するが、ここではeventsに含まれないものとする
+          };
+
+          return {
+            startedAt,
+            finishedAt,
+            durationMs,
+            reconciliation,
+            chunksIndexed,
+          };
+        } finally {
+          if (fullRebuild && this.options.eventQueue) {
+            this.options.eventQueue.markFullScanComplete();
+          }
         }
-
-        // 計算ロジックを簡略化（必要に応じて詳細な集計を実装可能）
-        const reconciliation = {
-          added: events.filter((e) => e.type === 'added').length,
-          modified: events.filter((e) => e.type === 'modified').length,
-          deleted: events.filter((e) => e.type === 'deleted').length,
-          unchanged: 0, // フルスキャン時に判明するが、ここではeventsに含まれないものとする
-        };
-
-        return {
-          startedAt,
-          finishedAt,
-          durationMs,
-          reconciliation,
-          chunksIndexed,
-        };
       });
     } catch (e) {
       if (e === E_ALREADY_LOCKED) {
@@ -210,6 +208,36 @@ export class IndexPipeline implements IIndexPipeline {
 
   getSkippedFiles(): ReadonlyMap<string, string> {
     return this.skippedFiles;
+  }
+
+  private async indexFile(filePath: string, content: string, contentHash: string): Promise<number> {
+    const chunks = await this.options.chunker.chunkFiles([
+      {
+        filePath,
+        language: this.detectLanguage(filePath),
+        content,
+      },
+    ]);
+
+    const embeddings = await this.embedWithRetry(chunks.map((chunk) => chunk.content));
+    await this.options.vectorStore.deleteByFilePath(filePath);
+    await this.options.vectorStore.upsertChunks(chunks, embeddings);
+    await this.merkleTree.update(filePath, contentHash);
+    this.skippedFiles.delete(filePath);
+    return chunks.length;
+  }
+
+  private async embeddingHealthy(): Promise<boolean> {
+    return this.options.embeddingProvider.healthCheck();
+  }
+
+  private async computeFileHash(filePath: string): Promise<string> {
+    return computeFileHashStreaming(filePath);
+  }
+
+  private async reprocess(entry: DeadLetterEntry): Promise<void> {
+    const content = await readFile(entry.filePath, 'utf8');
+    await this.indexFile(entry.filePath, content, entry.contentHash);
   }
 
   private async embedWithRetry(texts: string[]): Promise<number[][]> {
