@@ -125,25 +125,6 @@ export class SqliteMetadataStore implements IMetadataStore {
     return result.changes;
   }
 
-  async renamePath(oldPath: string, newPath: string, hash: string): Promise<void> {
-    await this.asyncBoundary();
-    this.db
-      .prepare(
-        `INSERT INTO merkle_nodes (path, hash, parent_path, is_directory)
-         VALUES (@path, @hash, @parentPath, 0)
-         ON CONFLICT(path) DO UPDATE SET
-           hash = excluded.hash,
-           parent_path = excluded.parent_path,
-           is_directory = excluded.is_directory`,
-      )
-      .run({
-        path: newPath,
-        hash,
-        parentPath: newPath.includes('/') ? newPath.split('/').slice(0, -1).join('/') : null,
-      });
-    this.db.prepare('DELETE FROM merkle_nodes WHERE path = ?').run(oldPath);
-  }
-
   async getMerkleNode(path: string): Promise<MerkleNodeRow | null> {
     await this.asyncBoundary();
     const row = this.db
