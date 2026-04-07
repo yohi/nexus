@@ -49,15 +49,15 @@ class PythonParser {
           const currentLine = lines[i]?.trim() ?? '';
           if (currentLine.startsWith('import ') || currentLine.startsWith('from ')) {
             currentImportLines.push(i);
-            if (currentLine.includes('(')) {
-              while (i + 1 < lines.length && !(lines[i + 1]?.trim() ?? '').startsWith(')')) {
-                i += 1;
-                currentImportLines.push(i);
-              }
-              if (i + 1 < lines.length) {
-                i += 1;
-                currentImportLines.push(i);
-              }
+            
+            // Check brace balance to handle parenthesized imports across lines
+            let braceBalance = (currentLine.match(/\(/g) ?? []).length - (currentLine.match(/\)/g) ?? []).length;
+            
+            while (braceBalance > 0 && i + 1 < lines.length) {
+              i += 1;
+              const nextLine = lines[i]?.trim() ?? '';
+              currentImportLines.push(i);
+              braceBalance += (nextLine.match(/\(/g) ?? []).length - (nextLine.match(/\)/g) ?? []).length;
             }
           } else if (currentLine === '') {
             // Skip empty lines within an import block if needed, 
@@ -95,11 +95,12 @@ class PythonParser {
         continue;
       }
 
-      const functionMatch = /^def\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(/.exec(line);
+      const functionMatch = /^(?:async\s+)?def\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(/.exec(line);
       const functionName = functionMatch?.[1];
       if (functionName) {
         const type = leadingSpaces(lines[i] ?? '') > 0 ? 'method' : 'function';
         declarations.push(buildDeclaration(lines, i, type, functionName));
+        continue;
       }
     }
 
