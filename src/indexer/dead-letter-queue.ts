@@ -60,6 +60,7 @@ export class DeadLetterQueue {
   }
 
   async enqueue(input: Pick<DeadLetterEntry, 'filePath' | 'contentHash' | 'errorMessage' | 'attempts'>): Promise<DeadLetterEntry> {
+    await this.ensureLoaded();
     const timestamp = this.now().toISOString();
 
     const existingEntry = [...this.entries.values()].find((e) => e.filePath === input.filePath);
@@ -172,19 +173,20 @@ export class DeadLetterQueue {
   }
 
   private async trimToCapacity(): Promise<void> {
-    const removedIds: string[] = [];
-
-    while (this.entries.size > this.maxEntries) {
-      const oldestId = this.entries.keys().next().value as string | undefined;
-      if (oldestId === undefined) {
-        break;
-      }
-      this.entries.delete(oldestId);
-      removedIds.push(oldestId);
+    if (this.entries.size <= this.maxEntries) {
+      return;
     }
 
-    if (removedIds.length > 0) {
-      await this.options.metadataStore.removeDeadLetterEntries(removedIds);
+    const sortedEntries = [...this.entries.values()]
+      .sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+
+    const toRemove = sortedEntries.slice(0, this.entries.size - this.maxEntries);
+    const removedIds = toRemove.map((e) => e.id);
+
+    for (const id of removedIds) {
+      this.entries.delete(id);
     }
+
+    await this.options.metadataStore.removeDeadLetterEntries(removedIds);
   }
 }
