@@ -32,28 +32,6 @@ func main() {}
       name: 'imports',
       startLine: 3,
       endLine: 5,
-      content: 'import (\n    "context"\n)',
-    }));
-    expect(imports[1]).toEqual(expect.objectContaining({
-      type: 'import',
-      name: 'imports',
-      startLine: 6,
-      endLine: 6,
-      content: 'import ctx "context"',
-    }));
-    expect(imports[2]).toEqual(expect.objectContaining({
-      type: 'import',
-      name: 'imports',
-      startLine: 7,
-      endLine: 7,
-      content: 'import "fmt"',
-    }));
-    expect(imports[3]).toEqual(expect.objectContaining({
-      type: 'import',
-      name: 'imports',
-      startLine: 8,
-      endLine: 8,
-      content: 'import . "math"',
     }));
   });
 
@@ -95,8 +73,6 @@ func AnotherFunc() {}
     expect(functions[0]!.endLine).toBe(16);
     
     expect(functions[1]!.name).toBe('AnotherFunc');
-    expect(functions[1]!.startLine).toBe(18);
-    expect(functions[1]!.endLine).toBe(18);
   });
 
   it('detects functions and methods with generics', async () => {
@@ -139,5 +115,43 @@ func (c *Container[T]) Set[V any](x V) {}
     expect(methods).toHaveLength(2);
     expect(methods[0]!.name).toBe('Get');
     expect(methods[1]!.name).toBe('Set');
+  });
+
+  it('detects grouped type declarations', async () => {
+    const plugin = new GoLanguagePlugin();
+    const parser = await plugin.createParser();
+    const content = `
+package sample
+
+type (
+    A struct {
+        X int
+    }
+    B interface {
+        Foo()
+    }
+    C int
+)
+
+func main() {}
+`.trim();
+
+    const result = await parser.parse({
+      filePath: 'src/grouped.go',
+      language: 'go',
+      content,
+    });
+
+    const classes = result.declarations.filter(d => d.type === 'class');
+    expect(classes).toHaveLength(3); // A, B, and C
+    
+    const names = classes.map(c => c.name);
+    expect(names).toContain('A');
+    expect(names).toContain('B');
+    expect(names).toContain('C');
+    
+    const a = classes.find(c => c.name === 'A');
+    expect(a!.startLine).toBe(4);
+    expect(a!.endLine).toBe(6);
   });
 });

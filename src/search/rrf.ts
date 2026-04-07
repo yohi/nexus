@@ -22,7 +22,7 @@ export const fuseResults = (
 
   const scoreMap = new Map<string, RankedResult>();
 
-  for (const [results] of [
+  for (const [results, source] of [
     [semanticResults, 'semantic'],
     [grepResults, 'grep'],
   ] as const) {

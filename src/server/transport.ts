@@ -124,7 +124,7 @@ const readBody = async (req: IncomingMessage): Promise<unknown> => {
   let totalSize = 0;
 
   for await (const chunk of req) {
-    const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk as string | Uint8Array);
+    const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
     totalSize += buffer.length;
 
     if (totalSize > MAX_BODY_SIZE) {

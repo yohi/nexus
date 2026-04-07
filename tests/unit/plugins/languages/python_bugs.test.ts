@@ -29,7 +29,7 @@ import sys, \\
     }));
   });
 
-  it('skips class body to avoid mis-extracting inner methods', async () => {
+  it('extracts class methods correctly (regression check)', async () => {
     const plugin = new PythonLanguagePlugin();
     const parser = await plugin.createParser();
     const content = `
@@ -50,20 +50,48 @@ def top_level_func():
       content,
     });
 
-    // Only 1 class and 1 function should be detected as top-level declarations
     const classDecls = result.declarations.filter(d => d.type === 'class');
     const funcDecls = result.declarations.filter(d => d.type === 'function');
     const methodDecls = result.declarations.filter(d => d.type === 'method');
 
     expect(classDecls).toHaveLength(1);
     expect(funcDecls).toHaveLength(1);
-    expect(methodDecls).toHaveLength(0); // methods should be skipped inside class body
+    expect(methodDecls).toHaveLength(2); // Should extract methods now
 
     expect(classDecls[0]!.name).toBe('MyClass');
-    expect(classDecls[0]!.startLine).toBe(1);
-    expect(classDecls[0]!.endLine).toBe(6);
-
+    expect(methodDecls[0]!.name).toBe('method1');
+    expect(methodDecls[1]!.name).toBe('method2');
     expect(funcDecls[0]!.name).toBe('top_level_func');
-    expect(funcDecls[0]!.startLine).toBe(8);
+  });
+
+  it('includes decorators in declaration range', async () => {
+    const plugin = new PythonLanguagePlugin();
+    const parser = await plugin.createParser();
+    const content = `
+@decorator1
+@decorator2(arg=1)
+class MyClass:
+    @property
+    def my_prop(self):
+        return 1
+
+@async_dec
+async def my_func():
+    pass
+`.trim();
+
+    const result = await parser.parse({
+      filePath: 'src/decorators.py',
+      language: 'python',
+      content,
+    });
+
+    const classDecl = result.declarations.find(d => d.type === 'class');
+    const methodDecl = result.declarations.find(d => d.type === 'method');
+    const funcDecl = result.declarations.find(d => d.type === 'function');
+
+    expect(classDecl!.startLine).toBe(1); // Should start at @decorator1
+    expect(methodDecl!.startLine).toBe(4); // Should start at @property (Line 4)
+    expect(funcDecl!.startLine).toBe(8); // Should start at @async_dec (Line 8)
   });
 });

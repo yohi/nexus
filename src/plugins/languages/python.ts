@@ -2,58 +2,110 @@ import type { FileToChunk, LanguagePlugin, ParsedDeclaration, ParsedSourceFile }
 
 const leadingSpaces = (line: string): number => line.match(/^\s*/)?.[0].length ?? 0;
 
+/**
+ * Strips comments and strings from a line of Python code to help with balance tracking.
+ * Handles single quotes, double quotes, and triple quotes.
+ */
 const stripCommentsAndStrings = (line: string): string => {
   let result = '';
+  let i = 0;
   let inString: string | null = null;
   let escaped = false;
 
-  for (let i = 0; i < line.length; i++) {
+  while (i < line.length) {
     const char = line[i];
+
     if (escaped) {
       escaped = false;
+      i += 1;
       continue;
     }
+
     if (inString) {
       if (char === '\\') {
         escaped = true;
-      } else if (char === inString) {
+      } else if (line.startsWith(inString, i)) {
+        i += inString.length;
         inString = null;
+        continue;
       }
+      i += 1;
       continue;
     }
-    if (char === '#' && !inString) break;
+
+    // Check for triple quotes first
+    if (line.startsWith('"""', i)) {
+      inString = '"""';
+      i += 3;
+      continue;
+    }
+    if (line.startsWith("'''", i)) {
+      inString = "'''";
+      i += 3;
+      continue;
+    }
+
+    // Check for single quotes
     if (char === '"' || char === "'") {
       inString = char;
+      i += 1;
       continue;
     }
+
+    // Check for comments
+    if (char === '#') {
+      break;
+    }
+
     result += char;
+    i += 1;
   }
   return result;
 };
 
+/**
+ * Builds a declaration by scanning lines until the end of the block.
+ * Uses indentation and parenthesis/bracket balance to determine the boundary.
+ */
 const buildDeclaration = (
   lines: string[],
   startIndex: number,
+  headerIndex: number,
   type: ParsedDeclaration['type'],
   name: string,
 ): ParsedDeclaration => {
-  const startLineContent = lines[startIndex];
-  const baseIndent = leadingSpaces(startLineContent);
-  let endIndex = startIndex;
+  const headerLine = lines[headerIndex];
+  const headerIndent = headerLine ? leadingSpaces(headerLine) : 0;
+  let endIndex = headerIndex;
   let balance = 0;
+  let headerFinished = false;
 
-  for (let i = startIndex; i < lines.length; i += 1) {
+  for (let i = headerIndex; i < lines.length; i += 1) {
     const line = lines[i];
+    if (line === undefined) continue;
+
     const stripped = stripCommentsAndStrings(line);
 
     balance += (stripped.match(/\(/g) ?? []).length - (stripped.match(/\)/g) ?? []).length;
     balance += (stripped.match(/\[/g) ?? []).length - (stripped.match(/\]/g) ?? []).length;
     balance += (stripped.match(/\{/g) ?? []).length - (stripped.match(/\}/g) ?? []).length;
 
-    if (i === startIndex) continue;
-    if (line.trim() === '') continue;
+    if (!headerFinished) {
+      if (balance <= 0) {
+        headerFinished = true;
+      }
+      endIndex = i;
+      continue;
+    }
 
-    if (balance === 0 && leadingSpaces(line) <= baseIndent) {
+    // After header is finished, we look for dedent
+    const trimmed = line.trim();
+    if (trimmed === '') {
+      continue;
+    }
+
+    // If we reach a line with same or less indentation, we stop
+    if (balance === 0 && leadingSpaces(line) <= headerIndent && i > headerIndex) {
       break;
     }
     endIndex = i;
@@ -69,14 +121,21 @@ const buildDeclaration = (
 };
 
 class PythonParser {
+  /**
+   * Backtracks from a declaration line to find any preceding decorators.
+   */
   private findDecoratorStartIndex(lines: string[], index: number, indent: number): number {
     let actualStartIndex = index;
     for (let j = index - 1; j >= 0; j -= 1) {
       const prevLine = lines[j];
+      if (prevLine === undefined) break;
+
       const prevLineTrimmed = prevLine.trim();
-      if (prevLineTrimmed === '') break;
+      if (prevLineTrimmed === '') continue; // Skip blank lines between decorators
       if (leadingSpaces(prevLine) === indent && prevLineTrimmed.startsWith('@')) {
         actualStartIndex = j;
+      } else if (prevLineTrimmed.startsWith('#')) {
+        continue; // Skip comments
       } else {
         break;
       }
@@ -84,45 +143,63 @@ class PythonParser {
     return actualStartIndex;
   }
 
-  parse(file: FileToChunk): Promise<ParsedSourceFile> {
+  async parse(file: FileToChunk): Promise<ParsedSourceFile> {
     const lines = file.content.split('\n');
     const declarations: ParsedDeclaration[] = [];
 
     for (let i = 0; i < lines.length; i += 1) {
       const line = lines[i];
-      const trimmedLine = line.trim();
+      if (line === undefined) continue;
 
+      const trimmedLine = line.trim();
+      if (trimmedLine === '') continue;
+
+      // Handle imports
       if (trimmedLine.startsWith('import ') || trimmedLine.startsWith('from ')) {
         const startLine = i;
         const currentImportLines: number[] = [];
 
         while (i < lines.length) {
           const currentLine = lines[i];
+          if (currentLine === undefined) break;
+
           const currentLineTrimmed = currentLine.trim();
 
           if (currentLineTrimmed.startsWith('import ') || currentLineTrimmed.startsWith('from ')) {
             currentImportLines.push(i);
-            let braceBalance = (currentLineTrimmed.match(/\(/g) ?? []).length - (currentLineTrimmed.match(/\)/g) ?? []).length;
+            
+            // Check for multi-line imports
+            const stripped = stripCommentsAndStrings(currentLineTrimmed);
+            let balance = (stripped.match(/\(/g) ?? []).length - (stripped.match(/\)/g) ?? []).length;
             let hasBackslash = currentLineTrimmed.endsWith('\\');
 
-            while ((braceBalance > 0 || hasBackslash) && i + 1 < lines.length) {
+            while ((balance > 0 || hasBackslash) && i + 1 < lines.length) {
               i += 1;
               const nextLine = lines[i];
+              if (nextLine === undefined) break;
+
               const nextLineTrimmed = nextLine.trim();
               currentImportLines.push(i);
-              braceBalance += (nextLineTrimmed.match(/\(/g) ?? []).length - (nextLineTrimmed.match(/\)/g) ?? []).length;
+              const nextStripped = stripCommentsAndStrings(nextLineTrimmed);
+              balance += (nextStripped.match(/\(/g) ?? []).length - (nextStripped.match(/\)/g) ?? []).length;
               hasBackslash = nextLineTrimmed.endsWith('\\');
             }
           } else if (currentLineTrimmed === '') {
-            break;
+            // Skip empty lines
           } else {
             break;
           }
           
-          const nextLineIdx = i + 1;
-          const nextLine = lines[nextLineIdx];
-          if (typeof nextLine === 'string' && (nextLine.trim().startsWith('import ') || nextLine.trim().startsWith('from '))) {
-            i += 1;
+          if (i + 1 < lines.length) {
+            const nextLine = lines[i + 1];
+            if (nextLine === undefined) break;
+
+            const nextLineTrimmed = nextLine.trim();
+            if (nextLineTrimmed.startsWith('import ') || nextLineTrimmed.startsWith('from ') || nextLineTrimmed === '') {
+              i += 1;
+            } else {
+              break;
+            }
           } else {
             break;
           }
@@ -134,35 +211,38 @@ class PythonParser {
             name: 'imports',
             startLine: startLine + 1,
             endLine: i + 1,
-            content: currentImportLines.map((index) => lines[index]?.trim() ?? '').join('\n'),
+            content: currentImportLines.map((idx) => lines[idx] ?? '').join('\n').trim(),
           });
         }
         continue;
       }
 
+      // Handle Classes
       const classMatch = /^class\s+([A-Za-z_][A-Za-z0-9_]*)/.exec(trimmedLine);
-      const className = classMatch?.[1];
-      if (className) {
+      if (classMatch) {
+        const className = classMatch[1]!;
         const currentIndent = leadingSpaces(line);
-        const actualStartIndex = this.findDecoratorStartIndex(lines, i, currentIndent);
-        const decl = buildDeclaration(lines, actualStartIndex, 'class', className);
+        const startIndex = this.findDecoratorStartIndex(lines, i, currentIndent);
+        const decl = buildDeclaration(lines, startIndex, i, 'class', className);
         declarations.push(decl);
-        // Do NOT skip the body to allow method extraction
         continue;
       }
 
+      // Handle Functions and Methods
       const functionMatch = /^(?:async\s+)?def\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(/.exec(trimmedLine);
-      const functionName = functionMatch?.[1];
-      if (functionName) {
+      if (functionMatch) {
+        const functionName = functionMatch[1]!;
         const currentIndent = leadingSpaces(line);
+        
         let isMethod = false;
-
         if (currentIndent > 0) {
           let checkIndent = currentIndent;
           for (let j = i - 1; j >= 0; j -= 1) {
             const prevLine = lines[j];
+            if (prevLine === undefined) break;
+
             const prevLineTrimmed = prevLine.trim();
-            if (prevLineTrimmed === '') continue;
+            if (prevLineTrimmed === '' || prevLineTrimmed.startsWith('#')) continue;
 
             const prevIndent = leadingSpaces(prevLine);
             if (prevIndent < checkIndent) {
@@ -179,14 +259,12 @@ class PythonParser {
           }
         }
 
-        const actualStartIndex = this.findDecoratorStartIndex(lines, i, currentIndent);
+        const startIndex = this.findDecoratorStartIndex(lines, i, currentIndent);
         const type = isMethod ? 'method' : 'function';
-        const decl = buildDeclaration(lines, actualStartIndex, type, functionName);
+        const decl = buildDeclaration(lines, startIndex, i, type, functionName);
         declarations.push(decl);
         
-        // If it's a regular function (not a method inside a class), skip its body 
-        // to avoid redundant scanning and extraction of inner functions as top-level items.
-        if (!isMethod) {
+        if (currentIndent === 0) {
           i = decl.endLine - 1;
         }
         continue;
@@ -195,10 +273,10 @@ class PythonParser {
 
     declarations.sort((left, right) => left.startLine - right.startLine);
 
-    return Promise.resolve({
+    return {
       rootType: 'module',
       declarations,
-    });
+    };
   }
 }
 
@@ -211,7 +289,7 @@ export class PythonLanguagePlugin implements LanguagePlugin {
     return this.fileExtensions.some((extension) => filePath.endsWith(extension));
   }
 
-  createParser(): Promise<{ parse(file: FileToChunk): Promise<ParsedSourceFile> }> {
-    return Promise.resolve(new PythonParser());
+  async createParser(): Promise<{ parse(file: FileToChunk): Promise<ParsedSourceFile> }> {
+    return new PythonParser();
   }
 }

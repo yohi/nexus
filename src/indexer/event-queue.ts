@@ -223,7 +223,7 @@ export class EventQueue {
     }
 
     if (firstError) {
-      throw firstError instanceof Error ? firstError : new Error(typeof firstError === 'string' ? firstError : String(firstError));
+      throw firstError instanceof Error ? firstError : new Error(String(firstError));
     }
 
     return results;

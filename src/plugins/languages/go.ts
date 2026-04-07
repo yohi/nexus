@@ -1,5 +1,9 @@
 import type { FileToChunk, LanguagePlugin, ParsedDeclaration, ParsedSourceFile } from '../../types/index.js';
 
+/**
+ * Builds a Go declaration by scanning lines until the braces are balanced.
+ * Handles block comments, raw strings, and regular strings.
+ */
 const buildGoDeclaration = (
   lines: string[],
   startIndex: number,
@@ -14,7 +18,7 @@ const buildGoDeclaration = (
 
   for (let i = startIndex; i < lines.length; i += 1) {
     const line = lines[i];
-    if (typeof line !== 'string') continue;
+    if (line === undefined) continue;
     let stripped = '';
     
     // Process character by character to handle multi-line comments and strings correctly
@@ -97,15 +101,18 @@ class GoParser {
 
     for (let i = 0; i < lines.length; i += 1) {
       const line = lines[i];
-      if (typeof line !== 'string') continue;
+      if (line === undefined) continue;
       const trimmedLine = line.trim();
 
+      if (trimmedLine === '') continue;
+
+      // Handle imports
       if (trimmedLine === 'import (' || /^import\s+/.test(trimmedLine)) {
         let endIndex = i;
         if (trimmedLine === 'import (') {
           while (endIndex < lines.length) {
             const currentLine = lines[endIndex];
-            if (typeof currentLine === 'string' && currentLine.trim() === ')') {
+            if (currentLine !== undefined && currentLine.trim() === ')') {
               break;
             }
             endIndex += 1;
@@ -123,7 +130,38 @@ class GoParser {
         continue;
       }
 
-      const typeMatch = /^type\s+([A-Za-z_][A-Za-z0-9_]*)(?:\[[^\]]+\])?\s+(?:struct|interface)\b/.exec(trimmedLine);
+      // Handle grouped type declarations: type (...)
+      if (trimmedLine === 'type (') {
+        const startLine = i;
+        let endIndex = i;
+        while (endIndex < lines.length) {
+          const currentLine = lines[endIndex];
+          if (currentLine !== undefined && currentLine.trim() === ')') {
+            break;
+          }
+          endIndex += 1;
+        }
+
+        // Extract individual types within the block for better indexing
+        for (let j = startLine + 1; j < endIndex; j += 1) {
+          const currentLine = lines[j];
+          if (currentLine === undefined) continue;
+          const innerLine = currentLine.trim();
+          const innerTypeMatch = /^([A-Za-z_][A-Za-z0-9_]*)(?:\[[^\]]*\])?\s+(?:struct|interface|func|map|chan|\[\])?/.exec(innerLine);
+          if (innerTypeMatch) {
+            const typeName = innerTypeMatch[1]!;
+            const decl = buildGoDeclaration(lines, j, 'class', typeName);
+            declarations.push(decl);
+            j = decl.endLine - 1;
+          }
+        }
+        
+        i = endIndex;
+        continue;
+      }
+
+      // Handle single type declarations
+      const typeMatch = /^type\s+([A-Za-z_][A-Za-z0-9_]*)(?:\[[^\]]*\])?\s+(?:struct|interface)\b/.exec(trimmedLine);
       const typeName = typeMatch?.[1];
       if (typeName) {
         const decl = buildGoDeclaration(lines, i, 'class', typeName);
@@ -132,6 +170,7 @@ class GoParser {
         continue;
       }
 
+      // Handle Methods
       const methodMatch = /^func\s*\([^)]*\)\s*([A-Za-z_][A-Za-z0-9_]*)(?:\[[^\]]*\])?\s*\(/.exec(trimmedLine);
       const methodName = methodMatch?.[1];
       if (methodName) {
@@ -141,6 +180,7 @@ class GoParser {
         continue;
       }
 
+      // Handle Functions
       const functionMatch = /^func\s+([A-Za-z_][A-Za-z0-9_]*)(?:\[[^\]]*\])?\s*\(/.exec(trimmedLine);
       const functionName = functionMatch?.[1];
       if (functionName) {

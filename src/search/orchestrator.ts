@@ -10,7 +10,7 @@ export interface HybridSearchParams extends SemanticSearchParams {
 }
 
 export interface ILogger {
-  error(message: string, ...args: unknown[]): void;
+  error(message: string, ...args: any[]): void;
 }
 
 export interface SearchOrchestratorOptions {
