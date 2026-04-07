@@ -117,6 +117,10 @@ export class InMemoryVectorStore implements IVectorStore {
     }
 
     for (const [newId, newRecord] of toAdd) {
+      const prior = this.records.get(newId);
+      if (prior?.deleted) {
+        this.deletedCount -= 1;
+      }
       this.records.set(newId, newRecord);
     }
 

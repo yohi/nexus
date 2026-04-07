@@ -128,6 +128,10 @@ export class LanceVectorStore implements IVectorStore {
       };
 
       this.rows.delete(id);
+      const existingAtTarget = this.rows.get(nextChunk.id);
+      if (existingAtTarget?.deleted) {
+        this.deletedCount -= 1;
+      }
       this.rows.set(nextChunk.id, {
         chunk: nextChunk,
         vector: row.vector,
