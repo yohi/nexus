@@ -248,7 +248,9 @@ export class InMemoryVectorStore implements IVectorStore {
               controller.abort(new Error(`Compaction mutex acquisition timed out after ${mutexTimeoutMs}ms`));
             }, mutexTimeoutMs);
 
-            const onAbort = () => controller.abort();
+            const onAbort = () => {
+              controller.abort();
+            };
             if (abortSignal) {
               abortSignal.addEventListener('abort', onAbort, { once: true });
             }
