@@ -208,7 +208,7 @@ export const initializeNexusRuntime = async (options: NexusRuntimeOptions): Prom
         }
 
         try {
-          options.pipeline.stop();
+          await options.pipeline.stop();
         } catch (error) {
           shutdownErrors.push(error);
         }

@@ -210,7 +210,7 @@ describe('DeadLetterQueue', () => {
     const [res1, res2] = await Promise.all([sweep1, sweep2]);
 
     expect(res1.retried).toBe(1);
-    expect(res2.retried).toBe(0); // 2つ目はスキップされるはず
+    expect(res2.retried).toBe(1); // 2つ目は1つ目と同じ結果を待って返すはず
   });
 
   it('warns when starting recovery loop while already running', () => {

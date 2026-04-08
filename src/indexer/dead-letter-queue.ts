@@ -41,9 +41,11 @@ export class DeadLetterQueue {
 
   private recoveryRunning = false;
 
+  private currentSweep: Promise<RecoverySweepResult> | undefined;
+
   private recoveryInterval: ReturnType<typeof setInterval> | undefined;
 
-  private recoveryStopper: (() => void) | undefined;
+  private recoveryStopper: (() => Promise<void>) | undefined;
 
   constructor(private readonly options: DeadLetterQueueOptions) {
     this.maxEntries = options.maxEntries ?? 1000;
@@ -123,53 +125,58 @@ export class DeadLetterQueue {
 
   async recoverySweep(): Promise<RecoverySweepResult> {
     if (this.recoveryRunning) {
-      return { retried: 0, purged: 0, skipped: 0 };
+      return this.currentSweep ?? { retried: 0, purged: 0, skipped: 0 };
     }
 
     this.recoveryRunning = true;
-    try {
-      await this.ensureLoaded();
-      if (!(await this.embeddingHealthy())) {
-        return { retried: 0, purged: 0, skipped: this.entries.size };
-      }
-
-      let retried = 0;
-      let purged = 0;
-      let skipped = 0;
-
-      for (const entry of [...this.entries.values()]) {
-        try {
-          const currentHash = await this.computeFileHash(entry.filePath);
-          if (currentHash !== entry.contentHash) {
-            this.logger.warn(`Dropping stale DLQ entry for ${entry.filePath}: hash mismatch`);
-            await this.removeEntries([entry.id]);
-            purged += 1;
-            continue;
-          }
-
-          await this.reprocess(entry);
-          await this.removeEntries([entry.id]);
-          retried += 1;
-        } catch (error) {
-          const err = error as NodeJS.ErrnoException;
-          if (err.code === 'ENOENT') {
-            await this.removeEntries([entry.id]);
-            purged += 1;
-            continue;
-          }
-
-          skipped += 1;
-          this.logger.error(`Failed to recover DLQ entry for ${entry.filePath}`, error);
+    this.currentSweep = (async () => {
+      try {
+        await this.ensureLoaded();
+        if (!(await this.embeddingHealthy())) {
+          return { retried: 0, purged: 0, skipped: this.entries.size };
         }
-      }
 
-      return { retried, purged, skipped };
-    } finally {
-      this.recoveryRunning = false;
-    }
+        let retried = 0;
+        let purged = 0;
+        let skipped = 0;
+
+        for (const entry of [...this.entries.values()]) {
+          try {
+            const currentHash = await this.computeFileHash(entry.filePath);
+            if (currentHash !== entry.contentHash) {
+              this.logger.warn(`Dropping stale DLQ entry for ${entry.filePath}: hash mismatch`);
+              await this.removeEntries([entry.id]);
+              purged += 1;
+              continue;
+            }
+
+            await this.reprocess(entry);
+            await this.removeEntries([entry.id]);
+            retried += 1;
+          } catch (error) {
+            const err = error as NodeJS.ErrnoException;
+            if (err.code === 'ENOENT') {
+              await this.removeEntries([entry.id]);
+              purged += 1;
+              continue;
+            }
+
+            skipped += 1;
+            this.logger.error(`Failed to recover DLQ entry for ${entry.filePath}`, error);
+          }
+        }
+
+        return { retried, purged, skipped };
+      } finally {
+        this.recoveryRunning = false;
+        this.currentSweep = undefined;
+      }
+    })();
+
+    return this.currentSweep;
   }
 
-  startRecoveryLoop(intervalMs = 60_000): () => void {
+  startRecoveryLoop(intervalMs = 60_000): () => Promise<void> {
     if (this.recoveryStopper !== undefined) {
       this.logger.warn('DLQ recovery loop is already running. Ignoring duplicate start.');
       return this.recoveryStopper;
@@ -183,8 +190,11 @@ export class DeadLetterQueue {
 
     this.recoveryInterval = intervalId;
 
-    const stopper = () => {
+    const stopper = async () => {
       clearInterval(intervalId);
+      if (this.currentSweep) {
+        await this.currentSweep;
+      }
       if (this.recoveryInterval === intervalId) {
         this.recoveryInterval = undefined;
         this.recoveryStopper = undefined;
