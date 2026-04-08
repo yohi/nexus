@@ -1,3 +1,4 @@
+import { dirname } from 'node:path';
 import type { IMetadataStore, IVectorStore } from '../types/index.js';
 
 export const gcOrphanNodes = async (
@@ -21,6 +22,20 @@ export const gcOrphanNodes = async (
   // Delete from vector store first, then metadata
   await Promise.all(orphanPaths.map((path) => vectorStore.deleteByFilePath(path)));
   await metadataStore.bulkDeleteMerkleNodes(orphanPaths);
+
+  // Prune empty ancestors
+  for (const orphanPath of orphanPaths) {
+    let currentPath = dirname(orphanPath);
+    while (currentPath !== '.' && currentPath !== '/' && currentPath !== '') {
+      const hasChildren = await metadataStore.hasChildren(currentPath);
+      if (!hasChildren) {
+        await metadataStore.bulkDeleteMerkleNodes([currentPath]);
+        currentPath = dirname(currentPath);
+      } else {
+        break;
+      }
+    }
+  }
 
   return orphanPaths.length;
 };

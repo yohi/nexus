@@ -44,9 +44,10 @@ class GoParser {
     for (let i = 0; i < lines.length; i += 1) {
       const line = lines[i]?.trim() ?? '';
 
-      if (line === 'import (' || line.startsWith('import "')) {
+      if (/^import\b/.test(line)) {
         let endIndex = i;
-        if (line === 'import (') {
+        const nextChar = line.slice(6).trim()[0];
+        if (nextChar === '(' || line === 'import (') {
           while (endIndex < lines.length && (lines[endIndex]?.trim() ?? '') !== ')') {
             endIndex += 1;
           }

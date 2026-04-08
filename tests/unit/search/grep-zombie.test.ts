@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { RipgrepEngine } from '../../../src/search/grep.js';
+import type { GrepParams } from '../../../src/types/index.js';
 
 describe('RipgrepEngine zombie prevention', () => {
   afterEach(() => {
@@ -19,6 +20,7 @@ describe('RipgrepEngine zombie prevention', () => {
 
     const engine = new RipgrepEngine({
       projectRoot: process.cwd(),
+      grepMaxConcurrency: 1,
       grepTimeoutMs: 50,
       killGraceMs: 1000,
       spawn: spawnImpl,
@@ -84,11 +86,12 @@ describe('RipgrepEngine zombie prevention', () => {
     });
 
     const controller = new AbortController();
-    const promise = engine.search({
+    const params: GrepParams = {
       query: 'alpha',
       cwd: process.cwd(),
       abortSignal: controller.signal,
-    } as any);
+    };
+    const promise = engine.search(params);
 
     await vi.waitFor(() => expect(spawnImpl).toHaveBeenCalledTimes(1));
     controller.abort();
@@ -105,6 +108,7 @@ describe('RipgrepEngine zombie prevention', () => {
 
     const engine = new RipgrepEngine({
       projectRoot: process.cwd(),
+      grepMaxConcurrency: 1,
       grepTimeoutMs: 50,
       killGraceMs: 1000,
       spawn: spawnImpl,

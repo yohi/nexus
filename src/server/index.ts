@@ -165,6 +165,7 @@ export const createNexusServer = (options: NexusServerOptions): McpServer => {
             options.metadataStore,
             options.vectorStore,
             options.pluginRegistry,
+            options.pipeline,
           ),
         );
       } catch (error) {
@@ -208,15 +209,26 @@ export const initializeNexusRuntime = async (options: NexusRuntimeOptions): Prom
       server,
       close: async () => {
         let watcherError: unknown;
+        let closeError: unknown;
+
         try {
           await options.watcher.stop();
         } catch (error) {
           watcherError = error;
-        } finally {
+        }
+
+        try {
           await server.close();
-          if (watcherError) {
-            throw watcherError;
-          }
+        } catch (error) {
+          closeError = error;
+        }
+
+        if (watcherError && closeError) {
+          throw new AggregateError([watcherError, closeError], 'Failed to close Nexus runtime');
+        } else if (watcherError) {
+          throw watcherError;
+        } else if (closeError) {
+          throw closeError;
         }
       },
     };
@@ -229,10 +241,22 @@ export const initializeNexusRuntime = async (options: NexusRuntimeOptions): Prom
 };
 
 export const errorResult = (error: unknown) => {
-  const isSafeError = error instanceof PathTraversalError || error instanceof RetryExhaustedError;
-  const errorMessage = isSafeError
-    ? (error as Error).message
-    : 'Internal server error';
+  if (error instanceof PathTraversalError) {
+    const message = 'Access denied';
+    return {
+      content: [
+        {
+          type: 'text' as const,
+          text: `Error: ${message}`,
+        },
+      ],
+      isError: true,
+      structuredContent: { error: true, message },
+    };
+  }
+
+  const isSafeError = error instanceof RetryExhaustedError;
+  const errorMessage = isSafeError ? (error as Error).message : 'Internal server error';
 
   if (!isSafeError) {
     console.error('Internal server error occurred:', error);

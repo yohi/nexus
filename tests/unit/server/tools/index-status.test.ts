@@ -13,7 +13,7 @@ describe('executeIndexStatus', () => {
     const vectorStore = new InMemoryVectorStore({ dimensions: 64 });
     const registry = new PluginRegistry();
     const pipeline = {
-      getSkippedFiles: () => new Map(),
+      getSkippedFiles: () => new Map([['src/auth.ts', 'embed failed']]),
       reconcileOnStartup: async () => ({
         startedAt: '',
         finishedAt: '',
@@ -21,7 +21,13 @@ describe('executeIndexStatus', () => {
         reconciliation: { added: 0, modified: 0, deleted: 0, unchanged: 0 },
         chunksIndexed: 0,
       }),
-      reindex: async () => ({ startedAt: '', finishedAt: '', durationMs: 0, reconciliation: { added: 0, modified: 0, deleted: 0, unchanged: 0 }, chunksIndexed: 0 }),
+      reindex: async () => ({
+        startedAt: '',
+        finishedAt: '',
+        durationMs: 0,
+        reconciliation: { added: 0, modified: 0, deleted: 0, unchanged: 0 },
+        chunksIndexed: 0,
+      }),
     };
     registry.registerLanguage(new TypeScriptLanguagePlugin());
     registry.registerEmbeddingProvider('test', new TestEmbeddingProvider());
@@ -49,7 +55,7 @@ describe('executeIndexStatus', () => {
       },
     ]);
 
-    const result = await executeIndexStatus(metadataStore, vectorStore, pipeline, registry);
+    const result = await executeIndexStatus(metadataStore, vectorStore, registry, pipeline as any);
 
     expect(result.skippedFiles).toBe(1);
     expect(result.indexStats).toMatchObject({ totalFiles: 1, totalChunks: 2 });

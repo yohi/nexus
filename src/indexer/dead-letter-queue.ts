@@ -60,6 +60,7 @@ export class DeadLetterQueue {
   }
 
   async enqueue(input: Pick<DeadLetterEntry, 'filePath' | 'contentHash' | 'errorMessage' | 'attempts'>): Promise<DeadLetterEntry> {
+    await this.ensureLoaded();
     const timestamp = this.now().toISOString();
     const entry: DeadLetterEntry = {
       id: randomUUID(),
@@ -145,6 +146,22 @@ export class DeadLetterQueue {
     return { retried, removed, skipped };
   }
 
+  async removeByFilePath(filePath: string): Promise<void> {
+    await this.ensureLoaded();
+    const idsToRemove = [...this.entries.values()]
+      .filter((entry) => entry.filePath === filePath)
+      .map((entry) => entry.id);
+    await this.removeEntries(idsToRemove);
+  }
+
+  async removeByPathPrefix(prefix: string): Promise<void> {
+    await this.ensureLoaded();
+    const idsToRemove = [...this.entries.values()]
+      .filter((entry) => entry.filePath === prefix || entry.filePath.startsWith(prefix.endsWith('/') ? prefix : prefix + '/'))
+      .map((entry) => entry.id);
+    await this.removeEntries(idsToRemove);
+  }
+
   private async removeEntries(ids: string[]): Promise<void> {
     if (ids.length === 0) {
       return;
@@ -163,19 +180,21 @@ export class DeadLetterQueue {
   }
 
   private async trimToCapacity(): Promise<void> {
-    const removedIds: string[] = [];
-
-    while (this.entries.size > this.maxEntries) {
-      const oldestId = this.entries.keys().next().value as string | undefined;
-      if (oldestId === undefined) {
-        break;
-      }
-      this.entries.delete(oldestId);
-      removedIds.push(oldestId);
+    if (this.entries.size <= this.maxEntries) {
+      return;
     }
+
+    const allEntries = [...this.entries.values()].sort(
+      (left, right) => new Date(left.createdAt).getTime() - new Date(right.createdAt).getTime()
+    );
+    const toRemoveCount = this.entries.size - this.maxEntries;
+    const removedIds = allEntries.slice(0, toRemoveCount).map((e) => e.id);
 
     if (removedIds.length > 0) {
       await this.options.metadataStore.removeDeadLetterEntries(removedIds);
+      for (const id of removedIds) {
+        this.entries.delete(id);
+      }
     }
   }
 }

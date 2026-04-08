@@ -67,12 +67,19 @@ export class IndexPipeline implements IIndexPipeline {
 
     let chunksIndexed = 0;
     const renameCandidates = MerkleTree.detectRenameCandidates(events);
-    const renamedOldPaths = new Set(renameCandidates.map((candidate) => candidate.oldPath));
-    const renamedNewPaths = new Set(renameCandidates.map((candidate) => candidate.newPath));
+    const consumedEvents = new Set<IndexEvent>();
 
     for (const candidate of renameCandidates) {
-      await this.options.vectorStore.renameFilePath(candidate.oldPath, candidate.newPath);
-      await this.merkleTree.move(candidate.oldPath, candidate.newPath, candidate.hash);
+      consumedEvents.add(candidate.oldEvent);
+      consumedEvents.add(candidate.newEvent);
+      try {
+        await this.options.vectorStore.renameFilePath(candidate.oldPath, candidate.newPath);
+        await this.merkleTree.move(candidate.oldPath, candidate.newPath, candidate.hash);
+      } catch (error) {
+        await this.options.vectorStore.renameFilePath(candidate.newPath, candidate.oldPath);
+        await this.merkleTree.load();
+        throw error;
+      }
     }
 
     if (renameCandidates.length > 0) {
@@ -80,19 +87,30 @@ export class IndexPipeline implements IIndexPipeline {
     }
 
     for (const event of events) {
-      if (renamedOldPaths.has(event.filePath) || renamedNewPaths.has(event.filePath)) {
+      if (consumedEvents.has(event)) {
         continue;
       }
 
       if (event.type === 'deleted') {
         const existingNode = await this.options.metadataStore.getMerkleNode(event.filePath);
         if (existingNode?.isDirectory) {
-          await this.options.vectorStore.deleteByPathPrefix(event.filePath.endsWith('/') ? event.filePath : event.filePath + '/');
+          const prefix = event.filePath.endsWith('/') ? event.filePath : event.filePath + '/';
+          await this.options.vectorStore.deleteByPathPrefix(prefix);
           await this.options.metadataStore.deleteSubtree(event.filePath);
           await this.merkleTree.load();
+
+          this.skippedFiles.delete(event.filePath);
+          await this.deadLetterQueue.removeByPathPrefix(event.filePath);
+          for (const path of this.skippedFiles.keys()) {
+            if (path.startsWith(prefix)) {
+              this.skippedFiles.delete(path);
+            }
+          }
         } else {
           await this.options.vectorStore.deleteByFilePath(event.filePath);
           await this.merkleTree.remove(event.filePath);
+          this.skippedFiles.delete(event.filePath);
+          await this.deadLetterQueue.removeByFilePath(event.filePath);
         }
         continue;
       }
@@ -117,6 +135,7 @@ export class IndexPipeline implements IIndexPipeline {
         await this.options.vectorStore.upsertChunks(chunks, embeddings);
         await this.merkleTree.update(event.filePath, event.contentHash ?? '');
         this.skippedFiles.delete(event.filePath);
+        await this.deadLetterQueue.removeByFilePath(event.filePath);
         chunksIndexed += chunks.length;
       } catch (error) {
         if (error instanceof Error && error.name === 'RetryExhaustedError') {

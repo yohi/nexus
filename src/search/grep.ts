@@ -41,11 +41,18 @@ export class RipgrepEngine implements IGrepEngine {
   };
 
   constructor(private readonly options: RipgrepEngineOptions) {
-    this.limit = pLimit(options.grepMaxConcurrency ?? DEFAULT_MAX_CONCURRENCY);
+    const concurrency = options.grepMaxConcurrency ?? DEFAULT_MAX_CONCURRENCY;
+    this.limit = pLimit(concurrency);
     this.timeoutMs = options.grepTimeoutMs ?? DEFAULT_TIMEOUT_MS;
     this.killGraceMs = options.killGraceMs ?? DEFAULT_KILL_GRACE_MS;
     this.createProcessController = options.createProcessController;
     this.processController = options.processController;
+
+    if (options.processController && concurrency > 1) {
+      throw new Error(
+        'Concurrent searches (grepMaxConcurrency > 1) cannot share a single processController. Provide createProcessController instead.',
+      );
+    }
 
     if (!options.spawn) {
       throw new Error('RipgrepEngine requires a spawn function to be provided in options.');
@@ -74,6 +81,11 @@ export class RipgrepEngine implements IGrepEngine {
     const combinedSignal = params.abortSignal
       ? AbortSignal.any([timeoutController.signal, params.abortSignal])
       : timeoutController.signal;
+
+    if (combinedSignal.aborted) {
+      clearTimeout(timeoutId);
+      return [];
+    }
 
     try {
       return await this.spawnImpl(this.normalizeParams(params), combinedSignal);

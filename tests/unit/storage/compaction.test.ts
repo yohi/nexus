@@ -46,6 +46,7 @@ describe('LanceVectorStore compaction integration', () => {
   });
 
   it('runs idle compaction only after acquiring the mutex', async () => {
+    vi.useRealTimers();
     const store = new LanceVectorStore({ dimensions: 3 });
     await store.initialize();
     const order: string[] = [];
@@ -63,16 +64,16 @@ describe('LanceVectorStore compaction integration', () => {
       async () => {
         order.push('compaction-start');
       },
-      1,
+      10,
       mutex,
     );
 
-    await new Promise((resolve) => setTimeout(resolve, 5));
+    await new Promise((resolve) => setTimeout(resolve, 50));
     expect(order).toEqual([]);
     expect(mutex.waitForUnlock).toHaveBeenCalledOnce();
 
     unlock?.();
-    await new Promise((resolve) => setTimeout(resolve, 5));
+    await new Promise((resolve) => setTimeout(resolve, 50));
 
     expect(order).toEqual(['compaction-start']);
   });

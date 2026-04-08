@@ -144,6 +144,7 @@ export interface IMetadataStore {
   deleteSubtree(pathPrefix: string): Promise<number>;
   renamePath(oldPath: string, newPath: string, hash: string): Promise<void>;
   getMerkleNode(path: string): Promise<MerkleNodeRow | null>;
+  hasChildren(path: string): Promise<boolean>;
   getAllNodes(): Promise<MerkleNodeRow[]>;
   getAllFileNodes(): Promise<MerkleNodeRow[]>;
   getAllPaths(): Promise<string[]>;

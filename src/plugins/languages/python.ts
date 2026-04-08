@@ -10,10 +10,24 @@ const buildDeclaration = (
 ): ParsedDeclaration => {
   const baseIndent = leadingSpaces(lines[startIndex] ?? '');
   let endIndex = startIndex;
+  let signatureClosed = false;
 
-  for (let i = startIndex + 1; i < lines.length; i += 1) {
+  for (let i = startIndex; i < lines.length; i += 1) {
     const line = lines[i] ?? '';
-    if (line.trim() === '') {
+    const trimmedWithComments = line.trim();
+    if (trimmedWithComments === '' || trimmedWithComments.startsWith('#')) {
+      if (!signatureClosed) {
+        endIndex = i;
+      }
+      continue;
+    }
+
+    if (!signatureClosed) {
+      const trimmed = line.split('#')[0]?.trim() ?? '';
+      if (trimmed.endsWith(':')) {
+        signatureClosed = true;
+      }
+      endIndex = i;
       continue;
     }
 
@@ -37,12 +51,33 @@ class PythonParser {
   async parse(file: FileToChunk): Promise<ParsedSourceFile> {
     const lines = file.content.split('\n');
     const declarations: ParsedDeclaration[] = [];
-    const importLines: number[] = [];
 
     for (let i = 0; i < lines.length; i += 1) {
-      const line = lines[i]?.trim() ?? '';
-      if (line.startsWith('import ') || line.startsWith('from ')) {
-        importLines.push(i);
+      const fullLine = lines[i] ?? '';
+      const line = fullLine.trim();
+      const indent = leadingSpaces(fullLine);
+
+      if (indent === 0 && (line.startsWith('import ') || line.startsWith('from '))) {
+        const start = i;
+        while (i + 1 < lines.length) {
+          const nextLine = lines[i + 1] ?? '';
+          const nextLineTrim = nextLine.trim();
+          if (
+            leadingSpaces(nextLine) === 0 &&
+            (nextLineTrim.startsWith('import ') || nextLineTrim.startsWith('from '))
+          ) {
+            i += 1;
+          } else {
+            break;
+          }
+        }
+        declarations.push({
+          type: 'import',
+          name: 'imports',
+          startLine: start + 1,
+          endLine: i + 1,
+          content: lines.slice(start, i + 1).join('\n').trim(),
+        });
         continue;
       }
 
@@ -59,23 +94,6 @@ class PythonParser {
         const type = leadingSpaces(lines[i] ?? '') > 0 ? 'method' : 'function';
         declarations.push(buildDeclaration(lines, i, type, functionName));
       }
-    }
-
-    if (importLines.length > 0) {
-      const firstImport = importLines[0];
-      const lastImport = importLines[importLines.length - 1];
-
-      if (firstImport === undefined || lastImport === undefined) {
-        throw new Error('importLines should not be empty');
-      }
-
-      declarations.push({
-        type: 'import',
-        name: 'imports',
-        startLine: firstImport + 1,
-        endLine: lastImport + 1,
-        content: importLines.map((index) => lines[index]?.trim() ?? '').join('\n'),
-      });
     }
 
     declarations.sort((left, right) => left.startLine - right.startLine);

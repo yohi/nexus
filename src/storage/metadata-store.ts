@@ -166,6 +166,12 @@ export class SqliteMetadataStore implements IMetadataStore {
     };
   }
 
+  async hasChildren(path: string): Promise<boolean> {
+    await this.asyncBoundary();
+    const row = this.db.prepare('SELECT 1 FROM merkle_nodes WHERE parent_path = ? LIMIT 1').get(path);
+    return row !== undefined;
+  }
+
   async getAllNodes(): Promise<MerkleNodeRow[]> {
     await this.asyncBoundary();
     const rows = this.db
@@ -278,23 +284,14 @@ export class SqliteMetadataStore implements IMetadataStore {
   }
 
   async removeDeadLetterEntries(ids: string[]): Promise<void> {
+    await this.asyncBoundary();
     const statement = this.db.prepare('DELETE FROM dead_letter_queue WHERE id = ?');
-
-    await executeBatchedWithYield({
-      items: ids,
-      batchSize: this.batchSize,
-      executeBatch: async (batch) => {
-        await this.asyncBoundary();
-        const transaction = this.db.transaction((rows: string[]) => {
-          for (const id of rows) {
-            statement.run(id);
-          }
-        });
-
-        transaction(batch);
-      },
-      yieldAfterBatch: this.asyncBoundary,
+    const transaction = this.db.transaction((rows: string[]) => {
+      for (const id of rows) {
+        statement.run(id);
+      }
     });
+    transaction(ids);
   }
 
   async getDeadLetterEntries(): Promise<DeadLetterEntry[]> {

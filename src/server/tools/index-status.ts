@@ -13,6 +13,7 @@ export const executeIndexStatus = async (
   metadataStore: IMetadataStore,
   vectorStore: IVectorStore,
   pluginRegistry: PluginRegistry,
+  pipeline: IIndexPipeline,
 ): Promise<IndexStatusResult> => {
   const [indexStats, vectorStats, deadLetterEntries, pluginHealth] = await Promise.all([
     metadataStore.getIndexStats(),
@@ -21,10 +22,13 @@ export const executeIndexStatus = async (
     pluginRegistry.healthCheck(),
   ]);
 
+  const runtimeSkipped = pipeline.getSkippedFiles();
+  const skippedCount = deadLetterEntries.filter((entry) => runtimeSkipped.has(entry.filePath)).length;
+
   return {
     indexStats,
     vectorStats,
-    skippedFiles: deadLetterEntries.length,
+    skippedFiles: skippedCount,
     pluginHealth,
   };
 };

@@ -51,6 +51,15 @@ export class InMemoryMetadataStore implements IMetadataStore {
     return this.nodes.get(path) ?? null;
   }
 
+  async hasChildren(path: string): Promise<boolean> {
+    for (const node of this.nodes.values()) {
+      if (node.parentPath === path) {
+        return true;
+      }
+    }
+    return false;
+  }
+
   async getAllNodes(): Promise<MerkleNodeRow[]> {
     return [...this.nodes.values()].sort((left, right) => left.path.localeCompare(right.path));
   }
