@@ -44,11 +44,11 @@ git commit -m "docs: regenerate NOTICE with full dependency licenses and remove 
 **Files:**
 - Modify: `tests/unit/server/tools/reindex.test.ts`
 
-- [ ] **Step 1: 既存のテストがパスすることを確認する**
+- [x] **Step 1: 既存のテストがパスすることを確認する**
 
 Run: `npx vitest tests/unit/server/tools/reindex.test.ts`
 
-- [ ] **Step 2: stop メソッドのモックを Promise を返すように修正する**
+- [x] **Step 2: stop メソッドのモックを Promise を返すように修正する**
 
 ```typescript
 // tests/unit/server/tools/reindex.test.ts
@@ -59,11 +59,11 @@ const pipeline = {
 };
 ```
 
-- [ ] **Step 3: 修正後のテストを実行してパスすることを確認する**
+- [x] **Step 3: 修正後のテストを実行してパスすることを確認する**
 
 Run: `npx vitest tests/unit/server/tools/reindex.test.ts`
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add tests/unit/server/tools/reindex.test.ts
