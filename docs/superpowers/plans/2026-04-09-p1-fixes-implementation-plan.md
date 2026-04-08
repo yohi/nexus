@@ -1,152 +1,155 @@
-# P1 Fixes Implementation Plan
+# 2026-04-09 P1 Fixes Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Fix missing `await` in server rollback and regenerate the `NOTICE` file with correct license information.
+**Goal:** 依存関係ライセンス情報の正確な反映、非同期停止処理の不備修正、およびドキュメントのインポート形式の改善を行う。
 
-**Architecture:** Use `await` for async rollback calls in `src/server/index.ts` with proper error logging. Use the project's `license:notice` script to fix the `NOTICE` file.
+**Architecture:** 
+1. NOTICEファイルの再生成と重複排除。
+2. IndexPipeline.stopインターフェースに合わせたテストモックのPromise化。
+3. DeadLetterQueueのリカバリーループ停止処理におけるawait欠落の修正。
+4. READMEのサンプルコードをパッケージ利用に適した形式に修正。
 
-**Tech Stack:** TypeScript, Vitest, npm scripts (generate-license-file).
-
----
-
-### Task 1: Fix Missing await in Server Rollback
-
-**Files:**
-- Modify: `src/server/index.ts`
-- Test: `tests/unit/server/index.test.ts`
-
-- [ ] **Step 1: Write a failing test for initialization rollback**
-
-Add a test case to `tests/unit/server/index.test.ts` that mocks a failure during `initializeNexusRuntime` and verifies if `pipeline.stop` is awaited.
-
-```typescript
-  describe('initializeNexusRuntime rollback', () => {
-    it('awaits pipeline.stop and watcher.stop when initialization fails', async () => {
-      const stopDeferred = {
-        promise: null as any as Promise<void>,
-        resolve: null as any as () => void,
-        called: false,
-      };
-      stopDeferred.promise = new Promise((resolve) => {
-        stopDeferred.resolve = () => {
-          stopDeferred.called = true;
-          resolve();
-        };
-      });
-
-      const mockPipeline = {
-        start: vi.fn(),
-        stop: vi.fn().mockImplementation(() => stopDeferred.promise),
-      };
-      const mockWatcher = {
-        start: vi.fn().mockRejectedValue(new Error('init failure')),
-        stop: vi.fn().mockResolvedValue(undefined),
-      };
-
-      const mockOptions = {
-        metadataStore: { initialize: vi.fn().mockResolvedValue(undefined) },
-        vectorStore: { initialize: vi.fn().mockResolvedValue(undefined) },
-        pipeline: mockPipeline,
-        watcher: mockWatcher,
-        projectRoot: '/tmp',
-        sanitizer: {} as any,
-        semanticSearch: {} as any,
-        grepEngine: {} as any,
-        orchestrator: {} as any,
-        pluginRegistry: {} as any,
-        runReindex: vi.fn(),
-        loadFileContent: vi.fn(),
-      } as any;
-
-      const initPromise = initializeNexusRuntime(mockOptions);
-
-      // Give it a tick to hit the catch block
-      await new Promise(resolve => setTimeout(resolve, 0));
-
-      expect(mockPipeline.stop).toHaveBeenCalled();
-      // If NOT awaited, the initPromise would have already rejected (or proceeded past the call)
-      // but we haven't resolved stopDeferred yet.
-      
-      let rejected = false;
-      initPromise.catch(() => { rejected = true; });
-
-      await new Promise(resolve => setTimeout(resolve, 0));
-      expect(rejected, 'Should not have rejected yet if pipeline.stop is awaited').toBe(false);
-
-      stopDeferred.resolve();
-      await initPromise.catch(() => {});
-      expect(stopDeferred.called).toBe(true);
-    });
-  });
-```
-
-- [ ] **Step 2: Run test to verify it fails**
-
-Run: `npx vitest tests/unit/server/index.test.ts`
-Expected: FAIL (The test will likely timeout or fail the `rejected` assertion because `pipeline.stop()` isn't awaited in the current code, meaning the promise rejects immediately after the call).
-
-- [ ] **Step 3: Implement fix in src/server/index.ts**
-
-Modify the `catch` block in `initializeNexusRuntime`.
-
-```typescript
-<<<<
-  } catch (error) {
-    options.pipeline.stop();
-    await options.watcher.stop().catch((stopError) => {
-      console.error('Failed to stop watcher during initialization rollback:', stopError);
-    });
-    throw error;
-  }
-====
-  } catch (error) {
-    await options.pipeline.stop().catch((stopError) => {
-      console.error('Failed to stop pipeline during initialization rollback:', stopError);
-    });
-    await options.watcher.stop().catch((stopError) => {
-      console.error('Failed to stop watcher during initialization rollback:', stopError);
-    });
-    throw error;
-  }
->>>>
-```
-
-- [ ] **Step 4: Run test to verify it passes**
-
-Run: `npx vitest tests/unit/server/index.test.ts`
-Expected: PASS
-
-- [ ] **Step 5: Commit**
-
-```bash
-git add src/server/index.ts tests/unit/server/index.test.ts
-git commit -m "fix: await pipeline.stop during initialization rollback"
-```
+**Tech Stack:** TypeScript, Vitest, npm, generate-license-file
 
 ---
 
-### Task 2: Regenerate NOTICE File
+### Task 1: NOTICE ファイルの再生成と重複排除
 
 **Files:**
 - Modify: `NOTICE`
 
-- [x] **Step 1: Delete existing NOTICE file**
+- [x] **Step 1: NOTICE ファイルを再生成する**
 
-Run: `rm NOTICE`
+Run: `npx generate-license-file --input package-lock.json --output NOTICE --overwrite`
 
-- [x] **Step 2: Run license:notice script**
+- [x] **Step 2: 重複したヘッダーとフッターを削除し、内容を確認する**
 
-Run: `npm run license:notice`
+`generate-license-file` が生成したファイルには、各ライセンスセクションの後に重複したツール情報が含まれる場合があるため、以下の形式に整形する。
+1. 先頭に1つだけツール情報を残す。
+2. 末尾の重複したツール情報を削除する。
+3. 10個以上のパッケージ（express, zod, chokidar等）が含まれていることを確認する。
 
-- [x] **Step 3: Verify content of NOTICE**
-
-Run: `grep -E "@lancedb/lancedb|zod|chokidar" NOTICE`
-Expected: Matches found, confirming license info is present.
-
-- [x] **Step 4: Commit**
+- [x] **Step 3: Commit**
 
 ```bash
 git add NOTICE
-git commit -m "build: regenerate NOTICE file with full dependency licenses"
+git commit -m "docs: regenerate NOTICE with full dependency licenses and remove duplicates"
 ```
+
+---
+
+### Task 2: IndexPipeline テストモックの非同期化修正
+
+**Files:**
+- Modify: `tests/unit/server/tools/reindex.test.ts`
+
+- [ ] **Step 1: 既存のテストがパスすることを確認する**
+
+Run: `npx vitest tests/unit/server/tools/reindex.test.ts`
+
+- [ ] **Step 2: stop メソッドのモックを Promise を返すように修正する**
+
+```typescript
+// tests/unit/server/tools/reindex.test.ts
+const pipeline = {
+  // ...
+  start: () => undefined,
+  stop: async () => {}, // 修正: async に変更
+};
+```
+
+- [ ] **Step 3: 修正後のテストを実行してパスすることを確認する**
+
+Run: `npx vitest tests/unit/server/tools/reindex.test.ts`
+
+- [ ] **Step 4: Commit**
+
+```bash
+git add tests/unit/server/tools/reindex.test.ts
+git commit -m "test: update IndexPipeline mock stop method to return Promise<void>"
+```
+
+---
+
+### Task 3: DeadLetterQueue テストの非同期停止処理の修正
+
+**Files:**
+- Modify: `tests/unit/indexer/dead-letter-queue.test.ts`
+
+- [ ] **Step 1: 既存のテストがパスすることを確認する（警告が出る可能性がある）**
+
+Run: `npx vitest tests/unit/indexer/dead-letter-queue.test.ts`
+
+- [ ] **Step 2: stopFirst() および stop1() の呼び出しに await を追加する**
+
+```typescript
+// tests/unit/indexer/dead-letter-queue.test.ts
+
+// 'returns the same stopper if already running' テスト内
+it('returns the same stopper if already running', async () => { // async を確認
+  // ...
+  expect(stopSecond).toBe(stopFirst);
+  await stopFirst(); // 修正: await を追加
+});
+
+// 'warns when starting recovery loop while already running' テスト内
+it('warns when starting recovery loop while already running', async () => { // 修正: async に変更
+  // ...
+  const stop1 = queue.startRecoveryLoop();
+  queue.startRecoveryLoop();
+
+  expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining('already running'));
+  await stop1(); // 修正: await を追加
+});
+```
+
+- [ ] **Step 3: 修正後のテストを実行してパスすることを確認する**
+
+Run: `npx vitest tests/unit/indexer/dead-letter-queue.test.ts`
+
+- [ ] **Step 4: Commit**
+
+```bash
+git add tests/unit/indexer/dead-letter-queue.test.ts
+git commit -m "test: properly await stopper in DeadLetterQueue tests"
+```
+
+---
+
+### Task 4: README のサンプルコード修正
+
+**Files:**
+- Modify: `README.md`
+
+- [ ] **Step 1: 相対パスインポートをパッケージ名またはプレースホルダーに変更する**
+
+```markdown
+// README.md のコードブロック内
+
+import { createNexusServer } from 'nexus'; // 修正: './src/server/index.js' から変更
+import { createStreamableHttpHandler } from 'nexus/transport'; // 修正: './src/server/transport.js' から変更
+```
+
+- [ ] **Step 2: パッケージ名についての注釈を追加する**
+
+コードブロックの直前に、`nexus` はプロジェクト名に応じて置き換える必要がある旨の注記を追加する。
+
+- [ ] **Step 3: Commit**
+
+```bash
+git add README.md
+git commit -m "docs: update README sample code to use package-style imports"
+```
+
+---
+
+### Task 5: 最終確認とクリーンアップ
+
+- [ ] **Step 1: 全てのユニットテストを実行する**
+
+Run: `npm test`
+
+- [ ] **Step 2: 全ての修正が正しく反映されているか diff を確認する**
+
+Run: `git diff HEAD`
