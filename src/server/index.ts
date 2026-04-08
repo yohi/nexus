@@ -191,6 +191,7 @@ export const initializeNexusRuntime = async (options: NexusRuntimeOptions): Prom
   await options.metadataStore.initialize();
   await options.vectorStore.initialize();
   await options.pipeline.reconcileOnStartup();
+  options.pipeline.start();
   await options.watcher.start();
 
   try {
@@ -202,6 +203,12 @@ export const initializeNexusRuntime = async (options: NexusRuntimeOptions): Prom
         const shutdownErrors: unknown[] = [];
         try {
           await options.watcher.stop();
+        } catch (error) {
+          shutdownErrors.push(error);
+        }
+
+        try {
+          options.pipeline.stop();
         } catch (error) {
           shutdownErrors.push(error);
         }
@@ -223,6 +230,7 @@ export const initializeNexusRuntime = async (options: NexusRuntimeOptions): Prom
       },
     };
   } catch (error) {
+    options.pipeline.stop();
     await options.watcher.stop().catch((stopError) => {
       console.error('Failed to stop watcher during initialization rollback:', stopError);
     });

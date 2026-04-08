@@ -5,7 +5,7 @@ import type { DeadLetterEntry, IMetadataStore } from '../types/index.js';
 
 export interface RecoverySweepResult {
   retried: number;
-  removed: number;
+  purged: number;
   skipped: number;
 }
 
@@ -39,13 +39,19 @@ export class DeadLetterQueue {
 
   private loaded = false;
 
+  private recoveryRunning = false;
+
+  private recoveryInterval: ReturnType<typeof setInterval> | undefined;
+
+  private recoveryStopper: (() => void) | undefined;
+
   constructor(private readonly options: DeadLetterQueueOptions) {
     this.maxEntries = options.maxEntries ?? 1000;
     this.ttlMs = options.ttlMs ?? 24 * 60 * 60 * 1000;
     this.now = options.now ?? (() => new Date());
-    this.embeddingHealthy = options.embeddingHealthy ?? (async () => true);
+    this.embeddingHealthy = options.embeddingHealthy ?? (() => Promise.resolve(true));
     this.computeFileHash = options.computeFileHash ?? computeFileHashStreaming;
-    this.reprocess = options.reprocess ?? (async () => undefined);
+    this.reprocess = options.reprocess ?? (() => Promise.resolve(undefined));
     this.logger = options.logger ?? console;
   }
 
@@ -116,43 +122,77 @@ export class DeadLetterQueue {
   }
 
   async recoverySweep(): Promise<RecoverySweepResult> {
-    await this.ensureLoaded();
-    if (!(await this.embeddingHealthy())) {
-      return { retried: 0, removed: 0, skipped: this.entries.size };
+    if (this.recoveryRunning) {
+      return { retried: 0, purged: 0, skipped: 0 };
     }
 
-    let retried = 0;
-    let removed = 0;
-    let skipped = 0;
-
-    for (const entry of [...this.entries.values()]) {
-      try {
-        const currentHash = await this.computeFileHash(entry.filePath);
-        if (currentHash !== entry.contentHash) {
-          this.logger.warn(`Dropping stale DLQ entry for ${entry.filePath}: hash mismatch`);
-          await this.removeEntries([entry.id]);
-          removed += 1;
-          continue;
-        }
-
-        await this.reprocess(entry);
-        await this.removeEntries([entry.id]);
-        retried += 1;
-        removed += 1;
-      } catch (error) {
-        const err = error as NodeJS.ErrnoException;
-        if (err.code === 'ENOENT') {
-          await this.removeEntries([entry.id]);
-          removed += 1;
-          continue;
-        }
-
-        skipped += 1;
-        this.logger.error(`Failed to recover DLQ entry for ${entry.filePath}`, error);
+    this.recoveryRunning = true;
+    try {
+      await this.ensureLoaded();
+      if (!(await this.embeddingHealthy())) {
+        return { retried: 0, purged: 0, skipped: this.entries.size };
       }
+
+      let retried = 0;
+      let purged = 0;
+      let skipped = 0;
+
+      for (const entry of [...this.entries.values()]) {
+        try {
+          const currentHash = await this.computeFileHash(entry.filePath);
+          if (currentHash !== entry.contentHash) {
+            this.logger.warn(`Dropping stale DLQ entry for ${entry.filePath}: hash mismatch`);
+            await this.removeEntries([entry.id]);
+            purged += 1;
+            continue;
+          }
+
+          await this.reprocess(entry);
+          await this.removeEntries([entry.id]);
+          retried += 1;
+        } catch (error) {
+          const err = error as NodeJS.ErrnoException;
+          if (err.code === 'ENOENT') {
+            await this.removeEntries([entry.id]);
+            purged += 1;
+            continue;
+          }
+
+          skipped += 1;
+          this.logger.error(`Failed to recover DLQ entry for ${entry.filePath}`, error);
+        }
+      }
+
+      return { retried, purged, skipped };
+    } finally {
+      this.recoveryRunning = false;
+    }
+  }
+
+  startRecoveryLoop(intervalMs = 60_000): () => void {
+    if (this.recoveryStopper !== undefined) {
+      this.logger.warn('DLQ recovery loop is already running. Ignoring duplicate start.');
+      return this.recoveryStopper;
     }
 
-    return { retried, removed, skipped };
+    const intervalId = setInterval(() => {
+      void this.recoverySweep().catch((error) => {
+        this.logger.error('DLQ recovery sweep failed', error);
+      });
+    }, intervalMs);
+
+    this.recoveryInterval = intervalId;
+
+    const stopper = () => {
+      clearInterval(intervalId);
+      if (this.recoveryInterval === intervalId) {
+        this.recoveryInterval = undefined;
+        this.recoveryStopper = undefined;
+      }
+    };
+
+    this.recoveryStopper = stopper;
+    return stopper;
   }
 
   async removeByFilePath(filePath: string): Promise<void> {

@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest';
+import { describe, expect, it, vi, afterEach } from 'vitest';
 
 import { DeadLetterQueue } from '../../../src/indexer/dead-letter-queue.js';
 import type { DeadLetterEntry, IMetadataStore } from '../../../src/types/index.js';
@@ -16,6 +16,10 @@ const makeEntry = (overrides: Partial<DeadLetterEntry> = {}): DeadLetterEntry =>
 });
 
 describe('DeadLetterQueue', () => {
+  afterEach(() => {
+    vi.clearAllTimers();
+    vi.useRealTimers();
+  });
   it('enqueues entries into memory and persistent storage', async () => {
     const metadataStore = new InMemoryMetadataStore();
     await metadataStore.initialize();
@@ -85,7 +89,7 @@ describe('DeadLetterQueue', () => {
 
     const result = await queue.recoverySweep();
 
-    expect(result).toEqual({ retried: 0, removed: 0, skipped: 1 });
+    expect(result).toEqual({ retried: 0, purged: 0, skipped: 1 });
     expect(reprocess).not.toHaveBeenCalled();
   });
 
@@ -105,7 +109,7 @@ describe('DeadLetterQueue', () => {
 
     const result = await queue.recoverySweep();
 
-    expect(result).toEqual({ retried: 0, removed: 1, skipped: 0 });
+    expect(result).toEqual({ retried: 0, purged: 1, skipped: 0 });
     await expect(metadataStore.getDeadLetterEntries()).resolves.toEqual([]);
     expect(logger.warn).toHaveBeenCalled();
   });
@@ -125,11 +129,25 @@ describe('DeadLetterQueue', () => {
 
     const result = await queue.recoverySweep();
 
-    expect(result).toEqual({ retried: 1, removed: 1, skipped: 0 });
+    expect(result).toEqual({ retried: 1, purged: 0, skipped: 0 });
     expect(reprocess).toHaveBeenCalledWith(
       expect.objectContaining({ filePath: '/repo/src/auth.ts', contentHash: 'hash-1' }),
     );
     await expect(metadataStore.getDeadLetterEntries()).resolves.toEqual([]);
+  });
+
+  it('returns the same stopper when recovery loop is started twice', () => {
+    vi.useFakeTimers();
+    const metadataStore = new InMemoryMetadataStore();
+    const queue = new DeadLetterQueue({
+      metadataStore,
+    });
+
+    const stopFirst = queue.startRecoveryLoop(60_000);
+    const stopSecond = queue.startRecoveryLoop(60_000);
+
+    expect(stopSecond).toBe(stopFirst);
+    stopFirst();
   });
 
   it('updates existing entries with the same filePath instead of creating new ones', async () => {
@@ -172,5 +190,41 @@ describe('DeadLetterQueue', () => {
     const persisted = await metadataStore.getDeadLetterEntries();
     expect(persisted).toHaveLength(1);
     expect(persisted[0]).toEqual(secondEntry);
+  });
+
+  it('prevents concurrent recovery sweeps', async () => {
+    const metadataStore = new InMemoryMetadataStore();
+    await metadataStore.initialize();
+    const queue = new DeadLetterQueue({
+      metadataStore,
+      computeFileHash: async () => 'a',
+      reprocess: async () => {
+        await new Promise((resolve) => setTimeout(resolve, 50)); // 意図的に遅延させる
+      },
+    });
+    await queue.enqueue({ filePath: 'a', contentHash: 'a', errorMessage: 'a', attempts: 1 });
+
+    const sweep1 = queue.recoverySweep();
+    const sweep2 = queue.recoverySweep();
+
+    const [res1, res2] = await Promise.all([sweep1, sweep2]);
+
+    expect(res1.retried).toBe(1);
+    expect(res2.retried).toBe(0); // 2つ目はスキップされるはず
+  });
+
+  it('warns when starting recovery loop while already running', () => {
+    vi.useFakeTimers();
+    const logger = { warn: vi.fn(), error: vi.fn() };
+    const queue = new DeadLetterQueue({
+      metadataStore: new InMemoryMetadataStore(),
+      logger,
+    });
+
+    const stop1 = queue.startRecoveryLoop();
+    queue.startRecoveryLoop();
+
+    expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining('already running'));
+    stop1();
   });
 });
