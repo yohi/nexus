@@ -146,10 +146,10 @@ git commit -m "docs: update README sample code to use package-style imports"
 
 ### Task 5: 最終確認とクリーンアップ
 
-- [ ] **Step 1: 全てのユニットテストを実行する**
+- [x] **Step 1: 全てのユニットテストを実行する**
 
 Run: `npm test`
 
-- [ ] **Step 2: 全ての修正が正しく反映されているか diff を確認する**
+- [x] **Step 2: 全ての修正が正しく反映されているか diff を確認する**
 
 Run: `git diff HEAD`
