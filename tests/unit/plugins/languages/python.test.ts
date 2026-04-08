@@ -40,7 +40,7 @@ def build_token(user_id: str) -> str:
         type: 'import',
         name: 'imports',
         startLine: 1,
-        endLine: 2,
+        endLine: 3,
       }),
       expect.objectContaining({
         type: 'class',

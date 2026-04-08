@@ -28,7 +28,7 @@ describe('DeadLetterQueue recovery loop', () => {
     } as any);
     const recoverySweep = vi.spyOn(queue, 'recoverySweep').mockResolvedValue({
       retried: 0,
-      removed: 0,
+      purged: 0,
       skipped: 0,
     });
 

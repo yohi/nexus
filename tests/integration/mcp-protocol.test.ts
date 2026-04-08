@@ -87,7 +87,7 @@ describe('Phase 2 MCP protocol integration', () => {
         pipeline,
         pluginRegistry,
         runReindex: async () => [],
-        loadFileContent: async (filePath) => fs.readFile(filePath === 'src/auth.ts' ? authFilePath : filePath, 'utf8'),
+        loadFileContent: async (filePath) => fs.readFile(filePath, 'utf8'),
       });
     const handler = createStreamableHttpHandler({ createServer: createTestServer });
 

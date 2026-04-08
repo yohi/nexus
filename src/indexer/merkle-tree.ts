@@ -7,6 +7,8 @@ export interface RenameCandidate {
   oldPath: string;
   newPath: string;
   hash: string;
+  oldEvent: IndexEvent;
+  newEvent: IndexEvent;
 }
 
 export class MerkleTree {
@@ -26,7 +28,7 @@ export class MerkleTree {
     this.rootHash = await this.computeRootHash();
   }
 
-  async update(filePath: string, contentHash: string): Promise<void> {
+  async update(filePath: string, contentHash: string, skipPersist = false): Promise<void> {
     const directories = this.collectDirectories(filePath);
     const fileNode: MerkleNodeRow = {
       path: filePath,
@@ -41,13 +43,47 @@ export class MerkleTree {
     }
 
     this.rootHash = await this.computeRootHash();
+    if (!skipPersist) {
+      await this.persistCurrentState();
+    }
+  }
+
+  async remove(filePath: string, skipPersist = false): Promise<void> {
+    this.nodes.delete(filePath);
+    this.pruneEmptyDirectories(path.dirname(filePath));
+
+    this.rootHash = await this.computeRootHash();
     await this.persistCurrentState();
   }
 
-  async remove(filePath: string): Promise<void> {
-    this.nodes.delete(filePath);
+  async move(oldPath: string, newPath: string, contentHash: string): Promise<void> {
+    // 1. Remove old path in memory
+    this.nodes.delete(oldPath);
+    this.pruneEmptyDirectories(path.dirname(oldPath));
 
-    let current = path.dirname(filePath);
+    // 2. Add new path in memory
+    const directories = this.collectDirectories(newPath);
+    const fileNode: MerkleNodeRow = {
+      path: newPath,
+      hash: contentHash,
+      parentPath: path.dirname(newPath) === '.' ? null : path.dirname(newPath),
+      isDirectory: false,
+    };
+
+    this.nodes.set(newPath, fileNode);
+    for (const directory of directories) {
+      if (!this.nodes.has(directory.path)) {
+        this.nodes.set(directory.path, directory);
+      }
+    }
+
+    // 3. Recompute hash and persist once
+    this.rootHash = await this.computeRootHash();
+    await this.persistCurrentState();
+  }
+
+  private pruneEmptyDirectories(dirPath: string): void {
+    let current = dirPath;
     while (current !== '.' && current !== path.sep) {
       const parentNode = this.nodes.get(current);
       if (parentNode !== undefined && parentNode.isDirectory) {
@@ -68,14 +104,6 @@ export class MerkleTree {
       }
       current = path.dirname(current);
     }
-
-    this.rootHash = await this.computeRootHash();
-    await this.persistCurrentState();
-  }
-
-  async move(oldPath: string, newPath: string, contentHash: string): Promise<void> {
-    await this.remove(oldPath);
-    await this.update(newPath, contentHash);
   }
 
   getRootHash(): string | null {
@@ -144,6 +172,8 @@ export class MerkleTree {
             oldPath: removed.filePath,
             newPath: addedMatch.filePath,
             hash: addedMatch.contentHash!,
+            oldEvent: removed,
+            newEvent: addedMatch,
           });
         }
       }
