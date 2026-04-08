@@ -109,11 +109,16 @@ export const createStreamableHttpHandler = ({
           closed: false,
         };
 
+        const finalEntry = createdEntry;
+
         transport.onclose = () => {
-          createdEntry.closed = true;
-          const activeId = transport.sessionId;
-          if (activeId) {
-            sessions.delete(activeId);
+          if (!finalEntry.closed) {
+            finalEntry.closed = true;
+            const activeId = transport.sessionId;
+            if (activeId) {
+              sessions.delete(activeId);
+            }
+            void finalEntry.server.close();
           }
         };
 
@@ -127,6 +132,11 @@ export const createStreamableHttpHandler = ({
 
       await entry.transport.handleRequest(req, res, body);
 
+      // The sessions.set(activeSessionId, entry) after handleRequest is intentionally
+      // idempotent (safe if onsessioninitialized already inserted the session). It
+      // covers edge cases where the initialization callback may not run (e.g.,
+      // early-return paths or missed events). Relevant symbols: handleRequest,
+      // onsessioninitialized, activeSessionId, entry.closed, and sessions.set.
       const activeSessionId = entry.transport.sessionId;
       if (activeSessionId && !entry.closed) {
         sessions.set(activeSessionId, entry);
