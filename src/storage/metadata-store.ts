@@ -117,30 +117,20 @@ export class SqliteMetadataStore implements IMetadataStore {
 
   async bulkDeleteSubtrees(paths: string[]): Promise<number> {
     const statement = this.db.prepare("DELETE FROM merkle_nodes WHERE path = ? OR path LIKE ? ESCAPE '\\'");
-    let totalChanges = 0;
 
-    await executeBatchedWithYield({
-      items: paths,
-      batchSize: this.batchSize,
-      executeBatch: async (batch) => {
-        await this.asyncBoundary();
-        const transaction = this.db.transaction((rows: string[]) => {
-          let batchChanges = 0;
-          for (const targetPath of rows) {
-            const escapedPrefix = targetPath.replace(/%/g, '\\%').replace(/_/g, '\\_');
-            const prefix = `${escapedPrefix}/%`;
-            const result = statement.run(targetPath, prefix);
-            batchChanges += result.changes;
-          }
-          return batchChanges;
-        });
-
-        totalChanges += transaction(batch);
-      },
-      yieldAfterBatch: this.asyncBoundary,
+    await this.asyncBoundary();
+    const transaction = this.db.transaction((allPaths: string[]) => {
+      let totalChanges = 0;
+      for (const targetPath of allPaths) {
+        const escapedPrefix = targetPath.replace(/%/g, '\\%').replace(/_/g, '\\_');
+        const prefix = `${escapedPrefix}/%`;
+        const result = statement.run(targetPath, prefix);
+        totalChanges += result.changes;
+      }
+      return totalChanges;
     });
 
-    return totalChanges;
+    return transaction(paths);
   }
 
   async deleteSubtree(pathPrefix: string): Promise<number> {
@@ -157,12 +147,13 @@ export class SqliteMetadataStore implements IMetadataStore {
 
   async pruneEmptyParents(path: string): Promise<void> {
     let currentPath = dirname(path);
+    const stmt = this.db.prepare('DELETE FROM merkle_nodes WHERE path = ?');
 
     while (currentPath !== '.' && currentPath !== '/' && currentPath !== '') {
       await this.asyncBoundary();
       const hasChildren = await this.hasChildren(currentPath);
       if (!hasChildren) {
-        this.db.prepare('DELETE FROM merkle_nodes WHERE path = ?').run(currentPath);
+        stmt.run(currentPath);
         currentPath = dirname(currentPath);
       } else {
         break;
@@ -172,21 +163,28 @@ export class SqliteMetadataStore implements IMetadataStore {
 
   async renamePath(oldPath: string, newPath: string, hash: string): Promise<void> {
     await this.asyncBoundary();
-    this.db
-      .prepare(
-        `INSERT INTO merkle_nodes (path, hash, parent_path, is_directory)
-         VALUES (@path, @hash, @parentPath, 0)
-         ON CONFLICT(path) DO UPDATE SET
-           hash = excluded.hash,
-           parent_path = excluded.parent_path,
-           is_directory = excluded.is_directory`,
-      )
-      .run({
-        path: newPath,
-        hash,
-        parentPath: newPath.includes('/') ? newPath.split('/').slice(0, -1).join('/') : null,
-      });
-    this.db.prepare('DELETE FROM merkle_nodes WHERE path = ?').run(oldPath);
+    const parentPath = dirname(newPath);
+    const normalizedParentPath = (parentPath === '.' || parentPath === '/' || parentPath === '') ? null : parentPath;
+
+    const transaction = this.db.transaction(() => {
+      this.db
+        .prepare(
+          `INSERT INTO merkle_nodes (path, hash, parent_path, is_directory)
+           VALUES (@path, @hash, @parentPath, 0)
+           ON CONFLICT(path) DO UPDATE SET
+             hash = excluded.hash,
+             parent_path = excluded.parent_path,
+             is_directory = excluded.is_directory`,
+        )
+        .run({
+          path: newPath,
+          hash,
+          parentPath: normalizedParentPath,
+        });
+      this.db.prepare('DELETE FROM merkle_nodes WHERE path = ?').run(oldPath);
+    });
+
+    transaction();
   }
 
 

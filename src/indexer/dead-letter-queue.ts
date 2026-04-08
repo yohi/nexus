@@ -166,7 +166,12 @@ export class DeadLetterQueue {
   async removeByPathPrefix(prefix: string): Promise<void> {
     await this.ensureLoaded();
     const idsToRemove = [...this.entries.values()]
-      .filter((entry) => entry.filePath === prefix || entry.filePath.startsWith(prefix.endsWith('/') ? prefix : prefix + '/'))
+      .filter((entry) => {
+        const matchesPrefix =
+          entry.filePath === prefix ||
+          entry.filePath.startsWith(prefix.endsWith('/') ? prefix : prefix + '/');
+        return matchesPrefix;
+      })
       .map((entry) => entry.id);
     await this.removeEntries(idsToRemove);
   }

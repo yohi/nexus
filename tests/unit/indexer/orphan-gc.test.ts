@@ -32,6 +32,7 @@ describe('gcOrphanNodes', () => {
 
   it('runs against an empty store with no removals', async () => {
     const metadataStore = new InMemoryMetadataStore();
+    await metadataStore.initialize();
     const vectorStore = new InMemoryVectorStore({ dimensions: 3 });
     const removed = await gcOrphanNodes(metadataStore, vectorStore, async () => false);
     expect(removed).toBe(0);
@@ -40,6 +41,7 @@ describe('gcOrphanNodes', () => {
 
   it('preserves all nodes if pathExists always returns true', async () => {
     const metadataStore = new InMemoryMetadataStore();
+    await metadataStore.initialize();
     const vectorStore = new InMemoryVectorStore({ dimensions: 3 });
     await metadataStore.bulkUpsertMerkleNodes([
       { path: 'src/a.ts', hash: 'h1', parentPath: 'src', isDirectory: false },
@@ -51,6 +53,7 @@ describe('gcOrphanNodes', () => {
 
   it('removes multiple file nodes and their empty parent directories', async () => {
     const metadataStore = new InMemoryMetadataStore();
+    await metadataStore.initialize();
     const vectorStore = new InMemoryVectorStore({ dimensions: 3 });
     await metadataStore.bulkUpsertMerkleNodes([
       { path: 'src', hash: '', parentPath: null, isDirectory: true },
