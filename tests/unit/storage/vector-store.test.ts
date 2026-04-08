@@ -147,7 +147,7 @@ describe('LanceVectorStore', () => {
       fragmentationRatio: 0,
       lastCompactedAt: undefined,
     });
-    expect(typeof (store as any).compactAfterReindex).toBe('function');
+    expect(typeof (store as IVectorStore).compactAfterReindex).toBe('function');
   });
 
   it('performs core vector store operations: upsert, search, delete, and compact', async () => {

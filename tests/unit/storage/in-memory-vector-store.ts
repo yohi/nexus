@@ -227,20 +227,51 @@ export class InMemoryVectorStore implements IVectorStore {
   async compactAfterReindex(config?: Partial<CompactionConfig>): Promise<CompactionResult> {
     return this.compactIfNeeded(config);
   }
+
   scheduleIdleCompaction(
     runCompaction: () => Promise<void>,
     delayMs = 0,
     mutex?: CompactionMutex,
+    abortSignal?: AbortSignal,
+    mutexTimeoutMs = 30000,
   ): NodeJS.Timeout {
     return setTimeout(() => {
+      if (abortSignal?.aborted) {
+        return;
+      }
+
       Promise.resolve()
         .then(async () => {
           if (mutex) {
-            await mutex.waitForUnlock();
+            let timeoutId: NodeJS.Timeout | undefined;
+            const timeoutPromise = new Promise<never>((_, reject) => {
+              timeoutId = setTimeout(() => {
+                reject(new Error(`Compaction mutex acquisition timed out after ${mutexTimeoutMs}ms`));
+              }, mutexTimeoutMs);
+            });
+
+            try {
+              await Promise.race([
+                mutex.waitForUnlock(abortSignal),
+                timeoutPromise,
+              ]);
+            } finally {
+              if (timeoutId) {
+                clearTimeout(timeoutId);
+              }
+            }
           }
         })
-        .then(() => runCompaction())
+        .then(() => {
+          if (abortSignal?.aborted) {
+            return;
+          }
+          return runCompaction();
+        })
         .catch((error) => {
+          if (error.name === 'AbortError' || abortSignal?.aborted) {
+            return;
+          }
           console.error('Compaction failed:', error);
         });
     }, delayMs);

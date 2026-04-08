@@ -92,4 +92,75 @@ describe('LanceVectorStore compaction integration', () => {
 
     expect(order).toEqual(['compaction-start']);
   });
+
+  it('cancels idle compaction using AbortSignal after the timer fires', async () => {
+    const store = new LanceVectorStore({ dimensions: 3 });
+    await store.initialize();
+    const order: string[] = [];
+    const controller = new AbortController();
+    let unlock: (() => void) | undefined;
+    const mutex: CompactionMutex = {
+      waitForUnlock: vi.fn(
+        (signal?: AbortSignal) =>
+          new Promise<void>((resolve, reject) => {
+            unlock = resolve;
+            signal?.addEventListener('abort', () => {
+              reject(new Error('AbortError'));
+            });
+          }),
+      ),
+    };
+
+    store.scheduleIdleCompaction(
+      async () => {
+        order.push('compaction-start');
+      },
+      10,
+      mutex,
+      controller.signal,
+    );
+
+    await vi.advanceTimersByTimeAsync(10);
+    expect(mutex.waitForUnlock).toHaveBeenCalledOnce();
+
+    // Cancel while waiting for mutex
+    controller.abort();
+    
+    // Even if we unlock now, compaction should not start
+    unlock?.();
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(order).toEqual([]);
+  });
+
+  it('fails with a timeout error if the mutex is not acquired in time', async () => {
+    const store = new LanceVectorStore({ dimensions: 3 });
+    await store.initialize();
+    const consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    
+    const mutex: CompactionMutex = {
+      waitForUnlock: vi.fn(() => new Promise<void>(() => {})), // Never resolves
+    };
+
+    store.scheduleIdleCompaction(
+      async () => {},
+      10,
+      mutex,
+      undefined,
+      50, // 50ms timeout
+    );
+
+    await vi.advanceTimersByTimeAsync(10); // Wait for delayMs
+    await vi.advanceTimersByTimeAsync(50); // Wait for mutexTimeoutMs
+    await vi.advanceTimersByTimeAsync(0);  // Allow catch block to run
+
+    expect(consoleErrorSpy).toHaveBeenCalledWith(
+      'Compaction failed:',
+      expect.objectContaining({
+        message: expect.stringContaining('Compaction mutex acquisition timed out after 50ms'),
+      }),
+    );
+
+    consoleErrorSpy.mockRestore();
+  });
 });

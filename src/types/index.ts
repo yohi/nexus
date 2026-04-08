@@ -106,7 +106,7 @@ export interface CompactionConfig {
 }
 
 export interface CompactionMutex {
-  waitForUnlock(): Promise<void>;
+  waitForUnlock(abortSignal?: AbortSignal): Promise<void>;
 }
 
 export interface IVectorStore {
@@ -122,6 +122,8 @@ export interface IVectorStore {
     runCompaction: () => Promise<void>,
     delayMs?: number,
     mutex?: CompactionMutex,
+    abortSignal?: AbortSignal,
+    mutexTimeoutMs?: number,
   ): NodeJS.Timeout;
   getStats(): Promise<VectorStoreStats>;
 }
