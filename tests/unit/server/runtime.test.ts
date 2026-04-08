@@ -46,6 +46,8 @@ const makeServerOptions = (): Omit<NexusRuntimeOptions, 'watcher'> => ({
       chunksIndexed: 0,
     }),
     getSkippedFiles: () => new Map(),
+    start: () => undefined,
+    stop: async () => {},
   } as any,
   pluginRegistry: {
     healthCheck: async () => ({ languages: ['typescript'], embeddingProvider: 'test', healthy: true }),

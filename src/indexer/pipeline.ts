@@ -35,7 +35,7 @@ type ContentLoader = (filePath: string) => Promise<string>;
 
 export interface IIndexPipeline {
   start(): void;
-  stop(): void;
+  stop(): Promise<void>;
   reindex(
     run: (options?: { fullScan?: boolean; reason?: 'manual' }) => Promise<IndexEvent[]>,
     loadContent: ContentLoader,
@@ -54,7 +54,7 @@ export class IndexPipeline implements IIndexPipeline {
 
   private readonly deadLetterQueue: DeadLetterQueue;
 
-  private dlqStopper: (() => void) | undefined;
+  private dlqStopper: (() => Promise<void>) | undefined;
 
   private isTreeLoaded = false;
 
@@ -74,9 +74,9 @@ export class IndexPipeline implements IIndexPipeline {
     }
   }
 
-  stop(): void {
+  async stop(): Promise<void> {
     if (this.dlqStopper !== undefined) {
-      this.dlqStopper();
+      await this.dlqStopper();
       this.dlqStopper = undefined;
     }
   }
