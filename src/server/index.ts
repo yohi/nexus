@@ -5,7 +5,15 @@ import type { IIndexPipeline } from '../indexer/pipeline.js';
 import type { PluginRegistry } from '../plugins/registry.js';
 import type { SearchOrchestrator } from '../search/orchestrator.js';
 import type { ISemanticSearch } from '../search/semantic.js';
-import type { IMetadataStore, IVectorStore, IGrepEngine, IndexEvent, IFileWatcher, ReindexOptions } from '../types/index.js';
+import type {
+  IMetadataStore,
+  IVectorStore,
+  IGrepEngine,
+  IndexEvent,
+  IFileWatcher,
+  ReindexOptions,
+} from '../types/index.js';
+import { PathTraversalError, RetryExhaustedError } from '../types/index.js';
 import type { PathSanitizer } from './path-sanitizer.js';
 import { executeGetContext } from './tools/get-context.js';
 import { executeGrepSearch } from './tools/grep-search.js';
@@ -156,7 +164,6 @@ export const createNexusServer = (options: NexusServerOptions): McpServer => {
           await executeIndexStatus(
             options.metadataStore,
             options.vectorStore,
-            options.pipeline,
             options.pluginRegistry,
           ),
         );
@@ -222,7 +229,15 @@ export const initializeNexusRuntime = async (options: NexusRuntimeOptions): Prom
 };
 
 export const errorResult = (error: unknown) => {
-  const errorMessage = error instanceof Error ? error.message : String(error);
+  const isSafeError = error instanceof PathTraversalError || error instanceof RetryExhaustedError;
+  const errorMessage = isSafeError
+    ? (error as Error).message
+    : 'Internal server error';
+
+  if (!isSafeError) {
+    console.error('Internal server error occurred:', error);
+  }
+
   return {
     content: [
       {

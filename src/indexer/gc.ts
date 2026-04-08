@@ -1,7 +1,8 @@
-import type { IMetadataStore } from '../types/index.js';
+import type { IMetadataStore, IVectorStore } from '../types/index.js';
 
 export const gcOrphanNodes = async (
   metadataStore: IMetadataStore,
+  vectorStore: IVectorStore,
   pathExists: (targetPath: string) => Promise<boolean>,
 ): Promise<number> => {
   const fileNodes = await metadataStore.getAllFileNodes();
@@ -17,6 +18,9 @@ export const gcOrphanNodes = async (
     return 0;
   }
 
+  // Delete from vector store first, then metadata
+  await Promise.all(orphanPaths.map((path) => vectorStore.deleteByFilePath(path)));
   await metadataStore.bulkDeleteMerkleNodes(orphanPaths);
+
   return orphanPaths.length;
 };
