@@ -136,7 +136,7 @@ describe('DeadLetterQueue', () => {
     await expect(metadataStore.getDeadLetterEntries()).resolves.toEqual([]);
   });
 
-  it('returns the same stopper when recovery loop is started twice', () => {
+  it('returns the same stopper when recovery loop is started twice', async () => {
     vi.useFakeTimers();
     const metadataStore = new InMemoryMetadataStore();
     const queue = new DeadLetterQueue({
@@ -147,7 +147,7 @@ describe('DeadLetterQueue', () => {
     const stopSecond = queue.startRecoveryLoop(60_000);
 
     expect(stopSecond).toBe(stopFirst);
-    stopFirst();
+    await stopFirst();
   });
 
   it('updates existing entries with the same filePath instead of creating new ones', async () => {
@@ -213,7 +213,7 @@ describe('DeadLetterQueue', () => {
     expect(res2.retried).toBe(1); // 2つ目は1つ目と同じ結果を待って返すはず
   });
 
-  it('warns when starting recovery loop while already running', () => {
+  it('warns when starting recovery loop while already running', async () => {
     vi.useFakeTimers();
     const logger = { warn: vi.fn(), error: vi.fn() };
     const queue = new DeadLetterQueue({
@@ -225,6 +225,6 @@ describe('DeadLetterQueue', () => {
     queue.startRecoveryLoop();
 
     expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining('already running'));
-    stop1();
+    await stop1();
   });
 });
