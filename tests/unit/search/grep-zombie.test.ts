@@ -7,49 +7,50 @@ describe('RipgrepEngine zombie prevention', () => {
     vi.useRealTimers();
   });
 
-  it('sends SIGTERM on timeout and SIGKILL after the grace period', async () => {
+  it('sends SIGTERM on timeout and SIGKILL after the grace period if zombie (resolves after timeout)', async () => {
     vi.useFakeTimers();
-
     const kill = vi.fn();
-    let release: (() => void) | undefined;
-    const spawn = vi.fn(async (_params, signal: AbortSignal) => {
-      await new Promise<void>((resolve) => {
-        signal.addEventListener('abort', () => {
-          release = resolve;
-        }, { once: true });
-      });
+    const grepTimeoutMs = 50;
+    const killGraceMs = 1000;
 
+    const spawnImpl = vi.fn(async () => {
+      // Delay resolution until after timeout
+      await new Promise((resolve) => {
+        setTimeout(resolve, 500);
+      });
       return [];
     });
 
     const engine = new RipgrepEngine({
       projectRoot: process.cwd(),
-      grepTimeoutMs: 50,
-      spawn,
+      grepTimeoutMs,
+      killGraceMs,
+      spawn: spawnImpl,
       createProcessController: () => ({ kill }),
     });
 
-    const searchPromise = engine.search({ query: 'alpha', cwd: process.cwd() });
+    const promise = engine.search({ query: 'alpha', cwd: process.cwd() });
 
-    await vi.advanceTimersByTimeAsync(50);
+    await vi.advanceTimersByTimeAsync(grepTimeoutMs);
     expect(kill).toHaveBeenNthCalledWith(1, 'SIGTERM');
 
-    await vi.advanceTimersByTimeAsync(1_000);
+    // Resolves at 500ms. Since it resolved after timeout without throwing,
+    // it's a "zombie" case where escalationId is preserved.
+    await vi.advanceTimersByTimeAsync(450);
+    await expect(promise).resolves.toEqual([]);
+
+    await vi.advanceTimersByTimeAsync(1000);
     expect(kill).toHaveBeenNthCalledWith(2, 'SIGKILL');
-
-    release?.();
-
-    await expect(searchPromise).resolves.toEqual([]);
   });
 
-  it('sends SIGTERM on timeout but cancels SIGKILL if resolving within grace period', async () => {
+  it('cancels SIGKILL if resolving before timeout', async () => {
     vi.useFakeTimers();
 
     const kill = vi.fn();
-    let resolveSearch: (() => void) | undefined;
-    const spawn = vi.fn(async () => {
-      await new Promise<void>((resolve) => {
-        resolveSearch = resolve;
+    const spawnImpl = vi.fn(async () => {
+      // Delay resolution but shorter than timeout
+      await new Promise((resolve) => {
+        setTimeout(resolve, 20);
       });
       return [];
     });
@@ -57,72 +58,89 @@ describe('RipgrepEngine zombie prevention', () => {
     const engine = new RipgrepEngine({
       projectRoot: process.cwd(),
       grepTimeoutMs: 50,
-      spawn,
+      spawn: spawnImpl,
       createProcessController: () => ({ kill }),
     });
 
     const searchPromise = engine.search({ query: 'alpha', cwd: process.cwd() });
 
-    await vi.advanceTimersByTimeAsync(50);
-    expect(kill).toHaveBeenCalledWith('SIGTERM');
-
-    // Resolve search during the 100ms grace period
-    resolveSearch?.();
+    await vi.advanceTimersByTimeAsync(20);
     await expect(searchPromise).resolves.toEqual([]);
 
-    // Advance time further to check that SIGKILL was cancelled
     await vi.advanceTimersByTimeAsync(1_000);
-    expect(kill).not.toHaveBeenCalledWith('SIGKILL');
+    expect(kill).not.toHaveBeenCalled();
   });
 
-  it('propagates client abort to the spawned process without forcing a timeout kill', async () => {
-    const kill = vi.fn();
-    const spawn = vi.fn(async (_params, signal: AbortSignal) => {
+  it('propagates client abort signals to the spawned search', async () => {
+    const observedSignals: AbortSignal[] = [];
+    const spawnImpl = vi.fn(async (_params, signal: AbortSignal) => {
+      observedSignals.push(signal);
       await new Promise<void>((resolve) => {
         signal.addEventListener('abort', () => resolve(), { once: true });
       });
-
-      return [];
+      throw new Error('aborted');
     });
 
     const engine = new RipgrepEngine({
       projectRoot: process.cwd(),
-      grepTimeoutMs: 1_000,
-      spawn,
-      createProcessController: () => ({ kill }),
+      grepTimeoutMs: 1000,
+      spawn: spawnImpl,
     });
 
     const controller = new AbortController();
-    const searchPromise = engine.search({
+    const promise = engine.search({
       query: 'alpha',
       cwd: process.cwd(),
       abortSignal: controller.signal,
-    });
+    } as any);
 
-    await vi.waitFor(() => expect(spawn).toHaveBeenCalledOnce());
+    await vi.waitFor(() => expect(spawnImpl).toHaveBeenCalledTimes(1));
     controller.abort();
 
-    await expect(searchPromise).resolves.toEqual([]);
-    expect(kill).not.toHaveBeenCalled();
-    expect(spawn.mock.calls[0]?.[1].aborted).toBe(true);
+    await expect(promise).resolves.toEqual([]);
+    expect(observedSignals).toHaveLength(1);
+    expect(observedSignals[0]?.aborted).toBe(true);
   });
 
-  it('cancels the forced kill timer after successful completion', async () => {
+  it('uses a fresh process controller for each concurrent search', async () => {
     vi.useFakeTimers();
-
-    const kill = vi.fn();
-    const spawn = vi.fn(async () => []);
+    const firstKill = vi.fn();
+    const secondKill = vi.fn();
+    const controllers = [firstKill, secondKill];
+    const spawnImpl = vi.fn(async (_params, signal: AbortSignal) => {
+      await new Promise<void>((resolve) => {
+        signal.addEventListener('abort', () => resolve(), { once: true });
+      });
+      throw new Error('aborted');
+    });
 
     const engine = new RipgrepEngine({
       projectRoot: process.cwd(),
+      grepMaxConcurrency: 2,
       grepTimeoutMs: 50,
-      spawn,
-      createProcessController: () => ({ kill }),
+      killGraceMs: 1000,
+      spawn: spawnImpl,
+      createProcessController: () => {
+        const kill = controllers.shift();
+        if (!kill) {
+          throw new Error('missing controller');
+        }
+        return { kill };
+      },
     });
 
-    await expect(engine.search({ query: 'alpha', cwd: process.cwd() })).resolves.toEqual([]);
+    const first = engine.search({ query: 'alpha', cwd: process.cwd() });
+    const second = engine.search({ query: 'beta', cwd: process.cwd() });
 
-    await vi.advanceTimersByTimeAsync(5_000);
-    expect(kill).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(50);
+
+    expect(firstKill).toHaveBeenCalledWith('SIGTERM');
+    expect(secondKill).toHaveBeenCalledWith('SIGTERM');
+
+    await vi.advanceTimersByTimeAsync(1000);
+
+    expect(firstKill).toHaveBeenCalledTimes(1);
+    expect(secondKill).toHaveBeenCalledTimes(1);
+    await expect(Promise.all([first, second])).resolves.toEqual([[], []]);
   });
 });

@@ -80,6 +80,9 @@ export class FileWatcher {
         filePath,
         detectedAt,
       });
+      void this.options.onFullScanRequired?.().catch((err) => {
+        console.error('onFullScanRequired failed:', err);
+      });
     }
   }
 

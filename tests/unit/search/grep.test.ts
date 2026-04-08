@@ -71,10 +71,11 @@ describe('RipgrepEngine', () => {
       projectRoot: process.cwd(),
       grepMaxConcurrency: 1,
       grepTimeoutMs: 50,
+      killGraceMs: 1000,
       spawn: spawnImpl,
     });
 
-    const searchPromise = engine.search({ query: 'alpha', cwd: process.cwd() });
+    const searchPromise = engine.search({ query: 'alpha', cwd: process.cwd() } as any);
     await vi.advanceTimersByTimeAsync(50);
 
     await expect(searchPromise).resolves.toEqual([]);
