@@ -1,4 +1,11 @@
-import type { DeadLetterEntry, IMetadataStore, IndexStatsRow, MerkleNodeRow } from '../../../src/types/index.js';
+import { dirname } from 'node:path';
+
+import type {
+  DeadLetterEntry,
+  IMetadataStore,
+  IndexStatsRow,
+  MerkleNodeRow,
+} from '../../../src/types/index.js';
 
 export class InMemoryMetadataStore implements IMetadataStore {
   private readonly nodes = new Map<string, MerkleNodeRow>();
@@ -23,6 +30,14 @@ export class InMemoryMetadataStore implements IMetadataStore {
     }
   }
 
+  async bulkDeleteSubtrees(paths: string[]): Promise<number> {
+    let totalDeleted = 0;
+    for (const pathPrefix of paths) {
+      totalDeleted += await this.deleteSubtree(pathPrefix);
+    }
+    return totalDeleted;
+  }
+
   async deleteSubtree(pathPrefix: string): Promise<number> {
     const normalizedPrefix = `${pathPrefix}/`;
     let deleted = 0;
@@ -37,18 +52,55 @@ export class InMemoryMetadataStore implements IMetadataStore {
     return deleted;
   }
 
+
+  async pruneEmptyParents(
+    path: string,
+    pathExists: (targetPath: string) => Promise<boolean>,
+  ): Promise<void> {
+    let currentPath = dirname(path);
+
+    while (currentPath !== '.' && currentPath !== '/' && currentPath !== '') {
+      const hasChildren = await this.hasChildren(currentPath);
+      if (!hasChildren) {
+        if (await pathExists(currentPath)) {
+          break;
+        }
+        this.nodes.delete(currentPath);
+        currentPath = dirname(currentPath);
+      } else {
+        break;
+      }
+    }
+  }
+
   async renamePath(oldPath: string, newPath: string, hash: string): Promise<void> {
+    const oldNode = this.nodes.get(oldPath);
+    const isDirectory = oldNode?.isDirectory ?? false;
+
+    const parentPath = dirname(newPath);
+    const normalizedParentPath = (parentPath === '.' || parentPath === '/' || parentPath === '') ? null : parentPath;
+
     this.nodes.delete(oldPath);
     this.nodes.set(newPath, {
       path: newPath,
       hash,
-      parentPath: newPath.includes('/') ? newPath.split('/').slice(0, -1).join('/') : null,
-      isDirectory: false,
+      parentPath: normalizedParentPath,
+      isDirectory,
     });
   }
 
+
   async getMerkleNode(path: string): Promise<MerkleNodeRow | null> {
     return this.nodes.get(path) ?? null;
+  }
+
+  async hasChildren(path: string): Promise<boolean> {
+    for (const node of this.nodes.values()) {
+      if (node.parentPath === path) {
+        return true;
+      }
+    }
+    return false;
   }
 
   async getAllNodes(): Promise<MerkleNodeRow[]> {

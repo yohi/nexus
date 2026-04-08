@@ -5,7 +5,7 @@ import type { DeadLetterEntry, IMetadataStore } from '../types/index.js';
 
 export interface RecoverySweepResult {
   retried: number;
-  removed: number;
+  purged: number;
   skipped: number;
 }
 
@@ -39,15 +39,21 @@ export class DeadLetterQueue {
 
   private loaded = false;
 
+  private recoveryRunning = false;
+
+  private currentSweep: Promise<RecoverySweepResult> | undefined;
+
   private recoveryInterval: ReturnType<typeof setInterval> | undefined;
+
+  private recoveryStopper: (() => Promise<void>) | undefined;
 
   constructor(private readonly options: DeadLetterQueueOptions) {
     this.maxEntries = options.maxEntries ?? 1000;
     this.ttlMs = options.ttlMs ?? 24 * 60 * 60 * 1000;
     this.now = options.now ?? (() => new Date());
-    this.embeddingHealthy = options.embeddingHealthy ?? (async () => true);
+    this.embeddingHealthy = options.embeddingHealthy ?? (() => Promise.resolve(true));
     this.computeFileHash = options.computeFileHash ?? computeFileHashStreaming;
-    this.reprocess = options.reprocess ?? (async () => undefined);
+    this.reprocess = options.reprocess ?? (() => Promise.resolve(undefined));
     this.logger = options.logger ?? console;
   }
 
@@ -62,16 +68,20 @@ export class DeadLetterQueue {
   }
 
   async enqueue(input: Pick<DeadLetterEntry, 'filePath' | 'contentHash' | 'errorMessage' | 'attempts'>): Promise<DeadLetterEntry> {
+    await this.ensureLoaded();
     const timestamp = this.now().toISOString();
+
+    const existingEntry = [...this.entries.values()].find((e) => e.filePath === input.filePath);
+
     const entry: DeadLetterEntry = {
-      id: randomUUID(),
+      id: existingEntry?.id ?? randomUUID(),
       filePath: input.filePath,
       contentHash: input.contentHash,
       errorMessage: input.errorMessage,
       attempts: input.attempts,
-      createdAt: timestamp,
+      createdAt: existingEntry?.createdAt ?? timestamp,
       updatedAt: timestamp,
-      lastRetryAt: null,
+      lastRetryAt: existingEntry?.lastRetryAt ?? null,
     };
 
     await this.options.metadataStore.upsertDeadLetterEntries([entry]);
@@ -80,6 +90,12 @@ export class DeadLetterQueue {
     return entry;
   }
 
+  /**
+   * Returns an in-memory snapshot of current entries mapped filePath → errorMessage.
+   * NOTE: only reflects entries loaded into memory. Call `load()` (or trigger
+   * `purgeExpired()` / `recoverySweep()`) before calling this if you need a
+   * view that includes all persisted entries.
+   */
   snapshot(): ReadonlyMap<string, string> {
     return new Map(
       [...this.entries.values()]
@@ -108,62 +124,106 @@ export class DeadLetterQueue {
   }
 
   async recoverySweep(): Promise<RecoverySweepResult> {
-    await this.ensureLoaded();
-    if (!(await this.embeddingHealthy())) {
-      return { retried: 0, removed: 0, skipped: this.entries.size };
+    if (this.recoveryRunning) {
+      return this.currentSweep ?? { retried: 0, purged: 0, skipped: 0 };
     }
 
-    let retried = 0;
-    let removed = 0;
-    let skipped = 0;
-
-    for (const entry of [...this.entries.values()]) {
+    this.recoveryRunning = true;
+    this.currentSweep = (async () => {
       try {
-        const currentHash = await this.computeFileHash(entry.filePath);
-        if (currentHash !== entry.contentHash) {
-          this.logger.warn(`Dropping stale DLQ entry for ${entry.filePath}: hash mismatch`);
-          await this.removeEntries([entry.id]);
-          removed += 1;
-          continue;
+        await this.ensureLoaded();
+        if (!(await this.embeddingHealthy())) {
+          return { retried: 0, purged: 0, skipped: this.entries.size };
         }
 
-        await this.reprocess(entry);
-        await this.removeEntries([entry.id]);
-        retried += 1;
-        removed += 1;
-      } catch (error) {
-        const err = error as NodeJS.ErrnoException;
-        if (err?.code === 'ENOENT') {
-          await this.removeEntries([entry.id]);
-          removed += 1;
-          continue;
+        let retried = 0;
+        let purged = 0;
+        let skipped = 0;
+
+        for (const entry of [...this.entries.values()]) {
+          try {
+            const currentHash = await this.computeFileHash(entry.filePath);
+            if (currentHash !== entry.contentHash) {
+              this.logger.warn(`Dropping stale DLQ entry for ${entry.filePath}: hash mismatch`);
+              await this.removeEntries([entry.id]);
+              purged += 1;
+              continue;
+            }
+
+            await this.reprocess(entry);
+            await this.removeEntries([entry.id]);
+            retried += 1;
+          } catch (error) {
+            const err = error as NodeJS.ErrnoException;
+            if (err.code === 'ENOENT') {
+              await this.removeEntries([entry.id]);
+              purged += 1;
+              continue;
+            }
+
+            skipped += 1;
+            this.logger.error(`Failed to recover DLQ entry for ${entry.filePath}`, error);
+          }
         }
 
-        skipped += 1;
-        this.logger.error(`Failed to recover DLQ entry for ${entry.filePath}`, error);
+        return { retried, purged, skipped };
+      } finally {
+        this.recoveryRunning = false;
+        this.currentSweep = undefined;
       }
-    }
+    })();
 
-    return { retried, removed, skipped };
+    return this.currentSweep;
   }
 
-  startRecoveryLoop(intervalMs = 60_000): () => void {
-    if (this.recoveryInterval !== undefined) {
-      return () => undefined;
+  startRecoveryLoop(intervalMs = 60_000): () => Promise<void> {
+    if (this.recoveryStopper !== undefined) {
+      this.logger.warn('DLQ recovery loop is already running. Ignoring duplicate start.');
+      return this.recoveryStopper;
     }
 
-    this.recoveryInterval = setInterval(() => {
+    const intervalId = setInterval(() => {
       void this.recoverySweep().catch((error) => {
         this.logger.error('DLQ recovery sweep failed', error);
       });
     }, intervalMs);
 
-    return () => {
-      if (this.recoveryInterval !== undefined) {
-        clearInterval(this.recoveryInterval);
+    this.recoveryInterval = intervalId;
+
+    const stopper = async () => {
+      clearInterval(intervalId);
+      if (this.currentSweep) {
+        await this.currentSweep;
+      }
+      if (this.recoveryInterval === intervalId) {
         this.recoveryInterval = undefined;
+        this.recoveryStopper = undefined;
       }
     };
+
+    this.recoveryStopper = stopper;
+    return stopper;
+  }
+
+  async removeByFilePath(filePath: string): Promise<void> {
+    await this.ensureLoaded();
+    const idsToRemove = [...this.entries.values()]
+      .filter((entry) => entry.filePath === filePath)
+      .map((entry) => entry.id);
+    await this.removeEntries(idsToRemove);
+  }
+
+  async removeByPathPrefix(prefix: string): Promise<void> {
+    await this.ensureLoaded();
+    const idsToRemove = [...this.entries.values()]
+      .filter((entry) => {
+        const matchesPrefix =
+          entry.filePath === prefix ||
+          entry.filePath.startsWith(prefix.endsWith('/') ? prefix : prefix + '/');
+        return matchesPrefix;
+      })
+      .map((entry) => entry.id);
+    await this.removeEntries(idsToRemove);
   }
 
   private async removeEntries(ids: string[]): Promise<void> {
@@ -184,19 +244,20 @@ export class DeadLetterQueue {
   }
 
   private async trimToCapacity(): Promise<void> {
-    const removedIds: string[] = [];
-
-    while (this.entries.size > this.maxEntries) {
-      const oldestId = this.entries.keys().next().value as string | undefined;
-      if (oldestId === undefined) {
-        break;
-      }
-      this.entries.delete(oldestId);
-      removedIds.push(oldestId);
+    if (this.entries.size <= this.maxEntries) {
+      return;
     }
 
-    if (removedIds.length > 0) {
-      await this.options.metadataStore.removeDeadLetterEntries(removedIds);
+    const sortedEntries = [...this.entries.values()]
+      .sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+
+    const toRemove = sortedEntries.slice(0, this.entries.size - this.maxEntries);
+    const removedIds = toRemove.map((e) => e.id);
+
+    for (const id of removedIds) {
+      this.entries.delete(id);
     }
+
+    await this.options.metadataStore.removeDeadLetterEntries(removedIds);
   }
 }

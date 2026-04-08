@@ -10,9 +10,19 @@ interface RipgrepEngineOptions {
   grepTimeoutMs?: number;
   killGraceMs?: number;
   spawn?: (params: GrepParams, signal: AbortSignal) => Promise<GrepMatch[]>;
+  /**
+   * Factory function to create a new process controller for each search.
+   * Preferred for concurrent execution.
+   */
   createProcessController?: () => {
     kill(signal: 'SIGTERM' | 'SIGKILL'): void;
   };
+
+  /**
+   * A single process controller instance.
+   * @deprecated Use createProcessController for concurrent-safe execution.
+   * WARNING: Using this directly is UNSAFE for concurrent searches as it will be shared.
+   */
   processController?: {
     kill(signal: 'SIGTERM' | 'SIGKILL'): void;
   };
@@ -32,20 +42,34 @@ export class RipgrepEngine implements IGrepEngine {
 
   private readonly spawnImpl: (params: GrepParams, signal: AbortSignal) => Promise<GrepMatch[]>;
 
+  /**
+   * Factory function to create a new process controller for each search.
+   */
   private readonly createProcessController?: () => {
     kill(signal: 'SIGTERM' | 'SIGKILL'): void;
   };
 
+  /**
+   * Shared process controller instance.
+   * @deprecated Use createProcessController for concurrent-safe execution.
+   */
   private readonly processController?: {
     kill(signal: 'SIGTERM' | 'SIGKILL'): void;
   };
 
   constructor(private readonly options: RipgrepEngineOptions) {
-    this.limit = pLimit(options.grepMaxConcurrency ?? DEFAULT_MAX_CONCURRENCY);
+    const concurrency = options.grepMaxConcurrency ?? DEFAULT_MAX_CONCURRENCY;
+    this.limit = pLimit(concurrency);
     this.timeoutMs = options.grepTimeoutMs ?? DEFAULT_TIMEOUT_MS;
     this.killGraceMs = options.killGraceMs ?? DEFAULT_KILL_GRACE_MS;
     this.createProcessController = options.createProcessController;
     this.processController = options.processController;
+
+    if (options.processController && concurrency > 1) {
+      throw new Error(
+        'Concurrent searches (grepMaxConcurrency > 1) cannot share a single processController. Provide createProcessController instead.',
+      );
+    }
 
     if (!options.spawn) {
       throw new Error('RipgrepEngine requires a spawn function to be provided in options.');
@@ -67,13 +91,21 @@ export class RipgrepEngine implements IGrepEngine {
       timedOut = true;
       processController?.kill('SIGTERM');
       timeoutController.abort();
-      escalationId = setTimeout(() => {
-        processController?.kill('SIGKILL');
-      }, this.killGraceMs);
+
+      if (processController) {
+        escalationId = setTimeout(() => {
+          processController.kill('SIGKILL');
+        }, this.killGraceMs);
+      }
     }, this.timeoutMs);
     const combinedSignal = params.abortSignal
       ? AbortSignal.any([timeoutController.signal, params.abortSignal])
       : timeoutController.signal;
+
+    if (combinedSignal.aborted) {
+      clearTimeout(timeoutId);
+      return [];
+    }
 
     try {
       return await this.spawnImpl(this.normalizeParams(params), combinedSignal);
@@ -85,7 +117,7 @@ export class RipgrepEngine implements IGrepEngine {
       throw error;
     } finally {
       clearTimeout(timeoutId);
-      if (escalationId && (!timedOut || !settledViaAbort)) {
+      if (escalationId && !(timedOut && !settledViaAbort)) {
         clearTimeout(escalationId);
       }
     }

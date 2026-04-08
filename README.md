@@ -59,11 +59,13 @@ npm run build
 
 4. ローカルプロセスへサーバーを組み込みます。
 
+※ 以下は `nexus` をパッケージとして利用する場合のインポート例です。リポジトリを直接利用する場合は適宜相対パスに読み替えてください。
+
 ```ts
 import { createServer } from 'node:http';
 
-import { createNexusServer } from './src/server/index.js';
-import { createStreamableHttpHandler } from './src/server/transport.js';
+import { createNexusServer } from 'nexus';
+import { createStreamableHttpHandler } from 'nexus/transport';
 
 const handler = createStreamableHttpHandler({
   createServer: () =>
