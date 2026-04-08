@@ -92,7 +92,11 @@ describe('NexusServer helpers', () => {
       const mockOptions = {
         metadataStore: { initialize: async () => {} },
         vectorStore: { initialize: async () => {} },
-        pipeline: { reconcileOnStartup: async () => ({}) },
+        pipeline: {
+          reconcileOnStartup: async () => ({}),
+          start: vi.fn(),
+          stop: vi.fn().mockResolvedValue(undefined),
+        },
         watcher: {
           start: async () => {},
           stop: async () => { throw new Error('watcher stop failed'); }
@@ -131,6 +135,64 @@ describe('NexusServer helpers', () => {
       } finally {
         runtime.server.close = originalServerClose;
       }
+    });
+  });
+
+  describe('initializeNexusRuntime rollback', () => {
+    it('awaits pipeline.stop and watcher.stop when initialization fails', async () => {
+      const stopDeferred = {
+        promise: null as any as Promise<void>,
+        resolve: null as any as () => void,
+        called: false,
+      };
+      stopDeferred.promise = new Promise((resolve) => {
+        stopDeferred.resolve = () => {
+          stopDeferred.called = true;
+          resolve();
+        };
+      });
+
+      const mockPipeline = {
+        start: vi.fn(),
+        stop: vi.fn().mockImplementation(() => stopDeferred.promise),
+        reconcileOnStartup: vi.fn().mockResolvedValue({}),
+      };
+      const mockWatcher = {
+        start: vi.fn().mockRejectedValue(new Error('init failure')),
+        stop: vi.fn().mockResolvedValue(undefined),
+      };
+
+      const mockOptions = {
+        metadataStore: { initialize: vi.fn().mockResolvedValue(undefined) },
+        vectorStore: { initialize: vi.fn().mockResolvedValue(undefined) },
+        pipeline: mockPipeline,
+        watcher: mockWatcher,
+        projectRoot: '/tmp',
+        sanitizer: {} as any,
+        semanticSearch: {} as any,
+        grepEngine: {} as any,
+        orchestrator: {} as any,
+        pluginRegistry: {} as any,
+        runReindex: vi.fn(),
+        loadFileContent: vi.fn(),
+      } as any;
+
+      const initPromise = initializeNexusRuntime(mockOptions);
+
+      // Give it a tick to hit the catch block
+      await new Promise(resolve => setTimeout(resolve, 0));
+
+      expect(mockPipeline.stop).toHaveBeenCalled();
+      
+      let rejected = false;
+      initPromise.catch(() => { rejected = true; });
+
+      await new Promise(resolve => setTimeout(resolve, 0));
+      expect(rejected, 'Should not have rejected yet if pipeline.stop is awaited').toBe(false);
+
+      stopDeferred.resolve();
+      await initPromise.catch(() => {});
+      expect(stopDeferred.called).toBe(true);
     });
   });
 });

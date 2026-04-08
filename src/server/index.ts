@@ -191,10 +191,10 @@ export const initializeNexusRuntime = async (options: NexusRuntimeOptions): Prom
   await options.metadataStore.initialize();
   await options.vectorStore.initialize();
   await options.pipeline.reconcileOnStartup();
-  options.pipeline.start();
-  await options.watcher.start();
 
   try {
+    options.pipeline.start();
+    await options.watcher.start();
     const server = createNexusServer(options);
 
     return {
@@ -230,7 +230,9 @@ export const initializeNexusRuntime = async (options: NexusRuntimeOptions): Prom
       },
     };
   } catch (error) {
-    options.pipeline.stop();
+    await options.pipeline.stop().catch((stopError) => {
+      console.error('Failed to stop pipeline during initialization rollback:', stopError);
+    });
     await options.watcher.stop().catch((stopError) => {
       console.error('Failed to stop watcher during initialization rollback:', stopError);
     });
