@@ -67,16 +67,16 @@ describe('LanceVectorStore compaction integration', () => {
       async () => {
         order.push('compaction-start');
       },
-      1,
+      10,
       mutex,
     );
 
-    await vi.advanceTimersByTimeAsync(5);
+    await vi.advanceTimersByTimeAsync(10);
     expect(order).toEqual([]);
     expect(mutex.waitForUnlock).toHaveBeenCalledOnce();
 
     unlock?.();
-    await vi.advanceTimersByTimeAsync(5);
+    await vi.advanceTimersByTimeAsync(0);
 
     expect(order).toEqual(['compaction-start']);
   });

@@ -75,35 +75,43 @@ export class IndexPipeline implements IIndexPipeline {
 
     let chunksIndexed = 0;
     const renameCandidates = MerkleTree.detectRenameCandidates(events);
-    const renamedOldPaths = new Set<string>();
-    const renamedNewPaths = new Set<string>();
+    const consumedEvents = new Set<IndexEvent>();
 
     for (const candidate of renameCandidates) {
       const affected = await this.options.vectorStore.renameFilePath(candidate.oldPath, candidate.newPath);
       if (affected > 0) {
         await this.merkleTree.move(candidate.oldPath, candidate.newPath, candidate.hash);
-        renamedOldPaths.add(candidate.oldPath);
-        renamedNewPaths.add(candidate.newPath);
+        consumedEvents.add(candidate.oldEvent);
+        consumedEvents.add(candidate.newEvent);
       }
     }
 
     for (const event of events) {
-      if (renamedOldPaths.has(event.filePath) || renamedNewPaths.has(event.filePath)) {
+      if (consumedEvents.has(event)) {
         continue;
       }
 
       if (event.type === 'deleted') {
-        const existingNode = this.merkleTree.getNode(event.filePath);
-
+        const existingNode = await this.options.metadataStore.getMerkleNode(event.filePath);
         if (existingNode?.isDirectory) {
-          await this.options.vectorStore.deleteByPathPrefix(event.filePath.endsWith('/') ? event.filePath : event.filePath + '/');
+          const prefix = event.filePath.endsWith('/') ? event.filePath : event.filePath + '/';
+          await this.options.vectorStore.deleteByPathPrefix(prefix);
           await this.options.metadataStore.deleteSubtree(event.filePath);
           await this.merkleTree.load();
+
+          this.skippedFiles.delete(event.filePath);
+          await this.deadLetterQueue.removeByPathPrefix(event.filePath);
+          for (const path of this.skippedFiles.keys()) {
+            if (path.startsWith(prefix)) {
+              this.skippedFiles.delete(path);
+            }
+          }
         } else {
           await this.options.vectorStore.deleteByFilePath(event.filePath);
           await this.merkleTree.remove(event.filePath);
+          this.skippedFiles.delete(event.filePath);
+          await this.deadLetterQueue.removeByFilePath(event.filePath);
         }
-
         continue;
       }
 

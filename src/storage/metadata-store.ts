@@ -1,3 +1,4 @@
+import { dirname } from 'node:path';
 import Database from 'better-sqlite3';
 
 import type { DeadLetterEntry, IMetadataStore, IndexStatsRow, MerkleNodeRow } from '../types/index.js';
@@ -37,6 +38,8 @@ export class SqliteMetadataStore implements IMetadataStore {
         parent_path TEXT,
         is_directory INTEGER NOT NULL CHECK (is_directory IN (0, 1))
       );
+
+      CREATE INDEX IF NOT EXISTS merkle_nodes_parent_path_idx ON merkle_nodes (parent_path);
 
       CREATE TABLE IF NOT EXISTS index_stats (
         id TEXT PRIMARY KEY,
@@ -114,6 +117,24 @@ export class SqliteMetadataStore implements IMetadataStore {
     });
   }
 
+  async bulkDeleteSubtrees(paths: string[]): Promise<number> {
+    const statement = this.db.prepare("DELETE FROM merkle_nodes WHERE path = ? OR path LIKE ? ESCAPE '\\'");
+
+    await this.asyncBoundary();
+    const transaction = this.db.transaction((allPaths: string[]) => {
+      let totalChanges = 0;
+      for (const targetPath of allPaths) {
+        const escapedPrefix = targetPath.replace(/%/g, '\\%').replace(/_/g, '\\_');
+        const prefix = `${escapedPrefix}/%`;
+        const result = statement.run(targetPath, prefix);
+        totalChanges += result.changes;
+      }
+      return totalChanges;
+    });
+
+    return transaction(paths);
+  }
+
   async deleteSubtree(pathPrefix: string): Promise<number> {
     await this.asyncBoundary();
     const escapedPrefix = pathPrefix.replace(/%/g, '\\%').replace(/_/g, '\\_');
@@ -124,6 +145,65 @@ export class SqliteMetadataStore implements IMetadataStore {
 
     return result.changes;
   }
+
+
+  async pruneEmptyParents(
+    path: string,
+    pathExists: (targetPath: string) => Promise<boolean>,
+  ): Promise<void> {
+    let currentPath = dirname(path);
+    const stmt = this.db.prepare('DELETE FROM merkle_nodes WHERE path = ?');
+
+    while (currentPath !== '.' && currentPath !== '/' && currentPath !== '') {
+      await this.asyncBoundary();
+      const hasChildren = await this.hasChildren(currentPath);
+      if (!hasChildren) {
+        // If the directory still exists on disk, don't prune it from metadata
+        if (await pathExists(currentPath)) {
+          break;
+        }
+        stmt.run(currentPath);
+        currentPath = dirname(currentPath);
+      } else {
+        break;
+      }
+    }
+  }
+
+  async renamePath(oldPath: string, newPath: string, hash: string): Promise<void> {
+    await this.asyncBoundary();
+    const parentPath = dirname(newPath);
+    const normalizedParentPath = (parentPath === '.' || parentPath === '/' || parentPath === '') ? null : parentPath;
+
+    const transaction = this.db.transaction(() => {
+      // Get the existing node to preserve its is_directory type
+      const oldNode = this.db
+        .prepare('SELECT is_directory FROM merkle_nodes WHERE path = ?')
+        .get(oldPath) as { is_directory: number } | undefined;
+
+      const isDirectory = oldNode?.is_directory ?? 0;
+
+      this.db
+        .prepare(
+          `INSERT INTO merkle_nodes (path, hash, parent_path, is_directory)
+           VALUES (@path, @hash, @parentPath, @isDirectory)
+           ON CONFLICT(path) DO UPDATE SET
+             hash = excluded.hash,
+             parent_path = excluded.parent_path,
+             is_directory = excluded.is_directory`,
+        )
+        .run({
+          path: newPath,
+          hash,
+          parentPath: normalizedParentPath,
+          isDirectory,
+        });
+      this.db.prepare('DELETE FROM merkle_nodes WHERE path = ?').run(oldPath);
+    });
+
+    transaction();
+  }
+
 
   async getMerkleNode(path: string): Promise<MerkleNodeRow | null> {
     await this.asyncBoundary();
@@ -145,6 +225,12 @@ export class SqliteMetadataStore implements IMetadataStore {
       parentPath: row.parentPath,
       isDirectory: row.isDirectory === 1,
     };
+  }
+
+  async hasChildren(path: string): Promise<boolean> {
+    await this.asyncBoundary();
+    const row = this.db.prepare('SELECT 1 FROM merkle_nodes WHERE parent_path = ? LIMIT 1').get(path);
+    return row !== undefined;
   }
 
   async getAllNodes(): Promise<MerkleNodeRow[]> {
@@ -258,23 +344,14 @@ export class SqliteMetadataStore implements IMetadataStore {
   }
 
   async removeDeadLetterEntries(ids: string[]): Promise<void> {
+    await this.asyncBoundary();
     const statement = this.db.prepare('DELETE FROM dead_letter_queue WHERE id = ?');
-
-    await executeBatchedWithYield({
-      items: ids,
-      batchSize: this.batchSize,
-      executeBatch: async (batch) => {
-        await this.asyncBoundary();
-        const transaction = this.db.transaction((rows: string[]) => {
-          for (const id of rows) {
-            statement.run(id);
-          }
-        });
-
-        transaction(batch);
-      },
-      yieldAfterBatch: this.asyncBoundary,
+    const transaction = this.db.transaction((rows: string[]) => {
+      for (const id of rows) {
+        statement.run(id);
+      }
     });
+    transaction(ids);
   }
 
   async getDeadLetterEntries(): Promise<DeadLetterEntry[]> {

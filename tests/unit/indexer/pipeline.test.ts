@@ -171,31 +171,46 @@ describe('IndexPipeline', () => {
       embeddingProvider: new TestEmbeddingProvider(),
       pluginRegistry: registry,
     });
-    const content = await readFile(fixturePath, 'utf8');
-    const nestedFile = 'src/nested/auth.ts';
 
-    await pipeline.processEvents(
-      [
-        {
-          type: 'added',
-          filePath: nestedFile,
-          contentHash: 'hash-nested',
-          detectedAt: new Date().toISOString(),
-        },
-      ],
-      async () => content,
-    );
+    await metadataStore.bulkUpsertMerkleNodes([
+      { path: 'src', hash: 'dir-hash', parentPath: null, isDirectory: true },
+      { path: 'src/auth.ts', hash: 'hash-auth', parentPath: 'src', isDirectory: false },
+      { path: 'src/nested', hash: 'hash-nested', parentPath: 'src', isDirectory: true },
+      { path: 'src/nested/deep.ts', hash: 'hash-deep', parentPath: 'src/nested', isDirectory: false },
+    ]);
+    await vectorStore.upsertChunks([
+      {
+        id: 'src/auth.ts:1-1:file-1',
+        filePath: 'src/auth.ts',
+        content: 'export const auth = true;',
+        language: 'typescript',
+        symbolKind: 'file',
+        startLine: 1,
+        endLine: 1,
+        hash: 'chunk-auth',
+      },
+      {
+        id: 'src/nested/deep.ts:1-1:file-1',
+        filePath: 'src/nested/deep.ts',
+        content: 'export const deep = true;',
+        language: 'typescript',
+        symbolKind: 'file',
+        startLine: 1,
+        endLine: 1,
+        hash: 'chunk-deep',
+      },
+    ]);
 
     await pipeline.processEvents([
       {
         type: 'deleted',
-        filePath: 'src/nested',
-        contentHash: 'hash-nested',
+        filePath: 'src',
+        contentHash: 'dir-hash',
         detectedAt: new Date().toISOString(),
       },
     ]);
 
-    await expect(metadataStore.getMerkleNode(nestedFile)).resolves.toBeNull();
+    await expect(metadataStore.getAllPaths()).resolves.toEqual([]);
     await expect(vectorStore.getStats()).resolves.toEqual(
       expect.objectContaining({ totalChunks: 0, totalFiles: 0 }),
     );

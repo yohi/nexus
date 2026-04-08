@@ -75,7 +75,7 @@ describe('RipgrepEngine', () => {
       spawn: spawnImpl,
     });
 
-    const searchPromise = engine.search({ query: 'alpha', cwd: process.cwd() } as any);
+    const searchPromise = engine.search({ query: 'alpha', cwd: process.cwd() });
     await vi.advanceTimersByTimeAsync(50);
 
     await expect(searchPromise).resolves.toEqual([]);

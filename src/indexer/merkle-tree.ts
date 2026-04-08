@@ -7,6 +7,8 @@ export interface RenameCandidate {
   oldPath: string;
   newPath: string;
   hash: string;
+  oldEvent: IndexEvent;
+  newEvent: IndexEvent;
 }
 
 export class MerkleTree {
@@ -26,7 +28,7 @@ export class MerkleTree {
     this.rootHash = await this.computeRootHash();
   }
 
-  async update(filePath: string, contentHash: string): Promise<void> {
+  async update(filePath: string, contentHash: string, skipPersist = false): Promise<void> {
     const directories = this.collectDirectories(filePath);
     const fileNode: MerkleNodeRow = {
       path: filePath,
@@ -41,10 +43,12 @@ export class MerkleTree {
     }
 
     this.rootHash = await this.computeRootHash();
-    await this.persistCurrentState();
+    if (!skipPersist) {
+      await this.persistCurrentState();
+    }
   }
 
-  async remove(filePath: string): Promise<void> {
+  async remove(filePath: string, skipPersist = false): Promise<void> {
     this.nodes.delete(filePath);
     this.pruneEmptyDirectories(path.dirname(filePath));
 
@@ -168,6 +172,8 @@ export class MerkleTree {
             oldPath: removed.filePath,
             newPath: addedMatch.filePath,
             hash: addedMatch.contentHash!,
+            oldEvent: removed,
+            newEvent: addedMatch,
           });
         }
       }

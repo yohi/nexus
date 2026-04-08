@@ -155,6 +155,27 @@ export class DeadLetterQueue {
     return { retried, removed, skipped };
   }
 
+  async removeByFilePath(filePath: string): Promise<void> {
+    await this.ensureLoaded();
+    const idsToRemove = [...this.entries.values()]
+      .filter((entry) => entry.filePath === filePath)
+      .map((entry) => entry.id);
+    await this.removeEntries(idsToRemove);
+  }
+
+  async removeByPathPrefix(prefix: string): Promise<void> {
+    await this.ensureLoaded();
+    const idsToRemove = [...this.entries.values()]
+      .filter((entry) => {
+        const matchesPrefix =
+          entry.filePath === prefix ||
+          entry.filePath.startsWith(prefix.endsWith('/') ? prefix : prefix + '/');
+        return matchesPrefix;
+      })
+      .map((entry) => entry.id);
+    await this.removeEntries(idsToRemove);
+  }
+
   private async removeEntries(ids: string[]): Promise<void> {
     if (ids.length === 0) {
       return;
