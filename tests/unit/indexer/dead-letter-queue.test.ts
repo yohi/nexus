@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest';
+import { describe, expect, it, vi, afterEach } from 'vitest';
 
 import { DeadLetterQueue } from '../../../src/indexer/dead-letter-queue.js';
 import type { DeadLetterEntry, IMetadataStore } from '../../../src/types/index.js';
@@ -16,6 +16,10 @@ const makeEntry = (overrides: Partial<DeadLetterEntry> = {}): DeadLetterEntry =>
 });
 
 describe('DeadLetterQueue', () => {
+  afterEach(() => {
+    vi.clearAllTimers();
+    vi.useRealTimers();
+  });
   it('enqueues entries into memory and persistent storage', async () => {
     const metadataStore = new InMemoryMetadataStore();
     await metadataStore.initialize();
@@ -132,7 +136,7 @@ describe('DeadLetterQueue', () => {
     await expect(metadataStore.getDeadLetterEntries()).resolves.toEqual([]);
   });
 
-  it('returns a no-op stopper when recovery loop is started twice', () => {
+  it('returns the same stopper when recovery loop is started twice', () => {
     vi.useFakeTimers();
     const metadataStore = new InMemoryMetadataStore();
     const queue = new DeadLetterQueue({
@@ -142,10 +146,8 @@ describe('DeadLetterQueue', () => {
     const stopFirst = queue.startRecoveryLoop(60_000);
     const stopSecond = queue.startRecoveryLoop(60_000);
 
-    expect(stopSecond).not.toBe(stopFirst);
-    stopSecond();
+    expect(stopSecond).toBe(stopFirst);
     stopFirst();
-    vi.useRealTimers();
   });
 
   it('updates existing entries with the same filePath instead of creating new ones', async () => {
@@ -212,6 +214,7 @@ describe('DeadLetterQueue', () => {
   });
 
   it('warns when starting recovery loop while already running', () => {
+    vi.useFakeTimers();
     const logger = { warn: vi.fn(), error: vi.fn() };
     const queue = new DeadLetterQueue({
       metadataStore: new InMemoryMetadataStore(),

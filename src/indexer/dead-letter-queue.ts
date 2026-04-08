@@ -43,13 +43,15 @@ export class DeadLetterQueue {
 
   private recoveryInterval: ReturnType<typeof setInterval> | undefined;
 
+  private recoveryStopper: (() => void) | undefined;
+
   constructor(private readonly options: DeadLetterQueueOptions) {
     this.maxEntries = options.maxEntries ?? 1000;
     this.ttlMs = options.ttlMs ?? 24 * 60 * 60 * 1000;
     this.now = options.now ?? (() => new Date());
-    this.embeddingHealthy = options.embeddingHealthy ?? (async () => true);
+    this.embeddingHealthy = options.embeddingHealthy ?? (() => Promise.resolve(true));
     this.computeFileHash = options.computeFileHash ?? computeFileHashStreaming;
-    this.reprocess = options.reprocess ?? (async () => undefined);
+    this.reprocess = options.reprocess ?? (() => Promise.resolve(undefined));
     this.logger = options.logger ?? console;
   }
 
@@ -168,23 +170,29 @@ export class DeadLetterQueue {
   }
 
   startRecoveryLoop(intervalMs = 60_000): () => void {
-    if (this.recoveryInterval !== undefined) {
+    if (this.recoveryStopper !== undefined) {
       this.logger.warn('DLQ recovery loop is already running. Ignoring duplicate start.');
-      return () => undefined;
+      return this.recoveryStopper;
     }
 
-    this.recoveryInterval = setInterval(() => {
+    const intervalId = setInterval(() => {
       void this.recoverySweep().catch((error) => {
         this.logger.error('DLQ recovery sweep failed', error);
       });
     }, intervalMs);
 
-    return () => {
-      if (this.recoveryInterval !== undefined) {
-        clearInterval(this.recoveryInterval);
+    this.recoveryInterval = intervalId;
+
+    const stopper = () => {
+      clearInterval(intervalId);
+      if (this.recoveryInterval === intervalId) {
         this.recoveryInterval = undefined;
+        this.recoveryStopper = undefined;
       }
     };
+
+    this.recoveryStopper = stopper;
+    return stopper;
   }
 
   async removeByFilePath(filePath: string): Promise<void> {

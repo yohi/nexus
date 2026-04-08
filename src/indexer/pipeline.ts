@@ -34,6 +34,8 @@ interface ProcessEventsResult {
 type ContentLoader = (filePath: string) => Promise<string>;
 
 export interface IIndexPipeline {
+  start(): void;
+  stop(): void;
   reindex(
     run: (options?: { fullScan?: boolean; reason?: 'manual' }) => Promise<IndexEvent[]>,
     loadContent: ContentLoader,
@@ -52,6 +54,8 @@ export class IndexPipeline implements IIndexPipeline {
 
   private readonly deadLetterQueue: DeadLetterQueue;
 
+  private dlqStopper: (() => void) | undefined;
+
   private isTreeLoaded = false;
 
   constructor(private readonly options: IndexPipelineOptions) {
@@ -62,6 +66,19 @@ export class IndexPipeline implements IIndexPipeline {
       computeFileHash: (path) => this.computeFileHash(path),
       reprocess: (entry) => this.reprocess(entry),
     });
+  }
+
+  start(): void {
+    if (this.dlqStopper === undefined) {
+      this.dlqStopper = this.deadLetterQueue.startRecoveryLoop();
+    }
+  }
+
+  stop(): void {
+    if (this.dlqStopper !== undefined) {
+      this.dlqStopper();
+      this.dlqStopper = undefined;
+    }
   }
 
   async processEvents(

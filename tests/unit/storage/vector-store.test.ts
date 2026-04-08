@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import type { CodeChunk } from '../../../src/types/index.js';
+import type { CodeChunk, IVectorStore } from '../../../src/types/index.js';
 import { InMemoryVectorStore } from './in-memory-vector-store.js';
 import { LanceVectorStore } from '../../../src/storage/vector-store.js';
 

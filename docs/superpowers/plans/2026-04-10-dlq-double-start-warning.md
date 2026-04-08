@@ -10,7 +10,7 @@
 
 ---
 
-### Task 1: Add Failing Test
+## Task 1: Add Failing Test
 
 **Files:**
 - Modify: `tests/unit/indexer/dead-letter-queue.test.ts`
@@ -49,7 +49,7 @@ git commit -m "test: add failing test for DLQ double start warning"
 
 ---
 
-### Task 2: Implement Warning Logic
+## Task 2: Implement Warning Logic
 
 **Files:**
 - Modify: `src/indexer/dead-letter-queue.ts`
