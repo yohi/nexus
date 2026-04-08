@@ -165,4 +165,13 @@ describe('SqliteMetadataStore', () => {
     expect(dirNode?.hash).toBe('d1-updated');
     await expect(store.getMerkleNode('old-dir')).resolves.toBeNull();
   });
+
+  it('renamePath handles non-existent source paths by creating a new node', async () => {
+    // 1. Rename a non-existent path
+    await store.renamePath('nonexistent/path.ts', 'new/path.ts', 'h1');
+    const node = await store.getMerkleNode('new/path.ts');
+    expect(node?.isDirectory).toBe(false);
+    expect(node?.hash).toBe('h1');
+    await expect(store.getMerkleNode('nonexistent/path.ts')).resolves.toBeNull();
+  });
 });
