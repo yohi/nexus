@@ -74,12 +74,15 @@ export class InMemoryMetadataStore implements IMetadataStore {
   }
 
   async renamePath(oldPath: string, newPath: string, hash: string): Promise<void> {
+    const oldNode = this.nodes.get(oldPath);
+    const isDirectory = oldNode?.isDirectory ?? false;
+
     this.nodes.delete(oldPath);
     this.nodes.set(newPath, {
       path: newPath,
       hash,
       parentPath: newPath.includes('/') ? newPath.split('/').slice(0, -1).join('/') : null,
-      isDirectory: false,
+      isDirectory,
     });
   }
 

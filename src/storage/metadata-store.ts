@@ -39,6 +39,8 @@ export class SqliteMetadataStore implements IMetadataStore {
         is_directory INTEGER NOT NULL CHECK (is_directory IN (0, 1))
       );
 
+      CREATE INDEX IF NOT EXISTS merkle_nodes_parent_path_idx ON merkle_nodes (parent_path);
+
       CREATE TABLE IF NOT EXISTS index_stats (
         id TEXT PRIMARY KEY,
         total_files INTEGER NOT NULL,
@@ -174,10 +176,17 @@ export class SqliteMetadataStore implements IMetadataStore {
     const normalizedParentPath = (parentPath === '.' || parentPath === '/' || parentPath === '') ? null : parentPath;
 
     const transaction = this.db.transaction(() => {
+      // Get the existing node to preserve its is_directory type
+      const oldNode = this.db
+        .prepare('SELECT is_directory FROM merkle_nodes WHERE path = ?')
+        .get(oldPath) as { is_directory: number } | undefined;
+
+      const isDirectory = oldNode?.is_directory ?? 0;
+
       this.db
         .prepare(
           `INSERT INTO merkle_nodes (path, hash, parent_path, is_directory)
-           VALUES (@path, @hash, @parentPath, 0)
+           VALUES (@path, @hash, @parentPath, @isDirectory)
            ON CONFLICT(path) DO UPDATE SET
              hash = excluded.hash,
              parent_path = excluded.parent_path,
@@ -187,6 +196,7 @@ export class SqliteMetadataStore implements IMetadataStore {
           path: newPath,
           hash,
           parentPath: normalizedParentPath,
+          isDirectory,
         });
       this.db.prepare('DELETE FROM merkle_nodes WHERE path = ?').run(oldPath);
     });

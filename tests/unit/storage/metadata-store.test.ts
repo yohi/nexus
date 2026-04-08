@@ -143,4 +143,26 @@ describe('SqliteMetadataStore', () => {
 
     await expect(store.getDeadLetterEntries()).resolves.toEqual([updated]);
   });
+
+  it('renamePath preserves the isDirectory property of the node', async () => {
+    // 1. Rename a file
+    await store.bulkUpsertMerkleNodes([
+      makeNode({ path: 'src/old.ts', hash: 'h1', isDirectory: false }),
+    ]);
+    await store.renamePath('src/old.ts', 'src/new.ts', 'h1-updated');
+    const fileNode = await store.getMerkleNode('src/new.ts');
+    expect(fileNode?.isDirectory).toBe(false);
+    expect(fileNode?.hash).toBe('h1-updated');
+    await expect(store.getMerkleNode('src/old.ts')).resolves.toBeNull();
+
+    // 2. Rename a directory
+    await store.bulkUpsertMerkleNodes([
+      makeNode({ path: 'old-dir', hash: 'd1', parentPath: null, isDirectory: true }),
+    ]);
+    await store.renamePath('old-dir', 'new-dir', 'd1-updated');
+    const dirNode = await store.getMerkleNode('new-dir');
+    expect(dirNode?.isDirectory).toBe(true);
+    expect(dirNode?.hash).toBe('d1-updated');
+    await expect(store.getMerkleNode('old-dir')).resolves.toBeNull();
+  });
 });
