@@ -1,5 +1,11 @@
 import type { FileToChunk, LanguagePlugin, ParsedDeclaration, ParsedSourceFile } from '../../types/index.js';
 
+/**
+ * Builds a Go declaration by scanning lines until the braces are balanced.
+ * Handles block comments, raw strings, and regular strings.
+ * For functions and methods, it continues scanning until an opening brace is found.
+ * For type aliases, it terminates if no brace is found on the first line.
+ */
 const buildGoDeclaration = (
   lines: string[],
   startIndex: number,
@@ -9,11 +15,65 @@ const buildGoDeclaration = (
   let endIndex = startIndex;
   let braceDepth = 0;
   let seenOpeningBrace = false;
+  let inBlockComment = false;
+  let inRawString = false;
 
   for (let i = startIndex; i < lines.length; i += 1) {
-    const line = lines[i] ?? '';
-    const opens = (line.match(/\{/g) ?? []).length;
-    const closes = (line.match(/\}/g) ?? []).length;
+    const line = lines[i];
+    if (line === undefined) continue;
+    let stripped = '';
+    
+    // Process character by character to handle multi-line comments and strings correctly
+    for (let j = 0; j < line.length; j += 1) {
+      if (inBlockComment) {
+        if (line.charAt(j) === '*' && line.charAt(j + 1) === '/') {
+          inBlockComment = false;
+          j += 1;
+        }
+        continue;
+      }
+
+      if (inRawString) {
+        if (line.charAt(j) === '`') {
+          inRawString = false;
+        }
+        continue;
+      }
+
+      const char = line.charAt(j);
+      const nextChar = line.charAt(j + 1);
+
+      if (char === '/' && nextChar === '*') {
+        inBlockComment = true;
+        j += 1;
+        continue;
+      }
+      if (char === '/' && nextChar === '/') {
+        break; // Line comment, skip rest of the line
+      }
+      
+      // Simple string literals (single line in Go)
+      if (char === '"' || char === '\'') {
+        const quote = char;
+        j += 1;
+        while (j < line.length && line.charAt(j) !== quote) {
+          if (line.charAt(j) === '\\') j += 1; // skip escaped
+          j += 1;
+        }
+        continue;
+      }
+      
+      // Backtick raw strings
+      if (char === '`') {
+        inRawString = true;
+        continue;
+      }
+
+      stripped += char;
+    }
+
+    const opens = (stripped.match(/\{/g) ?? []).length;
+    const closes = (stripped.match(/\}/g) ?? []).length;
 
     if (opens > 0) {
       seenOpeningBrace = true;
@@ -21,6 +81,12 @@ const buildGoDeclaration = (
 
     braceDepth += opens - closes;
     endIndex = i;
+
+    // For non-function declarations (like type aliases), 
+    // if we don't see an opening brace on the first line, we assume it's a single-line declaration.
+    if (i === startIndex && !seenOpeningBrace && type !== 'function' && type !== 'method') {
+      break;
+    }
 
     if (seenOpeningBrace && braceDepth <= 0) {
       break;
@@ -42,13 +108,21 @@ class GoParser {
     const declarations: ParsedDeclaration[] = [];
 
     for (let i = 0; i < lines.length; i += 1) {
-      const line = lines[i]?.trim() ?? '';
+      const line = lines[i];
+      if (line === undefined) continue;
+      const trimmedLine = line.trim();
 
-      if (/^import\b/.test(line)) {
+      if (trimmedLine === '') continue;
+
+      // Handle imports
+      if (trimmedLine === 'import (' || /^import\s+/.test(trimmedLine)) {
         let endIndex = i;
-        const nextChar = line.slice(6).trim()[0];
-        if (nextChar === '(' || line === 'import (') {
-          while (endIndex < lines.length && (lines[endIndex]?.trim() ?? '') !== ')') {
+        if (trimmedLine === 'import (') {
+          while (endIndex < lines.length) {
+            const currentLine = lines[endIndex];
+            if (currentLine !== undefined && currentLine.trim() === ')') {
+              break;
+            }
             endIndex += 1;
           }
         }
@@ -64,24 +138,66 @@ class GoParser {
         continue;
       }
 
-      const typeMatch = /^type\s+([A-Za-z_][A-Za-z0-9_]*)\s+struct\b/.exec(line);
+      // Handle grouped type declarations: type (...)
+      if (trimmedLine === 'type (') {
+        const startLine = i;
+        let endIndex = i;
+        while (endIndex < lines.length) {
+          const currentLine = lines[endIndex];
+          if (currentLine !== undefined && currentLine.trim() === ')') {
+            break;
+          }
+          endIndex += 1;
+        }
+
+        // Extract individual types within the block
+        for (let j = startLine + 1; j < endIndex; j += 1) {
+          const currentLine = lines[j];
+          if (currentLine === undefined) continue;
+          const innerLine = currentLine.trim();
+          
+          // Pattern for identifiers in type blocks - broadened to support more types
+          const innerTypeMatch = /^([A-Za-z_][A-Za-z0-9_]*)(?:\[[^\]]*\])?\s+([A-Za-z_\[*].*)/.exec(innerLine);
+          const typeName = innerTypeMatch?.[1];
+          if (typeName) {
+            const decl = buildGoDeclaration(lines, j, 'class', typeName);
+            declarations.push(decl);
+            j = decl.endLine - 1;
+          }
+        }
+        
+        i = endIndex;
+        continue;
+      }
+
+      // Handle single type declarations
+      const typeMatch = /^type\s+([A-Za-z_][A-Za-z0-9_]*)(?:\[[^\]]*\])?\s+([A-Za-z_\[*].*)/.exec(trimmedLine);
       const typeName = typeMatch?.[1];
       if (typeName) {
-        declarations.push(buildGoDeclaration(lines, i, 'class', typeName));
+        const decl = buildGoDeclaration(lines, i, 'class', typeName);
+        declarations.push(decl);
+        i = decl.endLine - 1;
         continue;
       }
 
-      const methodMatch = /^func\s*\([^)]*\)\s*([A-Za-z_][A-Za-z0-9_]*)\s*\(/.exec(line);
+      // Handle Methods
+      const methodMatch = /^func\s*\([^)]*\)\s*([A-Za-z_][A-Za-z0-9_]*)(?:\[[^\]]*\])?\s*\(/.exec(trimmedLine);
       const methodName = methodMatch?.[1];
       if (methodName) {
-        declarations.push(buildGoDeclaration(lines, i, 'method', methodName));
+        const decl = buildGoDeclaration(lines, i, 'method', methodName);
+        declarations.push(decl);
+        i = decl.endLine - 1;
         continue;
       }
 
-      const functionMatch = /^func\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(/.exec(line);
+      // Handle Functions
+      const functionMatch = /^func\s+([A-Za-z_][A-Za-z0-9_]*)(?:\[[^\]]*\])?\s*\(/.exec(trimmedLine);
       const functionName = functionMatch?.[1];
       if (functionName) {
-        declarations.push(buildGoDeclaration(lines, i, 'function', functionName));
+        const decl = buildGoDeclaration(lines, i, 'function', functionName);
+        declarations.push(decl);
+        i = decl.endLine - 1;
+        continue;
       }
     }
 

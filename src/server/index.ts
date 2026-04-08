@@ -5,16 +5,8 @@ import type { IIndexPipeline } from '../indexer/pipeline.js';
 import type { PluginRegistry } from '../plugins/registry.js';
 import type { SearchOrchestrator } from '../search/orchestrator.js';
 import type { ISemanticSearch } from '../search/semantic.js';
-import type {
-  IMetadataStore,
-  IVectorStore,
-  IGrepEngine,
-  IndexEvent,
-  IFileWatcher,
-  ReindexOptions,
-} from '../types/index.js';
-import { PathTraversalError, RetryExhaustedError } from '../types/index.js';
-import type { PathSanitizer } from './path-sanitizer.js';
+import type { IMetadataStore, IVectorStore, IGrepEngine, IndexEvent, IFileWatcher, ReindexOptions } from '../types/index.js';
+import { PathTraversalError, type PathSanitizer } from './path-sanitizer.js';
 import { executeGetContext } from './tools/get-context.js';
 import { executeGrepSearch } from './tools/grep-search.js';
 import { executeHybridSearch } from './tools/hybrid-search.js';
@@ -165,7 +157,6 @@ export const createNexusServer = (options: NexusServerOptions): McpServer => {
             options.metadataStore,
             options.vectorStore,
             options.pluginRegistry,
-            options.pipeline,
           ),
         );
       } catch (error) {
@@ -208,27 +199,26 @@ export const initializeNexusRuntime = async (options: NexusRuntimeOptions): Prom
     return {
       server,
       close: async () => {
-        let watcherError: unknown;
-        let closeError: unknown;
-
+        const shutdownErrors: unknown[] = [];
         try {
           await options.watcher.stop();
         } catch (error) {
-          watcherError = error;
+          shutdownErrors.push(error);
         }
 
         try {
           await server.close();
         } catch (error) {
-          closeError = error;
+          shutdownErrors.push(error);
         }
 
-        if (watcherError && closeError) {
-          throw new AggregateError([watcherError, closeError], 'Failed to close Nexus runtime');
-        } else if (watcherError) {
-          throw watcherError;
-        } else if (closeError) {
-          throw closeError;
+        if (shutdownErrors.length === 1) {
+          throw shutdownErrors[0];
+        } else if (shutdownErrors.length > 1) {
+          throw new AggregateError(
+            shutdownErrors,
+            'Multiple errors occurred during Nexus runtime shutdown',
+          );
         }
       },
     };
@@ -240,27 +230,26 @@ export const initializeNexusRuntime = async (options: NexusRuntimeOptions): Prom
   }
 };
 
-export const errorResult = (error: unknown) => {
+/**
+ * Sanitizes error messages to prevent leaking internal file paths.
+ */
+const sanitizeErrorMessage = (error: unknown): string => {
   if (error instanceof PathTraversalError) {
-    const message = 'Access denied';
-    return {
-      content: [
-        {
-          type: 'text' as const,
-          text: `Error: ${message}`,
-        },
-      ],
-      isError: true,
-      structuredContent: { error: true, message },
-    };
+    return 'Access denied: path is outside project root';
   }
-
-  const isSafeError = error instanceof RetryExhaustedError;
-  const errorMessage = isSafeError ? (error as Error).message : 'Internal server error';
-
-  if (!isSafeError) {
-    console.error('Internal server error occurred:', error);
+  const message = error instanceof Error ? error.message : String(error);
+  // Basic check for absolute or relative path-like strings that might be sensitive
+  const hasPathInfo = /\/|[a-zA-Z]:\\|\.\.\//.test(message);
+  if (hasPathInfo) {
+    return 'Internal server error';
   }
+  return message;
+};
+
+export const errorResult = (error: unknown) => {
+  const errorMessage = sanitizeErrorMessage(error);
+  // Log the original error for server-side debugging
+  console.error('[Nexus Server Error]', error);
 
   return {
     content: [
@@ -274,7 +263,7 @@ export const errorResult = (error: unknown) => {
   };
 };
 
-const toolResult = <T extends object>(structuredContent: T) => {
+export const toolResult = <T extends object>(structuredContent: T) => {
   try {
     return {
       content: [
@@ -286,7 +275,10 @@ const toolResult = <T extends object>(structuredContent: T) => {
       structuredContent: structuredContent as Record<string, unknown>,
     };
   } catch (error) {
-    const errorMessage = error instanceof Error ? error.message : String(error);
+    const errorMessage = sanitizeErrorMessage(error);
+    // Log the original error for server-side debugging
+    console.error('[Nexus Serialization Error]', error);
+
     return {
       content: [
         {
@@ -294,6 +286,7 @@ const toolResult = <T extends object>(structuredContent: T) => {
           text: `Failed to serialize structuredContent: ${errorMessage}`,
         },
       ],
+      isError: true,
       structuredContent: { error: true, message: errorMessage, originalType: typeof structuredContent },
     };
   }

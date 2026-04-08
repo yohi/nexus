@@ -154,6 +154,7 @@ export class SqliteMetadataStore implements IMetadataStore {
     return result.changes;
   }
 
+
   async pruneEmptyParents(path: string): Promise<void> {
     let currentPath = dirname(path);
 
@@ -187,6 +188,7 @@ export class SqliteMetadataStore implements IMetadataStore {
       });
     this.db.prepare('DELETE FROM merkle_nodes WHERE path = ?').run(oldPath);
   }
+
 
   async getMerkleNode(path: string): Promise<MerkleNodeRow | null> {
     await this.asyncBoundary();
@@ -305,7 +307,6 @@ export class SqliteMetadataStore implements IMetadataStore {
         content_hash = excluded.content_hash,
         error_message = excluded.error_message,
         attempts = excluded.attempts,
-        created_at = excluded.created_at,
         updated_at = excluded.updated_at,
         last_retry_at = excluded.last_retry_at
     `);

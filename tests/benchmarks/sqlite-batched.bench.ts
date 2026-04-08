@@ -18,7 +18,11 @@ const makeNodes = (count: number): MerkleNodeRow[] =>
     isDirectory: false,
   }));
 
-const withStore = async <T>(batchSize: number, run: (store: SqliteMetadataStore) => Promise<T>): Promise<T> => {
+const withStore = async <T>(
+  batchSize: number,
+  setup: (store: SqliteMetadataStore) => Promise<void>,
+  run: (store: SqliteMetadataStore) => Promise<T>,
+): Promise<T> => {
   const tempDir = await mkdtemp(path.join(os.tmpdir(), 'nexus-sqlite-bench-'));
   const store = new SqliteMetadataStore({
     databasePath: path.join(tempDir, 'metadata.db'),
@@ -27,9 +31,14 @@ const withStore = async <T>(batchSize: number, run: (store: SqliteMetadataStore)
 
   try {
     await store.initialize();
+    await setup(store);
     return await run(store);
   } finally {
-    await store.close();
+    try {
+      await store.close();
+    } catch (error) {
+      console.error('Failed to close store during benchmark cleanup:', error);
+    }
     await rm(tempDir, { recursive: true, force: true });
   }
 };
@@ -43,25 +52,36 @@ for (const nodeCount of NODE_COUNTS) {
       bench(
         `upsert batchSize=${batchSize}`,
         async () => {
-          await withStore(batchSize, async (store) => {
-            await store.bulkUpsertMerkleNodes(nodes);
-          });
+          await withStore(
+            batchSize,
+            async () => {}, // No setup needed for upsert
+            async (store) => {
+              await store.bulkUpsertMerkleNodes(nodes);
+            },
+          );
         },
         {
-          iterations: 3,
+          iterations: 10,
         },
       );
 
       bench(
-        `delete batchSize=${batchSize}`,
+        `upsert+delete batchSize=${batchSize}`,
         async () => {
-          await withStore(batchSize, async (store) => {
-            await store.bulkUpsertMerkleNodes(nodes);
-            await store.bulkDeleteMerkleNodes(paths);
-          });
+          await withStore(
+            batchSize,
+            async (store) => {
+              // Preparation
+              await store.bulkUpsertMerkleNodes(nodes);
+            },
+            async (store) => {
+              // Measured operation (along with setup/lifecycle)
+              await store.bulkDeleteMerkleNodes(paths);
+            },
+          );
         },
         {
-          iterations: 3,
+          iterations: 10,
         },
       );
     }

@@ -52,6 +52,7 @@ export class InMemoryMetadataStore implements IMetadataStore {
     return deleted;
   }
 
+
   async pruneEmptyParents(path: string): Promise<void> {
     let currentPath = dirname(path);
 
@@ -75,6 +76,7 @@ export class InMemoryMetadataStore implements IMetadataStore {
       isDirectory: false,
     });
   }
+
 
   async getMerkleNode(path: string): Promise<MerkleNodeRow | null> {
     return this.nodes.get(path) ?? null;

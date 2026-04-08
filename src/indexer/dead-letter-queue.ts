@@ -62,15 +62,18 @@ export class DeadLetterQueue {
   async enqueue(input: Pick<DeadLetterEntry, 'filePath' | 'contentHash' | 'errorMessage' | 'attempts'>): Promise<DeadLetterEntry> {
     await this.ensureLoaded();
     const timestamp = this.now().toISOString();
+
+    const existingEntry = [...this.entries.values()].find((e) => e.filePath === input.filePath);
+
     const entry: DeadLetterEntry = {
-      id: randomUUID(),
+      id: existingEntry?.id ?? randomUUID(),
       filePath: input.filePath,
       contentHash: input.contentHash,
       errorMessage: input.errorMessage,
       attempts: input.attempts,
-      createdAt: timestamp,
+      createdAt: existingEntry?.createdAt ?? timestamp,
       updatedAt: timestamp,
-      lastRetryAt: null,
+      lastRetryAt: existingEntry?.lastRetryAt ?? null,
     };
 
     await this.options.metadataStore.upsertDeadLetterEntries([entry]);
@@ -79,6 +82,12 @@ export class DeadLetterQueue {
     return entry;
   }
 
+  /**
+   * Returns an in-memory snapshot of current entries mapped filePath → errorMessage.
+   * NOTE: only reflects entries loaded into memory. Call `load()` (or trigger
+   * `purgeExpired()` / `recoverySweep()`) before calling this if you need a
+   * view that includes all persisted entries.
+   */
   snapshot(): ReadonlyMap<string, string> {
     return new Map(
       [...this.entries.values()]
@@ -132,7 +141,7 @@ export class DeadLetterQueue {
         removed += 1;
       } catch (error) {
         const err = error as NodeJS.ErrnoException;
-        if (err?.code === 'ENOENT') {
+        if (err.code === 'ENOENT') {
           await this.removeEntries([entry.id]);
           removed += 1;
           continue;
@@ -184,17 +193,16 @@ export class DeadLetterQueue {
       return;
     }
 
-    const allEntries = [...this.entries.values()].sort(
-      (left, right) => new Date(left.createdAt).getTime() - new Date(right.createdAt).getTime()
-    );
-    const toRemoveCount = this.entries.size - this.maxEntries;
-    const removedIds = allEntries.slice(0, toRemoveCount).map((e) => e.id);
+    const sortedEntries = [...this.entries.values()]
+      .sort((a, b) => a.createdAt.localeCompare(b.createdAt));
 
-    if (removedIds.length > 0) {
-      await this.options.metadataStore.removeDeadLetterEntries(removedIds);
-      for (const id of removedIds) {
-        this.entries.delete(id);
-      }
+    const toRemove = sortedEntries.slice(0, this.entries.size - this.maxEntries);
+    const removedIds = toRemove.map((e) => e.id);
+
+    for (const id of removedIds) {
+      this.entries.delete(id);
     }
+
+    await this.options.metadataStore.removeDeadLetterEntries(removedIds);
   }
 }

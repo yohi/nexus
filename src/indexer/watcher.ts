@@ -80,8 +80,8 @@ export class FileWatcher {
         filePath,
         detectedAt,
       });
-      this.options.onFullScanRequired?.().catch((error) => {
-        console.error('Failed during overflow recovery (onFullScanRequired):', error);
+      void this.options.onFullScanRequired?.().catch((err) => {
+        console.error('onFullScanRequired failed:', err);
       });
     }
   }

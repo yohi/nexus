@@ -1,6 +1,7 @@
 import type {
   CodeChunk,
   CompactionConfig,
+  CompactionMutex,
   CompactionResult,
   IVectorStore,
   VectorFilter,
@@ -116,6 +117,34 @@ export class LanceVectorStore implements IVectorStore {
 
   async renameFilePath(oldPath: string, newPath: string): Promise<number> {
     await this.asyncBoundary();
+
+    if (oldPath === newPath) {
+      return 0;
+    }
+
+    // Check if oldPath exists first to avoid unnecessary mutations
+    let exists = false;
+    for (const row of this.rows.values()) {
+      if (row.chunk.filePath === oldPath && !row.deleted) {
+        exists = true;
+        break;
+      }
+    }
+
+    if (!exists) {
+      return 0;
+    }
+
+    // Clear any existing chunks at newPath to avoid mixing old/new data
+    for (const [id, row] of [...this.rows.entries()]) {
+      if (row.chunk.filePath === newPath) {
+        if (row.deleted) {
+          this.deletedCount -= 1;
+        }
+        this.rows.delete(id);
+      }
+    }
+
     let renamed = 0;
 
     for (const [id, row] of [...this.rows.entries()]) {
@@ -125,12 +154,15 @@ export class LanceVectorStore implements IVectorStore {
 
       const nextChunk = {
         ...row.chunk,
-        id: row.chunk.id.replace(oldPath, newPath),
+        id: row.chunk.id.replaceAll(oldPath, newPath),
         filePath: newPath,
-        hash: row.chunk.hash.replace(oldPath, newPath),
       };
 
       this.rows.delete(id);
+      const existingAtTarget = this.rows.get(nextChunk.id);
+      if (existingAtTarget?.deleted) {
+        this.deletedCount -= 1;
+      }
       this.rows.set(nextChunk.id, {
         chunk: nextChunk,
         vector: row.vector,
@@ -209,9 +241,9 @@ export class LanceVectorStore implements IVectorStore {
   scheduleIdleCompaction(
     runCompaction: () => Promise<void>,
     delayMs = 0,
-    mutex?: { waitForUnlock(): Promise<void> },
-  ): void {
-    setTimeout(() => {
+    mutex?: CompactionMutex,
+  ): NodeJS.Timeout {
+    return setTimeout(() => {
       Promise.resolve()
         .then(() => mutex?.waitForUnlock())
         .then(() => runCompaction())
