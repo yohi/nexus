@@ -84,8 +84,10 @@ export class InMemoryVectorStore implements IVectorStore {
 
   async deleteByPathPrefix(pathPrefix: string): Promise<number> {
     let deleted = 0;
+    const prefixWithSlash = pathPrefix.endsWith('/') ? pathPrefix : `${pathPrefix}/`;
     for (const record of this.records.values()) {
-      if (record.chunk.filePath.startsWith(pathPrefix) && !record.deleted) {
+      const isMatch = record.chunk.filePath === pathPrefix || record.chunk.filePath.startsWith(prefixWithSlash);
+      if (isMatch && !record.deleted) {
         record.deleted = true;
         deleted += 1;
         this.deletedCount += 1;

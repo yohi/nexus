@@ -63,7 +63,7 @@ describe('gcOrphanNodes', () => {
     const removed = await gcOrphanNodes(metadataStore, vectorStore, async (p) =>
       p.startsWith('keep'),
     );
-    expect(removed).toBe(2);
+    expect(removed).toBe(3);
     expect(await metadataStore.getAllPaths()).toEqual(['keep', 'keep/file.ts']);
   });
 });

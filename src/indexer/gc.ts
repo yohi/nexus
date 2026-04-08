@@ -1,4 +1,3 @@
-import { dirname } from 'node:path';
 import type { IMetadataStore, IVectorStore } from '../types/index.js';
 
 export const gcOrphanNodes = async (
@@ -6,10 +5,10 @@ export const gcOrphanNodes = async (
   vectorStore: IVectorStore,
   pathExists: (targetPath: string) => Promise<boolean>,
 ): Promise<number> => {
-  const fileNodes = await metadataStore.getAllFileNodes();
+  const nodes = await metadataStore.getAllNodes();
   const orphanPaths: string[] = [];
 
-  for (const node of fileNodes) {
+  for (const node of nodes) {
     if (!(await pathExists(node.path))) {
       orphanPaths.push(node.path);
     }
@@ -19,22 +18,15 @@ export const gcOrphanNodes = async (
     return 0;
   }
 
-  // Delete from vector store first, then metadata
-  await Promise.all(orphanPaths.map((path) => vectorStore.deleteByFilePath(path)));
-  await metadataStore.bulkDeleteMerkleNodes(orphanPaths);
+  // Delete from vector store first (by prefix to handle subtrees)
+  await Promise.all(orphanPaths.map((path) => vectorStore.deleteByPathPrefix(path)));
+
+  // Delete from metadata store (using bulkDeleteSubtrees)
+  await metadataStore.bulkDeleteSubtrees(orphanPaths);
 
   // Prune empty ancestors
   for (const orphanPath of orphanPaths) {
-    let currentPath = dirname(orphanPath);
-    while (currentPath !== '.' && currentPath !== '/' && currentPath !== '') {
-      const hasChildren = await metadataStore.hasChildren(currentPath);
-      if (!hasChildren) {
-        await metadataStore.bulkDeleteMerkleNodes([currentPath]);
-        currentPath = dirname(currentPath);
-      } else {
-        break;
-      }
-    }
+    await metadataStore.pruneEmptyParents(orphanPath);
   }
 
   return orphanPaths.length;

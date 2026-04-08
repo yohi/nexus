@@ -1,4 +1,11 @@
-import type { DeadLetterEntry, IMetadataStore, IndexStatsRow, MerkleNodeRow } from '../../../src/types/index.js';
+import { dirname } from 'node:path';
+
+import type {
+  DeadLetterEntry,
+  IMetadataStore,
+  IndexStatsRow,
+  MerkleNodeRow,
+} from '../../../src/types/index.js';
 
 export class InMemoryMetadataStore implements IMetadataStore {
   private readonly nodes = new Map<string, MerkleNodeRow>();
@@ -23,6 +30,14 @@ export class InMemoryMetadataStore implements IMetadataStore {
     }
   }
 
+  async bulkDeleteSubtrees(paths: string[]): Promise<number> {
+    let totalDeleted = 0;
+    for (const pathPrefix of paths) {
+      totalDeleted += await this.deleteSubtree(pathPrefix);
+    }
+    return totalDeleted;
+  }
+
   async deleteSubtree(pathPrefix: string): Promise<number> {
     const normalizedPrefix = `${pathPrefix}/`;
     let deleted = 0;
@@ -35,6 +50,20 @@ export class InMemoryMetadataStore implements IMetadataStore {
     }
 
     return deleted;
+  }
+
+  async pruneEmptyParents(path: string): Promise<void> {
+    let currentPath = dirname(path);
+
+    while (currentPath !== '.' && currentPath !== '/' && currentPath !== '') {
+      const hasChildren = await this.hasChildren(currentPath);
+      if (!hasChildren) {
+        this.nodes.delete(currentPath);
+        currentPath = dirname(currentPath);
+      } else {
+        break;
+      }
+    }
   }
 
   async renamePath(oldPath: string, newPath: string, hash: string): Promise<void> {

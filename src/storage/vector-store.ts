@@ -102,8 +102,10 @@ export class LanceVectorStore implements IVectorStore {
   async deleteByPathPrefix(pathPrefix: string): Promise<number> {
     await this.asyncBoundary();
     let deleted = 0;
+    const prefixWithSlash = pathPrefix.endsWith('/') ? pathPrefix : `${pathPrefix}/`;
     for (const row of this.rows.values()) {
-      if (row.chunk.filePath.startsWith(pathPrefix) && !row.deleted) {
+      const isMatch = row.chunk.filePath === pathPrefix || row.chunk.filePath.startsWith(prefixWithSlash);
+      if (isMatch && !row.deleted) {
         row.deleted = true;
         deleted += 1;
         this.deletedCount += 1;

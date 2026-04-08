@@ -1,3 +1,4 @@
+import { dirname } from 'node:path';
 import Database from 'better-sqlite3';
 
 import type { DeadLetterEntry, IMetadataStore, IndexStatsRow, MerkleNodeRow } from '../types/index.js';
@@ -114,6 +115,34 @@ export class SqliteMetadataStore implements IMetadataStore {
     });
   }
 
+  async bulkDeleteSubtrees(paths: string[]): Promise<number> {
+    const statement = this.db.prepare("DELETE FROM merkle_nodes WHERE path = ? OR path LIKE ? ESCAPE '\\'");
+    let totalChanges = 0;
+
+    await executeBatchedWithYield({
+      items: paths,
+      batchSize: this.batchSize,
+      executeBatch: async (batch) => {
+        await this.asyncBoundary();
+        const transaction = this.db.transaction((rows: string[]) => {
+          let batchChanges = 0;
+          for (const targetPath of rows) {
+            const escapedPrefix = targetPath.replace(/%/g, '\\%').replace(/_/g, '\\_');
+            const prefix = `${escapedPrefix}/%`;
+            const result = statement.run(targetPath, prefix);
+            batchChanges += result.changes;
+          }
+          return batchChanges;
+        });
+
+        totalChanges += transaction(batch);
+      },
+      yieldAfterBatch: this.asyncBoundary,
+    });
+
+    return totalChanges;
+  }
+
   async deleteSubtree(pathPrefix: string): Promise<number> {
     await this.asyncBoundary();
     const escapedPrefix = pathPrefix.replace(/%/g, '\\%').replace(/_/g, '\\_');
@@ -123,6 +152,21 @@ export class SqliteMetadataStore implements IMetadataStore {
       .run(pathPrefix, prefix);
 
     return result.changes;
+  }
+
+  async pruneEmptyParents(path: string): Promise<void> {
+    let currentPath = dirname(path);
+
+    while (currentPath !== '.' && currentPath !== '/' && currentPath !== '') {
+      await this.asyncBoundary();
+      const hasChildren = await this.hasChildren(currentPath);
+      if (!hasChildren) {
+        this.db.prepare('DELETE FROM merkle_nodes WHERE path = ?').run(currentPath);
+        currentPath = dirname(currentPath);
+      } else {
+        break;
+      }
+    }
   }
 
   async renamePath(oldPath: string, newPath: string, hash: string): Promise<void> {
