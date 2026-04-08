@@ -77,11 +77,14 @@ export class InMemoryMetadataStore implements IMetadataStore {
     const oldNode = this.nodes.get(oldPath);
     const isDirectory = oldNode?.isDirectory ?? false;
 
+    const parentPath = dirname(newPath);
+    const normalizedParentPath = (parentPath === '.' || parentPath === '/' || parentPath === '') ? null : parentPath;
+
     this.nodes.delete(oldPath);
     this.nodes.set(newPath, {
       path: newPath,
       hash,
-      parentPath: newPath.includes('/') ? newPath.split('/').slice(0, -1).join('/') : null,
+      parentPath: normalizedParentPath,
       isDirectory,
     });
   }

@@ -49,6 +49,18 @@ describe('LanceVectorStore compaction integration', () => {
     expect(result.fragmentationRatioAfter).toBe(0);
   });
 
+  it('runs post-reindex compaction immediately when fragmentation exceeds threshold', async () => {
+    const store = new LanceVectorStore({ dimensions: 3 });
+    await store.initialize();
+    await store.upsertChunks([makeChunk({ id: 'a', filePath: 'src/a.ts' })]);
+    await store.deleteByFilePath('src/a.ts');
+
+    const result = await store.compactAfterReindex({ fragmentationThreshold: 0, minStaleChunks: 1 });
+
+    expect(result.compacted).toBe(true);
+    expect(result.chunksRemoved).toBe(1);
+  });
+
   it('runs idle compaction only after acquiring the mutex', async () => {
     const store = new LanceVectorStore({ dimensions: 3 });
     await store.initialize();
@@ -79,5 +91,89 @@ describe('LanceVectorStore compaction integration', () => {
     await vi.advanceTimersByTimeAsync(0);
 
     expect(order).toEqual(['compaction-start']);
+  });
+
+  it('cancels idle compaction using AbortSignal after the timer fires', async () => {
+    const store = new LanceVectorStore({ dimensions: 3 });
+    await store.initialize();
+    const order: string[] = [];
+    const controller = new AbortController();
+    let unlock: (() => void) | undefined;
+    const mutex: CompactionMutex = {
+      waitForUnlock: vi.fn(
+        (signal?: AbortSignal) =>
+          new Promise<void>((resolve, reject) => {
+            unlock = resolve;
+            signal?.addEventListener('abort', () => {
+              reject(new Error('AbortError'));
+            });
+          }),
+      ),
+    };
+
+    store.scheduleIdleCompaction(
+      async () => {
+        order.push('compaction-start');
+      },
+      10,
+      mutex,
+      controller.signal,
+    );
+
+    await vi.advanceTimersByTimeAsync(10);
+    expect(mutex.waitForUnlock).toHaveBeenCalledOnce();
+
+    // Cancel while waiting for mutex
+    controller.abort();
+    
+    // Even if we unlock now, compaction should not start
+    unlock?.();
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(order).toEqual([]);
+  });
+
+  it('fails with a timeout error if the mutex is not acquired in time', async () => {
+    const store = new LanceVectorStore({ dimensions: 3 });
+    await store.initialize();
+    const consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    
+    try {
+      const mutex: CompactionMutex = {
+        waitForUnlock: vi.fn(
+          (signal?: AbortSignal) =>
+            new Promise<void>((_, reject) => {
+              if (signal?.aborted) {
+                reject(signal.reason ?? new Error('AbortError'));
+                return;
+              }
+              signal?.addEventListener('abort', () => {
+                reject(signal.reason ?? new Error('AbortError'));
+              }, { once: true });
+            }),
+        ),
+      };
+
+      store.scheduleIdleCompaction(
+        async () => {},
+        10,
+        mutex,
+        undefined,
+        50, // 50ms timeout
+      );
+
+      await vi.advanceTimersByTimeAsync(10); // Wait for delayMs
+      await vi.advanceTimersByTimeAsync(50); // Wait for mutexTimeoutMs
+      await vi.advanceTimersByTimeAsync(0);  // Allow catch block to run
+
+      expect(consoleErrorSpy).toHaveBeenCalledWith(
+        'Compaction failed:',
+        expect.objectContaining({
+          message: expect.stringContaining('Compaction mutex acquisition timed out after 50ms'),
+        }),
+      );
+    } finally {
+      consoleErrorSpy.mockRestore();
+    }
   });
 });

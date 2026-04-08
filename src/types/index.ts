@@ -106,7 +106,7 @@ export interface CompactionConfig {
 }
 
 export interface CompactionMutex {
-  waitForUnlock(): Promise<void>;
+  waitForUnlock(abortSignal?: AbortSignal): Promise<void>;
 }
 
 export interface IVectorStore {
@@ -117,10 +117,13 @@ export interface IVectorStore {
   renameFilePath(oldPath: string, newPath: string): Promise<number>;
   search(queryVector: number[], topK: number, filter?: VectorFilter): Promise<VectorSearchResult[]>;
   compactIfNeeded(config?: Partial<CompactionConfig>): Promise<CompactionResult>;
+  compactAfterReindex(config?: Partial<CompactionConfig>): Promise<CompactionResult>;
   scheduleIdleCompaction(
     runCompaction: () => Promise<void>,
     delayMs?: number,
     mutex?: CompactionMutex,
+    abortSignal?: AbortSignal,
+    mutexTimeoutMs?: number,
   ): NodeJS.Timeout;
   getStats(): Promise<VectorStoreStats>;
 }

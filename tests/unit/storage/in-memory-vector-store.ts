@@ -224,16 +224,62 @@ export class InMemoryVectorStore implements IVectorStore {
     };
   }
 
+  async compactAfterReindex(config?: Partial<CompactionConfig>): Promise<CompactionResult> {
+    return this.compactIfNeeded(config);
+  }
+
   scheduleIdleCompaction(
     runCompaction: () => Promise<void>,
     delayMs = 0,
     mutex?: CompactionMutex,
+    abortSignal?: AbortSignal,
+    mutexTimeoutMs = 30000,
   ): NodeJS.Timeout {
     return setTimeout(() => {
+      if (abortSignal?.aborted) {
+        return;
+      }
+
       Promise.resolve()
-        .then(() => mutex?.waitForUnlock())
-        .then(() => runCompaction())
+        .then(async () => {
+          if (mutex) {
+            const controller = new AbortController();
+            const timeoutId = setTimeout(() => {
+              controller.abort(new Error(`Compaction mutex acquisition timed out after ${mutexTimeoutMs}ms`));
+            }, mutexTimeoutMs);
+
+            const onAbort = () => {
+              controller.abort();
+            };
+            if (abortSignal) {
+              abortSignal.addEventListener('abort', onAbort, { once: true });
+            }
+
+            try {
+              await mutex.waitForUnlock(controller.signal);
+            } catch (error) {
+              if (controller.signal.aborted && controller.signal.reason) {
+                throw controller.signal.reason;
+              }
+              throw error;
+            } finally {
+              clearTimeout(timeoutId);
+              if (abortSignal) {
+                abortSignal.removeEventListener('abort', onAbort);
+              }
+            }
+          }
+        })
+        .then(() => {
+          if (abortSignal?.aborted) {
+            return;
+          }
+          return runCompaction();
+        })
         .catch((error) => {
+          if (error.name === 'AbortError' || abortSignal?.aborted) {
+            return;
+          }
           console.error('Compaction failed:', error);
         });
     }, delayMs);
