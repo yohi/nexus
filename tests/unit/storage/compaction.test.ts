@@ -1,11 +1,11 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import type { CodeChunk, CompactionMutex } from '../../../src/types/index.js';
 import { LanceVectorStore } from '../../../src/storage/vector-store.js';
-import type { CodeChunk } from '../../../src/types/index.js';
 
 const makeChunk = (overrides: Partial<CodeChunk>): CodeChunk => ({
   id: overrides.id ?? 'chunk-1',
-  filePath: overrides.filePath ?? 'src/index.ts',
+  filePath: overrides.filePath ?? 'src/file.ts',
   content: overrides.content ?? 'export const value = 1;',
   language: overrides.language ?? 'typescript',
   symbolName: overrides.symbolName,
@@ -16,20 +16,37 @@ const makeChunk = (overrides: Partial<CodeChunk>): CodeChunk => ({
 });
 
 describe('LanceVectorStore compaction integration', () => {
-  it('waits for the mutex before running idle compaction', async () => {
-    vi.useFakeTimers();
-    const mutex = {
-      waitForUnlock: vi.fn(async () => undefined),
-    };
-    const runCompaction = vi.fn(async () => undefined);
-    const store = new LanceVectorStore({ dimensions: 3 });
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+  });
 
-    store.scheduleIdleCompaction(runCompaction, 10, mutex as any);
-    await vi.advanceTimersByTimeAsync(10);
-
-    expect(mutex.waitForUnlock).toHaveBeenCalledTimes(1);
-    expect(runCompaction).toHaveBeenCalledTimes(1);
+  afterEach(() => {
     vi.useRealTimers();
+  });
+
+  it('skips compaction when fragmentation is below the threshold', async () => {
+    const store = new LanceVectorStore({ dimensions: 3 });
+    await store.initialize();
+    await store.upsertChunks([makeChunk({ id: 'a' }), makeChunk({ id: 'b', filePath: 'src/b.ts' })]);
+    await store.deleteByFilePath('src/file.ts');
+
+    const result = await store.compactIfNeeded({ fragmentationThreshold: 0.8 });
+
+    expect(result.compacted).toBe(false);
+    expect(result.fragmentationRatioBefore).toBeLessThan(0.8);
+  });
+
+  it('compacts deleted rows once fragmentation reaches the threshold', async () => {
+    const store = new LanceVectorStore({ dimensions: 3 });
+    await store.initialize();
+    await store.upsertChunks([makeChunk({ id: 'a' }), makeChunk({ id: 'b', filePath: 'src/b.ts' })]);
+    await store.deleteByFilePath('src/file.ts');
+
+    const result = await store.compactIfNeeded({ fragmentationThreshold: 0.2, minStaleChunks: 1 });
+
+    expect(result.compacted).toBe(true);
+    expect(result.chunksRemoved).toBe(1);
+    expect(result.fragmentationRatioAfter).toBe(0);
   });
 
   it('runs post-reindex compaction immediately when fragmentation exceeds threshold', async () => {
@@ -44,18 +61,35 @@ describe('LanceVectorStore compaction integration', () => {
     expect(result.chunksRemoved).toBe(1);
   });
 
-  it('skips post-reindex compaction when fragmentation is below threshold', async () => {
+  it('runs idle compaction only after acquiring the mutex', async () => {
     const store = new LanceVectorStore({ dimensions: 3 });
     await store.initialize();
-    await store.upsertChunks([makeChunk({ id: 'a', filePath: 'src/a.ts' })]);
+    const order: string[] = [];
+    let unlock: (() => void) | undefined;
+    const mutex: CompactionMutex = {
+      waitForUnlock: vi.fn(
+        () =>
+          new Promise<void>((resolve) => {
+            unlock = resolve;
+          }),
+      ),
+    };
 
-    const result = await store.compactAfterReindex({ fragmentationThreshold: 0.2, minStaleChunks: 1 });
+    store.scheduleIdleCompaction(
+      async () => {
+        order.push('compaction-start');
+      },
+      10,
+      mutex,
+    );
 
-    expect(result).toEqual({
-      compacted: false,
-      fragmentationRatioBefore: 0,
-      fragmentationRatioAfter: 0,
-      chunksRemoved: 0,
-    });
+    await vi.advanceTimersByTimeAsync(10);
+    expect(order).toEqual([]);
+    expect(mutex.waitForUnlock).toHaveBeenCalledOnce();
+
+    unlock?.();
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(order).toEqual(['compaction-start']);
   });
 });
