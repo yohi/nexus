@@ -138,29 +138,42 @@ describe('LanceVectorStore compaction integration', () => {
     await store.initialize();
     const consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
     
-    const mutex: CompactionMutex = {
-      waitForUnlock: vi.fn(() => new Promise<void>(() => {})), // Never resolves
-    };
+    try {
+      const mutex: CompactionMutex = {
+        waitForUnlock: vi.fn(
+          (signal?: AbortSignal) =>
+            new Promise<void>((_, reject) => {
+              if (signal?.aborted) {
+                reject(signal.reason ?? new Error('AbortError'));
+                return;
+              }
+              signal?.addEventListener('abort', () => {
+                reject(signal.reason ?? new Error('AbortError'));
+              }, { once: true });
+            }),
+        ),
+      };
 
-    store.scheduleIdleCompaction(
-      async () => {},
-      10,
-      mutex,
-      undefined,
-      50, // 50ms timeout
-    );
+      store.scheduleIdleCompaction(
+        async () => {},
+        10,
+        mutex,
+        undefined,
+        50, // 50ms timeout
+      );
 
-    await vi.advanceTimersByTimeAsync(10); // Wait for delayMs
-    await vi.advanceTimersByTimeAsync(50); // Wait for mutexTimeoutMs
-    await vi.advanceTimersByTimeAsync(0);  // Allow catch block to run
+      await vi.advanceTimersByTimeAsync(10); // Wait for delayMs
+      await vi.advanceTimersByTimeAsync(50); // Wait for mutexTimeoutMs
+      await vi.advanceTimersByTimeAsync(0);  // Allow catch block to run
 
-    expect(consoleErrorSpy).toHaveBeenCalledWith(
-      'Compaction failed:',
-      expect.objectContaining({
-        message: expect.stringContaining('Compaction mutex acquisition timed out after 50ms'),
-      }),
-    );
-
-    consoleErrorSpy.mockRestore();
+      expect(consoleErrorSpy).toHaveBeenCalledWith(
+        'Compaction failed:',
+        expect.objectContaining({
+          message: expect.stringContaining('Compaction mutex acquisition timed out after 50ms'),
+        }),
+      );
+    } finally {
+      consoleErrorSpy.mockRestore();
+    }
   });
 });

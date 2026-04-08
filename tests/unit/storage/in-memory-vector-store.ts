@@ -243,21 +243,27 @@ export class InMemoryVectorStore implements IVectorStore {
       Promise.resolve()
         .then(async () => {
           if (mutex) {
-            let timeoutId: NodeJS.Timeout | undefined;
-            const timeoutPromise = new Promise<never>((_, reject) => {
-              timeoutId = setTimeout(() => {
-                reject(new Error(`Compaction mutex acquisition timed out after ${mutexTimeoutMs}ms`));
-              }, mutexTimeoutMs);
-            });
+            const controller = new AbortController();
+            const timeoutId = setTimeout(() => {
+              controller.abort(new Error(`Compaction mutex acquisition timed out after ${mutexTimeoutMs}ms`));
+            }, mutexTimeoutMs);
+
+            const onAbort = () => controller.abort();
+            if (abortSignal) {
+              abortSignal.addEventListener('abort', onAbort, { once: true });
+            }
 
             try {
-              await Promise.race([
-                mutex.waitForUnlock(abortSignal),
-                timeoutPromise,
-              ]);
+              await mutex.waitForUnlock(controller.signal);
+            } catch (error) {
+              if (controller.signal.aborted && controller.signal.reason) {
+                throw controller.signal.reason;
+              }
+              throw error;
             } finally {
-              if (timeoutId) {
-                clearTimeout(timeoutId);
+              clearTimeout(timeoutId);
+              if (abortSignal) {
+                abortSignal.removeEventListener('abort', onAbort);
               }
             }
           }
