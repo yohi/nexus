@@ -21,7 +21,7 @@ const makeServerOptions = (): Omit<NexusRuntimeOptions, 'watcher'> => ({
     renameFilePath: async () => 0,
     search: async () => [],
     compactIfNeeded: async () => ({ compacted: false, fragmentationRatioBefore: 0, fragmentationRatioAfter: 0, chunksRemoved: 0 }),
-    scheduleIdleCompaction: () => undefined,
+    scheduleIdleCompaction: () => setTimeout(() => {}, 0),
     getStats: async () => ({ totalChunks: 0, totalFiles: 0, dimensions: 64, fragmentationRatio: 0 }),
   } as any,
   metadataStore: {

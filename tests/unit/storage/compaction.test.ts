@@ -1,6 +1,6 @@
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import type { CodeChunk } from '../../../src/types/index.js';
+import type { CodeChunk, CompactionMutex } from '../../../src/types/index.js';
 import { LanceVectorStore } from '../../../src/storage/vector-store.js';
 
 const makeChunk = (overrides: Partial<CodeChunk>): CodeChunk => ({
@@ -16,6 +16,10 @@ const makeChunk = (overrides: Partial<CodeChunk>): CodeChunk => ({
 });
 
 describe('LanceVectorStore compaction integration', () => {
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+  });
+
   afterEach(() => {
     vi.useRealTimers();
   });
@@ -50,7 +54,7 @@ describe('LanceVectorStore compaction integration', () => {
     await store.initialize();
     const order: string[] = [];
     let unlock: (() => void) | undefined;
-    const mutex = {
+    const mutex: CompactionMutex = {
       waitForUnlock: vi.fn(
         () =>
           new Promise<void>((resolve) => {
@@ -67,12 +71,12 @@ describe('LanceVectorStore compaction integration', () => {
       mutex,
     );
 
-    await new Promise((resolve) => setTimeout(resolve, 5));
+    await vi.advanceTimersByTimeAsync(5);
     expect(order).toEqual([]);
     expect(mutex.waitForUnlock).toHaveBeenCalledOnce();
 
     unlock?.();
-    await new Promise((resolve) => setTimeout(resolve, 5));
+    await vi.advanceTimersByTimeAsync(5);
 
     expect(order).toEqual(['compaction-start']);
   });

@@ -1,4 +1,3 @@
-import type { IIndexPipeline } from '../../indexer/pipeline.js';
 import type { PluginRegistry } from '../../plugins/registry.js';
 import type { IMetadataStore, IVectorStore } from '../../types/index.js';
 
@@ -12,7 +11,6 @@ export interface IndexStatusResult {
 export const executeIndexStatus = async (
   metadataStore: IMetadataStore,
   vectorStore: IVectorStore,
-  pipeline: IIndexPipeline,
   pluginRegistry: PluginRegistry,
 ): Promise<IndexStatusResult> => {
   const [indexStats, vectorStats, deadLetterEntries, pluginHealth] = await Promise.all([
@@ -21,8 +19,6 @@ export const executeIndexStatus = async (
     metadataStore.getDeadLetterEntries(),
     pluginRegistry.healthCheck(),
   ]);
-
-  void pipeline;
 
   return {
     indexStats,
