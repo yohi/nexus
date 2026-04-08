@@ -53,12 +53,18 @@ export class InMemoryMetadataStore implements IMetadataStore {
   }
 
 
-  async pruneEmptyParents(path: string): Promise<void> {
+  async pruneEmptyParents(
+    path: string,
+    pathExists: (targetPath: string) => Promise<boolean>,
+  ): Promise<void> {
     let currentPath = dirname(path);
 
     while (currentPath !== '.' && currentPath !== '/' && currentPath !== '') {
       const hasChildren = await this.hasChildren(currentPath);
       if (!hasChildren) {
+        if (await pathExists(currentPath)) {
+          break;
+        }
         this.nodes.delete(currentPath);
         currentPath = dirname(currentPath);
       } else {

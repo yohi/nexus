@@ -11,6 +11,9 @@ export const gcOrphanNodes = async (
   const orphanPaths: string[] = [];
 
   for (const node of nodes) {
+    if (node.isDirectory) {
+      continue;
+    }
     if (!(await pathExists(node.path))) {
       orphanPaths.push(node.path);
     }
@@ -33,7 +36,7 @@ export const gcOrphanNodes = async (
 
   // Prune empty ancestors
   for (const orphanPath of orphanPaths) {
-    await metadataStore.pruneEmptyParents(orphanPath);
+    await metadataStore.pruneEmptyParents(orphanPath, pathExists);
   }
 
   return orphanPaths.length;

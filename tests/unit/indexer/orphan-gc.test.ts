@@ -57,16 +57,16 @@ describe('gcOrphanNodes', () => {
     const vectorStore = new InMemoryVectorStore({ dimensions: 3 });
     await metadataStore.bulkUpsertMerkleNodes([
       { path: 'src', hash: '', parentPath: null, isDirectory: true },
-      { path: 'src/a.ts', hash: 'h1', parentPath: 'src', isDirectory: false },
-      { path: 'src/b.ts', hash: 'h2', parentPath: 'src', isDirectory: false },
+      { path: 'src/a.ts', hash: '', parentPath: 'src', isDirectory: false },
+      { path: 'src/b.ts', hash: '', parentPath: 'src', isDirectory: false },
       { path: 'keep', hash: '', parentPath: null, isDirectory: true },
       { path: 'keep/file.ts', hash: 'h3', parentPath: 'keep', isDirectory: false },
     ]);
 
     const removed = await gcOrphanNodes(metadataStore, vectorStore, async (p) =>
-      p.startsWith('keep'),
+      p === 'src' || p.startsWith('keep'),
     );
-    expect(removed).toBe(3);
-    expect(await metadataStore.getAllPaths()).toEqual(['keep', 'keep/file.ts']);
+    expect(removed).toBe(2);
+    expect(await metadataStore.getAllPaths()).toEqual(['keep', 'keep/file.ts', 'src']);
   });
 });

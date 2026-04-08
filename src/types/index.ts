@@ -147,7 +147,7 @@ export interface IMetadataStore {
   bulkDeleteMerkleNodes(paths: string[]): Promise<void>;
   bulkDeleteSubtrees(paths: string[]): Promise<number>;
   deleteSubtree(pathPrefix: string): Promise<number>;
-  pruneEmptyParents(path: string): Promise<void>;
+  pruneEmptyParents(path: string, pathExists: (targetPath: string) => Promise<boolean>): Promise<void>;
   renamePath(oldPath: string, newPath: string, hash: string): Promise<void>;
   getMerkleNode(path: string): Promise<MerkleNodeRow | null>;
   hasChildren(path: string): Promise<boolean>;

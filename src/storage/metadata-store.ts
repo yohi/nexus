@@ -145,7 +145,10 @@ export class SqliteMetadataStore implements IMetadataStore {
   }
 
 
-  async pruneEmptyParents(path: string): Promise<void> {
+  async pruneEmptyParents(
+    path: string,
+    pathExists: (targetPath: string) => Promise<boolean>,
+  ): Promise<void> {
     let currentPath = dirname(path);
     const stmt = this.db.prepare('DELETE FROM merkle_nodes WHERE path = ?');
 
@@ -153,6 +156,10 @@ export class SqliteMetadataStore implements IMetadataStore {
       await this.asyncBoundary();
       const hasChildren = await this.hasChildren(currentPath);
       if (!hasChildren) {
+        // If the directory still exists on disk, don't prune it from metadata
+        if (await pathExists(currentPath)) {
+          break;
+        }
         stmt.run(currentPath);
         currentPath = dirname(currentPath);
       } else {
