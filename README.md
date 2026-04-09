@@ -74,7 +74,7 @@ server.listen(3000);
 
 | 環境変数 / キー | デフォルト値 | 説明 |
 | :--- | :--- | :--- |
-| `NEXUS_STORAGE_PATH` | `./.nexus` | インデックスデータの保存先 |
+| `NEXUS_STORAGE_ROOT_DIR` | `<projectRoot>/.nexus` | インデックスデータの保存先 |
 | `embedding.provider` | `ollama` | 使用する Embedding プロバイダー (`ollama`, `openai-compat`) |
 | `embedding.model` | `nomic-embed-text` | Embedding モデル名 |
 
