@@ -1,6 +1,7 @@
 import type {
   CodeChunk,
   CompactionConfig,
+  CompactionMutex,
   CompactionResult,
   IVectorStore,
   VectorFilter,
@@ -102,8 +103,10 @@ export class LanceVectorStore implements IVectorStore {
   async deleteByPathPrefix(pathPrefix: string): Promise<number> {
     await this.asyncBoundary();
     let deleted = 0;
+    const prefixWithSlash = pathPrefix.endsWith('/') ? pathPrefix : `${pathPrefix}/`;
     for (const row of this.rows.values()) {
-      if (row.chunk.filePath.startsWith(pathPrefix) && !row.deleted) {
+      const isMatch = row.chunk.filePath === pathPrefix || row.chunk.filePath.startsWith(prefixWithSlash);
+      if (isMatch && !row.deleted) {
         row.deleted = true;
         deleted += 1;
         this.deletedCount += 1;
@@ -114,6 +117,34 @@ export class LanceVectorStore implements IVectorStore {
 
   async renameFilePath(oldPath: string, newPath: string): Promise<number> {
     await this.asyncBoundary();
+
+    if (oldPath === newPath) {
+      return 0;
+    }
+
+    // Check if oldPath exists first to avoid unnecessary mutations
+    let exists = false;
+    for (const row of this.rows.values()) {
+      if (row.chunk.filePath === oldPath && !row.deleted) {
+        exists = true;
+        break;
+      }
+    }
+
+    if (!exists) {
+      return 0;
+    }
+
+    // Clear any existing chunks at newPath to avoid mixing old/new data
+    for (const [id, row] of [...this.rows.entries()]) {
+      if (row.chunk.filePath === newPath) {
+        if (row.deleted) {
+          this.deletedCount -= 1;
+        }
+        this.rows.delete(id);
+      }
+    }
+
     let renamed = 0;
 
     for (const [id, row] of [...this.rows.entries()]) {
@@ -123,12 +154,15 @@ export class LanceVectorStore implements IVectorStore {
 
       const nextChunk = {
         ...row.chunk,
-        id: row.chunk.id.replace(oldPath, newPath),
+        id: row.chunk.id.replaceAll(oldPath, newPath),
         filePath: newPath,
-        hash: row.chunk.hash.replace(oldPath, newPath),
       };
 
       this.rows.delete(id);
+      const existingAtTarget = this.rows.get(nextChunk.id);
+      if (existingAtTarget?.deleted) {
+        this.deletedCount -= 1;
+      }
       this.rows.set(nextChunk.id, {
         chunk: nextChunk,
         vector: row.vector,
@@ -207,20 +241,59 @@ export class LanceVectorStore implements IVectorStore {
   async compactAfterReindex(config?: Partial<CompactionConfig>): Promise<CompactionResult> {
     return this.compactIfNeeded(config);
   }
+
   scheduleIdleCompaction(
     runCompaction: () => Promise<void>,
     delayMs = 0,
-    mutex?: { waitForUnlock(): Promise<void> },
-  ): void {
-    setTimeout(() => {
+    mutex?: CompactionMutex,
+    abortSignal?: AbortSignal,
+    mutexTimeoutMs = 30000,
+  ): NodeJS.Timeout {
+    return setTimeout(() => {
+      if (abortSignal?.aborted) {
+        return;
+      }
+
       Promise.resolve()
         .then(async () => {
           if (mutex) {
-            await mutex.waitForUnlock();
+            const controller = new AbortController();
+            const timeoutId = setTimeout(() => {
+              controller.abort(new Error(`Compaction mutex acquisition timed out after ${mutexTimeoutMs}ms`));
+            }, mutexTimeoutMs);
+
+            const onAbort = () => {
+              controller.abort();
+            };
+            if (abortSignal) {
+              abortSignal.addEventListener('abort', onAbort, { once: true });
+            }
+
+            try {
+              await mutex.waitForUnlock(controller.signal);
+            } catch (error) {
+              if (controller.signal.aborted && controller.signal.reason) {
+                throw controller.signal.reason;
+              }
+              throw error;
+            } finally {
+              clearTimeout(timeoutId);
+              if (abortSignal) {
+                abortSignal.removeEventListener('abort', onAbort);
+              }
+            }
           }
         })
-        .then(() => runCompaction())
+        .then(() => {
+          if (abortSignal?.aborted) {
+            return;
+          }
+          return runCompaction();
+        })
         .catch((error) => {
+          if (error.name === 'AbortError' || abortSignal?.aborted) {
+            return;
+          }
           console.error('Compaction failed:', error);
         });
     }, delayMs);

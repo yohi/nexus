@@ -1,6 +1,7 @@
 import type {
   CodeChunk,
   CompactionConfig,
+  CompactionMutex,
   CompactionResult,
   IVectorStore,
   VectorFilter,
@@ -57,13 +58,22 @@ export class InMemoryVectorStore implements IVectorStore {
 
     for (let i = 0; i < chunks.length; i++) {
       const chunk = chunks[i]!;
+      const vector = embeddings ? embeddings[i]! : this.vectorize(chunk.content);
+
+      if (vector.length !== this.dimensions) {
+        throw new Error(`InMemoryVectorStore.upsertChunks: vector length mismatch for chunk ${chunk.id} (expected ${this.dimensions}, got ${vector.length})`);
+      }
+      if (!vector.every(Number.isFinite)) {
+        throw new Error(`InMemoryVectorStore.upsertChunks: vector contains non-finite values for chunk ${chunk.id}`);
+      }
+
       const prior = this.records.get(chunk.id);
       if (prior?.deleted) {
         this.deletedCount -= 1;
       }
       this.records.set(chunk.id, {
         chunk,
-        vector: embeddings ? embeddings[i]! : this.vectorize(chunk.content),
+        vector,
         deleted: false,
       });
     }
@@ -84,8 +94,10 @@ export class InMemoryVectorStore implements IVectorStore {
 
   async deleteByPathPrefix(pathPrefix: string): Promise<number> {
     let deleted = 0;
+    const prefixWithSlash = pathPrefix.endsWith('/') ? pathPrefix : `${pathPrefix}/`;
     for (const record of this.records.values()) {
-      if (record.chunk.filePath.startsWith(pathPrefix) && !record.deleted) {
+      const isMatch = record.chunk.filePath === pathPrefix || record.chunk.filePath.startsWith(prefixWithSlash);
+      if (isMatch && !record.deleted) {
         record.deleted = true;
         deleted += 1;
         this.deletedCount += 1;
@@ -96,19 +108,58 @@ export class InMemoryVectorStore implements IVectorStore {
   }
 
   async renameFilePath(oldPath: string, newPath: string): Promise<number> {
-    let renamed = 0;
+    if (oldPath === newPath) {
+      return 0;
+    }
+
+    // Check if oldPath exists first to avoid unnecessary mutations
+    let exists = false;
     for (const record of this.records.values()) {
+      if (record.chunk.filePath === oldPath && !record.deleted) {
+        exists = true;
+        break;
+      }
+    }
+
+    if (!exists) {
+      return 0;
+    }
+
+    // Clear any existing chunks at newPath to avoid mixing old/new data
+    for (const [id, record] of [...this.records.entries()]) {
+      if (record.chunk.filePath === newPath) {
+        if (record.deleted) {
+          this.deletedCount -= 1;
+        }
+        this.records.delete(id);
+      }
+    }
+
+    let renamed = 0;
+    const toAdd: [string, StoredVector][] = [];
+
+    for (const [id, record] of this.records.entries()) {
       if (record.chunk.filePath !== oldPath || record.deleted) {
         continue;
       }
 
-      record.chunk = {
+      this.records.delete(id);
+      const nextChunk = {
         ...record.chunk,
-        id: record.chunk.id.replace(oldPath, newPath),
+        id: record.chunk.id.replaceAll(oldPath, newPath),
         filePath: newPath,
-        hash: record.chunk.hash.replace(oldPath, newPath),
       };
+
+      toAdd.push([nextChunk.id, { ...record, chunk: nextChunk }]);
       renamed += 1;
+    }
+
+    for (const [newId, newRecord] of toAdd) {
+      const prior = this.records.get(newId);
+      if (prior?.deleted) {
+        this.deletedCount -= 1;
+      }
+      this.records.set(newId, newRecord);
     }
 
     return renamed;
@@ -176,20 +227,59 @@ export class InMemoryVectorStore implements IVectorStore {
   async compactAfterReindex(config?: Partial<CompactionConfig>): Promise<CompactionResult> {
     return this.compactIfNeeded(config);
   }
+
   scheduleIdleCompaction(
     runCompaction: () => Promise<void>,
     delayMs = 0,
-    mutex?: { waitForUnlock(): Promise<void> },
-  ): void {
-    setTimeout(() => {
+    mutex?: CompactionMutex,
+    abortSignal?: AbortSignal,
+    mutexTimeoutMs = 30000,
+  ): NodeJS.Timeout {
+    return setTimeout(() => {
+      if (abortSignal?.aborted) {
+        return;
+      }
+
       Promise.resolve()
         .then(async () => {
           if (mutex) {
-            await mutex.waitForUnlock();
+            const controller = new AbortController();
+            const timeoutId = setTimeout(() => {
+              controller.abort(new Error(`Compaction mutex acquisition timed out after ${mutexTimeoutMs}ms`));
+            }, mutexTimeoutMs);
+
+            const onAbort = () => {
+              controller.abort();
+            };
+            if (abortSignal) {
+              abortSignal.addEventListener('abort', onAbort, { once: true });
+            }
+
+            try {
+              await mutex.waitForUnlock(controller.signal);
+            } catch (error) {
+              if (controller.signal.aborted && controller.signal.reason) {
+                throw controller.signal.reason;
+              }
+              throw error;
+            } finally {
+              clearTimeout(timeoutId);
+              if (abortSignal) {
+                abortSignal.removeEventListener('abort', onAbort);
+              }
+            }
           }
         })
-        .then(() => runCompaction())
+        .then(() => {
+          if (abortSignal?.aborted) {
+            return;
+          }
+          return runCompaction();
+        })
         .catch((error) => {
+          if (error.name === 'AbortError' || abortSignal?.aborted) {
+            return;
+          }
           console.error('Compaction failed:', error);
         });
     }, delayMs);

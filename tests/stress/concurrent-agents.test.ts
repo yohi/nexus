@@ -100,8 +100,9 @@ describe('stress: concurrent MCP agents', () => {
           pluginRegistry,
           runReindex: async () => [],
           loadFileContent: async (filePath) => {
-            const relativePath = path.relative(projectRoot, filePath);
-            if (relativePath === 'src/auth.ts' || filePath === 'src/auth.ts') {
+            const relativePath = path.relative(projectRoot, filePath).replace(/\\/g, '/');
+            const normalizedFilePath = filePath.replace(/\\/g, '/');
+            if (relativePath === 'src/auth.ts' || normalizedFilePath === 'src/auth.ts') {
               return 'export function authenticate() {}\n';
             }
             throw new Error(`unexpected file: ${filePath}`);
@@ -155,9 +156,13 @@ describe('stress: concurrent MCP agents', () => {
     }
 
     if (errors.length > 0) {
-      throw errors.length === 1
-        ? errors[0]
-        : new Error(errors.map((error) => error.message).join(', '));
+      if (errors.length === 1) {
+        throw errors[0];
+      }
+      throw new AggregateError(
+        errors,
+        `Multiple errors: ${errors.map((e) => e.message).join(', ')}`
+      );
     }
   });
 
@@ -247,7 +252,7 @@ describe('stress: concurrent MCP agents', () => {
       }),
     );
 
-    await new Promise((resolve) => setTimeout(resolve, SESSION_IDLE_TIMEOUT_MS + 300));
+    await new Promise((resolve) => setTimeout(resolve, SESSION_IDLE_TIMEOUT_MS + 1500));
 
     const secondWave = Array.from({ length: 8 }, (_, index) => {
       const client = new Client({ name: `second-wave-${index + 1}`, version: '1.0.0' });
@@ -279,8 +284,16 @@ const parseResult = (result: unknown) => {
   };
 
   if (candidate.content?.[0]?.type === 'text' && typeof candidate.content[0].text === 'string') {
-    return JSON.parse(candidate.content[0].text) as Record<string, unknown>;
+    try {
+      return JSON.parse(candidate.content[0].text) as Record<string, unknown>;
+    } catch (error) {
+      throw new Error(`Failed to parse candidate.content[0].text: ${candidate.content[0].text}. Error: ${error instanceof Error ? error.message : String(error)}`);
+    }
   }
 
-  return candidate.structuredContent as Record<string, unknown>;
+  if (candidate.structuredContent !== undefined) {
+    return candidate.structuredContent as Record<string, unknown>;
+  }
+
+  throw new Error(`Invalid result: neither parsable text nor structuredContent was available. Candidate: ${JSON.stringify(candidate)}`);
 };
