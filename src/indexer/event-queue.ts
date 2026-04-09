@@ -142,6 +142,7 @@ export class EventQueue {
     const limit = pLimit(this.options.concurrency);
     const results: T[] = [];
     let firstError: unknown;
+    let hasError = false;
 
     // Phase 1: Reindex events
     if (this.reindexQueue.length > 0) {
@@ -173,8 +174,9 @@ export class EventQueue {
               this.enterOverflow();
             }
           }
-          if (!firstError) {
+          if (!hasError) {
             firstError = res.reason;
+            hasError = true;
           }
         }
       }
@@ -210,8 +212,9 @@ export class EventQueue {
               this.enterOverflow();
             }
           }
-          if (!firstError) {
+          if (!hasError) {
             firstError = res.reason;
+            hasError = true;
           }
         }
       }
@@ -224,7 +227,7 @@ export class EventQueue {
       await this.options.onFullScanRequired?.();
     }
 
-    if (firstError) {
+    if (hasError) {
       if (firstError instanceof Error) {
         throw firstError;
       }
