@@ -1,7 +1,11 @@
 import { describe, it, expect } from 'vitest';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import * as nexus from '../../src/index.js';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
 describe('Distribution and Public API', () => {
   it('should export core components from the main entry point', () => {
@@ -23,7 +27,9 @@ describe('Distribution and Public API', () => {
     // pkg.exports['./transport'].import is './dist/server/transport.js'
     // This should correspond to 'src/server/transport.ts'
     const transportExport = exports['./transport'].import;
-    const expectedSrcPath = transportExport
+    expect(typeof transportExport).toBe('string');
+    
+    const expectedSrcPath = (transportExport as string)
       .replace('./dist/', 'src/')
       .replace('.js', '.ts');
     
