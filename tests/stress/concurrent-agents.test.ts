@@ -100,8 +100,9 @@ describe('stress: concurrent MCP agents', () => {
           pluginRegistry,
           runReindex: async () => [],
           loadFileContent: async (filePath) => {
-            const relativePath = path.relative(projectRoot, filePath);
-            if (relativePath === 'src/auth.ts' || filePath === 'src/auth.ts') {
+            const relativePath = path.relative(projectRoot, filePath).replace(/\\/g, '/');
+            const normalizedFilePath = filePath.replace(/\\/g, '/');
+            if (relativePath === 'src/auth.ts' || normalizedFilePath === 'src/auth.ts') {
               return 'export function authenticate() {}\n';
             }
             throw new Error(`unexpected file: ${filePath}`);

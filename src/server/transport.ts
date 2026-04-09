@@ -35,6 +35,14 @@ export const createStreamableHttpHandler = ({
 }: StreamableHttpHandlerOptions) => {
   const sessions = new Map<string, SessionEntry>();
 
+  const safeClose = async (server: McpServer, sessionId?: string): Promise<void> => {
+    try {
+      await server.close();
+    } catch (error) {
+      console.error(`Error closing server for session ${sessionId ?? 'unknown'}:`, error);
+    }
+  };
+
   const closeEntry = async (sessionId: string, entry: SessionEntry): Promise<void> => {
     if (entry.closed) {
       sessions.delete(sessionId);
@@ -43,7 +51,7 @@ export const createStreamableHttpHandler = ({
 
     entry.closed = true;
     sessions.delete(sessionId);
-    await entry.server.close();
+    await safeClose(entry.server, sessionId);
   };
 
   const interval = setInterval(() => {
@@ -75,13 +83,14 @@ export const createStreamableHttpHandler = ({
 
     try {
       let entry = sessionId ? sessions.get(sessionId) : undefined;
+      let createdEntry: SessionEntry | undefined;
 
       if (entry) {
         if (entry.closed) {
           sessions.delete(sessionId!);
           entry = undefined;
         } else {
-        entry.lastActivity = Date.now();
+          entry.lastActivity = Date.now();
         }
       } else {
         if (!isInitializeRequest(body)) {
@@ -92,7 +101,6 @@ export const createStreamableHttpHandler = ({
         }
 
         const server = createServer();
-        let createdEntry: SessionEntry | undefined;
         const transport = new StreamableHTTPServerTransport({
           sessionIdGenerator: () => randomUUID(),
           onsessioninitialized: (createdSessionId) => {
@@ -118,11 +126,10 @@ export const createStreamableHttpHandler = ({
             if (activeId) {
               sessions.delete(activeId);
             }
-            void finalEntry.server.close();
+            void safeClose(finalEntry.server, activeId);
           }
         };
 
-        await server.connect(transport);
         entry = createdEntry;
       }
 
@@ -130,7 +137,22 @@ export const createStreamableHttpHandler = ({
         throw new HttpError(400, 'invalid session');
       }
 
-      await entry.transport.handleRequest(req, res, body);
+      try {
+        if (createdEntry) {
+          await entry.server.connect(entry.transport);
+        }
+        await entry.transport.handleRequest(req, res, body);
+      } catch (error) {
+        if (createdEntry && !createdEntry.closed) {
+          createdEntry.closed = true;
+          const activeId = createdEntry.transport.sessionId;
+          if (activeId) {
+            sessions.delete(activeId);
+          }
+          await safeClose(createdEntry.server, activeId);
+        }
+        throw error;
+      }
 
       // The sessions.set(activeSessionId, entry) after handleRequest is intentionally
       // idempotent (safe if onsessioninitialized already inserted the session). It
