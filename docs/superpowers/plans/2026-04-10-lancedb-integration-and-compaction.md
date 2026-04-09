@@ -797,6 +797,7 @@ private inflightOps = 0;
 private closingResolve: (() => void) | undefined = undefined;
 private closing = false;
 private static readonly CLOSE_TIMEOUT_MS = 5_000;
+private static readonly CLEANUP_GRACE_PERIOD_MS = 300_000; // 5分
 ```
 
 - [ ] **Step 3: コンストラクタ更新**
@@ -898,6 +899,7 @@ async upsertChunks(chunks: CodeChunk[], embeddings?: number[][]): Promise<void> 
     symbolKind: chunk.symbolKind,
     startLine: chunk.startLine,
     endLine: chunk.endLine,
+    hash: chunk.hash,
     vector: embeddings ? embeddings[i]! : [],
   }));
 
@@ -934,6 +936,7 @@ async upsertChunks(chunks: CodeChunk[], embeddings?: number[][]): Promise<void> 
     symbolKind: chunk.symbolKind,
     startLine: chunk.startLine,
     endLine: chunk.endLine,
+    hash: chunk.hash,
     vector: embeddings ? embeddings[i]! : [],
   }));
 
@@ -1397,7 +1400,7 @@ start(): void {
   this.idleCompactionTimer = this.options.vectorStore.scheduleIdleCompaction(
     () => this.options.vectorStore.compactIfNeeded(),
     300_000, // 5分
-    { waitForUnlock: (signal) => this.mutex.waitForUnlock({ signal }) },
+    { waitForUnlock: () => this.mutex.waitForUnlock() },
     this.abortController.signal,
   );
   this.idleCompactionTimer.unref();
