@@ -230,10 +230,11 @@ export class EventQueue {
       }
       let message: string;
       try {
-        message = typeof firstError === 'string' ? firstError : JSON.stringify(firstError);
-        if (message === undefined) {
-          throw new Error(); // trigger catch for undefined result
+        const stringified = typeof firstError === 'string' ? firstError : JSON.stringify(firstError);
+        if (typeof stringified !== 'string') {
+          throw new Error();
         }
+        message = stringified;
       } catch {
         message = inspect(firstError, { depth: null });
       }
