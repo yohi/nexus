@@ -14,17 +14,17 @@ jobs:
   release-please:
     runs-on: ubuntu-slim
     steps:
-      - uses: googleapis/release-please-action@v4
+      - uses: googleapis/release-please-action@c3fc4de07084f75a2b61a5b933069bda6edf3d5c # v4
         id: release
         with:
           release-type: node
           target-branch: master
 
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         if: ${{ steps.release.outputs.release_created }}
         with:
           ref: ${{ steps.release.outputs.tag_name }}
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         if: ${{ steps.release.outputs.release_created }}
         with:
           node-version: '22'
@@ -37,7 +37,7 @@ jobs:
         run: npm run build
         if: ${{ steps.release.outputs.release_created }}
       - name: Upload Build Artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: nexus-dist
           path: dist/
