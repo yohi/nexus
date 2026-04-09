@@ -1,5 +1,17 @@
 # Changelog
 
+## [1.1.0](https://github.com/yohi/nexus/compare/v1.0.0...v1.1.0) (2026-04-09)
+
+
+### Features
+
+* AIエージェントによる自動セットアップ用のAGENTS.mdとbootstrapスクリプトを追加 ([b2d1cca](https://github.com/yohi/nexus/commit/b2d1cca10de6c7ddfbcbda973983d478a5bb670d))
+
+
+### Bug Fixes
+
+* AIエージェント向けプロンプトの明示化とエラーハンドリングの改善 ([869e6d2](https://github.com/yohi/nexus/commit/869e6d25402bbe5ad4927ea5f0ed64d4195f3c4d))
+
 ## 1.0.0 (2026-04-09)
 
 
