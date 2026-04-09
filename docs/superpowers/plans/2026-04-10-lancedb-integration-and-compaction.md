@@ -988,18 +988,18 @@ async deleteByPathPrefix(pathPrefix: string): Promise<number> {
 async renameFilePath(oldPath: string, newPath: string): Promise<number> {
   return this.trackOp(async () => {
     if (!this.table) return 0;
-    // table.update() は更新行数を返す
-    const result = await this.table.update({
+    const before = await this.table.countRows(this.filePathFilter(oldPath));
+    await this.table.update({
       where: this.filePathFilter(oldPath),
       values: { filePath: newPath },
     });
-    return result;
+    return before;
   });
 }
 ```
 
 > [!NOTE]
-> LanceDB の `table.update()` の戻り値の型は実行時に確認が必要。`number` または `{ count: number }` の可能性がある。テスト実行時に型を確定させる。
+> `table.update()` は `Promise<void>` を返すため、`deleteByFilePath` / `deleteByPathPrefix` と同様に `countRows` で事前に件数を取得するパターンを採用。
 
 - [ ] **Step 11: search 実装**
 
