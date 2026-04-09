@@ -1,3 +1,5 @@
+import { inspect } from 'node:util';
+
 import pLimit from 'p-limit';
 
 import type { IndexEvent, ReindexOptions, ReindexQueueEvent } from '../types/index.js';
@@ -140,6 +142,7 @@ export class EventQueue {
     const limit = pLimit(this.options.concurrency);
     const results: T[] = [];
     let firstError: unknown;
+    let hasError = false;
 
     // Phase 1: Reindex events
     if (this.reindexQueue.length > 0) {
@@ -171,8 +174,9 @@ export class EventQueue {
               this.enterOverflow();
             }
           }
-          if (!firstError) {
+          if (!hasError) {
             firstError = res.reason;
+            hasError = true;
           }
         }
       }
@@ -208,8 +212,9 @@ export class EventQueue {
               this.enterOverflow();
             }
           }
-          if (!firstError) {
+          if (!hasError) {
             firstError = res.reason;
+            hasError = true;
           }
         }
       }
@@ -222,8 +227,21 @@ export class EventQueue {
       await this.options.onFullScanRequired?.();
     }
 
-    if (firstError) {
-      throw firstError instanceof Error ? firstError : new Error(String(firstError));
+    if (hasError) {
+      if (firstError instanceof Error) {
+        throw firstError;
+      }
+      let message: string;
+      try {
+        const stringified = typeof firstError === 'string' ? firstError : JSON.stringify(firstError);
+        if (typeof stringified !== 'string') {
+          throw new Error();
+        }
+        message = stringified;
+      } catch {
+        message = inspect(firstError, { depth: null });
+      }
+      throw new Error(message);
     }
 
     return results;
