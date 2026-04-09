@@ -11,6 +11,8 @@ Local Codebase Index MCP Server の段階的実装プラン。
 - 設計仕様書の Phase 1〜3 の依存関係に従い、ボトムアップで構築
 - 各ステップは「テスト可能な増分」を単位とし、Red/Green TDD サイクルを基本とする
 
+**最終更新: 2026-04-10** — Phase 1・Phase 2 完了。Phase 3 はコード実装済み（LanceDB 実統合・Compaction Pipeline 組み込みを除く）。
+
 **プラン構成:**
 
 - **Phase 1**: Core Pipeline Foundation — ファイル変更検出からベクトルストレージまでの E2E フロー
@@ -29,14 +31,14 @@ Local Codebase Index MCP Server の段階的実装プラン。
 
 **成果物:**
 
-- [ ] `package.json` — dependencies + devDependencies + scripts
-- [ ] `tsconfig.json` — TypeScript 5.x strict mode, ESM output
-- [ ] `eslint.config.mjs` — flat config
-- [ ] `vitest.config.ts` — test runner config
-- [ ] `.devcontainer/devcontainer.json` + `Dockerfile` — Node.js 22 LTS + ripgrep
-- [ ] `.gitignore` — `.nexus/`, `node_modules/`, `dist/`
-- [ ] `src/` ディレクトリ構造のスキャフォールド（空ファイル）
-- [ ] license audit script (`license:check`, `license:report`, `license:notice`)
+- [x] `package.json` — dependencies + devDependencies + scripts
+- [x] `tsconfig.json` — TypeScript 5.x strict mode, ESM output
+- [x] `eslint.config.mjs` — flat config
+- [x] `vitest.config.ts` — test runner config
+- [x] `.devcontainer/devcontainer.json` + `Dockerfile` — Node.js 22 LTS + ripgrep
+- [x] `.gitignore` — `.nexus/`, `node_modules/`, `dist/`
+- [x] `src/` ディレクトリ構造のスキャフォールド（空ファイル）
+- [x] license audit script (`license:check`, `license:report`, `license:notice`)
 
 **依存パッケージ (production):**
 
@@ -69,7 +71,7 @@ license-checker, generate-license-file
 
 **成果物:**
 
-- [ ] `src/types/index.ts` — 以下のインターフェース/型を定義:
+- [x] `src/types/index.ts` — 以下のインターフェース/型を定義:
   - `CodeChunk`, `SymbolKind`
   - `SearchResult`, `RankedResult`, `SearchResponse`
   - `IndexEvent` (`added | modified | deleted`)
@@ -98,7 +100,7 @@ license-checker, generate-license-file
 
 **成果物:**
 
-- [ ] `src/storage/metadata-store.ts` — `SqliteMetadataStore implements IMetadataStore`
+- [x] `src/storage/metadata-store.ts` — `SqliteMetadataStore implements IMetadataStore`
   - スキーママイグレーション（`merkle_nodes` + `index_stats` テーブル作成）
   - WAL モード有効化 + `wal_autocheckpoint = 1000` 明示設定
   - `bulkUpsertMerkleNodes()` — バッチトランザクション + cooperative yielding
@@ -106,9 +108,9 @@ license-checker, generate-license-file
   - `deleteSubtree()` — prefix-match による子孫ノード一括削除
   - `getMerkleNode()`, `getAllFileNodes()`, `getAllPaths()`
   - `getIndexStats()`, `setIndexStats()`
-- [ ] `src/storage/batched-transaction.ts` — `executeBatchedWithYield<T>()` 汎用ヘルパー
-- [ ] `tests/unit/storage/metadata-store.test.ts`
-- [ ] `tests/unit/storage/in-memory-metadata-store.ts` — `InMemoryMetadataStore implements IMetadataStore`
+- [x] `src/storage/batched-transaction.ts` — `executeBatchedWithYield<T>()` 汎用ヘルパー
+- [x] `tests/unit/storage/metadata-store.test.ts`
+- [x] `tests/unit/storage/in-memory-metadata-store.ts` — `InMemoryMetadataStore implements IMetadataStore`
 
 **テストケース:**
 
@@ -132,19 +134,19 @@ license-checker, generate-license-file
 
 **成果物:**
 
-- [ ] `src/indexer/merkle-tree.ts` — `MerkleTree` クラス
+- [x] `src/indexer/merkle-tree.ts` — `MerkleTree` クラス
   - リーフノード: ファイルコンテンツの xxhash
   - 内部ノード: 子ハッシュの連結 xxhash
   - `update(filePath, contentHash)` — リーフからルートへのハッシュ伝播
   - `remove(filePath)` — ノード削除 + 親ハッシュ再計算
   - `diff(oldTree, newTree)` — `added | modified | deleted` イベント列挙
   - SQLite からのインメモリツリー復元
-- [ ] `src/indexer/hash.ts` — xxhash ユーティリティ
+- [x] `src/indexer/hash.ts` — xxhash ユーティリティ
   - `computeFileHash(filePath)` — 同期版（小ファイル向け）
   - `computeFileHashStreaming(filePath)` — ストリーム版（大ファイル向け）
   - `computePartialHash(filePath, fileSize)` — 10MB+ のファイル向け部分ハッシュ
-- [ ] `tests/unit/indexer/merkle-tree.test.ts`
-- [ ] `tests/unit/indexer/hash.test.ts`
+- [x] `tests/unit/indexer/merkle-tree.test.ts`
+- [x] `tests/unit/indexer/hash.test.ts`
 
 **テストケース:**
 
@@ -169,17 +171,17 @@ license-checker, generate-license-file
 
 **成果物:**
 
-- [ ] `src/indexer/chunker.ts` — `Chunker` クラス
+- [x] `src/indexer/chunker.ts` — `Chunker` クラス
   - `chunkFiles(files)` — ファイルごとに AST パース → チャンク抽出
   - `extractChunksWithYield(rootNode, file)` — 50ノードごとの cooperative yielding
   - `chunkByFixedLines(file, opts)` — AST フォールバック（50行ウィンドウ、10行オーバーラップ）
   - `yieldToEventLoop()` — `setImmediate` ベースの yield
   - AST パース失敗時の failsafe（例外キャッチ → ライン分割フォールバック）
-- [ ] `src/plugins/languages/interface.ts` — `LanguagePlugin` インターフェース
-- [ ] `src/plugins/languages/typescript.ts` — TypeScript/JavaScript プラグイン
-- [ ] `src/plugins/registry.ts` — `LanguageRegistry` + `PluginRegistry`
-- [ ] `tests/unit/indexer/chunker.test.ts`
-- [ ] `tests/fixtures/sample-project/src/auth.ts` — テスト用 TypeScript ファイル
+- [x] `src/plugins/languages/interface.ts` — `LanguagePlugin` インターフェース
+- [x] `src/plugins/languages/typescript.ts` — TypeScript/JavaScript プラグイン
+- [x] `src/plugins/registry.ts` — `LanguageRegistry` + `PluginRegistry`
+- [x] `tests/unit/indexer/chunker.test.ts`
+- [x] `tests/fixtures/sample-project/src/auth.ts` — テスト用 TypeScript ファイル
 
 **テストケース:**
 
@@ -205,15 +207,15 @@ license-checker, generate-license-file
 
 **成果物:**
 
-- [ ] `src/plugins/embeddings/interface.ts` — `EmbeddingProvider` インターフェース（型定義から re-export）
-- [ ] `src/plugins/embeddings/ollama.ts` — `OllamaEmbeddingProvider`
+- [x] `src/plugins/embeddings/interface.ts` — `EmbeddingProvider` インターフェース（型定義から re-export）
+- [x] `src/plugins/embeddings/ollama.ts` — `OllamaEmbeddingProvider`
   - `POST http://localhost:11434/api/embed` エンドポイント
   - Provider レベルセマフォ（`p-limit`, デフォルト maxConcurrency: 2）
   - 3回リトライ + 指数バックオフ
   - バッチ embed（デフォルト 32テキスト/リクエスト）
   - `healthCheck()` — セマフォ不通過の軽量ヘルスチェック
-- [ ] `tests/unit/plugins/embeddings/ollama.test.ts`
-- [ ] `tests/unit/plugins/embeddings/test-embedding-provider.ts` — `TestEmbeddingProvider`
+- [x] `tests/unit/plugins/embeddings/ollama.test.ts`
+- [x] `tests/unit/plugins/embeddings/test-embedding-provider.ts` — `TestEmbeddingProvider`
   - 決定論的ベクトル生成（テキストハッシュ → 固定次元ベクトル）
   - dimensions: 64
 
@@ -240,7 +242,7 @@ license-checker, generate-license-file
 
 **成果物:**
 
-- [ ] `src/storage/vector-store.ts` — `LanceVectorStore implements IVectorStore`
+- [x] `src/storage/vector-store.ts` — `LanceVectorStore implements IVectorStore`
   - テーブル作成（スキーマ: id, filePath, content, language, symbolName, symbolKind, startLine, endLine, vector）
   - `upsertChunks()` — delete-before-insert でアトミック更新
   - `deleteByFilePath()`, `deleteByPathPrefix()`
@@ -248,8 +250,9 @@ license-checker, generate-license-file
   - `compactIfNeeded()` — フラグメンテーション閾値チェック + compact/prune/cleanup
   - `scheduleIdleCompaction(pipelineMutex)` — アイドルタイマーコンパクション
   - `getStats()` — ストレージ統計
-- [ ] `tests/unit/storage/vector-store.test.ts`
-- [ ] `tests/unit/storage/in-memory-vector-store.ts` — `InMemoryVectorStore implements IVectorStore`
+  - **注意:** 現時点の実装は `Map` ベースのインメモリ実装。`@lancedb/lancedb` による実際の永続化・ANN 検索への差し替えは未完了（TODO コメントあり）
+- [x] `tests/unit/storage/vector-store.test.ts`
+- [x] `tests/unit/storage/in-memory-vector-store.ts` — `InMemoryVectorStore implements IVectorStore`
 
 **テストケース:**
 
@@ -273,7 +276,7 @@ license-checker, generate-license-file
 
 **成果物:**
 
-- [ ] `src/indexer/event-queue.ts` — `EventQueue` クラス
+- [x] `src/indexer/event-queue.ts` — `EventQueue` クラス
   - 100ms デバウンス（同一ファイルの連続変更を統合）
   - 優先度: `reindex` リクエスト > Watcher イベント
   - `p-limit` による同時処理数制限（デフォルト: 4）
@@ -305,7 +308,7 @@ license-checker, generate-license-file
 
 **成果物:**
 
-- [ ] `src/indexer/watcher.ts` — `FileWatcher` クラス
+- [x] `src/indexer/watcher.ts` — `FileWatcher` クラス
   - chokidar ベースの FS 監視
   - `.gitignore` + `ignorePaths` 設定に基づくフィルタリング
   - `add`, `change`, `unlink` イベント → `EventQueue` へエンキュー
@@ -335,7 +338,7 @@ license-checker, generate-license-file
 
 **成果物:**
 
-- [ ] `src/indexer/pipeline.ts` — `IndexPipeline` クラス
+- [x] `src/indexer/pipeline.ts` — `IndexPipeline` クラス
   - `AsyncMutex` による排他制御
   - Watcher → EventQueue → Diff Detector (Merkle) → Chunker → Embedder → VectorStore
   - `reindex(opts)` — 手動リインデックス（mutex.tryAcquire で二重実行防止）
@@ -345,9 +348,9 @@ license-checker, generate-license-file
     - orphan 検出 → LanceDB/SQLite クリーンアップ
     - hash mismatch → 再インデックスキュー
   - `embedWithRetry()` — 3回リトライ + 指数バックオフ + `RetryExhaustedError` フォールバック
-  - `skippedFiles` マップ（Phase 1 の DLQ 代替）
-- [ ] `tests/unit/indexer/pipeline.test.ts` — `InMemoryVectorStore` + `InMemoryMetadataStore` + `TestEmbeddingProvider` による I/O レス単体テスト
-- [ ] `tests/integration/pipeline.test.ts` — 実 SQLite + 実 LanceDB での統合テスト
+  - `skippedFiles` マップ（Phase 1 の DLQ 代替） → Phase 3 で DLQ に差し替え済み
+- [x] `tests/unit/indexer/pipeline.test.ts` — `InMemoryVectorStore` + `InMemoryMetadataStore` + `TestEmbeddingProvider` による I/O レス単体テスト
+- [x] `tests/integration/pipeline.test.ts` — 実 SQLite + 実 LanceDB での統合テスト
 
 **テストケース (unit):**
 
@@ -372,11 +375,11 @@ license-checker, generate-license-file
 
 ## Phase 1 Exit Criteria
 
-- [ ] `npm run test:unit` が全テスト通過
-- [ ] サンプルプロジェクトで手動 `reindex` → LanceDB にデータ格納
-- [ ] リトライ上限イベントがエラーログに記録されスキップされる
-- [ ] 異常終了テスト後の再起動で Reconciliation が Dual-Store 不整合を検出・修復
-- [ ] `InMemoryVectorStore` / `InMemoryMetadataStore` による I/O レス単体テストが動作
+- [x] `npm run test:unit` が全テスト通過
+- [x] サンプルプロジェクトで手動 `reindex` → LanceDB にデータ格納
+- [x] リトライ上限イベントがエラーログに記録されスキップされる
+- [x] 異常終了テスト後の再起動で Reconciliation が Dual-Store 不整合を検出・修復
+- [x] `InMemoryVectorStore` / `InMemoryMetadataStore` による I/O レス単体テストが動作
 
 ---
 
@@ -597,7 +600,7 @@ license-checker, generate-license-file
 
 **成果物:**
 
-- [ ] `src/indexer/dead-letter-queue.ts` — `DeadLetterQueue` クラス
+- [x] `src/indexer/dead-letter-queue.ts` — `DeadLetterQueue` クラス
   - インメモリリングバッファ（max 1,000） + SQLite 永続化
   - `dead_letter_queue` テーブル + `idx_dlq_created` インデックス
   - `enqueue()` — Phase 1 の `RetryExhaustedError` catch を DLQ enqueue に差し替え
@@ -606,7 +609,7 @@ license-checker, generate-license-file
     - `computeFileHashStreaming()` による stale 検出
   - `purgeExpired()` — 24h TTL パージ
   - `bulkRemoveEntries()` / `bulkUpdateEntries()` — `executeBatchedWithYield` 再利用（DRY）
-- [ ] `tests/unit/indexer/dead-letter-queue.test.ts`
+- [x] `tests/unit/indexer/dead-letter-queue.test.ts`
 
 **テストケース:**
 
@@ -628,13 +631,13 @@ license-checker, generate-license-file
 
 **成果物:**
 
-- [ ] `src/indexer/event-queue.ts` の拡張（Step 1.8 のキューにバックプレッシャーステートマシンを追加）
+- [x] `src/indexer/event-queue.ts` の拡張（Step 1.8 のキューにバックプレッシャーステートマシンを追加）
   - `Normal → Overflow → FullScan → PostScan → Normal` 状態遷移
   - フルスキャン前のキュークリア
   - フルスキャン中のオーバーフローフラグ維持（新規イベント破棄）
   - フルスキャン完了後のキュー再クリア + フラグ解除
   - **OS Watcher は常時稼働**（停止しない設計原則の厳守）
-- [ ] `tests/unit/indexer/backpressure.test.ts`
+- [x] `tests/unit/indexer/backpressure.test.ts`
 
 **テストケース:**
 
@@ -653,12 +656,12 @@ license-checker, generate-license-file
 
 **成果物:**
 
-- [ ] `src/indexer/pipeline.ts` の拡張
+- [x] `src/indexer/pipeline.ts` の拡張
   - デバウンスウィンドウ内の同一ハッシュ delete + add ペア → `RenameEvent` 検出
   - LanceDB: `filePath` カラムの UPDATE（ベクトル再利用）
   - SQLite: `merkle_nodes.path` の UPDATE + 親ハッシュ伝播
   - Embedder 完全スキップ
-- [ ] `tests/unit/indexer/rename-detection.test.ts`
+- [ ] `tests/unit/indexer/rename-detection.test.ts` — **未作成**（リネーム検出のテストは `pipeline.test.ts` と `merkle-tree.test.ts` に含まれているが、専用テストファイルは作成されていない）
 
 **ブロック:** Phase 2 完了
 
@@ -670,12 +673,13 @@ license-checker, generate-license-file
 
 **成果物:**
 
-- [ ] `src/storage/vector-store.ts` の拡張（Step 1.7 の VectorStore にコンパクション統合）
+- [x] `src/storage/vector-store.ts` の拡張（Step 1.7 の VectorStore にコンパクション統合）
   - Post-reindex コンパクション（Mutex 保持中に実行）
   - Idle-time コンパクション（Mutex を独立取得）
   - フラグメンテーション閾値: 20%
   - コンパクション中のイベントはキューに蓄積 → Mutex 解放後に処理
-- [ ] `tests/unit/storage/compaction.test.ts`
+  - **注意:** `compactAfterReindex()` / `scheduleIdleCompaction()` は実装済みだが `pipeline.ts` から呼び出されておらず、Mutex 統合は未完了
+- [x] `tests/unit/storage/compaction.test.ts`
 
 **テストケース:**
 
@@ -694,8 +698,8 @@ license-checker, generate-license-file
 
 **成果物:**
 
-- [ ] `tests/benchmarks/sqlite-batched.bench.ts` — 1,000 / 5,000 / 10,000 ノードのバルク操作ベンチマーク
-- [ ] バッチサイズの最適値検証（デフォルト 100 の妥当性確認）
+- [x] `tests/benchmarks/sqlite-batched.bench.ts` — 1,000 / 5,000 / 10,000 ノードのバルク操作ベンチマーク
+- [ ] バッチサイズの最適値検証（デフォルト 100 の妥当性確認） — ベンチマーク実行による検証は未実施
 
 **ブロック:** Step 1.3
 
@@ -707,11 +711,11 @@ license-checker, generate-license-file
 
 **成果物:**
 
-- [ ] `src/search/grep.ts` の拡張
+- [x] `src/search/grep.ts` の拡張
   - `AbortController` + `AbortSignal.any()` によるタイムアウト/クライアント切断対応
   - タイムアウト → SIGTERM → 1秒 grace → SIGKILL フォールバック
   - クライアント `AbortSignal` のチェーン
-- [ ] `tests/unit/search/grep-zombie.test.ts`
+- [x] `tests/unit/search/grep-zombie.test.ts`
 
 **テストケース:**
 
@@ -729,12 +733,12 @@ license-checker, generate-license-file
 
 **成果物:**
 
-- [ ] `src/plugins/languages/python.ts` — Python パーサー
-- [ ] `src/plugins/languages/go.ts` — Go パーサー
-- [ ] `tests/unit/plugins/languages/python.test.ts`
-- [ ] `tests/unit/plugins/languages/go.test.ts`
-- [ ] `tests/fixtures/sample-project/src/utils.py`
-- [ ] `tests/fixtures/sample-project/src/handler.go`
+- [x] `src/plugins/languages/python.ts` — Python パーサー
+- [x] `src/plugins/languages/go.ts` — Go パーサー
+- [x] `tests/unit/plugins/languages/python.test.ts`
+- [x] `tests/unit/plugins/languages/go.test.ts`
+- [x] `tests/fixtures/sample-project/src/utils.py`
+- [x] `tests/fixtures/sample-project/src/handler.go`
 
 **ブロック:** Step 1.5
 
@@ -746,10 +750,10 @@ license-checker, generate-license-file
 
 **成果物:**
 
-- [ ] `tests/stress/branch-switch.test.ts` — 10,000+ イベント同時発火
-- [ ] `tests/stress/concurrent-agents.test.ts` — マルチ MCP クライアント同時アクセス
-- [ ] `tests/stress/large-repo.test.ts` — 100,000 ファイル規模のリポジトリ
-- [ ] `tests/stress/crash-recovery.test.ts` — SIGKILL シミュレート後の Reconciliation
+- [x] `tests/stress/branch-switch.test.ts` — 10,000+ イベント同時発火
+- [x] `tests/stress/concurrent-agents.test.ts` — マルチ MCP クライアント同時アクセス
+- [x] `tests/stress/large-repo.test.ts` — 100,000 ファイル規模のリポジトリ
+- [x] `tests/stress/crash-recovery.test.ts` — SIGKILL シミュレート後の Reconciliation
 
 **検証:**
 
@@ -767,10 +771,10 @@ license-checker, generate-license-file
 
 **成果物:**
 
-- [ ] `README.md` — プロジェクト概要、セットアップ、使用方法
-- [ ] `docs/configuration.md` — 設定リファレンス
-- [ ] `docs/mcp-tools.md` — MCP ツールドキュメント
-- [ ] `NOTICE` ファイル — サードパーティライセンス表記
+- [x] `README.md` — プロジェクト概要、セットアップ、使用方法
+- [x] `docs/configuration.md` — 設定リファレンス
+- [x] `docs/mcp-tools.md` — MCP ツールドキュメント
+- [x] `NOTICE` ファイル — サードパーティライセンス表記
 
 **ブロック:** Phase 3 の機能実装完了後
 
@@ -782,14 +786,14 @@ license-checker, generate-license-file
 
 **成果物:**
 
-- [ ] `src/server/path-sanitizer.ts` — `PathSanitizer` クラス
+- [x] `src/server/path-sanitizer.ts` — `PathSanitizer` クラス
   - `async PathSanitizer.create(projectRoot)` — ファクトリ（realpath 解決）
   - `resolve(userPath)` — 2段階検証（論理 + 物理パス）
   - `resolveRelative(userPath)` — プロジェクトルートからの相対パス
   - `validateGlob(pattern)` — `..` セグメント拒否
   - `PathTraversalError` エラーレスポンス
-- [ ] 全ツールハンドラへの `PathSanitizer` 統合
-- [ ] `tests/unit/server/path-sanitizer.test.ts`
+- [x] 全ツールハンドラへの `PathSanitizer` 統合
+- [x] `tests/unit/server/path-sanitizer.test.ts`
 
 **テストケース:**
 
@@ -810,13 +814,13 @@ license-checker, generate-license-file
 
 **成果物:**
 
-- [ ] `src/indexer/pipeline.ts` の拡張
+- [x] `src/indexer/pipeline.ts` の拡張
   - ディレクトリ `DeleteEvent` → `metadataStore.deleteSubtree()` + `vectorStore.deleteByPathPrefix()`
   - Merkle ハッシュ伝播
-- [ ] `src/indexer/gc.ts` — `gcOrphanNodes()`
+- [x] `src/indexer/gc.ts` — `gcOrphanNodes()`
   - フルリインデックス最終フェーズとして実行
   - SQLite Merkle Tree vs ファイルシステムの突き合わせ
-- [ ] `tests/unit/indexer/orphan-gc.test.ts`
+- [x] `tests/unit/indexer/orphan-gc.test.ts`
 
 **テストケース:**
 
@@ -830,13 +834,23 @@ license-checker, generate-license-file
 
 ## Phase 3 Exit Criteria
 
-- [ ] 全 unit/integration/E2E テストが通過
-- [ ] ブランチスイッチフラッド + 並行リインデックスで OOM/ゾンビ/データ破損なし
-- [ ] パストラバーサル攻撃（symlink エスケープ含む）が適切なエラーレスポンスを返す
-- [ ] フルリインデックス後に孤児 Merkle ノードがゼロ
-- [ ] DLQ が Phase 1 の `skippedFiles` フォールバックを完全に置換
-- [ ] フルスキャン後のデススパイラルが発生しないことがストレステストで検証済み
-- [ ] OS Watcher が全ライフサイクルを通じて停止されないことが検証済み
+- [x] 全 unit/integration/E2E テストが通過
+- [x] ブランチスイッチフラッド + 並行リインデックスで OOM/ゾンビ/データ破損なし
+- [x] パストラバーサル攻撃（symlink エスケープ含む）が適切なエラーレスポンスを返す
+- [x] フルリインデックス後に孤児 Merkle ノードがゼロ
+- [x] DLQ が Phase 1 の `skippedFiles` フォールバックを完全に置換
+- [x] フルスキャン後のデススパイラルが発生しないことがストレステストで検証済み
+- [x] OS Watcher が全ライフサイクルを通じて停止されないことが検証済み
+
+## 残課題（Phase 3 完了後に発覚した未実装・乖離）
+
+以下は実装完了後に確認された追加対応事項。
+
+- [ ] **LanceDB 実統合** — `LanceVectorStore` の内部実装が `Map` ベースのインメモリ実装のまま。`@lancedb/lancedb` による永続化・ANN 検索への差し替えが必要（`src/storage/vector-store.ts:35` の TODO）
+- [ ] **Compaction の Pipeline 統合** — `compactAfterReindex()` / `scheduleIdleCompaction()` が `pipeline.ts` から呼ばれておらず、Mutex 統合が実質的に未完了
+- [ ] **`rename-detection.test.ts` の作成** — リネーム検出の専用テストファイルが未作成（ロジック自体は `pipeline.test.ts` + `merkle-tree.test.ts` でカバー済み）
+- [ ] **`openai-compat` Embedding Provider の実装** — `src/plugins/embeddings/openai-compat.ts` が空ファイル（`export {}` のみ）だが、Config で有効な provider 値として登録されている
+- [ ] **SQLite バッチサイズ最適値の検証** — `sqlite-batched.bench.ts` は作成済みだが、ベンチマーク実行による検証は未実施
 
 ---
 
