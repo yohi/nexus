@@ -22,10 +22,7 @@ export const fuseResults = (
 
   const scoreMap = new Map<string, RankedResult>();
 
-  for (const [results] of [
-    [semanticResults, 'semantic'],
-    [grepResults, 'grep'],
-  ] as const) {
+  for (const results of [semanticResults, grepResults]) {
     results.forEach((result, index) => {
       const contribution = 1 / (k + index + 1);
       const existing = scoreMap.get(result.chunk.id);

@@ -1,3 +1,5 @@
+import { inspect } from 'node:util';
+
 import pLimit from 'p-limit';
 
 import type { IndexEvent, ReindexOptions, ReindexQueueEvent } from '../types/index.js';
@@ -226,7 +228,15 @@ export class EventQueue {
       if (firstError instanceof Error) {
         throw firstError;
       }
-      const message = typeof firstError === 'string' ? firstError : JSON.stringify(firstError);
+      let message: string;
+      try {
+        message = typeof firstError === 'string' ? firstError : JSON.stringify(firstError);
+        if (message === undefined) {
+          throw new Error(); // trigger catch for undefined result
+        }
+      } catch {
+        message = inspect(firstError, { depth: null });
+      }
       throw new Error(message);
     }
 
