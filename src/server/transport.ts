@@ -25,6 +25,7 @@ interface SessionEntry {
   server: McpServer;
   transport: StreamableHTTPServerTransport;
   lastActivity: number;
+  closed: boolean;
 }
 
 export const createStreamableHttpHandler = ({
@@ -34,12 +35,30 @@ export const createStreamableHttpHandler = ({
 }: StreamableHttpHandlerOptions) => {
   const sessions = new Map<string, SessionEntry>();
 
+  const safeClose = async (server: McpServer, sessionId?: string): Promise<void> => {
+    try {
+      await server.close();
+    } catch (error) {
+      console.error(`Error closing server for session ${sessionId ?? 'unknown'}:`, error);
+    }
+  };
+
+  const closeEntry = async (sessionId: string, entry: SessionEntry): Promise<void> => {
+    if (entry.closed) {
+      sessions.delete(sessionId);
+      return;
+    }
+
+    entry.closed = true;
+    sessions.delete(sessionId);
+    await safeClose(entry.server, sessionId);
+  };
+
   const interval = setInterval(() => {
     const now = Date.now();
     for (const [sessionId, entry] of sessions.entries()) {
       if (now - entry.lastActivity > sessionIdleTimeoutMs) {
-        sessions.delete(sessionId);
-        void entry.server.close();
+        void closeEntry(sessionId, entry);
       }
     }
   }, sessionCleanupIntervalMs);
@@ -64,9 +83,15 @@ export const createStreamableHttpHandler = ({
 
     try {
       let entry = sessionId ? sessions.get(sessionId) : undefined;
+      let createdEntry: SessionEntry | undefined;
 
       if (entry) {
-        entry.lastActivity = Date.now();
+        if (entry.closed) {
+          sessions.delete(sessionId!);
+          entry = undefined;
+        } else {
+          entry.lastActivity = Date.now();
+        }
       } else {
         if (!isInitializeRequest(body)) {
           res.statusCode = 400;
@@ -79,25 +104,65 @@ export const createStreamableHttpHandler = ({
         const transport = new StreamableHTTPServerTransport({
           sessionIdGenerator: () => randomUUID(),
           onsessioninitialized: (createdSessionId) => {
-            if (entry) {
-              sessions.set(createdSessionId, entry);
+            if (createdEntry) {
+              sessions.set(createdSessionId, createdEntry);
             }
           },
         });
 
+        createdEntry = {
+          server,
+          transport,
+          lastActivity: Date.now(),
+          closed: false,
+        };
+
+        const finalEntry = createdEntry;
+
         transport.onclose = () => {
-          const activeId = transport.sessionId;
+          if (!finalEntry.closed) {
+            finalEntry.closed = true;
+            const activeId = transport.sessionId;
+            if (activeId) {
+              sessions.delete(activeId);
+            }
+            void safeClose(finalEntry.server, activeId);
+          }
+        };
+
+        entry = createdEntry;
+      }
+
+      if (!entry) {
+        throw new HttpError(400, 'invalid session');
+      }
+
+      try {
+        if (createdEntry) {
+          await entry.server.connect(entry.transport);
+        }
+        await entry.transport.handleRequest(req, res, body);
+      } catch (error) {
+        if (createdEntry && !createdEntry.closed) {
+          createdEntry.closed = true;
+          const activeId = createdEntry.transport.sessionId;
           if (activeId) {
             sessions.delete(activeId);
           }
-          void server.close();
-        };
-
-        await server.connect(transport);
-        entry = { server, transport, lastActivity: Date.now() };
+          await safeClose(createdEntry.server, activeId);
+        }
+        throw error;
       }
 
-      await entry.transport.handleRequest(req, res, body);
+      // The sessions.set(activeSessionId, entry) after handleRequest is intentionally
+      // idempotent (safe if onsessioninitialized already inserted the session). It
+      // covers edge cases where the initialization callback may not run (e.g.,
+      // early-return paths or missed events). Relevant symbols: handleRequest,
+      // onsessioninitialized, activeSessionId, entry.closed, and sessions.set.
+      const activeSessionId = entry.transport.sessionId;
+      if (activeSessionId && !entry.closed) {
+        sessions.set(activeSessionId, entry);
+      }
     } catch (error) {
       const statusCode = error instanceof HttpError ? error.statusCode : 500;
       res.statusCode = statusCode;
