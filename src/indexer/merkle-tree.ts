@@ -53,7 +53,9 @@ export class MerkleTree {
     this.pruneEmptyDirectories(path.dirname(filePath));
 
     this.rootHash = await this.computeRootHash();
-    await this.persistCurrentState();
+    if (!skipPersist) {
+      await this.persistCurrentState();
+    }
   }
 
   async move(oldPath: string, newPath: string, contentHash: string): Promise<void> {

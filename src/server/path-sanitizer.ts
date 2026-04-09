@@ -77,7 +77,7 @@ export class PathSanitizer {
     const normalized = pattern.replace(/\\/g, '/');
 
     // Tokenize on path separators, braces, and commas to prevent bypasses like "{src,../secret}"
-    const tokens = normalized.split(/[\/{},]+/);
+    const tokens = normalized.split(/[/{},]+/);
 
     if (tokens.includes('..')) {
       throw new PathTraversalError(`Glob pattern '${pattern}' contains directory traversal`);

@@ -290,13 +290,12 @@ export class LanceVectorStore implements IVectorStore {
           }
           return runCompaction();
         })
-        .catch((error) => {
-          if (error.name === 'AbortError' || abortSignal?.aborted) {
+        .catch((error: unknown) => {
+          if ((error instanceof Error && error.name === 'AbortError') || abortSignal?.aborted) {
             return;
           }
           console.error('Compaction failed:', error);
-        });
-    }, delayMs);
+        });    }, delayMs);
   }
 
   async getStats(): Promise<VectorStoreStats> {

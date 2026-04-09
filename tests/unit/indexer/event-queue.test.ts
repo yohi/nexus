@@ -233,12 +233,16 @@ describe('EventQueue', () => {
       };
 
       const drainPromise = queue.drain(handler);
+      // Catch immediately to avoid unhandled rejection warning, but keep the result for expectation
+      const caughtErrorPromise = drainPromise.catch((err) => err);
 
       // Advance timers repeatedly to resolve the internal promises
       await vi.advanceTimersByTimeAsync(10);
       await vi.advanceTimersByTimeAsync(100);
 
-      await expect(drainPromise).rejects.toThrow('fast fail');
+      const error = await caughtErrorPromise;
+      expect(error).toBeInstanceOf(Error);
+      expect(error.message).toContain('fast fail');
       expect(order).toEqual(['fast-fail', 'slow-success']);
       expect(queue.size()).toBe(1); // fast-fail.ts should be re-enqueued
     });

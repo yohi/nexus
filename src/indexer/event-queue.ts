@@ -223,7 +223,11 @@ export class EventQueue {
     }
 
     if (firstError) {
-      throw firstError instanceof Error ? firstError : new Error(String(firstError));
+      if (firstError instanceof Error) {
+        throw firstError;
+      }
+      const message = typeof firstError === 'string' ? firstError : JSON.stringify(firstError);
+      throw new Error(message);
     }
 
     return results;

@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 
-import type { CodeChunk, FileToChunk, ParsedSourceFile, SymbolKind } from '../types/index.js';
+import type { CodeChunk, FileToChunk, ParsedSourceFile } from '../types/index.js';
 import type { PluginRegistry } from '../plugins/registry.js';
 
 export interface FixedLineChunkOptions {
