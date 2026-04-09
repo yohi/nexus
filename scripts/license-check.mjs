@@ -36,6 +36,12 @@ checker.init(
 
     const violations = Object.entries(packages).flatMap(([name, info]) => {
       const packageName = name.replace(/@[^@]+$/, '');
+      
+      // Skip the root package itself
+      if (packageName === '@yohi/nexus') {
+        return [];
+      }
+
       const license = packageOverrides.get(packageName) ?? info.licenses;
 
       if (typeof license !== 'string' || !allowed.has(license)) {
