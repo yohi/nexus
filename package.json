@@ -1,8 +1,30 @@
 {
-  "name": "nexus",
+  "name": "@yohi/nexus",
   "version": "0.1.0",
-  "private": true,
+  "private": false,
   "type": "module",
+  "main": "./dist/index.js",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    },
+    "./transport": {
+      "import": "./dist/server/transport.js",
+      "types": "./dist/server/transport.d.ts"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE",
+    "NOTICE"
+  ],
+  "publishConfig": {
+    "registry": "https://npm.pkg.github.com"
+  },
   "engines": {
     "node": ">=22.0.0"
   },
