@@ -12,8 +12,8 @@
       "types": "./dist/index.d.ts"
     },
     "./transport": {
-      "import": "./dist/transport.js",
-      "types": "./dist/transport.d.ts"
+      "import": "./dist/server/transport.js",
+      "types": "./dist/server/transport.d.ts"
     }
   },
   "files": [
