@@ -6,6 +6,12 @@
 Nexus は、AI エージェント向けのローカル MCP ベースコードインデックス基盤です。
 semantic search、grep search、file context 取得を 1 つのローカルインデックスに集約し、複数のクライアントから共有できます。
 
+## 🤖 AI-Powered One-Click Setup
+
+If you are using an AI agent like **Gemini CLI**, **Claude Engineer**, or **Cursor**, simply copy and paste the prompt below. The agent will handle the entire installation, build, and verification process for you:
+
+> **Install and configure Nexus in this directory. First, read `AGENTS.md` for the setup protocol, then execute the bootstrap script, and verify the installation with `npm test`.**
+
 ## インストール
 
 GitHub Packages からパッケージをインストールします。
