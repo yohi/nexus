@@ -232,14 +232,13 @@ describe('EventQueue', () => {
         }
       };
 
-      const rejection = queue.drain(handler);
-      const drainPromise = expect(rejection).rejects.toThrow('fast fail');
+      const drainPromise = queue.drain(handler);
 
       // Advance timers repeatedly to resolve the internal promises
       await vi.advanceTimersByTimeAsync(10);
       await vi.advanceTimersByTimeAsync(100);
 
-      await drainPromise;
+      await expect(drainPromise).rejects.toThrow('fast fail');
       expect(order).toEqual(['fast-fail', 'slow-success']);
       expect(queue.size()).toBe(1); // fast-fail.ts should be re-enqueued
     });

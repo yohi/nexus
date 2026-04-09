@@ -25,6 +25,7 @@ interface SessionEntry {
   server: McpServer;
   transport: StreamableHTTPServerTransport;
   lastActivity: number;
+  inFlightRequests: number;
   closed: boolean;
 }
 
@@ -57,7 +58,7 @@ export const createStreamableHttpHandler = ({
   const interval = setInterval(() => {
     const now = Date.now();
     for (const [sessionId, entry] of sessions.entries()) {
-      if (now - entry.lastActivity > sessionIdleTimeoutMs) {
+      if (entry.inFlightRequests === 0 && now - entry.lastActivity > sessionIdleTimeoutMs) {
         void closeEntry(sessionId, entry);
       }
     }
@@ -116,6 +117,7 @@ export const createStreamableHttpHandler = ({
           server,
           transport,
           lastActivity: Date.now(),
+          inFlightRequests: 0,
           closed: false,
         };
 
@@ -139,6 +141,7 @@ export const createStreamableHttpHandler = ({
         throw new HttpError(400, 'invalid session');
       }
 
+      entry.inFlightRequests += 1;
       try {
         if (createdEntry) {
           await entry.server.connect(entry.transport);
@@ -154,6 +157,9 @@ export const createStreamableHttpHandler = ({
           await safeClose(createdEntry.server, activeId);
         }
         throw error;
+      } finally {
+        entry.inFlightRequests = Math.max(0, entry.inFlightRequests - 1);
+        entry.lastActivity = Date.now();
       }
 
       // The sessions.set(activeSessionId, entry) after handleRequest is intentionally
