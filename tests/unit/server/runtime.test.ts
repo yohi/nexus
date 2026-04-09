@@ -21,7 +21,7 @@ const makeServerOptions = (): Omit<NexusRuntimeOptions, 'watcher'> => ({
     renameFilePath: async () => 0,
     search: async () => [],
     compactIfNeeded: async () => ({ compacted: false, fragmentationRatioBefore: 0, fragmentationRatioAfter: 0, chunksRemoved: 0 }),
-    scheduleIdleCompaction: () => undefined,
+    scheduleIdleCompaction: () => setTimeout(() => {}, 0),
     getStats: async () => ({ totalChunks: 0, totalFiles: 0, dimensions: 64, fragmentationRatio: 0 }),
   } as any,
   metadataStore: {
@@ -46,6 +46,8 @@ const makeServerOptions = (): Omit<NexusRuntimeOptions, 'watcher'> => ({
       chunksIndexed: 0,
     }),
     getSkippedFiles: () => new Map(),
+    start: () => undefined,
+    stop: async () => {},
   } as any,
   pluginRegistry: {
     healthCheck: async () => ({ languages: ['typescript'], embeddingProvider: 'test', healthy: true }),
