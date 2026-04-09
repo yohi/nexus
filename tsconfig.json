@@ -6,6 +6,7 @@
     "lib": ["ES2023"],
     "strict": true,
     "declaration": true,
+    "noEmit": true,
     "rootDir": ".",
     "outDir": "dist",
     "esModuleInterop": true,
