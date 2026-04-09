@@ -65,7 +65,7 @@ const handler = createStreamableHttpHandler({
 });
 
 const server = createServer((req, res) => void handler(req, res));
-server.listen(3000);
+server.listen(3000, '127.0.0.1');
 ```
 
 ## ⚙️ 設定
