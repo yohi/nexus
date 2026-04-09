@@ -1,39 +1,57 @@
-# Nexus
+# Nexus ⚡️
+
+**AI エージェントのための、ローカル MCP ベース・コードインデックス基盤**
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
 [![MCP Protocol](https://img.shields.io/badge/MCP-Supported-green.svg)](https://modelcontextprotocol.io/)
 
-Nexus は、AI エージェント向けのローカル MCP ベースコードインデックス基盤です。
-semantic search、grep search、file context 取得を 1 つのローカルインデックスに集約し、複数のクライアントから共有できます。
+Nexus は、AI エージェントが巨大なコードベースを効率的に理解し、正確なコンテキストを取得するための MCP (Model Context Protocol) サーバーです。
+Semantic search、Exact grep search、File context 取得を 1 つのローカルインデックスに集約し、高速かつ一貫性のある検索体験を提供します。
 
-## 🤖 AI-Powered One-Click Setup
+## 🚀 特徴
 
-If you are using an AI agent like **Gemini CLI**, **Claude Engineer**, or **Cursor**, simply copy and paste the prompt below. The agent will handle the entire installation, build, and verification process for you:
+- **ハイブリッド検索**: LanceDB によるベクトル検索と ripgrep による高速な文字列検索を統合。
+- **インテリジェント・チャンキング**: AST 解析に基づき、関数のセマンティクスを維持したままコードを分割。
+- **低レイテンシ**: ローカル実行に特化し、ネットワーク遅延のない高速なレスポンスを実現。
+- **ストリーミング対応**: 巨大な検索結果も Streamable HTTP transport により効率的に処理。
+- **自律的メンテナンス**: ファイル監視 (Watcher) とデッドレターキュー (DLQ) による自動的なインデックス更新とリカバリ。
 
+## 🛠 セットアップ
+
+### For Humans
+
+> [!TIP]
+> **Gemini CLI**, **Claude Code**, **Cursor** などの AI エージェントを使用している場合は、以下のプロンプトをコピーして貼り付けてください。エージェントが自律的にインストール、ビルド、動作確認を完了させます。
+>
 > **Install and configure Nexus in this directory. First, read `AGENTS.md` for the setup protocol, then run `node scripts/bootstrap.mjs`, and verify the installation with `npm test`.**
 
-## インストール
+### For Agents
 
-GitHub Packages からパッケージをインストールします。
+<details>
+<summary><b>自律的セットアップ手順 & 運用ガイド (Agent Instructions)</b></summary>
 
-```bash
-npm install @yohi/nexus
-```
+ターミナル操作が可能なエージェントは、以下のチェックリストを順に実行して環境を構築してください。
 
-※ インストールには `.npmrc` で `@yohi` スコープを `https://npm.pkg.github.com` に向ける設定が必要です。
+1.  [ ] **依存関係のインストール**: `npm install`
+2.  [ ] **ブートストラップ実行**: `node scripts/bootstrap.mjs`（必要なバイナリや設定の初期化）
+3.  [ ] **ビルド**: `npm run build`
+4.  [ ] **動作確認**: `npm test`
 
-## 提供機能
+#### 💡 運用ガイドライン (Playbook)
 
-- インデックス済みコードチャンクに対する semantic search
-- ripgrep ベースの exact search
-- semantic と grep を統合した hybrid ranking
-- 行範囲を指定できる file context 取得
-- MCP 経由の index status / manual reindex
-- 複数クライアントを扱える Streamable HTTP transport
+- **インデックス状態の確認**: 最初に `index_status` を実行してください。`isIndexing: true` の間も検索は可能ですが、結果が不完全な場合があります。
+- **検索の使い分け**: 曖昧な質問や機能の探索には `hybrid_search`、特定のシンボルや定数の検索には `grep_search` を推奨します。
+- **コンテキスト取得**: `get_context` で広範囲を指定しすぎるとコンテキストを圧迫します。必要な行範囲を絞り込んで取得してください。
+- **インデックスの鮮度**: 大規模なファイル変更やブランチ切り替え後は、`reindex` を呼び出してインデックスを明示的に更新することを検討してください。
 
-## ライブラリとしての利用
+設定が必要な場合は、プロジェクトルートに `.nexus.json` を作成してください。
+</details>
 
-Nexus はライブラリとして提供されており、Node.js プロセスへ組み込んで MCP サーバーとして公開できます。
+## 📖 使い方
+
+### ライブラリとして組み込む
+
+Nexus は Node.js プロセスに組み込んで、独自の MCP サーバーとして公開できます。
 
 ```ts
 import { createServer } from 'node:http';
@@ -41,74 +59,53 @@ import { createNexusServer } from '@yohi/nexus';
 import { createStreamableHttpHandler } from '@yohi/nexus/transport';
 
 const handler = createStreamableHttpHandler({
-  createServer: () =>
-    createNexusServer({
-      // ... configuration
-    }),
+  createServer: () => createNexusServer({
+    /* config */
+  }),
 });
 
-const server = createServer((req, res) => {
-  void handler(req, res);
-});
-
+const server = createServer((req, res) => void handler(req, res));
 server.listen(3000, '127.0.0.1');
 ```
 
-## For Agents
+## ⚙️ 設定
 
-Nexus は、AI エージェントが巨大なコードベースを効率的に理解し、正確なコンテキストを取得するための MCP (Model Context Protocol) サーバーとして機能します。
+プロジェクトルートの `.nexus.json` で挙動をカスタマイズできます。詳細は [docs/configuration.md](docs/configuration.md) を参照してください。
 
-### セットアップ手順 (Self-Installation)
+| 環境変数 / キー | デフォルト値 | 説明 |
+| :--- | :--- | :--- |
+| `NEXUS_STORAGE_ROOT_DIR` | `<projectRoot>/.nexus` | インデックスデータの保存先 |
+| `embedding.provider` | `ollama` | 使用する Embedding プロバイダー (`ollama`, `openai-compat`) |
+| `embedding.model` | `nomic-embed-text` | Embedding モデル名 |
 
-ターミナル操作が可能なエージェントは、以下の手順を自律的に実行して Nexus をセットアップできます。
+## 🧰 MCP ツール一覧
 
-1.  **依存関係のインストールとビルド**
-    ```bash
-    npm install && npm run build
-    ```
-2.  **設定ファイルの準備**
-    必要に応じて、プロジェクトルートに `.nexus.json` を作成して Embedding Provider 等を設定します。
-    ```json
-    {
-      "embedding": {
-        "provider": "ollama",
-        "model": "nomic-embed-text"
-      }
-    }
-    ```
-3.  **動作確認**
-    ユニットテストを実行して環境が正しく構築されたか確認します。
-    ```bash
-    npm test
-    ```
+詳細は [docs/mcp-tools.md](docs/mcp-tools.md) を参照してください。
 
-### 推奨されるワークフロー
+| ツール名 | 説明 |
+| :--- | :--- |
+| `hybrid_search` | セマンティックと grep を組み合わせた強力な検索 |
+| `semantic_search` | ベクトル検索による意味的なコード探索 |
+| `grep_search` | ripgrep を用いた正確な文字列検索 |
+| `get_context` | ファイルの指定範囲のコードをコンテキストとして取得 |
+| `index_status` | 現在のインデックス進捗や統計情報の確認 |
+| `reindex` | インデックスの手動再作成 |
 
-1.  **`index-status`**: 最初にインデックスの状態を確認してください。`isIndexing: true` の場合は、バックグラウンドで処理が進行中です。
-2.  **`hybrid-search`**: 曖昧な質問や広範囲な機能の探索には、セマンティック検索と grep 検索を組み合わせたハイブリッド検索を推奨します。
-3.  **`grep-search`**: 特定のシンボル、定数、または正確な文字列の一致が必要な場合は、`grep-search` を使用してください。
-4.  **`get-context`**: 検索結果から特定されたファイルに対して、必要な行範囲を指定して詳細なコードコンテキストを取得します。
+## 🏗 アーキテクチャ
 
-### エージェントへの注意事項
-
-- **インデックスの鮮度**: 大規模なファイル変更（ブランチ切り替えや大量の `replace` 実行後）を行った場合は、`reindex` ツールを呼び出してインデックスを明示的に更新することを検討してください。
-- **パスの指定**: すべてのパスはプロジェクトルートからの相対パスとして扱われます。
-- **リソース制限**: `get-context` で極端に広い行範囲を指定すると、コンテキストウィンドウを圧迫する可能性があります。必要な範囲を絞り込んで取得してください。
-
-## 設定
-
-設定は project root の `.nexus.json` から読み込まれ、環境変数で上書きできます。
-
-- 設定リファレンス: [docs/configuration.md](docs/configuration.md)
-- MCP ツールリファレンス: [docs/mcp-tools.md](docs/mcp-tools.md)
-
-## 開発
-
-```bash
-npm run build
-npm test
-npm run license:check
-npm run license:notice
+```mermaid
+graph TD
+    Client[AI Agent / Client] -->|MCP| Server[Nexus MCP Server]
+    Server --> Search[Search Orchestrator]
+    Search --> Vector[LanceDB Vector Store]
+    Search --> Grep[Ripgrep Engine]
+    Watcher[File Watcher] --> Pipeline[Indexing Pipeline]
+    Pipeline --> Chunker[AST Chunker]
+    Chunker --> Embed[Embedding Provider]
+    Embed --> Vector
 ```
 
-`npm run license:notice` は、同梱するサードパーティライセンス情報のためのルート `NOTICE` ファイルを生成します。
+## ⚠️ ライセンス
+
+MIT License - 詳細は [LICENSE](LICENSE) ファイルを確認してください。
+同梱されるサードパーティライセンスについては [NOTICE](NOTICE) を参照してください。
