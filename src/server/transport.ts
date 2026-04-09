@@ -87,7 +87,9 @@ export const createStreamableHttpHandler = ({
 
       if (entry) {
         if (entry.closed) {
-          sessions.delete(sessionId!);
+          if (sessionId) {
+            sessions.delete(sessionId);
+          }
           entry = undefined;
         } else {
           entry.lastActivity = Date.now();

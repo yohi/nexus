@@ -156,9 +156,13 @@ describe('stress: concurrent MCP agents', () => {
     }
 
     if (errors.length > 0) {
-      throw errors.length === 1
-        ? errors[0]
-        : new Error(errors.map((error) => error.message).join(', '));
+      if (errors.length === 1) {
+        throw errors[0];
+      }
+      throw new AggregateError(
+        errors,
+        `Multiple errors: ${errors.map((e) => e.message).join(', ')}`
+      );
     }
   });
 
