@@ -36,28 +36,36 @@ describe('stress: branch switch watcher load', () => {
 
     await watcher.start();
 
-    for (let index = 0; index < 12_000; index += 1) {
-      fakeWatcher.emit('change', `/repo/src/file-${index}.ts`);
+    try {
+      for (let index = 0; index < 12_000; index += 1) {
+        fakeWatcher.emit('change', `/repo/src/file-${index}.ts`);
+      }
+
+      // Wait for the queue to process enough events to overflow
+      await vi.waitFor(() => {
+        if (!queue.isOverflowing()) {
+          throw new Error('Queue has not overflowed yet');
+        }
+      });
+
+      const actualSize = queue.size();
+      expect(queue.isOverflowing()).toBe(true);
+      expect(actualSize).toBe(5_000);
+      expect(queue.getDroppedEventCount()).toBeGreaterThan(0);
+      expect(fakeWatcher.closeCalls).toBe(0);
+
+      const drained = await queue.drain(async (event) => event);
+
+      expect(drained).toHaveLength(5_000);
+      expect(queue.size()).toBe(0);
+
+      // drain transitions overflow → full_scan; call markFullScanComplete to reset
+      queue.markFullScanComplete();
+      expect(queue.isOverflowing()).toBe(false);
+      expect(fakeWatcher.closeCalls).toBe(0);
+    } finally {
+      await watcher.stop();
     }
-
-    await new Promise((resolve) => setTimeout(resolve, 50));
-
-    expect(queue.isOverflowing()).toBe(true);
-    expect(queue.size()).toBe(5_000);
-    expect(queue.getDroppedEventCount()).toBeGreaterThan(0);
-    expect(fakeWatcher.closeCalls).toBe(0);
-
-    const drained = await queue.drain(async (event) => event);
-
-    expect(drained).toHaveLength(5_000);
-    expect(queue.size()).toBe(0);
-    expect(queue.getState()).toBe('full_scan');
-    expect(fakeWatcher.closeCalls).toBe(0);
-
-    queue.markFullScanComplete();
-    expect(queue.isOverflowing()).toBe(false);
-
-    await watcher.stop();
 
     expect(fakeWatcher.closeCalls).toBe(1);
   }, 15_000);

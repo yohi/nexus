@@ -86,6 +86,8 @@ describe('MerkleTree', () => {
         oldPath: 'src/old-name.ts',
         newPath: 'src/new-name.ts',
         hash: 'same-hash',
+        oldEvent: expect.any(Object),
+        newEvent: expect.any(Object),
       },
     ]);
   });

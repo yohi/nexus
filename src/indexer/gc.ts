@@ -1,13 +1,19 @@
-import type { IMetadataStore } from '../types/index.js';
+import pLimit from 'p-limit';
+
+import type { IMetadataStore, IVectorStore } from '../types/index.js';
 
 export const gcOrphanNodes = async (
   metadataStore: IMetadataStore,
+  vectorStore: IVectorStore,
   pathExists: (targetPath: string) => Promise<boolean>,
 ): Promise<number> => {
-  const fileNodes = await metadataStore.getAllFileNodes();
+  const nodes = await metadataStore.getAllNodes();
   const orphanPaths: string[] = [];
 
-  for (const node of fileNodes) {
+  for (const node of nodes) {
+    if (node.isDirectory) {
+      continue;
+    }
     if (!(await pathExists(node.path))) {
       orphanPaths.push(node.path);
     }
@@ -17,6 +23,21 @@ export const gcOrphanNodes = async (
     return 0;
   }
 
+  // Delete from vector store first
+  // Use bounded concurrency to prevent memory/DB overload
+  const limit = pLimit(10);
+  const deleteTasks = orphanPaths.map((path) =>
+    limit(() => vectorStore.deleteByFilePath(path)),
+  );
+  await Promise.all(deleteTasks);
+
+  // Delete from metadata store (using bulkDeleteMerkleNodes)
   await metadataStore.bulkDeleteMerkleNodes(orphanPaths);
+
+  // Prune empty ancestors
+  for (const orphanPath of orphanPaths) {
+    await metadataStore.pruneEmptyParents(orphanPath, pathExists);
+  }
+
   return orphanPaths.length;
 };
