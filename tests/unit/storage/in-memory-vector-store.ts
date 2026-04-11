@@ -298,6 +298,10 @@ export class InMemoryVectorStore implements IVectorStore {
     };
   }
 
+  async close(): Promise<void> {
+    // No-op: InMemoryVectorStore has no external resources to release.
+  }
+
   private vectorize(content: string): number[] {
     const base = content.charCodeAt(0) % 10;
     return Array.from({ length: this.dimensions }, (_, index) => (index === base % this.dimensions ? 1 : 0));

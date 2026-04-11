@@ -325,4 +325,8 @@ export class LanceVectorStore implements IVectorStore {
     }
     return this.deletedCount / this.rows.size;
   }
+
+  async close(): Promise<void> {
+    // TODO: LanceDB implementation with trackOp + inflight I/O wait
+  }
 }
