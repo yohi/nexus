@@ -443,4 +443,65 @@ describe('IndexPipeline', () => {
     await pipeline.stop();
     expect(closeSpy).toHaveBeenCalledOnce();
   });
+
+  it('start() で idle compaction タイマーが登録され unref() が適用される', async () => {
+    const { metadataStore, vectorStore, chunker, registry } = await createPipeline();
+    const timerRef = { unref: vi.fn() };
+    vi.spyOn(vectorStore, 'scheduleIdleCompaction').mockReturnValue(
+      timerRef as unknown as NodeJS.Timeout,
+    );
+    const pipeline = new IndexPipeline({
+      metadataStore,
+      vectorStore,
+      chunker,
+      embeddingProvider: new TestEmbeddingProvider(),
+      pluginRegistry: registry,
+    });
+
+    pipeline.start();
+
+    expect(vectorStore.scheduleIdleCompaction).toHaveBeenCalledOnce();
+    expect(timerRef.unref).toHaveBeenCalledOnce();
+
+    await pipeline.stop();
+  });
+
+  it('stop() でタイマーがクリアされ abortController.signal が abort 状態になる', async () => {
+    const { metadataStore, vectorStore, chunker, registry } = await createPipeline();
+    const timerRef = { unref: vi.fn() };
+    vi.spyOn(vectorStore, 'scheduleIdleCompaction').mockReturnValue(
+      timerRef as unknown as NodeJS.Timeout,
+    );
+    vi.spyOn(vectorStore, 'close').mockResolvedValue(undefined);
+    const pipeline = new IndexPipeline({
+      metadataStore,
+      vectorStore,
+      chunker,
+      embeddingProvider: new TestEmbeddingProvider(),
+      pluginRegistry: registry,
+    });
+
+    pipeline.start();
+    await pipeline.stop();
+
+    const callArgs = vi.mocked(vectorStore.scheduleIdleCompaction).mock.calls[0];
+    const abortSignal = callArgs?.[3] as AbortSignal | undefined;
+    expect(abortSignal?.aborted).toBe(true);
+  });
+
+  it('stop() の二重呼び出しでエラーが発生しない', async () => {
+    const { metadataStore, vectorStore, chunker, registry } = await createPipeline();
+    vi.spyOn(vectorStore, 'close').mockResolvedValue(undefined);
+    const pipeline = new IndexPipeline({
+      metadataStore,
+      vectorStore,
+      chunker,
+      embeddingProvider: new TestEmbeddingProvider(),
+      pluginRegistry: registry,
+    });
+
+    pipeline.start();
+    await expect(pipeline.stop()).resolves.toBeUndefined();
+    await expect(pipeline.stop()).resolves.toBeUndefined();
+  });
 });

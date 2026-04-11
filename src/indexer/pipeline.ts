@@ -58,6 +58,9 @@ export class IndexPipeline implements IIndexPipeline {
 
   private isTreeLoaded = false;
 
+  private abortController = new AbortController();
+  private idleCompactionTimer: NodeJS.Timeout | undefined;
+
   constructor(private readonly options: IndexPipelineOptions) {
     this.merkleTree = new MerkleTree(options.metadataStore);
     this.deadLetterQueue = new DeadLetterQueue({
@@ -72,9 +75,25 @@ export class IndexPipeline implements IIndexPipeline {
     if (this.dlqStopper === undefined) {
       this.dlqStopper = this.deadLetterQueue.startRecoveryLoop();
     }
+    this.idleCompactionTimer = this.options.vectorStore.scheduleIdleCompaction(
+      async () => {
+        await this.options.vectorStore.compactIfNeeded();
+      },
+      300_000,
+      { waitForUnlock: () => this.mutex.waitForUnlock() },
+      this.abortController.signal,
+    );
+    this.idleCompactionTimer.unref();
   }
 
   async stop(): Promise<void> {
+    this.abortController.abort();
+
+    if (this.idleCompactionTimer !== undefined) {
+      clearTimeout(this.idleCompactionTimer);
+      this.idleCompactionTimer = undefined;
+    }
+
     if (this.dlqStopper !== undefined) {
       await this.dlqStopper();
       this.dlqStopper = undefined;
