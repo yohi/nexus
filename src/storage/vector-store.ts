@@ -118,10 +118,12 @@ export class LanceVectorStore implements IVectorStore {
       const inflightDone = new Promise<void>((resolve) => {
         this.closingResolve = resolve;
       });
+      let timerHandle: NodeJS.Timeout;
       const timeout = new Promise<'timeout'>((resolve) => {
-        setTimeout(() => { resolve('timeout'); }, LanceVectorStore.CLOSE_TIMEOUT_MS);
+        timerHandle = setTimeout(() => { resolve('timeout'); }, LanceVectorStore.CLOSE_TIMEOUT_MS);
       });
       const result = await Promise.race([inflightDone.then(() => 'done' as const), timeout]);
+      clearTimeout(timerHandle!);
       if (result === 'timeout') {
         console.error(
           `[LanceVectorStore] close() timed out after ${LanceVectorStore.CLOSE_TIMEOUT_MS}ms ` +
@@ -131,6 +133,16 @@ export class LanceVectorStore implements IVectorStore {
     }
 
     // 3. Release LanceDB resources
+    try {
+      if (this.table && typeof (this.table as any).close === 'function') {
+        await (this.table as any).close();
+      }
+      if (this.db && typeof (this.db as any).close === 'function') {
+        await (this.db as any).close();
+      }
+    } catch (e) {
+      console.error('[LanceVectorStore] Error closing LanceDB resources:', e);
+    }
     this.table = undefined;
     this.db = undefined;
     this.closingResolve = undefined;
@@ -327,7 +339,7 @@ export class LanceVectorStore implements IVectorStore {
     return this.trackOp(async () => {
       if (!this.table) return [];
       
-      let query = this.table.vectorSearch(queryVector).limit(topK * 3);
+      let query = this.table.vectorSearch(queryVector).distanceType('cosine').limit(topK * 3);
       
       // SQL フィルタの構築
       const sqlFilters: string[] = ['"filePath" IS NOT NULL'];
@@ -507,8 +519,8 @@ export class LanceVectorStore implements IVectorStore {
             controller.abort();
           };
 
-          const combinedSignal = abortSignal || this.abortController.signal;
-          combinedSignal.addEventListener('abort', onAbort, { once: true });
+          abortSignal?.addEventListener('abort', onAbort, { once: true });
+          this.abortController.signal.addEventListener('abort', onAbort, { once: true });
 
           try {
             await mutex.waitForUnlock(controller.signal);
@@ -519,7 +531,8 @@ export class LanceVectorStore implements IVectorStore {
             throw error;
           } finally {
             clearTimeout(timeoutId);
-            combinedSignal.removeEventListener('abort', onAbort);
+            abortSignal?.removeEventListener('abort', onAbort);
+            this.abortController.signal.removeEventListener('abort', onAbort);
           }
         }
 
