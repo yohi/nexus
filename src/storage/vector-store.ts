@@ -274,28 +274,30 @@ export class LanceVectorStore implements IVectorStore {
     });
   }
 
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
   async compactIfNeeded(config?: Partial<CompactionConfig>): Promise<CompactionResult> {
-    return this.trackOp(async () => {
+    return this.trackOp(() => {
       if (!this.table) {
-        return {
+        return Promise.resolve({
           compacted: false,
           fragmentationRatioBefore: 0,
           fragmentationRatioAfter: 0,
           chunksRemoved: 0,
-        };
+        });
       }
 
       const fragmentationRatioBefore = 0;
 
-      return {
+      return Promise.resolve({
         compacted: false,
         fragmentationRatioBefore,
         fragmentationRatioAfter: fragmentationRatioBefore,
         chunksRemoved: 0,
-      };
+      });
     });
   }
 
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
   async compactAfterReindex(config?: Partial<CompactionConfig>): Promise<CompactionResult> {
     if (!this.table) {
       return {
@@ -387,6 +389,7 @@ export class LanceVectorStore implements IVectorStore {
   // --- フィルタ値検証・エスケープユーティリティ ---
 
   private static readonly ALLOWED_FILTER_VALUE_PATTERN = /^[\p{L}\p{N}\p{P}\p{Z}\p{S}]*$/u;
+  // eslint-disable-next-line no-control-regex
   private static readonly FORBIDDEN_CONTROL_CHARS = /[\x00-\x1f\x7f]/;
 
   protected validateFilterValue(value: string, paramName: string): void {
