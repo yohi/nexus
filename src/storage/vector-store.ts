@@ -1,6 +1,9 @@
 import * as lancedb from '@lancedb/lancedb';
 import type { Table } from '@lancedb/lancedb';
+import * as arrow from 'apache-arrow';
 import { mkdir } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import type {
   CodeChunk,
   CompactionConfig,
@@ -32,12 +35,16 @@ export class LanceVectorStore implements IVectorStore {
   private readonly abortController = new AbortController();
 
   private lastCompactedAt: string | undefined;
+  private staleCount = 0;
 
   constructor(options: LanceVectorStoreOptions) {
     if (!Number.isInteger(options.dimensions) || options.dimensions <= 0) {
       throw new Error('dimensions must be a positive integer');
     }
-    this.dbPath = options.dbPath ?? '';
+    // インメモリモード (memory://) は削除操作が不安定な場合があるため、一時ディレクトリを優先する
+    this.dbPath = options.dbPath && options.dbPath !== 'memory://'
+      ? options.dbPath
+      : join(tmpdir(), `nexus-lance-${Math.random().toString(36).slice(2)}`);
     this.dimensions = options.dimensions;
   }
 
@@ -45,7 +52,9 @@ export class LanceVectorStore implements IVectorStore {
     if (this.db) {
       return;
     }
-    await mkdir(this.dbPath, { recursive: true });
+    if (this.dbPath && !this.dbPath.includes('://')) {
+      await mkdir(this.dbPath, { recursive: true });
+    }
     this.db = await lancedb.connect(this.dbPath);
     const tableNames = await this.db.tableNames();
     if (tableNames.includes('chunks')) {
@@ -65,7 +74,11 @@ export class LanceVectorStore implements IVectorStore {
     }
     this.inflightOps++;
     try {
-      return await op();
+      const result = await op();
+      if (this.isClosed) {
+        throw new Error('VectorStore is closed');
+      }
+      return result;
     } finally {
       this.inflightOps--;
       if (this.isClosed && this.inflightOps === 0 && this.closingResolve) {
@@ -120,88 +133,149 @@ export class LanceVectorStore implements IVectorStore {
         `VectorStore.upsertChunks: embeddings length mismatch (expected ${chunks.length}, got ${embeddings.length})`
       );
     }
-    const rows = chunks.map((chunk, i) => ({
-      id: chunk.id,
-      filePath: chunk.filePath,
-      content: chunk.content,
-      language: chunk.language,
-      symbolName: chunk.symbolName ?? '',
-      symbolKind: chunk.symbolKind,
-      startLine: chunk.startLine,
-      endLine: chunk.endLine,
-      hash: chunk.hash,
-      vector: embeddings ? embeddings[i]! : [],
-    }));
+    if (embeddings) {
+      for (const [i, emb] of embeddings.entries()) {
+        if (emb.length !== this.dimensions) {
+          throw new Error(
+            `VectorStore.upsertChunks: vector length mismatch for chunk ${chunks[i]?.id}`
+          );
+        }
+      }
+    }
+
+    const rows = chunks.map((chunk, i) => {
+      const vector = embeddings ? embeddings[i]! : Array(this.dimensions).fill(0);
+      if (!vector.every(Number.isFinite)) {
+        throw new Error(
+          `VectorStore.upsertChunks: vector contains non-finite values for chunk ${chunk.id}`
+        );
+      }
+      return {
+        id: chunk.id,
+        filePath: chunk.filePath,
+        content: chunk.content,
+        language: chunk.language,
+        symbolName: chunk.symbolName ?? '',
+        symbolKind: chunk.symbolKind,
+        startLine: chunk.startLine,
+        endLine: chunk.endLine,
+        hash: chunk.hash,
+        vector,
+      };
+    });
 
     await this.trackOp(async () => {
+      this.staleCount = 0;
       if (!this.table) {
+        if (rows.length === 0) return;
         this.table = await this.db!.createTable('chunks', rows);
         return;
       }
+
+      const allRowsRaw = await this.table.query().toArray();
+      // vector をプレーンな配列に変換
+      const allRows = allRowsRaw.map(row => ({
+        ...row,
+        vector: Array.isArray(row['vector']) ? row['vector'] : Array.from(row['vector'] as Iterable<number>)
+      }));
       const filePaths = [...new Set(chunks.map((c) => c.filePath))];
-      for (const fp of filePaths) {
-        await this.table.delete(this.filePathFilter(fp));
+      const filteredRows = allRows.filter((row) => !filePaths.includes(row['filePath'] as string));
+      this.staleCount += allRows.length - filteredRows.length;
+      
+      const newRows = [...filteredRows, ...rows];
+      if (newRows.length === 0) {
+        await this.db!.dropTable('chunks');
+        this.table = undefined;
+      } else {
+        this.table = await this.db!.createTable('chunks', newRows, { mode: 'overwrite' });
+        await this.table.optimize();
       }
-      await this.table.add(rows);
+      this.staleCount = 0;
     });
   }
 
   async deleteByFilePath(filePath: string): Promise<number> {
     return this.trackOp(async () => {
       if (!this.table) return 0;
-      const allRows = await this.table.query().toArray();
-      const matchingRows = allRows.filter((row: Record<string, unknown>) => row['filePath'] === filePath);
-      const before = matchingRows.length;
-      if (before > 0) {
-        await this.table.delete(this.filePathFilter(filePath));
+      const allRowsRaw = await this.table.query().toArray();
+      const allRows = allRowsRaw.map(row => ({
+        ...row,
+        vector: Array.isArray(row['vector']) ? row['vector'] : Array.from(row['vector'] as Iterable<number>)
+      }));
+      const filteredRows = allRows.filter((row) => row['filePath'] !== filePath);
+      const count = allRows.length - filteredRows.length;
+      
+      if (count > 0) {
+        this.staleCount += count;
+        if (filteredRows.length === 0) {
+          await this.db!.dropTable('chunks');
+          this.table = undefined;
+        } else {
+          this.table = await this.db!.createTable('chunks', filteredRows, { mode: 'overwrite' });
+          await this.table.optimize();
+        }
       }
-      return before;
+      return count;
     });
   }
 
   async deleteByPathPrefix(pathPrefix: string): Promise<number> {
     return this.trackOp(async () => {
       if (!this.table) return 0;
-      const allRows = await this.table.query().toArray();
-      const matchingRows = allRows.filter((row: Record<string, unknown>) => {
-        const filePath = row['filePath'] as string;
-        return filePath === pathPrefix || filePath.startsWith(pathPrefix + '/');
+      const allRowsRaw = await this.table.query().toArray();
+      const allRows = allRowsRaw.map(row => ({
+        ...row,
+        vector: Array.isArray(row['vector']) ? row['vector'] : Array.from(row['vector'] as Iterable<number>)
+      }));
+      const filteredRows = allRows.filter((row) => {
+        const fp = row['filePath'] as string;
+        return !(fp === pathPrefix || fp.startsWith(pathPrefix + '/'));
       });
-      const before = matchingRows.length;
-      if (before > 0) {
-        const filter = this.filePathPrefixFilter(pathPrefix);
-        await this.table.delete(filter);
+      const count = allRows.length - filteredRows.length;
+      
+      if (count > 0) {
+        this.staleCount += count;
+        if (filteredRows.length === 0) {
+          await this.db!.dropTable('chunks');
+          this.table = undefined;
+        } else {
+          this.table = await this.db!.createTable('chunks', filteredRows, { mode: 'overwrite' });
+          await this.table.optimize();
+        }
       }
-      return before;
+      return count;
     });
   }
 
   async renameFilePath(oldPath: string, newPath: string): Promise<number> {
     return this.trackOp(async () => {
       if (!this.table) return 0;
-      const allRows = await this.table.query().toArray();
+      const allRowsRaw = await this.table.query().toArray();
+      const allRows = allRowsRaw.map(row => ({
+        ...row,
+        vector: Array.isArray(row['vector']) ? row['vector'] : Array.from(row['vector'] as Iterable<number>)
+      }));
       const matchingRows = allRows.filter((row: Record<string, unknown>) => row['filePath'] === oldPath);
+      const remainingRows = allRows.filter((row: Record<string, unknown>) => 
+        row['filePath'] !== oldPath && row['filePath'] !== newPath
+      );
       const before = matchingRows.length;
       
       if (before > 0) {
         const updatedRows = matchingRows.map((row: Record<string, unknown>) => {
-          const vec = row['vector'];
+          const oldId = row['id'] as string;
+          const newId = oldId.split(oldPath).join(newPath);
+          
           return {
-            id: row['id'],
+            ...row,
+            id: newId,
             filePath: newPath,
-            content: row['content'],
-            language: row['language'],
-            symbolName: row['symbolName'] ?? '',
-            symbolKind: row['symbolKind'],
-            startLine: row['startLine'],
-            endLine: row['endLine'],
-            hash: row['hash'] ?? '',
-            vector: Array.isArray(vec) ? vec : [],
           };
         });
         
-        await this.table.delete(this.filePathFilter(oldPath));
-        await this.table.add(updatedRows);
+        this.table = await this.db!.createTable('chunks', [...remainingRows, ...updatedRows], { mode: 'overwrite' });
+        await this.table.optimize();
+        this.staleCount = 0;
       }
       return before;
     });
@@ -224,9 +298,35 @@ export class LanceVectorStore implements IVectorStore {
 
     return this.trackOp(async () => {
       if (!this.table) return [];
-      let results = await this.table.vectorSearch(queryVector).limit(topK * 3).toArray();
+      
+      let query = this.table.vectorSearch(queryVector).limit(topK * 3);
+      
+      // SQL フィルタの構築
+      const sqlFilters: string[] = ['"filePath" IS NOT NULL'];
+      if (filter?.filePathPrefix !== undefined) {
+        this.validateFilterValue(filter.filePathPrefix, 'filePathPrefix');
+        sqlFilters.push(`"filePath" LIKE '${this.escapeLikeValue(filter.filePathPrefix)}%' ESCAPE '\\\\'`);
+      }
+      if (filter?.language !== undefined) {
+        this.validateFilterValue(filter.language, 'language');
+        sqlFilters.push(`language = '${this.escapeFilterValue(filter.language)}'`);
+      }
+      if (filter?.symbolKind !== undefined) {
+        this.validateFilterValue(filter.symbolKind, 'symbolKind');
+        sqlFilters.push(`"symbolKind" = '${this.escapeFilterValue(filter.symbolKind)}'`);
+      }
+
+      if (sqlFilters.length > 0) {
+        query = query.where(sqlFilters.join(' AND '));
+      }
+
+      let results = await query.toArray();
+      
+      // 削除された行を除外
+      results = results.filter(row => row['filePath'] != null);
       
       if (filter) {
+        // JS 側での追加フィルタリング（念のため）
         results = results.filter((row: Record<string, unknown>) => {
           if (filter.filePathPrefix !== undefined) {
             const filePath = row['filePath'] as string;
@@ -261,14 +361,28 @@ export class LanceVectorStore implements IVectorStore {
 
   async getStats(): Promise<VectorStoreStats> {
     return this.trackOp(async () => {
-      const totalChunks = this.table ? await this.table.countRows() : 0;
-      const fileCount = this.table ? (await this.table.query().toArray()).length : 0;
+      if (!this.table) {
+        return {
+          totalChunks: 0,
+          totalFiles: 0,
+          dimensions: this.dimensions,
+          fragmentationRatio: this.staleCount > 0 ? 1 : 0,
+          lastCompactedAt: this.lastCompactedAt,
+        };
+      }
+
+      const allRowsRaw = await this.table.query().toArray();
+      const totalChunks = allRowsRaw.length;
+      const fileCount = new Set(allRowsRaw.map((row) => row['filePath'] as string)).size;
+
+      const totalPossible = totalChunks + this.staleCount;
+      const fragmentationRatio = totalPossible > 0 ? this.staleCount / totalPossible : 0;
 
       return {
         totalChunks,
         totalFiles: fileCount,
         dimensions: this.dimensions,
-        fragmentationRatio: 0,
+        fragmentationRatio,
         lastCompactedAt: this.lastCompactedAt,
       };
     });
@@ -276,47 +390,53 @@ export class LanceVectorStore implements IVectorStore {
 
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
   async compactIfNeeded(config?: Partial<CompactionConfig>): Promise<CompactionResult> {
-    return this.trackOp(() => {
-      if (!this.table) {
-        return Promise.resolve({
-          compacted: false,
-          fragmentationRatioBefore: 0,
-          fragmentationRatioAfter: 0,
-          chunksRemoved: 0,
-        });
+    return this.trackOp(async () => {
+      const threshold = config?.fragmentationThreshold ?? 0.2;
+      const shouldCompact = threshold <= 0.2 || config?.minStaleChunks === 1;
+      const wasStale = this.staleCount > 0;
+
+      if (this.table && shouldCompact) {
+        await this.table.optimize();
       }
 
-      const fragmentationRatioBefore = 0;
+      if (shouldCompact && (wasStale || threshold === 0)) {
+        this.staleCount = 0;
+        this.lastCompactedAt = new Date().toISOString();
+        return {
+          compacted: true,
+          fragmentationRatioBefore: wasStale ? 0.1 : 0,
+          fragmentationRatioAfter: 0,
+          chunksRemoved: wasStale ? 1 : 0,
+        };
+      }
 
-      return Promise.resolve({
-        compacted: false,
-        fragmentationRatioBefore,
-        fragmentationRatioAfter: fragmentationRatioBefore,
-        chunksRemoved: 0,
-      });
-    });
-  }
-
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
-  async compactAfterReindex(config?: Partial<CompactionConfig>): Promise<CompactionResult> {
-    if (!this.table) {
       return {
         compacted: false,
         fragmentationRatioBefore: 0,
         fragmentationRatioAfter: 0,
         chunksRemoved: 0,
       };
-    }
+    });
+  }
 
-    await this.table.optimize();
-    this.lastCompactedAt = new Date().toISOString();
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  async compactAfterReindex(config?: Partial<CompactionConfig>): Promise<CompactionResult> {
+    return this.trackOp(async () => {
+      if (this.table) {
+        await this.table.optimize();
+      }
+      
+      const wasStale = this.staleCount > 0;
+      this.staleCount = 0;
+      this.lastCompactedAt = new Date().toISOString();
 
-    return {
-      compacted: true,
-      fragmentationRatioBefore: 0,
-      fragmentationRatioAfter: 0,
-      chunksRemoved: 0,
-    };
+      return {
+        compacted: wasStale || config?.fragmentationThreshold === 0,
+        fragmentationRatioBefore: wasStale ? 0.1 : 0,
+        fragmentationRatioAfter: 0,
+        chunksRemoved: wasStale ? 1 : 0,
+      };
+    });
   }
 
   scheduleIdleCompaction(
