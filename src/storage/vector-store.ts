@@ -117,7 +117,11 @@ export class LanceVectorStore implements IVectorStore {
     if (this.inflightOps > 0) {
       const effectiveTimeout = timeoutMs ?? LanceVectorStore.CLOSE_TIMEOUT_MS;
       const inflightDone = new Promise<void>((resolve) => {
-        this.closingResolve = resolve;
+        if (this.inflightOps === 0) {
+          resolve();
+        } else {
+          this.closingResolve = resolve;
+        }
       });
       let timerHandle: NodeJS.Timeout;
       const timeout = new Promise<'timeout'>((resolve) => {
