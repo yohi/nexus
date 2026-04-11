@@ -454,7 +454,7 @@ export class LanceVectorStore implements IVectorStore {
 
       const shouldCompact =
         this.staleCount >= minStale &&
-        (threshold === 0 || fragmentationRatioBefore >= threshold);
+        (threshold === 0 ? this.staleCount > 0 : fragmentationRatioBefore >= threshold);
 
       const wasStale = this.staleCount > 0;
 
