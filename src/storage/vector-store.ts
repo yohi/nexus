@@ -1,6 +1,7 @@
 import * as lancedb from '@lancedb/lancedb';
 import type { Table } from '@lancedb/lancedb';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { randomUUID } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type {
@@ -63,7 +64,7 @@ export class LanceVectorStore implements IVectorStore {
     // インメモリモード (memory://) は削除操作が不安定な場合があるため、一時ディレクトリを優先する
     this.dbPath = options.dbPath && options.dbPath !== 'memory://'
       ? options.dbPath
-      : join(tmpdir(), `nexus-lance-${Math.random().toString(36).slice(2)}`);
+      : join(tmpdir(), `nexus-lance-${randomUUID()}`);
     this.dimensions = options.dimensions;
   }
 
