@@ -182,11 +182,17 @@ export class LanceVectorStore implements IVectorStore {
             if (metadata.lastCompactedAt !== undefined) {
               this.lastCompactedAt = metadata.lastCompactedAt;
             }
+            let validTotalFiles = false;
             if (metadata.totalFiles !== undefined) {
               const parsed = parseInt(metadata.totalFiles, 10);
               if (Number.isFinite(parsed) && parsed >= 0) {
                 this.totalFiles = parsed;
+                validTotalFiles = true;
               }
+            }
+            if (!validTotalFiles) {
+              const rows = await localTable.query().select(['filepath']).toArray() as unknown as { filepath: string }[];
+              this.totalFiles = new Set(rows.map(r => r.filepath)).size;
             }
           } else {
             // Initial or missing metadata: perform expensive distinct count once
