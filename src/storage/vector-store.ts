@@ -146,23 +146,27 @@ export class LanceVectorStore implements IVectorStore {
           if (metadata?.dimensions === undefined) {
             const schema = await localTable.schema();
             const vectorField = schema.fields.find(f => f.name === 'vector');
-            if (vectorField) {
-              const firstRow = await localTable.query().limit(1).toArray() as unknown as LanceRow[];
-              if (firstRow.length > 0 && firstRow[0]?.vector) {
-                const actualDim = Array.isArray(firstRow[0].vector) 
-                  ? firstRow[0].vector.length 
-                  : firstRow[0].vector.length;
-                if (actualDim !== this.dimensions) {
-                  throw new Error(
-                    `VectorStore dimension mismatch: existing table has ${actualDim}, but expected ${this.dimensions}`
-                  );
-                }
-              } else {
-                // Empty table without metadata is treated as a mismatch to avoid silent dimension errors
+            if (!vectorField) {
+              throw new Error(
+                `VectorStore dimension mismatch: missing 'vector' column in existing table; reinitialize required`
+              );
+            }
+
+            const firstRow = await localTable.query().limit(1).toArray() as unknown as LanceRow[];
+            if (firstRow.length > 0 && firstRow[0]?.vector) {
+              const actualDim = Array.isArray(firstRow[0].vector) 
+                ? firstRow[0].vector.length 
+                : firstRow[0].vector.length;
+              if (actualDim !== this.dimensions) {
                 throw new Error(
-                  'VectorStore dimension mismatch: empty table without sidecar metadata. Explicit reinitialization required.'
+                  `VectorStore dimension mismatch: existing table has ${actualDim}, but expected ${this.dimensions}`
                 );
               }
+            } else {
+              // Empty table without metadata is treated as a mismatch to avoid silent dimension errors
+              throw new Error(
+                'VectorStore dimension mismatch: empty table without sidecar metadata. Explicit reinitialization required.'
+              );
             }
           }
 
@@ -259,6 +263,7 @@ export class LanceVectorStore implements IVectorStore {
     if (this.table && this.db) {
       await this.table.delete('true');
       this.staleCount = 0;
+      this.totalFiles = 0;
       this.lastCompactedAt = undefined;
       await this.updateMetadata();
     }
