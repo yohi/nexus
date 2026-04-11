@@ -1,6 +1,5 @@
 import * as lancedb from '@lancedb/lancedb';
 import type { Table } from '@lancedb/lancedb';
-import * as arrow from 'apache-arrow';
 import { mkdir } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -18,6 +17,20 @@ import type {
 interface LanceVectorStoreOptions {
   dbPath?: string;
   dimensions: number;
+}
+
+interface LanceRow {
+  id: string;
+  filePath: string;
+  content: string;
+  language: string;
+  symbolName: string;
+  symbolKind: CodeChunk['symbolKind'];
+  startLine: number;
+  endLine: number;
+  hash: string;
+  vector: number[] | Float32Array;
+  [key: string]: unknown;
 }
 
 export class LanceVectorStore implements IVectorStore {
@@ -176,14 +189,14 @@ export class LanceVectorStore implements IVectorStore {
         return;
       }
 
-      const allRowsRaw = await this.table.query().toArray();
+      const allRowsRaw = await this.table.query().toArray() as unknown as LanceRow[];
       // vector をプレーンな配列に変換
       const allRows = allRowsRaw.map(row => ({
         ...row,
-        vector: Array.isArray(row['vector']) ? row['vector'] : Array.from(row['vector'] as Iterable<number>)
+        vector: Array.isArray(row.vector) ? row.vector : Array.from(row.vector as Iterable<number>)
       }));
       const filePaths = [...new Set(chunks.map((c) => c.filePath))];
-      const filteredRows = allRows.filter((row) => !filePaths.includes(row['filePath'] as string));
+      const filteredRows = allRows.filter((row) => !filePaths.includes(row.filePath));
       this.staleCount += allRows.length - filteredRows.length;
       
       const newRows = [...filteredRows, ...rows];
@@ -205,12 +218,12 @@ export class LanceVectorStore implements IVectorStore {
       }
       const db = this.db;
       if (!this.table) return 0;
-      const allRowsRaw = await this.table.query().toArray();
+      const allRowsRaw = await this.table.query().toArray() as unknown as LanceRow[];
       const allRows = allRowsRaw.map(row => ({
         ...row,
-        vector: Array.isArray(row['vector']) ? row['vector'] : Array.from(row['vector'] as Iterable<number>)
+        vector: Array.isArray(row.vector) ? row.vector : Array.from(row.vector as Iterable<number>)
       }));
-      const filteredRows = allRows.filter((row) => row['filePath'] !== filePath);
+      const filteredRows = allRows.filter((row) => row.filePath !== filePath);
       const count = allRows.length - filteredRows.length;
       
       if (count > 0) {
@@ -234,13 +247,13 @@ export class LanceVectorStore implements IVectorStore {
       }
       const db = this.db;
       if (!this.table) return 0;
-      const allRowsRaw = await this.table.query().toArray();
+      const allRowsRaw = await this.table.query().toArray() as unknown as LanceRow[];
       const allRows = allRowsRaw.map(row => ({
         ...row,
-        vector: Array.isArray(row['vector']) ? row['vector'] : Array.from(row['vector'] as Iterable<number>)
+        vector: Array.isArray(row.vector) ? row.vector : Array.from(row.vector as Iterable<number>)
       }));
       const filteredRows = allRows.filter((row) => {
-        const fp = row['filePath'] as string;
+        const fp = row.filePath;
         return !(fp === pathPrefix || fp.startsWith(pathPrefix + '/'));
       });
       const count = allRows.length - filteredRows.length;
@@ -266,20 +279,20 @@ export class LanceVectorStore implements IVectorStore {
       }
       const db = this.db;
       if (!this.table) return 0;
-      const allRowsRaw = await this.table.query().toArray();
+      const allRowsRaw = await this.table.query().toArray() as unknown as LanceRow[];
       const allRows = allRowsRaw.map(row => ({
         ...row,
-        vector: Array.isArray(row['vector']) ? row['vector'] : Array.from(row['vector'] as Iterable<number>)
+        vector: Array.isArray(row.vector) ? row.vector : Array.from(row.vector as Iterable<number>)
       }));
-      const matchingRows = allRows.filter((row: Record<string, unknown>) => row['filePath'] === oldPath);
-      const remainingRows = allRows.filter((row: Record<string, unknown>) => 
-        row['filePath'] !== oldPath && row['filePath'] !== newPath
+      const matchingRows = allRows.filter((row) => row.filePath === oldPath);
+      const remainingRows = allRows.filter((row) => 
+        row.filePath !== oldPath && row.filePath !== newPath
       );
       const before = matchingRows.length;
       
       if (before > 0) {
-        const updatedRows = matchingRows.map((row: Record<string, unknown>) => {
-          const oldId = row['id'] as string;
+        const updatedRows = matchingRows.map((row) => {
+          const oldId = row.id;
           const newId = oldId.split(oldPath).join(newPath);
           
           return {
@@ -336,39 +349,39 @@ export class LanceVectorStore implements IVectorStore {
         query = query.where(sqlFilters.join(' AND '));
       }
 
-      let results = await query.toArray();
+      const resultsRaw = await query.toArray() as unknown as LanceRow[];
       
       // 削除された行を除外
-      results = results.filter(row => row['filePath'] != null);
+      let results = resultsRaw.filter(row => row.filePath != null);
       
       if (filter) {
         // JS 側での追加フィルタリング（念のため）
-        results = results.filter((row: Record<string, unknown>) => {
+        results = results.filter((row) => {
           if (filter.filePathPrefix !== undefined) {
-            const filePath = row['filePath'] as string;
+            const filePath = row.filePath;
             if (!filePath.startsWith(filter.filePathPrefix)) return false;
           }
           if (filter.language !== undefined) {
-            if (row['language'] !== filter.language) return false;
+            if (row.language !== filter.language) return false;
           }
           if (filter.symbolKind !== undefined) {
-            if (row['symbolKind'] !== filter.symbolKind) return false;
+            if (row.symbolKind !== filter.symbolKind) return false;
           }
           return true;
         });
       }
 
-      return results.slice(0, topK).map((row: Record<string, unknown>) => ({
+      return results.slice(0, topK).map((row) => ({
         chunk: {
-          id: row['id'] as string,
-          filePath: row['filePath'] as string,
-          content: row['content'] as string,
-          language: row['language'] as string,
-          symbolName: (row['symbolName'] as string) || undefined,
-          symbolKind: row['symbolKind'] as CodeChunk['symbolKind'],
-          startLine: row['startLine'] as number,
-          endLine: row['endLine'] as number,
-          hash: (row['hash'] as string) ?? '',
+          id: row.id,
+          filePath: row.filePath,
+          content: row.content,
+          language: row.language,
+          symbolName: row.symbolName || undefined,
+          symbolKind: row.symbolKind,
+          startLine: row.startLine,
+          endLine: row.endLine,
+          hash: row.hash ?? '',
         },
         score: row['_distance'] != null ? 1 - (row['_distance'] as number) : 0,
       }));
@@ -387,9 +400,9 @@ export class LanceVectorStore implements IVectorStore {
         };
       }
 
-      const allRowsRaw = await this.table.query().toArray();
+      const allRowsRaw = await this.table.query().toArray() as unknown as LanceRow[];
       const totalChunks = allRowsRaw.length;
-      const fileCount = new Set(allRowsRaw.map((row) => row['filePath'] as string)).size;
+      const fileCount = new Set(allRowsRaw.map((row) => row.filePath)).size;
 
       const totalPossible = totalChunks + this.staleCount;
       const fragmentationRatio = totalPossible > 0 ? this.staleCount / totalPossible : 0;
@@ -404,7 +417,6 @@ export class LanceVectorStore implements IVectorStore {
     });
   }
 
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
   async compactIfNeeded(config?: Partial<CompactionConfig>): Promise<CompactionResult> {
     return this.trackOp(async () => {
       const threshold = config?.fragmentationThreshold ?? 0.2;
@@ -435,7 +447,6 @@ export class LanceVectorStore implements IVectorStore {
     });
   }
 
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
   async compactAfterReindex(config?: Partial<CompactionConfig>): Promise<CompactionResult> {
     return this.trackOp(async () => {
       if (this.table) {
