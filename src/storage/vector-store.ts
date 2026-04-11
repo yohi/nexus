@@ -33,6 +33,10 @@ interface LanceRow {
   [key: string]: unknown;
 }
 
+interface TableWithInternalMetadata {
+  replaceMetadata(metadata: Map<string, string>): Promise<void>;
+}
+
 export class LanceVectorStore implements IVectorStore {
   private readonly dbPath: string;
   private readonly dimensions: number;
@@ -109,14 +113,14 @@ export class LanceVectorStore implements IVectorStore {
     // Note: In LanceDB Node SDK, table metadata is often immutable after creation.
     // Some versions may support replaceMetadata but it is not in the public Table API.
     try {
-      const tableAny = this.table as any;
-      if (typeof tableAny.replaceMetadata === 'function') {
+      const tableWithMeta = this.table as unknown as Partial<TableWithInternalMetadata>;
+      if (typeof tableWithMeta.replaceMetadata === 'function') {
         const newMetadata = new Map<string, string>();
         newMetadata.set('staleCount', this.staleCount.toString());
         if (this.lastCompactedAt) {
           newMetadata.set('lastCompactedAt', this.lastCompactedAt);
         }
-        await tableAny.replaceMetadata(newMetadata);
+        await tableWithMeta.replaceMetadata(newMetadata);
       }
       // If replaceMetadata is not available, we rely on in-memory state for this session.
       // A more robust implementation might use a sidecar file if persistence across 
