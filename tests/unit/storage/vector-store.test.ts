@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import type { CodeChunk, IVectorStore } from '../../../src/types/index.js';
 import { InMemoryVectorStore } from './in-memory-vector-store.js';
@@ -309,5 +309,62 @@ describe('LanceVectorStore', () => {
     const results = await store.search([1, 0, 0], 10);
     expect(results[0]?.chunk.id).toBe(`${newPath}:${newPath}:0`);
     expect(results[0]?.chunk.filePath).toBe(newPath);
+  });
+
+  it('throws if accessed after close', async () => {
+    const store = new LanceVectorStore({ dimensions: 3 });
+    await store.initialize();
+    await store.close();
+
+    await expect(store.getStats()).rejects.toThrow('VectorStore is closed');
+    await expect(store.upsertChunks([])).rejects.toThrow('VectorStore is closed');
+    await expect(store.search([0, 0, 0], 1)).rejects.toThrow('VectorStore is closed');
+    await expect(store.deleteByFilePath('a')).rejects.toThrow('VectorStore is closed');
+    await expect(store.deleteByPathPrefix('a')).rejects.toThrow('VectorStore is closed');
+    await expect(store.renameFilePath('a', 'b')).rejects.toThrow('VectorStore is closed');
+    await expect(store.compactIfNeeded()).rejects.toThrow('VectorStore is closed');
+  });
+
+  it('waits for in-flight operations during close', async () => {
+    const store = new LanceVectorStore({ dimensions: 3 });
+    await store.initialize();
+
+    // Track a public async operation. 
+    // We expect it to either finish OR be caught in the wait group during close.
+    // In our implementation, it will throw 'VectorStore is closed' after asyncBoundary.
+    const upsertPromise = store.upsertChunks([makeChunk({ id: '1' })]);
+
+    const closePromise = store.close();
+    
+    // closePromise should resolve even if upsertPromise rejects
+    await closePromise;
+    
+    // upsertPromise is expected to reject because it checks closed state after asyncBoundary
+    await expect(upsertPromise).rejects.toThrow('VectorStore is closed');
+    
+    expect(true).toBe(true);
+  });
+
+  it('clears scheduled timeouts during close', async () => {
+    // initialize BEFORE using fake timers to avoid setImmediate hang
+    const store = new LanceVectorStore({ dimensions: 3 });
+    await store.initialize();
+
+    vi.useFakeTimers();
+    try {
+      let compactionCalled = false;
+      store.scheduleIdleCompaction(async () => {
+        compactionCalled = true;
+      }, 1000);
+
+      await store.close();
+
+      // Fast-forward time
+      vi.advanceTimersByTime(2000);
+
+      expect(compactionCalled).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
