@@ -25,9 +25,11 @@ export class LanceVectorStore implements IVectorStore {
 
   private inflightOps = 0;
   private closingResolve: (() => void) | undefined;
-  private closing = false;
+  private isClosed = false;
   private static readonly CLOSE_TIMEOUT_MS = 5_000;
-  private static readonly CLEANUP_GRACE_PERIOD_MS = 300_000;
+
+  private readonly activeTimeouts = new Set<NodeJS.Timeout>();
+  private readonly abortController = new AbortController();
 
   private lastCompactedAt: string | undefined;
 
@@ -58,26 +60,38 @@ export class LanceVectorStore implements IVectorStore {
   }
 
   private async trackOp<T>(op: () => Promise<T>): Promise<T> {
-    if (this.closing) {
-      throw new Error('VectorStore is closing, no new operations accepted');
+    if (this.isClosed) {
+      throw new Error('VectorStore is closed');
     }
     this.inflightOps++;
     try {
       return await op();
     } finally {
       this.inflightOps--;
-      if (this.closing && this.inflightOps === 0 && this.closingResolve) {
+      if (this.isClosed && this.inflightOps === 0 && this.closingResolve) {
         this.closingResolve();
       }
     }
   }
 
+  /**
+   * Performs an idempotent, safe shutdown of the vector store.
+   * Stops all timers, aborts ongoing operations, and waits for in-flight I/O to settle.
+   */
   async close(): Promise<void> {
-    if (this.closing) {
+    if (this.isClosed) {
       return;
     }
-    this.closing = true;
+    this.isClosed = true;
 
+    // 1. Abort ongoing operations and clear all scheduled timeouts
+    this.abortController.abort();
+    for (const timeout of this.activeTimeouts) {
+      clearTimeout(timeout);
+    }
+    this.activeTimeouts.clear();
+
+    // 2. Wait for in-flight operations to settle with a timeout
     if (this.inflightOps > 0) {
       const inflightDone = new Promise<void>((resolve) => {
         this.closingResolve = resolve;
@@ -94,16 +108,16 @@ export class LanceVectorStore implements IVectorStore {
       }
     }
 
+    // 3. Release LanceDB resources
     this.table = undefined;
     this.db = undefined;
-    this.closing = false;
     this.closingResolve = undefined;
   }
 
   async upsertChunks(chunks: CodeChunk[], embeddings?: number[][]): Promise<void> {
     if (embeddings && embeddings.length !== chunks.length) {
       throw new Error(
-        `embeddings length mismatch (expected ${chunks.length}, got ${embeddings.length})`
+        `VectorStore.upsertChunks: embeddings length mismatch (expected ${chunks.length}, got ${embeddings.length})`
       );
     }
     const rows = chunks.map((chunk, i) => ({
@@ -246,36 +260,40 @@ export class LanceVectorStore implements IVectorStore {
   }
 
   async getStats(): Promise<VectorStoreStats> {
-    const totalChunks = this.table ? await this.table.countRows() : 0;
-    const fileCount = this.table ? (await this.table.query().toArray()).length : 0;
+    return this.trackOp(async () => {
+      const totalChunks = this.table ? await this.table.countRows() : 0;
+      const fileCount = this.table ? (await this.table.query().toArray()).length : 0;
 
-    return {
-      totalChunks,
-      totalFiles: fileCount,
-      dimensions: this.dimensions,
-      fragmentationRatio: 0,
-      lastCompactedAt: this.lastCompactedAt,
-    };
+      return {
+        totalChunks,
+        totalFiles: fileCount,
+        dimensions: this.dimensions,
+        fragmentationRatio: 0,
+        lastCompactedAt: this.lastCompactedAt,
+      };
+    });
   }
 
   async compactIfNeeded(config?: Partial<CompactionConfig>): Promise<CompactionResult> {
-    if (!this.table) {
+    return this.trackOp(async () => {
+      if (!this.table) {
+        return {
+          compacted: false,
+          fragmentationRatioBefore: 0,
+          fragmentationRatioAfter: 0,
+          chunksRemoved: 0,
+        };
+      }
+
+      const fragmentationRatioBefore = 0;
+
       return {
         compacted: false,
-        fragmentationRatioBefore: 0,
-        fragmentationRatioAfter: 0,
+        fragmentationRatioBefore,
+        fragmentationRatioAfter: fragmentationRatioBefore,
         chunksRemoved: 0,
       };
-    }
-
-    const fragmentationRatioBefore = 0;
-
-    return {
-      compacted: false,
-      fragmentationRatioBefore,
-      fragmentationRatioAfter: fragmentationRatioBefore,
-      chunksRemoved: 0,
-    };
+    });
   }
 
   async compactAfterReindex(config?: Partial<CompactionConfig>): Promise<CompactionResult> {
@@ -306,54 +324,64 @@ export class LanceVectorStore implements IVectorStore {
     abortSignal?: AbortSignal,
     mutexTimeoutMs = 30000,
   ): NodeJS.Timeout {
-    return setTimeout(() => {
-      if (abortSignal?.aborted) {
+    if (this.isClosed) {
+      // Return a dummy timeout if already closed
+      return setTimeout(() => {}, 0);
+    }
+
+    const timeout = setTimeout(() => {
+      this.activeTimeouts.delete(timeout);
+      if (abortSignal?.aborted || this.abortController.signal.aborted) {
         return;
       }
 
-      Promise.resolve()
-        .then(async () => {
-          if (mutex) {
-            const controller = new AbortController();
-            const timeoutId = setTimeout(() => {
-              controller.abort(new Error(`Compaction mutex acquisition timed out after ${mutexTimeoutMs}ms`));
-            }, mutexTimeoutMs);
+      const operation = (async () => {
+        if (mutex) {
+          const controller = new AbortController();
+          const timeoutId = setTimeout(() => {
+            controller.abort(new Error(`Compaction mutex acquisition timed out after ${mutexTimeoutMs}ms`));
+          }, mutexTimeoutMs);
 
-            const onAbort = () => {
-              controller.abort();
-            };
-            if (abortSignal) {
-              abortSignal.addEventListener('abort', onAbort, { once: true });
-            }
+          const onAbort = () => {
+            controller.abort();
+          };
 
-            try {
-              await mutex.waitForUnlock(controller.signal);
-            } catch (error) {
-              if (controller.signal.aborted && controller.signal.reason) {
-                throw controller.signal.reason;
-              }
-              throw error;
-            } finally {
-              clearTimeout(timeoutId);
-              if (abortSignal) {
-                abortSignal.removeEventListener('abort', onAbort);
-              }
+          const combinedSignal = abortSignal || this.abortController.signal;
+          combinedSignal.addEventListener('abort', onAbort, { once: true });
+
+          try {
+            await mutex.waitForUnlock(controller.signal);
+          } catch (error) {
+            if (controller.signal.aborted && controller.signal.reason) {
+              throw controller.signal.reason;
             }
+            throw error;
+          } finally {
+            clearTimeout(timeoutId);
+            combinedSignal.removeEventListener('abort', onAbort);
           }
-        })
-        .then(() => {
-          if (abortSignal?.aborted) {
-            return;
-          }
-          return runCompaction();
-        })
-        .catch((error: unknown) => {
-          if ((error instanceof Error && error.name === 'AbortError') || abortSignal?.aborted) {
-            return;
-          }
-          console.error('Compaction failed:', error);
-        });
+        }
+
+        if (abortSignal?.aborted || this.abortController.signal.aborted) {
+          return;
+        }
+        return runCompaction();
+      })();
+
+      operation.catch((error: unknown) => {
+        if (
+          (error instanceof Error && (error.name === 'AbortError' || error.message.includes('abort'))) ||
+          abortSignal?.aborted ||
+          this.abortController.signal.aborted
+        ) {
+          return;
+        }
+        console.error('Compaction failed:', error);
+      });
     }, delayMs);
+
+    this.activeTimeouts.add(timeout);
+    return timeout;
   }
 
   // --- フィルタ値検証・エスケープユーティリティ ---
