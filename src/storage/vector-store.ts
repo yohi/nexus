@@ -85,6 +85,9 @@ export class LanceVectorStore implements IVectorStore {
   }
 
   async initialize(): Promise<void> {
+    if (this.isClosed) {
+      throw new Error('VectorStore is closed');
+    }
     if (this.db) {
       return;
     }
