@@ -72,6 +72,39 @@ describe('LanceVectorStore (LanceDB integration)', () => {
       expect(stats.totalChunks).toBe(2);
     });
 
+    it('deleteByFilePath() — 該当ファイルのチャンクが全削除', async () => {
+      const embedding = Array.from({ length: 64 }, (_, i) => (i === 0 ? 1 : 0));
+      await store.upsertChunks(
+        [
+          makeChunk({ id: 'a1', filePath: 'src/a.ts' }),
+          makeChunk({ id: 'b1', filePath: 'src/b.ts' }),
+        ],
+        [embedding, embedding],
+      );
+      const deleted = await store.deleteByFilePath('src/a.ts');
+      expect(deleted).toBe(1);
+      const results = await store.search(embedding, 10);
+      expect(results).toHaveLength(1);
+      expect(results[0]?.chunk.filePath).toBe('src/b.ts');
+    });
+
+    it('deleteByPathPrefix() — プレフィックス配下の全チャンク削除', async () => {
+      const embedding = Array.from({ length: 64 }, (_, i) => (i === 0 ? 1 : 0));
+      await store.upsertChunks(
+        [
+          makeChunk({ id: 'a1', filePath: 'src/a.ts' }),
+          makeChunk({ id: 'b1', filePath: 'src/nested/b.ts' }),
+          makeChunk({ id: 'c1', filePath: 'tests/test.ts' }),
+        ],
+        [embedding, embedding, embedding],
+      );
+      const deleted = await store.deleteByPathPrefix('src');
+      expect(deleted).toBe(2);
+      const results = await store.search(embedding, 10);
+      expect(results).toHaveLength(1);
+      expect(results[0]?.chunk.filePath).toBe('tests/test.ts');
+    });
+
     it('close() — 二重呼び出しで冪等', async () => {
       await expect(store.close()).resolves.toBeUndefined();
       await expect(store.close()).resolves.toBeUndefined();

@@ -57,14 +57,12 @@ describe('LanceVectorStore compaction integration', () => {
     await store.upsertChunks([makeChunk({ id: 'a' }), makeChunk({ id: 'b', filePath: 'src/b.ts' })]);
     await store.deleteByFilePath('src/file.ts');
 
-    // In current LanceVectorStore, delete resets staleCount to 0.
-    // To test compaction with staleCount > 0, we would need an operation that doesn't reset it,
-    // but all current deletions (ByFilePath, ByPathPrefix) do.
+    // In current LanceVectorStore, delete increments staleCount.
     // For now, we verify it still works when threshold is 0.
     const result = await store.compactIfNeeded({ fragmentationThreshold: 0 });
 
     expect(result.compacted).toBe(true);
-    expect(result.chunksRemoved).toBe(0); // already removed
+    expect(result.chunksRemoved).toBe(1);
     expect(result.fragmentationRatioAfter).toBe(0);
   });
 
@@ -75,7 +73,7 @@ describe('LanceVectorStore compaction integration', () => {
     const result = await store.compactAfterReindex({ fragmentationThreshold: 0 });
 
     expect(result.compacted).toBe(true);
-    expect(result.chunksRemoved).toBe(0); // already removed
+    expect(result.chunksRemoved).toBe(1);
   });
 
   it('runs idle compaction only after acquiring the mutex', async () => {

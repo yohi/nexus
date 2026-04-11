@@ -21,13 +21,13 @@ interface LanceVectorStoreOptions {
 
 interface LanceRow {
   id: string;
-  filePath: string;
+  filepath: string;
   content: string;
   language: string;
-  symbolName: string;
-  symbolKind: CodeChunk['symbolKind'];
-  startLine: number;
-  endLine: number;
+  symbolname: string;
+  symbolkind: CodeChunk['symbolKind'];
+  startline: number;
+  endline: number;
   hash: string;
   vector: number[] | Float32Array;
   [key: string]: unknown;
@@ -181,13 +181,13 @@ export class LanceVectorStore implements IVectorStore {
       }
       return {
         id: chunk.id,
-        filePath: chunk.filePath,
+        filepath: chunk.filePath,
         content: chunk.content,
         language: chunk.language,
-        symbolName: chunk.symbolName ?? '',
-        symbolKind: chunk.symbolKind,
-        startLine: chunk.startLine,
-        endLine: chunk.endLine,
+        symbolname: chunk.symbolName ?? '',
+        symbolkind: chunk.symbolKind,
+        startline: chunk.startLine,
+        endline: chunk.endLine,
         hash: chunk.hash,
         vector,
       };
@@ -268,7 +268,7 @@ export class LanceVectorStore implements IVectorStore {
       if (count > 0) {
         await this.table.update({
           where: filter,
-          values: { filePath: newPath },
+          values: { filepath: newPath },
         });
       }
       return count;
@@ -309,7 +309,7 @@ export class LanceVectorStore implements IVectorStore {
       }
       if (filter?.symbolKind !== undefined) {
         this.validateFilterValue(filter.symbolKind, 'symbolKind');
-        sqlFilters.push(`"symbolKind" = '${this.escapeFilterValue(filter.symbolKind)}'`);
+        sqlFilters.push(`symbolkind = '${this.escapeFilterValue(filter.symbolKind)}'`);
       }
 
       if (sqlFilters.length > 0) {
@@ -321,13 +321,13 @@ export class LanceVectorStore implements IVectorStore {
       return resultsRaw.map((row) => ({
         chunk: {
           id: row.id,
-          filePath: row.filePath,
+          filePath: row.filepath,
           content: row.content,
           language: row.language,
-          symbolName: row.symbolName || undefined,
-          symbolKind: row.symbolKind,
-          startLine: row.startLine,
-          endLine: row.endLine,
+          symbolName: row.symbolname || undefined,
+          symbolKind: row.symbolkind,
+          startLine: row.startline,
+          endLine: row.endline,
           hash: row.hash ?? '',
         },
         score: row['_distance'] != null ? 1 - (row['_distance'] as number) : 0,
@@ -348,8 +348,8 @@ export class LanceVectorStore implements IVectorStore {
       }
 
       const totalChunks = await this.table.countRows();
-      const rows = await this.table.query().select(['filePath']).toArray() as unknown as { filePath: string }[];
-      const totalFiles = new Set(rows.map(r => r.filePath)).size;
+      const rows = await this.table.query().select(['filepath']).toArray() as unknown as { filepath: string }[];
+      const totalFiles = new Set(rows.map(r => r.filepath)).size;
 
       const totalPossible = totalChunks + this.staleCount;
       const fragmentationRatio = totalPossible > 0 ? this.staleCount / totalPossible : 0;
@@ -374,8 +374,8 @@ export class LanceVectorStore implements IVectorStore {
       const fragmentationRatioBefore = totalPossible > 0 ? this.staleCount / totalPossible : 0;
 
       const shouldCompact =
-        this.staleCount >= minStale &&
-        (threshold === 0 ? this.staleCount > 0 : fragmentationRatioBefore >= threshold);
+        (threshold === 0) ||
+        (this.staleCount >= minStale && fragmentationRatioBefore >= threshold);
 
       const wasStale = this.staleCount > 0;
 
@@ -525,11 +525,11 @@ export class LanceVectorStore implements IVectorStore {
 
   protected filePathFilter(filePath: string): string {
     this.validateFilterValue(filePath, 'filePath');
-    return `"filePath" = '${this.escapeFilterValue(filePath)}'`;
+    return `filepath = '${this.escapeFilterValue(filePath)}'`;
   }
 
   protected filePathPrefixFilter(prefix: string): string {
     this.validateFilterValue(prefix, 'prefix');
-    return `"filePath" LIKE '${this.escapeLikeValue(prefix)}%' ESCAPE '\\\\'`;
+    return `filepath LIKE '${this.escapeLikeValue(prefix)}%' ESCAPE '\\\\'`;
   }
 }
