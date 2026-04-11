@@ -169,24 +169,22 @@ describe('Filter Validation and Escape', () => {
 
     it('正常入力の貫通 — 正しいフィルタ文字列が構築される', () => {
       const result = store.testFilePathFilter('src/utils/parser.ts');
-      expect(result).toBe("\"filePath\" = 'src/utils/parser.ts'");
+      expect(result).toBe("filepath = 'src/utils/parser.ts'");
     });
 
     it('LIKE ワイルドカードの安全なプレフィックス検索', () => {
       const result = store.testFilePathPrefixFilter('src/my_module');
-      expect(result).toContain('LIKE');
-      expect(result).toContain('\\_');
-      expect(result).toContain("ESCAPE '\\\\'");
+      expect(result).toBe("filepath LIKE 'src/my\\_module%' ESCAPE '\\\\'");
     });
 
     it('ESCAPE 句の付与', () => {
       const result = store.testFilePathPrefixFilter('src/utils');
-      expect(result).toContain("ESCAPE '\\\\'");
+      expect(result).toBe("filepath LIKE 'src/utils%' ESCAPE '\\\\'");
     });
 
     it('完全一致フィルタに ESCAPE なし', () => {
       const result = store.testFilePathFilter('src/utils/parser.ts');
-      expect(result).not.toContain('ESCAPE');
+      expect(result).toBe("filepath = 'src/utils/parser.ts'");
     });
   });
 });
