@@ -86,6 +86,7 @@ export class LanceVectorStore implements IVectorStore {
         return;
       }
 
+      // Security: dbPath is validated in constructor and potentially derived from tmpdir()
       const isUri = this.dbPath.includes('://');
       if (!isUri) {
         await mkdir(this.dbPath, { recursive: true });
@@ -338,7 +339,7 @@ export class LanceVectorStore implements IVectorStore {
         this.validateFilterValue(chunk.language, 'language');
       }
 
-      const vector = embeddings ? embeddings[i]! : Array(this.dimensions).fill(0);
+      const vector = embeddings && embeddings[i] ? embeddings[i] : Array(this.dimensions).fill(0);
       if (!vector.every(Number.isFinite)) {
         throw new Error(
           `VectorStore.upsertChunks: vector contains non-finite values for chunk ${chunk.id}`
@@ -505,7 +506,7 @@ export class LanceVectorStore implements IVectorStore {
           symbolKind: row.symbolkind,
           startLine: row.startline,
           endLine: row.endline,
-          hash: row.hash ?? '',
+          hash: row.hash,
         },
         score: typeof row._distance === 'number' ? 1 - row._distance : 0,
       }));
