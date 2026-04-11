@@ -110,7 +110,7 @@ export class LanceVectorStore implements IVectorStore {
         this.closingResolve = resolve;
       });
       const timeout = new Promise<'timeout'>((resolve) => {
-        setTimeout(() => resolve('timeout'), LanceVectorStore.CLOSE_TIMEOUT_MS);
+        setTimeout(() => { resolve('timeout'); }, LanceVectorStore.CLOSE_TIMEOUT_MS);
       });
       const result = await Promise.race([inflightDone.then(() => 'done' as const), timeout]);
       if (result === 'timeout') {
@@ -144,7 +144,7 @@ export class LanceVectorStore implements IVectorStore {
     }
 
     const rows = chunks.map((chunk, i) => {
-      const vector = embeddings ? embeddings[i]! : Array(this.dimensions).fill(0);
+      const vector = embeddings ? (embeddings[i] ?? Array(this.dimensions).fill(0)) : Array(this.dimensions).fill(0);
       if (!vector.every(Number.isFinite)) {
         throw new Error(
           `VectorStore.upsertChunks: vector contains non-finite values for chunk ${chunk.id}`
@@ -165,10 +165,14 @@ export class LanceVectorStore implements IVectorStore {
     });
 
     await this.trackOp(async () => {
+      if (!this.db) {
+        throw new Error('VectorStore not initialized');
+      }
+      const db = this.db;
       this.staleCount = 0;
       if (!this.table) {
         if (rows.length === 0) return;
-        this.table = await this.db!.createTable('chunks', rows);
+        this.table = await db.createTable('chunks', rows);
         return;
       }
 
@@ -184,10 +188,10 @@ export class LanceVectorStore implements IVectorStore {
       
       const newRows = [...filteredRows, ...rows];
       if (newRows.length === 0) {
-        await this.db!.dropTable('chunks');
+        await db.dropTable('chunks');
         this.table = undefined;
       } else {
-        this.table = await this.db!.createTable('chunks', newRows, { mode: 'overwrite' });
+        this.table = await db.createTable('chunks', newRows, { mode: 'overwrite' });
         await this.table.optimize();
       }
       this.staleCount = 0;
@@ -196,6 +200,10 @@ export class LanceVectorStore implements IVectorStore {
 
   async deleteByFilePath(filePath: string): Promise<number> {
     return this.trackOp(async () => {
+      if (!this.db) {
+        throw new Error('VectorStore not initialized');
+      }
+      const db = this.db;
       if (!this.table) return 0;
       const allRowsRaw = await this.table.query().toArray();
       const allRows = allRowsRaw.map(row => ({
@@ -208,10 +216,10 @@ export class LanceVectorStore implements IVectorStore {
       if (count > 0) {
         this.staleCount += count;
         if (filteredRows.length === 0) {
-          await this.db!.dropTable('chunks');
+          await db.dropTable('chunks');
           this.table = undefined;
         } else {
-          this.table = await this.db!.createTable('chunks', filteredRows, { mode: 'overwrite' });
+          this.table = await db.createTable('chunks', filteredRows, { mode: 'overwrite' });
           await this.table.optimize();
         }
       }
@@ -221,6 +229,10 @@ export class LanceVectorStore implements IVectorStore {
 
   async deleteByPathPrefix(pathPrefix: string): Promise<number> {
     return this.trackOp(async () => {
+      if (!this.db) {
+        throw new Error('VectorStore not initialized');
+      }
+      const db = this.db;
       if (!this.table) return 0;
       const allRowsRaw = await this.table.query().toArray();
       const allRows = allRowsRaw.map(row => ({
@@ -236,10 +248,10 @@ export class LanceVectorStore implements IVectorStore {
       if (count > 0) {
         this.staleCount += count;
         if (filteredRows.length === 0) {
-          await this.db!.dropTable('chunks');
+          await db.dropTable('chunks');
           this.table = undefined;
         } else {
-          this.table = await this.db!.createTable('chunks', filteredRows, { mode: 'overwrite' });
+          this.table = await db.createTable('chunks', filteredRows, { mode: 'overwrite' });
           await this.table.optimize();
         }
       }
@@ -249,6 +261,10 @@ export class LanceVectorStore implements IVectorStore {
 
   async renameFilePath(oldPath: string, newPath: string): Promise<number> {
     return this.trackOp(async () => {
+      if (!this.db) {
+        throw new Error('VectorStore not initialized');
+      }
+      const db = this.db;
       if (!this.table) return 0;
       const allRowsRaw = await this.table.query().toArray();
       const allRows = allRowsRaw.map(row => ({
@@ -273,7 +289,7 @@ export class LanceVectorStore implements IVectorStore {
           };
         });
         
-        this.table = await this.db!.createTable('chunks', [...remainingRows, ...updatedRows], { mode: 'overwrite' });
+        this.table = await db.createTable('chunks', [...remainingRows, ...updatedRows], { mode: 'overwrite' });
         await this.table.optimize();
         this.staleCount = 0;
       }
