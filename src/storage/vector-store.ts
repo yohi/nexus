@@ -329,4 +329,41 @@ export class LanceVectorStore implements IVectorStore {
   async close(): Promise<void> {
     // TODO: LanceDB implementation with trackOp + inflight I/O wait
   }
+
+  // --- フィルタ値検証・エスケープユーティリティ ---
+
+  private static readonly ALLOWED_FILTER_VALUE_PATTERN = /^[\p{L}\p{N}\p{P}\p{Z}\p{S}]*$/u;
+  private static readonly FORBIDDEN_CONTROL_CHARS = /[\x00-\x1f\x7f]/;
+
+  protected validateFilterValue(value: string, paramName: string): void {
+    if (LanceVectorStore.FORBIDDEN_CONTROL_CHARS.test(value)) {
+      throw new Error(
+        `Invalid ${paramName}: contains control characters that could compromise filter integrity`
+      );
+    }
+    if (!LanceVectorStore.ALLOWED_FILTER_VALUE_PATTERN.test(value)) {
+      throw new Error(
+        `Invalid ${paramName}: contains characters outside the allowed set (printable Unicode only)`
+      );
+    }
+  }
+
+  protected escapeFilterValue(value: string): string {
+    return value.replace(/\\/g, '\\\\').replace(/'/g, "''");
+  }
+
+  protected escapeLikeValue(value: string): string {
+    const escaped = this.escapeFilterValue(value);
+    return escaped.replace(/%/g, '\\%').replace(/_/g, '\\_');
+  }
+
+  protected filePathFilter(filePath: string): string {
+    this.validateFilterValue(filePath, 'filePath');
+    return `filePath = '${this.escapeFilterValue(filePath)}'`;
+  }
+
+  protected filePathPrefixFilter(prefix: string): string {
+    this.validateFilterValue(prefix, 'prefix');
+    return `filePath LIKE '${this.escapeLikeValue(prefix)}%' ESCAPE '\\\\'`;
+  }
 }
