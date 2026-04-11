@@ -42,6 +42,7 @@ describe('LanceVectorStore compaction integration', () => {
     const result = await store.compactIfNeeded({ fragmentationThreshold: 0.8 });
 
     expect(result.compacted).toBe(false);
+    expect(result.fragmentationRatioBefore).toBeLessThan(0.8);
     await store.close();
   });
 

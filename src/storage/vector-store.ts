@@ -36,6 +36,8 @@ export class LanceVectorStore implements IVectorStore {
   // TODO: Replace Map with actual LanceDB integration (@lancedb/lancedb) in Phase 2.
   private readonly dimensions: number;
 
+  private readonly dbPath: string | undefined;
+
   private readonly rows = new Map<string, StoredVectorRow>();
 
   private deletedCount = 0;
@@ -60,6 +62,7 @@ export class LanceVectorStore implements IVectorStore {
       throw new Error('dimensions must be a positive integer');
     }
     this.dimensions = options.dimensions;
+    this.dbPath = options.dbPath;
   }
 
   async initialize(): Promise<void> {
@@ -129,7 +132,6 @@ export class LanceVectorStore implements IVectorStore {
       for (const row of this.rows.values()) {
         const isMatch = row.chunk.filePath === pathPrefix || row.chunk.filePath.startsWith(prefixWithSlash);
         if (isMatch && !row.deleted) {
-          row.deleted = true;
           deleted += 1;
           this.deletedCount += 1;
         }
@@ -413,4 +415,3 @@ export class LanceVectorStore implements IVectorStore {
     // TODO: LanceDB specific cleanup (file handles, etc) once integrated
   }
 }
-
