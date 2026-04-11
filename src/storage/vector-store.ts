@@ -134,11 +134,14 @@ export class LanceVectorStore implements IVectorStore {
 
     // 3. Release LanceDB resources
     try {
-      if (this.table && typeof (this.table as any).close === 'function') {
-        await (this.table as any).close();
+      const tableObj = this.table as unknown as Record<string, unknown>;
+      if (tableObj && typeof tableObj.close === 'function') {
+        await (tableObj.close as () => Promise<void>)();
       }
-      if (this.db && typeof (this.db as any).close === 'function') {
-        await (this.db as any).close();
+
+      const dbObj = this.db as unknown as Record<string, unknown>;
+      if (dbObj && typeof dbObj.close === 'function') {
+        await (dbObj.close as () => Promise<void>)();
       }
     } catch (e) {
       console.error('[LanceVectorStore] Error closing LanceDB resources:', e);
