@@ -252,9 +252,10 @@ export class LanceVectorStore implements IVectorStore {
         ...row,
         vector: Array.isArray(row.vector) ? row.vector : Array.from(row.vector as Iterable<number>)
       }));
+      const normalizedPrefix = pathPrefix.endsWith('/') ? pathPrefix : pathPrefix + '/';
       const filteredRows = allRows.filter((row) => {
         const fp = row.filePath;
-        return !(fp === pathPrefix || fp.startsWith(pathPrefix + '/'));
+        return !(fp === pathPrefix || fp.startsWith(normalizedPrefix));
       });
       const count = allRows.length - filteredRows.length;
       
@@ -420,28 +421,35 @@ export class LanceVectorStore implements IVectorStore {
   async compactIfNeeded(config?: Partial<CompactionConfig>): Promise<CompactionResult> {
     return this.trackOp(async () => {
       const threshold = config?.fragmentationThreshold ?? 0.2;
-      const shouldCompact = threshold <= 0.2 || config?.minStaleChunks === 1;
+
+      const totalChunks = this.table ? (await this.table.query().toArray() as unknown as LanceRow[]).length : 0;
+      const totalPossible = totalChunks + this.staleCount;
+      const fragmentationRatioBefore = totalPossible > 0 ? this.staleCount / totalPossible : 0;
+
+      const shouldCompact = (threshold === 0 && this.staleCount > 0) || 
+                            (threshold < 1 && fragmentationRatioBefore >= threshold) ||
+                            (config?.minStaleChunks !== undefined && this.staleCount >= config.minStaleChunks);
       const wasStale = this.staleCount > 0;
 
-      if (this.table && shouldCompact) {
-        await this.table.optimize();
-      }
-
-      if (shouldCompact && (wasStale || threshold === 0)) {
+      if (shouldCompact) {
+        if (this.table) {
+          await this.table.optimize();
+        }
+        const removed = this.staleCount;
         this.staleCount = 0;
         this.lastCompactedAt = new Date().toISOString();
         return {
           compacted: true,
-          fragmentationRatioBefore: wasStale ? 0.1 : 0,
+          fragmentationRatioBefore,
           fragmentationRatioAfter: 0,
-          chunksRemoved: wasStale ? 1 : 0,
+          chunksRemoved: wasStale ? removed : 0,
         };
       }
 
       return {
         compacted: false,
-        fragmentationRatioBefore: 0,
-        fragmentationRatioAfter: 0,
+        fragmentationRatioBefore,
+        fragmentationRatioAfter: fragmentationRatioBefore,
         chunksRemoved: 0,
       };
     });
@@ -453,15 +461,20 @@ export class LanceVectorStore implements IVectorStore {
         await this.table.optimize();
       }
       
+      const allRowsRaw = this.table ? await this.table.query().toArray() as unknown as LanceRow[] : [];
+      const totalPossible = allRowsRaw.length + this.staleCount;
+      const fragmentationRatioBefore = totalPossible > 0 ? this.staleCount / totalPossible : 0;
+      
       const wasStale = this.staleCount > 0;
+      const removed = this.staleCount;
       this.staleCount = 0;
       this.lastCompactedAt = new Date().toISOString();
 
       return {
         compacted: wasStale || config?.fragmentationThreshold === 0,
-        fragmentationRatioBefore: wasStale ? 0.1 : 0,
+        fragmentationRatioBefore,
         fragmentationRatioAfter: 0,
-        chunksRemoved: wasStale ? 1 : 0,
+        chunksRemoved: wasStale ? removed : 0,
       };
     });
   }
