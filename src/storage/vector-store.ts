@@ -10,6 +10,7 @@ import type {
 } from '../types/index.js';
 
 interface LanceVectorStoreOptions {
+  dbPath?: string;
   dimensions: number;
 }
 
