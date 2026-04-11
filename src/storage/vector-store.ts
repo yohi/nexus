@@ -33,6 +33,11 @@ interface LanceRow {
   [key: string]: unknown;
 }
 
+interface SidecarMetadata {
+  staleCount?: string;
+  lastCompactedAt?: string;
+}
+
 export class LanceVectorStore implements IVectorStore {
   private readonly dbPath: string;
   private readonly dimensions: number;
@@ -97,7 +102,7 @@ export class LanceVectorStore implements IVectorStore {
       try {
         const metaPath = join(this.dbPath, 'metadata.json');
         const content = await readFile(metaPath, 'utf8');
-        const metadata = JSON.parse(content);
+        const metadata = JSON.parse(content) as SidecarMetadata;
         
         if (metadata.staleCount !== undefined) {
           const parsed = parseInt(metadata.staleCount, 10);
@@ -105,7 +110,7 @@ export class LanceVectorStore implements IVectorStore {
             this.staleCount = parsed;
           }
         }
-        if (metadata.lastCompactedAt) {
+        if (metadata.lastCompactedAt !== undefined) {
           this.lastCompactedAt = metadata.lastCompactedAt;
         }
       } catch {
