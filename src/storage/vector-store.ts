@@ -99,8 +99,14 @@ export class LanceVectorStore implements IVectorStore {
 
       // Restore metadata
       const metadata = schema.metadata;
-      if (metadata.get('staleCount')) {
-        this.staleCount = parseInt(metadata.get('staleCount')!, 10);
+      const storedStale = metadata.get('staleCount');
+      if (storedStale) {
+        const parsed = parseInt(storedStale, 10);
+        if (Number.isFinite(parsed) && parsed >= 0) {
+          this.staleCount = parsed;
+        } else {
+          this.staleCount = 0;
+        }
       }
       if (metadata.get('lastCompactedAt')) {
         this.lastCompactedAt = metadata.get('lastCompactedAt');
@@ -111,7 +117,7 @@ export class LanceVectorStore implements IVectorStore {
   private async updateMetadata(): Promise<void> {
     if (!this.table) return;
     // Note: In LanceDB Node SDK, table metadata is often immutable after creation.
-    // Some versions may support replaceMetadata but it is not in the public Table API.
+    // Some versions may support replaceMetadata (as an internal or undocumented API).
     try {
       const tableWithMeta = this.table as unknown as Partial<TableWithInternalMetadata>;
       if (typeof tableWithMeta.replaceMetadata === 'function') {
@@ -122,11 +128,8 @@ export class LanceVectorStore implements IVectorStore {
         }
         await tableWithMeta.replaceMetadata(newMetadata);
       }
-      // If replaceMetadata is not available, we rely on in-memory state for this session.
-      // A more robust implementation might use a sidecar file if persistence across 
-      // restarts is strictly required and replaceMetadata is missing.
-    } catch {
-      // Ignore metadata update errors to avoid blocking main operations
+    } catch (e) {
+      console.error('[LanceVectorStore] Failed to update table metadata:', e);
     }
   }
 
@@ -201,16 +204,22 @@ export class LanceVectorStore implements IVectorStore {
       if (tableObj && typeof tableObj.close === 'function') {
         await (tableObj.close as () => Promise<void>)();
       }
+    } catch (e) {
+      console.error('[LanceVectorStore] Error closing table resources:', e);
+    } finally {
+      this.table = undefined;
+    }
 
+    try {
       const dbObj = this.db as unknown as Record<string, unknown>;
       if (dbObj && typeof dbObj.close === 'function') {
         await (dbObj.close as () => Promise<void>)();
       }
     } catch (e) {
-      console.error('[LanceVectorStore] Error closing LanceDB resources:', e);
+      console.error('[LanceVectorStore] Error closing DB connection:', e);
+    } finally {
+      this.db = undefined;
     }
-    this.table = undefined;
-    this.db = undefined;
     this.closingResolve = undefined;
   }
 

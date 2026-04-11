@@ -414,7 +414,7 @@ describe('IndexPipeline', () => {
     expect(compactSpy).toHaveBeenCalledOnce();
   });
 
-  it('compactAfterReindex() 失敗어도 reindex は成功扱い', async () => {
+  it('compactAfterReindex() 失敗しても reindex は成功扱い', async () => {
     const { metadataStore, vectorStore, chunker, registry } = await createPipeline();
     vi.spyOn(vectorStore, 'compactAfterReindex').mockRejectedValue(new Error('compact failed'));
     const pipeline = new IndexPipeline({
