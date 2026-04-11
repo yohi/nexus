@@ -39,6 +39,7 @@ interface SidecarMetadata {
   dimensions?: string;
   staleCount?: string;
   lastCompactedAt?: string;
+  totalFiles?: string;
 }
 
 interface Closable {
@@ -61,7 +62,9 @@ export class LanceVectorStore implements IVectorStore {
 
   private lastCompactedAt: string | undefined;
   private staleCount = 0;
+  private totalFiles = 0;
   private metadataMutex: Promise<void> = Promise.resolve();
+  private initPromise: Promise<void> | undefined;
 
   constructor(options: LanceVectorStoreOptions) {
     if (!Number.isInteger(options.dimensions) || options.dimensions <= 0) {
@@ -81,7 +84,15 @@ export class LanceVectorStore implements IVectorStore {
   }
 
   async initialize(): Promise<void> {
-    return this.trackOp(async () => {
+    if (this.db) {
+      return;
+    }
+    if (this.initPromise) {
+      return this.initPromise;
+    }
+
+    this.initPromise = this.trackOp(async () => {
+      // Re-check this.db inside the lock
       if (this.db) {
         return;
       }
@@ -166,6 +177,16 @@ export class LanceVectorStore implements IVectorStore {
             if (metadata.lastCompactedAt !== undefined) {
               this.lastCompactedAt = metadata.lastCompactedAt;
             }
+            if (metadata.totalFiles !== undefined) {
+              const parsed = parseInt(metadata.totalFiles, 10);
+              if (Number.isFinite(parsed) && parsed >= 0) {
+                this.totalFiles = parsed;
+              }
+            }
+          } else {
+            // Initial or missing metadata: perform expensive distinct count once
+            const rows = await localTable.query().select(['filepath']).toArray() as unknown as { filepath: string }[];
+            this.totalFiles = new Set(rows.map(r => r.filepath)).size;
           }
         }
 
@@ -198,7 +219,11 @@ export class LanceVectorStore implements IVectorStore {
           }
         }
       }
+    }).finally(() => {
+      this.initPromise = undefined;
     });
+
+    return this.initPromise;
   }
 
   private async updateMetadata(): Promise<void> {
@@ -214,6 +239,7 @@ export class LanceVectorStore implements IVectorStore {
           dimensions: this.dimensions.toString(),
           staleCount: this.staleCount.toString(),
           lastCompactedAt: this.lastCompactedAt,
+          totalFiles: this.totalFiles.toString(),
         };
         await writeFile(tmpPath, JSON.stringify(metadata, null, 2), 'utf8');
         await rename(tmpPath, metaPath);
@@ -222,6 +248,11 @@ export class LanceVectorStore implements IVectorStore {
       }
     });
     return this.metadataMutex;
+  }
+
+  private async refreshTotalFiles(table: Table): Promise<void> {
+    const rows = await table.query().select(['filepath']).toArray() as unknown as { filepath: string }[];
+    this.totalFiles = new Set(rows.map(r => r.filepath)).size;
   }
 
   async resetForTest(): Promise<void> {
@@ -367,6 +398,7 @@ export class LanceVectorStore implements IVectorStore {
       if (!this.table) {
         if (rows.length === 0) return;
         this.table = await db.createTable('chunks', rows, { schema: undefined });
+        await this.refreshTotalFiles(this.table);
         await this.updateMetadata();
         return;
       }
@@ -391,6 +423,7 @@ export class LanceVectorStore implements IVectorStore {
         if (rows.length > 0) {
           await this.table.add(rows);
         }
+        await this.refreshTotalFiles(this.table);
         await this.updateMetadata();
       }
     });
@@ -408,6 +441,7 @@ export class LanceVectorStore implements IVectorStore {
       if (count > 0) {
         await this.table.delete(filter);
         this.staleCount += count;
+        await this.refreshTotalFiles(this.table);
         await this.updateMetadata();
       }
       return count;
@@ -426,6 +460,7 @@ export class LanceVectorStore implements IVectorStore {
       if (count > 0) {
         await this.table.delete(filter);
         this.staleCount += count;
+        await this.refreshTotalFiles(this.table);
         await this.updateMetadata();
       }
       return count;
@@ -447,6 +482,7 @@ export class LanceVectorStore implements IVectorStore {
           where: filter,
           values: { filepath: newPath },
         });
+        await this.refreshTotalFiles(this.table);
         await this.updateMetadata();
       }
       return count;
@@ -526,15 +562,12 @@ export class LanceVectorStore implements IVectorStore {
       }
 
       const totalChunks = await this.table.countRows();
-      const rows = await this.table.query().select(['filepath']).toArray() as unknown as { filepath: string }[];
-      const totalFiles = new Set(rows.map(r => r.filepath)).size;
-
       const totalPossible = totalChunks + this.staleCount;
       const fragmentationRatio = totalPossible > 0 ? this.staleCount / totalPossible : 0;
 
       return {
         totalChunks,
-        totalFiles,
+        totalFiles: this.totalFiles,
         dimensions: this.dimensions,
         fragmentationRatio,
         lastCompactedAt: this.lastCompactedAt,
