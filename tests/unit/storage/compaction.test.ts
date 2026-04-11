@@ -30,12 +30,15 @@ describe('LanceVectorStore compaction integration', () => {
   });
 
   afterEach(async () => {
-    if (store) {
-      await store.close();
-    }
-    vi.useRealTimers();
-    if (tmpDir) {
-      await rm(tmpDir, { recursive: true, force: true });
+    try {
+      if (store) {
+        await store.close();
+      }
+    } finally {
+      vi.useRealTimers();
+      if (tmpDir) {
+        await rm(tmpDir, { recursive: true, force: true });
+      }
     }
   });
 
