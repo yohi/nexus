@@ -413,49 +413,44 @@ export class LanceVectorStore implements IVectorStore {
 
     const currentMutex = this.writeMutex;
     this.writeMutex = (async () => {
-      try {
-        await currentMutex;
-        await this.trackOp(async () => {
-          if (!this.db) {
-            throw new Error('VectorStore not initialized');
-          }
-          const db = this.db;
-          if (!this.table) {
-            if (rows.length === 0) return;
-            this.table = await db.createTable('chunks', rows, { schema: undefined });
-            await this.refreshTotalFiles(this.table);
-            await this.updateMetadata();
-            return;
-          }
+      await currentMutex;
+      await this.trackOp(async () => {
+        if (!this.db) {
+          throw new Error('VectorStore not initialized');
+        }
+        const db = this.db;
+        if (!this.table) {
+          if (rows.length === 0) return;
+          this.table = await db.createTable('chunks', rows, { schema: undefined });
+          await this.refreshTotalFiles(this.table);
+          await this.updateMetadata();
+          return;
+        }
 
-          // パス B: delete-then-add
-          // 対象ファイルのチャンクを削除し、新データを追加する
-          const filePaths = [...new Set(chunks.map((c) => c.filePath))];
-          let staleAdded = 0;
-          for (const fp of filePaths) {
-            const filter = this.filePathFilter(fp);
-            const count = await this.table.countRows(filter);
-            if (count > 0) {
-              await this.table.delete(filter);
-              staleAdded += count;
-            }
+        // パス B: delete-then-add
+        // 対象ファイルのチャンクを削除し、新データを追加する
+        const filePaths = [...new Set(chunks.map((c) => c.filePath))];
+        let staleAdded = 0;
+        for (const fp of filePaths) {
+          const filter = this.filePathFilter(fp);
+          const count = await this.table.countRows(filter);
+          if (count > 0) {
+            await this.table.delete(filter);
+            staleAdded += count;
           }
-          
-          if (staleAdded > 0 || rows.length > 0) {
-            if (staleAdded > 0) {
-              this.staleCount += staleAdded;
-            }
-            if (rows.length > 0) {
-              await this.table.add(rows);
-            }
-            await this.refreshTotalFiles(this.table);
-            await this.updateMetadata();
+        }
+        
+        if (staleAdded > 0 || rows.length > 0) {
+          if (staleAdded > 0) {
+            this.staleCount += staleAdded;
           }
-        });
-      } catch (err) {
-        // Re-throw to allow caller to handle, but ensure mutex chain continues
-        throw err;
-      }
+          if (rows.length > 0) {
+            await this.table.add(rows);
+          }
+          await this.refreshTotalFiles(this.table);
+          await this.updateMetadata();
+        }
+      });
     })();
     
     return this.writeMutex;
