@@ -64,6 +64,7 @@ export class LanceVectorStore implements IVectorStore {
   private staleCount = 0;
   private totalFiles = 0;
   private metadataMutex: Promise<void> = Promise.resolve();
+  private writeMutex: Promise<void> = Promise.resolve();
   private initPromise: Promise<void> | undefined;
   private closePromise: Promise<void> | undefined;
 
@@ -410,103 +411,129 @@ export class LanceVectorStore implements IVectorStore {
       };
     });
 
-    await this.trackOp(async () => {
-      if (!this.db) {
-        throw new Error('VectorStore not initialized');
-      }
-      const db = this.db;
-      if (!this.table) {
-        if (rows.length === 0) return;
-        this.table = await db.createTable('chunks', rows, { schema: undefined });
-        await this.refreshTotalFiles(this.table);
-        await this.updateMetadata();
-        return;
-      }
+    const currentMutex = this.writeMutex;
+    this.writeMutex = (async () => {
+      try {
+        await currentMutex;
+        await this.trackOp(async () => {
+          if (!this.db) {
+            throw new Error('VectorStore not initialized');
+          }
+          const db = this.db;
+          if (!this.table) {
+            if (rows.length === 0) return;
+            this.table = await db.createTable('chunks', rows, { schema: undefined });
+            await this.refreshTotalFiles(this.table);
+            await this.updateMetadata();
+            return;
+          }
 
-      // パス B: delete-then-add
-      // 対象ファイルのチャンクを削除し、新データを追加する
-      const filePaths = [...new Set(chunks.map((c) => c.filePath))];
-      let staleAdded = 0;
-      for (const fp of filePaths) {
-        const filter = this.filePathFilter(fp);
-        const count = await this.table.countRows(filter);
-        if (count > 0) {
-          await this.table.delete(filter);
-          staleAdded += count;
-        }
+          // パス B: delete-then-add
+          // 対象ファイルのチャンクを削除し、新データを追加する
+          const filePaths = [...new Set(chunks.map((c) => c.filePath))];
+          let staleAdded = 0;
+          for (const fp of filePaths) {
+            const filter = this.filePathFilter(fp);
+            const count = await this.table.countRows(filter);
+            if (count > 0) {
+              await this.table.delete(filter);
+              staleAdded += count;
+            }
+          }
+          
+          if (staleAdded > 0 || rows.length > 0) {
+            if (staleAdded > 0) {
+              this.staleCount += staleAdded;
+            }
+            if (rows.length > 0) {
+              await this.table.add(rows);
+            }
+            await this.refreshTotalFiles(this.table);
+            await this.updateMetadata();
+          }
+        });
+      } catch (err) {
+        // Re-throw to allow caller to handle, but ensure mutex chain continues
+        throw err;
       }
-      
-      if (staleAdded > 0 || rows.length > 0) {
-        if (staleAdded > 0) {
-          this.staleCount += staleAdded;
-        }
-        if (rows.length > 0) {
-          await this.table.add(rows);
-        }
-        await this.refreshTotalFiles(this.table);
-        await this.updateMetadata();
-      }
-    });
+    })();
+    
+    return this.writeMutex;
   }
 
   async deleteByFilePath(filePath: string): Promise<number> {
-    return this.trackOp(async () => {
-      if (!this.db) {
-        throw new Error('VectorStore not initialized');
-      }
-      if (!this.table) return 0;
-      
-      const filter = this.filePathFilter(filePath);
-      const count = await this.table.countRows(filter);
-      if (count > 0) {
-        await this.table.delete(filter);
-        this.staleCount += count;
-        await this.refreshTotalFiles(this.table);
-        await this.updateMetadata();
-      }
-      return count;
-    });
+    const currentMutex = this.writeMutex;
+    this.writeMutex = (async () => {
+      await currentMutex;
+      return await this.trackOp(async () => {
+        if (!this.db) {
+          throw new Error('VectorStore not initialized');
+        }
+        if (!this.table) return 0;
+        
+        const filter = this.filePathFilter(filePath);
+        const count = await this.table.countRows(filter);
+        if (count > 0) {
+          await this.table.delete(filter);
+          this.staleCount += count;
+          await this.refreshTotalFiles(this.table);
+          await this.updateMetadata();
+        }
+        return count;
+      });
+    })();
+    return await (this.writeMutex as Promise<number>);
   }
 
   async deleteByPathPrefix(pathPrefix: string): Promise<number> {
-    return this.trackOp(async () => {
-      if (!this.db) {
-        throw new Error('VectorStore not initialized');
-      }
-      if (!this.table) return 0;
+    const currentMutex = this.writeMutex;
+    this.writeMutex = (async () => {
+      await currentMutex;
+      return await this.trackOp(async () => {
+        if (!this.db) {
+          throw new Error('VectorStore not initialized');
+        }
+        if (!this.table) return 0;
 
-      const filter = this.filePathPrefixFilter(pathPrefix);
-      const count = await this.table.countRows(filter);
-      if (count > 0) {
-        await this.table.delete(filter);
-        this.staleCount += count;
-        await this.refreshTotalFiles(this.table);
-        await this.updateMetadata();
-      }
-      return count;
-    });
+        const filter = this.filePathPrefixFilter(pathPrefix);
+        const count = await this.table.countRows(filter);
+        if (count > 0) {
+          await this.table.delete(filter);
+          this.staleCount += count;
+          await this.refreshTotalFiles(this.table);
+          await this.updateMetadata();
+        }
+        return count;
+      });
+    })();
+    return await (this.writeMutex as Promise<number>);
   }
 
   async renameFilePath(oldPath: string, newPath: string): Promise<number> {
     this.validateFilterValue(newPath, 'newPath');
-    return this.trackOp(async () => {
-      if (!this.db) {
-        throw new Error('VectorStore not initialized');
-      }
-      if (!this.table) return 0;
+    const currentMutex = this.writeMutex;
+    this.writeMutex = (async () => {
+      await currentMutex;
+      return await this.trackOp(async () => {
+        if (!this.db) {
+          throw new Error('VectorStore not initialized');
+        }
+        if (!this.table) return 0;
 
-      const filter = this.filePathFilter(oldPath);
-      const count = await this.table.countRows(filter);
-      if (count > 0) {
-        await this.table.update({
-          where: filter,
-          values: { filepath: newPath },
-        });
-        await this.refreshTotalFiles(this.table);
-        await this.updateMetadata();
-      }
-      return count;
-    });
+        const filter = this.filePathFilter(oldPath);
+        const count = await this.table.countRows(filter);
+        if (count > 0) {
+          await this.table.update({
+            where: filter,
+            values: { filepath: newPath },
+          });
+          await this.refreshTotalFiles(this.table);
+          await this.updateMetadata();
+        }
+        return count;
+      });
+    })();
+    return await (this.writeMutex as Promise<number>);
   }
 
   async search(
@@ -596,70 +623,83 @@ export class LanceVectorStore implements IVectorStore {
   }
 
   async compactIfNeeded(config?: Partial<CompactionConfig>): Promise<CompactionResult> {
-    return this.trackOp(async () => {
-      const threshold = config?.fragmentationThreshold ?? 0.2;
-      const minStale = config?.minStaleChunks ?? 1;
+    const currentMutex = this.writeMutex;
+    this.writeMutex = (async () => {
+      await currentMutex;
+      return await this.trackOp(async () => {
+        const threshold = config?.fragmentationThreshold ?? 0.2;
+        const minStale = config?.minStaleChunks ?? 1;
 
-      const totalChunks = this.table ? await this.table.countRows() : 0;
-      const totalPossible = totalChunks + this.staleCount;
-      const fragmentationRatioBefore = totalPossible > 0 ? this.staleCount / totalPossible : 0;
+        const totalChunks = this.table ? await this.table.countRows() : 0;
+        const totalPossible = totalChunks + this.staleCount;
+        const fragmentationRatioBefore = totalPossible > 0 ? this.staleCount / totalPossible : 0;
 
-      const shouldCompact =
-        this.staleCount >= minStale &&
-        (threshold === 0 ? this.staleCount > 0 : fragmentationRatioBefore >= threshold);
+        const shouldCompact =
+          this.staleCount >= minStale &&
+          (threshold === 0 ? this.staleCount > 0 : fragmentationRatioBefore >= threshold);
 
-      const wasStale = this.staleCount > 0;
+        const wasStale = this.staleCount > 0;
 
-      if (shouldCompact) {
+        if (shouldCompact) {
+          if (this.table) {
+            await this.table.optimize();
+          }
+          const removed = this.staleCount;
+          this.staleCount = 0;
+          this.lastCompactedAt = new Date().toISOString();
+          await this.updateMetadata();
+          return {
+            compacted: true,
+            fragmentationRatioBefore,
+            fragmentationRatioAfter: 0,
+            chunksRemoved: wasStale ? removed : 0,
+          };
+        }
+
+        return {
+          compacted: false,
+          fragmentationRatioBefore,
+          fragmentationRatioAfter: fragmentationRatioBefore,
+          chunksRemoved: 0,
+        };
+      });
+    })();
+    return await (this.writeMutex as Promise<CompactionResult>);
+  }
+
+  async compactAfterReindex(): Promise<CompactionResult> {
+    const currentMutex = this.writeMutex;
+    this.writeMutex = (async () => {
+      await currentMutex;
+      return await this.trackOp(async () => {
+        let didOptimize = false;
         if (this.table) {
           await this.table.optimize();
+          didOptimize = true;
         }
+        
+        const totalChunks = this.table ? await this.table.countRows() : 0;
+        const totalPossible = totalChunks + this.staleCount;
+        const fragmentationRatioBefore = totalPossible > 0 ? this.staleCount / totalPossible : 0;
+        
+        const wasStale = this.staleCount > 0;
         const removed = this.staleCount;
-        this.staleCount = 0;
-        this.lastCompactedAt = new Date().toISOString();
-        await this.updateMetadata();
+        
+        if (didOptimize || wasStale) {
+          this.staleCount = 0;
+          this.lastCompactedAt = new Date().toISOString();
+          await this.updateMetadata();
+        }
+
         return {
-          compacted: true,
+          compacted: didOptimize || wasStale,
           fragmentationRatioBefore,
           fragmentationRatioAfter: 0,
           chunksRemoved: wasStale ? removed : 0,
         };
-      }
-
-      return {
-        compacted: false,
-        fragmentationRatioBefore,
-        fragmentationRatioAfter: fragmentationRatioBefore,
-        chunksRemoved: 0,
-      };
-    });
-  }
-
-  async compactAfterReindex(): Promise<CompactionResult> {
-    return this.trackOp(async () => {
-      let didOptimize = false;
-      if (this.table) {
-        await this.table.optimize();
-        didOptimize = true;
-      }
-      
-      const totalChunks = this.table ? await this.table.countRows() : 0;
-      const totalPossible = totalChunks + this.staleCount;
-      const fragmentationRatioBefore = totalPossible > 0 ? this.staleCount / totalPossible : 0;
-      
-      const wasStale = this.staleCount > 0;
-      const removed = this.staleCount;
-      this.staleCount = 0;
-      this.lastCompactedAt = new Date().toISOString();
-      await this.updateMetadata();
-
-      return {
-        compacted: didOptimize || wasStale,
-        fragmentationRatioBefore,
-        fragmentationRatioAfter: 0,
-        chunksRemoved: wasStale ? removed : 0,
-      };
-    });
+      });
+    })();
+    return await (this.writeMutex as Promise<CompactionResult>);
   }
 
   scheduleIdleCompaction(
