@@ -65,6 +65,7 @@ export class LanceVectorStore implements IVectorStore {
   private totalFiles = 0;
   private metadataMutex: Promise<void> = Promise.resolve();
   private initPromise: Promise<void> | undefined;
+  private closePromise: Promise<void> | undefined;
 
   constructor(options: LanceVectorStoreOptions) {
     if (!Number.isInteger(options.dimensions) || options.dimensions <= 0) {
@@ -290,64 +291,68 @@ export class LanceVectorStore implements IVectorStore {
    */
   async close(timeoutMs?: number): Promise<void> {
     if (this.isClosed) {
-      return;
+      return this.closePromise ?? Promise.resolve();
     }
     this.isClosed = true;
 
-    // 1. Abort ongoing operations and clear all scheduled timeouts
-    this.abortController.abort();
-    for (const timeout of this.activeTimeouts) {
-      clearTimeout(timeout);
-    }
-    this.activeTimeouts.clear();
+    this.closePromise = (async () => {
+      // 1. Abort ongoing operations and clear all scheduled timeouts
+      this.abortController.abort();
+      for (const timeout of this.activeTimeouts) {
+        clearTimeout(timeout);
+      }
+      this.activeTimeouts.clear();
 
-    // 2. Wait for in-flight operations to settle with a timeout
-    if (this.inflightOps > 0) {
-      const effectiveTimeout = timeoutMs ?? LanceVectorStore.CLOSE_TIMEOUT_MS;
-      const inflightDone = new Promise<void>((resolve) => {
-        if (this.inflightOps === 0) {
-          resolve();
-        } else {
-          this.closingResolve = resolve;
+      // 2. Wait for in-flight operations to settle with a timeout
+      if (this.inflightOps > 0) {
+        const effectiveTimeout = timeoutMs ?? LanceVectorStore.CLOSE_TIMEOUT_MS;
+        const inflightDone = new Promise<void>((resolve) => {
+          if (this.inflightOps === 0) {
+            resolve();
+          } else {
+            this.closingResolve = resolve;
+          }
+        });
+        let timerHandle: NodeJS.Timeout | undefined = undefined;
+        const timeout = new Promise<'timeout'>((resolve) => {
+          timerHandle = setTimeout(() => { resolve('timeout'); }, effectiveTimeout);
+        });
+        const result = await Promise.race([inflightDone.then(() => 'done' as const), timeout]);
+        if (timerHandle) {
+          clearTimeout(timerHandle);
         }
-      });
-      let timerHandle: NodeJS.Timeout | undefined = undefined;
-      const timeout = new Promise<'timeout'>((resolve) => {
-        timerHandle = setTimeout(() => { resolve('timeout'); }, effectiveTimeout);
-      });
-      const result = await Promise.race([inflightDone.then(() => 'done' as const), timeout]);
-      if (timerHandle) {
-        clearTimeout(timerHandle);
+        if (result === 'timeout') {
+          console.error(
+            `[LanceVectorStore] close() timed out after ${effectiveTimeout}ms ` +
+            `with ${this.inflightOps} in-flight operation(s). Forcing resource release.`
+          );
+        }
       }
-      if (result === 'timeout') {
-        console.error(
-          `[LanceVectorStore] close() timed out after ${effectiveTimeout}ms ` +
-          `with ${this.inflightOps} in-flight operation(s). Forcing resource release.`
-        );
-      }
-    }
 
-    // 3. Release LanceDB resources
-    try {
-      if (this.table && 'close' in this.table && typeof (this.table as unknown as Record<string, unknown>).close === 'function') {
-        await (this.table as unknown as Closable).close();
+      // 3. Release LanceDB resources
+      try {
+        if (this.table && 'close' in this.table && typeof (this.table as unknown as Record<string, unknown>).close === 'function') {
+          await (this.table as unknown as Closable).close();
+        }
+      } catch (e) {
+        console.error('[LanceVectorStore] Error closing table resources:', e);
+      } finally {
+        this.table = undefined;
       }
-    } catch (e) {
-      console.error('[LanceVectorStore] Error closing table resources:', e);
-    } finally {
-      this.table = undefined;
-    }
 
-    try {
-      if (this.db && 'close' in this.db && typeof (this.db as unknown as Record<string, unknown>).close === 'function') {
-        await (this.db as unknown as Closable).close();
+      try {
+        if (this.db && 'close' in this.db && typeof (this.db as unknown as Record<string, unknown>).close === 'function') {
+          await (this.db as unknown as Closable).close();
+        }
+      } catch (e) {
+        console.error('[LanceVectorStore] Error closing DB connection:', e);
+      } finally {
+        this.db = undefined;
       }
-    } catch (e) {
-      console.error('[LanceVectorStore] Error closing DB connection:', e);
-    } finally {
-      this.db = undefined;
-    }
-    this.closingResolve = undefined;
+      this.closingResolve = undefined;
+    })();
+
+    await this.closePromise;
   }
 
   async upsertChunks(chunks: CodeChunk[], embeddings?: number[][]): Promise<void> {
@@ -373,6 +378,9 @@ export class LanceVectorStore implements IVectorStore {
       }
       if (chunk.language) {
         this.validateFilterValue(chunk.language, 'language');
+      }
+      if (chunk.symbolKind) {
+        this.validateFilterValue(chunk.symbolKind, 'symbolKind');
       }
 
       const vector = embeddings && embeddings[i] ? embeddings[i] : Array(this.dimensions).fill(0);

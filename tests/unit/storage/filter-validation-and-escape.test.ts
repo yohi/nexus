@@ -114,6 +114,11 @@ describe('Filter Validation and Escape', () => {
       expect(() => store.testValidateFilterValue('src/ma\u200Bin.ts', 'filePath'))
         .toThrow('contains characters outside the allowed set');
     });
+
+    it('symbolKind のバリデーション — 制御文字で Error をスロー', () => {
+      expect(() => store.testValidateFilterValue('function\0', 'symbolKind'))
+        .toThrow('contains control characters');
+    });
   });
 
   describe('escapeFilterValue()', () => {
