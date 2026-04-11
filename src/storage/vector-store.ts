@@ -158,9 +158,7 @@ export class LanceVectorStore implements IVectorStore {
 
             const firstRow = await localTable.query().limit(1).toArray() as unknown as LanceRow[];
             if (firstRow.length > 0 && firstRow[0]?.vector) {
-              const actualDim = Array.isArray(firstRow[0].vector) 
-                ? firstRow[0].vector.length 
-                : firstRow[0].vector.length;
+              const actualDim = firstRow[0].vector.length;
               if (actualDim !== this.dimensions) {
                 throw new Error(
                   `VectorStore dimension mismatch: existing table has ${actualDim}, but expected ${this.dimensions}`
