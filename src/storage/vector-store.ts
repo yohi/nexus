@@ -293,7 +293,10 @@ export class LanceVectorStore implements IVectorStore {
     return this.trackOp(async () => {
       if (!this.table) return [];
       
-      let query = this.table.vectorSearch(queryVector).limit(topK);
+      // 明示的にコサイン類似度を使用し、スコア計算 (1 - distance) との整合性を確保する
+      let query = this.table.vectorSearch(queryVector)
+        .distanceType('cosine')
+        .limit(topK);
       
       // SQL フィルタの構築
       const sqlFilters: string[] = [];
