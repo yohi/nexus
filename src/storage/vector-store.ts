@@ -41,6 +41,10 @@ interface SidecarMetadata {
   lastCompactedAt?: string;
 }
 
+interface Closable {
+  close(): Promise<void>;
+}
+
 export class LanceVectorStore implements IVectorStore {
   private readonly dbPath: string;
   private readonly dimensions: number;
@@ -89,8 +93,8 @@ export class LanceVectorStore implements IVectorStore {
 
       const connection = await lancedb.connect(this.dbPath);
       if (this.isClosed) {
-        if (connection && 'close' in connection && typeof (connection as any).close === 'function') {
-          await (connection as any).close();
+        if (connection && 'close' in connection && typeof (connection as Record<string, unknown>).close === 'function') {
+          await (connection as unknown as Closable).close();
         }
         return;
       }
@@ -122,8 +126,8 @@ export class LanceVectorStore implements IVectorStore {
       if (tableNames.includes('chunks')) {
         const table = await this.db.openTable('chunks');
         if (this.isClosed) {
-          if (table && 'close' in table && typeof (table as any).close === 'function') {
-            await (table as any).close();
+          if (table && 'close' in table && typeof (table as Record<string, unknown>).close === 'function') {
+            await (table as unknown as Closable).close();
           }
           return;
         }
@@ -261,8 +265,8 @@ export class LanceVectorStore implements IVectorStore {
 
     // 3. Release LanceDB resources
     try {
-      if (this.table && 'close' in this.table && typeof (this.table as any).close === 'function') {
-        await (this.table as any).close();
+      if (this.table && 'close' in this.table && typeof (this.table as Record<string, unknown>).close === 'function') {
+        await (this.table as unknown as Closable).close();
       }
     } catch (e) {
       console.error('[LanceVectorStore] Error closing table resources:', e);
@@ -271,8 +275,8 @@ export class LanceVectorStore implements IVectorStore {
     }
 
     try {
-      if (this.db && 'close' in this.db && typeof (this.db as any).close === 'function') {
-        await (this.db as any).close();
+      if (this.db && 'close' in this.db && typeof (this.db as Record<string, unknown>).close === 'function') {
+        await (this.db as unknown as Closable).close();
       }
     } catch (e) {
       console.error('[LanceVectorStore] Error closing DB connection:', e);
