@@ -72,12 +72,66 @@ export class LanceVectorStore implements IVectorStore {
     const tableNames = await this.db.tableNames();
     if (tableNames.includes('chunks')) {
       this.table = await this.db.openTable('chunks');
+
+      // Validate dimensions against existing table schema
+      const schema = await this.table.schema();
+      const vectorField = schema.fields.find(f => f.name === 'vector');
+      if (vectorField) {
+        // vectorField.type は FixedSizeList などの型を持つ
+        // Node SDK では詳細な型情報へのアクセスが複雑な場合があるため、
+        // 最初の1行を取得して確認するか、メタデータを利用する
+        const firstRow = await this.table.query().limit(1).toArray() as unknown as LanceRow[];
+        if (firstRow.length > 0 && firstRow[0]?.vector) {
+          const actualDim = Array.isArray(firstRow[0].vector) 
+            ? firstRow[0].vector.length 
+            : (firstRow[0].vector as Float32Array).length;
+          if (actualDim !== this.dimensions) {
+            throw new Error(
+              `VectorStore dimension mismatch: existing table has ${actualDim}, but expected ${this.dimensions}`
+            );
+          }
+        }
+      }
+
+      // Restore metadata
+      const metadata = schema.metadata;
+      if (metadata.get('staleCount')) {
+        this.staleCount = parseInt(metadata.get('staleCount')!, 10);
+      }
+      if (metadata.get('lastCompactedAt')) {
+        this.lastCompactedAt = metadata.get('lastCompactedAt');
+      }
+    }
+  }
+
+  private async updateMetadata(): Promise<void> {
+    if (!this.table) return;
+    // Note: In LanceDB Node SDK, table metadata is often immutable after creation.
+    // Some versions may support replaceMetadata but it is not in the public Table API.
+    try {
+      const tableAny = this.table as any;
+      if (typeof tableAny.replaceMetadata === 'function') {
+        const newMetadata = new Map<string, string>();
+        newMetadata.set('staleCount', this.staleCount.toString());
+        if (this.lastCompactedAt) {
+          newMetadata.set('lastCompactedAt', this.lastCompactedAt);
+        }
+        await tableAny.replaceMetadata(newMetadata);
+      }
+      // If replaceMetadata is not available, we rely on in-memory state for this session.
+      // A more robust implementation might use a sidecar file if persistence across 
+      // restarts is strictly required and replaceMetadata is missing.
+    } catch (e) {
+      // Ignore metadata update errors to avoid blocking main operations
     }
   }
 
   async resetForTest(): Promise<void> {
     if (this.table && this.db) {
       await this.table.delete('true');
+      this.staleCount = 0;
+      this.lastCompactedAt = undefined;
+      await this.updateMetadata();
     }
   }
 
@@ -173,6 +227,14 @@ export class LanceVectorStore implements IVectorStore {
     }
 
     const rows = chunks.map((chunk, i) => {
+      this.validateFilterValue(chunk.filePath, 'filePath');
+      if (chunk.symbolName) {
+        this.validateFilterValue(chunk.symbolName, 'symbolName');
+      }
+      if (chunk.language) {
+        this.validateFilterValue(chunk.language, 'language');
+      }
+
       const vector = embeddings ? (embeddings[i] ?? Array(this.dimensions).fill(0)) : Array(this.dimensions).fill(0);
       if (!vector.every(Number.isFinite)) {
         throw new Error(
@@ -200,24 +262,33 @@ export class LanceVectorStore implements IVectorStore {
       const db = this.db;
       if (!this.table) {
         if (rows.length === 0) return;
-        this.table = await db.createTable('chunks', rows);
+        const initialMetadata = new Map<string, string>();
+        initialMetadata.set('staleCount', '0');
+        this.table = await db.createTable('chunks', rows, { schema: undefined });
         return;
       }
 
       // パス B: delete-then-add
       // 対象ファイルのチャンクを削除し、新データを追加する
       const filePaths = [...new Set(chunks.map((c) => c.filePath))];
+      let staleAdded = 0;
       for (const fp of filePaths) {
         const filter = this.filePathFilter(fp);
         const count = await this.table.countRows(filter);
         if (count > 0) {
           await this.table.delete(filter);
-          this.staleCount += count;
+          staleAdded += count;
         }
       }
       
-      if (rows.length > 0) {
-        await this.table.add(rows);
+      if (staleAdded > 0 || rows.length > 0) {
+        if (staleAdded > 0) {
+          this.staleCount += staleAdded;
+        }
+        if (rows.length > 0) {
+          await this.table.add(rows);
+        }
+        await this.updateMetadata();
       }
     });
   }
@@ -234,6 +305,7 @@ export class LanceVectorStore implements IVectorStore {
       if (count > 0) {
         await this.table.delete(filter);
         this.staleCount += count;
+        await this.updateMetadata();
       }
       return count;
     });
@@ -251,12 +323,14 @@ export class LanceVectorStore implements IVectorStore {
       if (count > 0) {
         await this.table.delete(filter);
         this.staleCount += count;
+        await this.updateMetadata();
       }
       return count;
     });
   }
 
   async renameFilePath(oldPath: string, newPath: string): Promise<number> {
+    this.validateFilterValue(newPath, 'newPath');
     return this.trackOp(async () => {
       if (!this.db) {
         throw new Error('VectorStore not initialized');
@@ -270,6 +344,7 @@ export class LanceVectorStore implements IVectorStore {
           where: filter,
           values: { filepath: newPath },
         });
+        await this.updateMetadata();
       }
       return count;
     });
@@ -374,8 +449,8 @@ export class LanceVectorStore implements IVectorStore {
       const fragmentationRatioBefore = totalPossible > 0 ? this.staleCount / totalPossible : 0;
 
       const shouldCompact =
-        (threshold === 0) ||
-        (this.staleCount >= minStale && fragmentationRatioBefore >= threshold);
+        this.staleCount >= minStale &&
+        (threshold === 0 || fragmentationRatioBefore >= threshold);
 
       const wasStale = this.staleCount > 0;
 
@@ -386,6 +461,7 @@ export class LanceVectorStore implements IVectorStore {
         const removed = this.staleCount;
         this.staleCount = 0;
         this.lastCompactedAt = new Date().toISOString();
+        await this.updateMetadata();
         return {
           compacted: true,
           fragmentationRatioBefore,
@@ -417,6 +493,7 @@ export class LanceVectorStore implements IVectorStore {
       const removed = this.staleCount;
       this.staleCount = 0;
       this.lastCompactedAt = new Date().toISOString();
+      await this.updateMetadata();
 
       return {
         compacted: wasStale || config?.fragmentationThreshold === 0,
@@ -497,9 +574,9 @@ export class LanceVectorStore implements IVectorStore {
 
   // --- フィルタ値検証・エスケープユーティリティ ---
 
-  private static readonly ALLOWED_FILTER_VALUE_PATTERN = /^[\p{L}\p{N}\p{P}\p{Z}\p{S}\p{M}]*$/u;
+  private static readonly ALLOWED_FILTER_VALUE_PATTERN = /^[\p{L}\p{N}\p{P}\p{Zs}\p{S}\p{M}]*$/u;
   // eslint-disable-next-line no-control-regex
-  private static readonly FORBIDDEN_CONTROL_CHARS = /[\x00-\x1f\x7f]/;
+  private static readonly FORBIDDEN_CONTROL_CHARS = /[\x00-\x1f\x7f\u2028\u2029]/;
 
   protected validateFilterValue(value: string, paramName: string): void {
     if (LanceVectorStore.FORBIDDEN_CONTROL_CHARS.test(value)) {

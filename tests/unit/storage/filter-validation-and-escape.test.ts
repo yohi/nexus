@@ -80,6 +80,21 @@ describe('Filter Validation and Escape', () => {
       expect(() => store.testValidateFilterValue('src/🚀.ts', 'filePath')).not.toThrow();
     });
 
+    it('非 ASCII（結合文字 NFD）— 例外をスローしない', () => {
+      // "café" (e + \u0301)
+      expect(() => store.testValidateFilterValue('src/cafe\u0301.ts', 'filePath')).not.toThrow();
+    });
+
+    it('LINE SEPARATOR (U+2028) — Error をスロー', () => {
+      expect(() => store.testValidateFilterValue('file\u2028path', 'filePath'))
+        .toThrow('contains control characters');
+    });
+
+    it('PARAGRAPH SEPARATOR (U+2029) — Error をスロー', () => {
+      expect(() => store.testValidateFilterValue('file\u2029path', 'filePath'))
+        .toThrow('contains control characters');
+    });
+
     it('制御文字混入 Unicode — Error をスロー', () => {
       expect(() => store.testValidateFilterValue('ソース/ma\x00in.ts', 'filePath'))
         .toThrow('contains control characters');
