@@ -1,7 +1,7 @@
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import { Chunker } from '../../../src/indexer/chunker.js';
 import { IndexPipeline } from '../../../src/indexer/pipeline.js';
@@ -396,5 +396,51 @@ describe('IndexPipeline', () => {
     );
     const results = await vectorStore.search(ONE_HOT_64, 20);
     expect(results.every((result) => result.chunk.filePath === newPath)).toBe(true);
+  });
+
+  it('reindex() 完了後に compactAfterReindex() が呼ばれる', async () => {
+    const { metadataStore, vectorStore, chunker, registry } = await createPipeline();
+    const compactSpy = vi.spyOn(vectorStore, 'compactAfterReindex');
+    const pipeline = new IndexPipeline({
+      metadataStore,
+      vectorStore,
+      chunker,
+      embeddingProvider: new TestEmbeddingProvider(),
+      pluginRegistry: registry,
+    });
+
+    await pipeline.reindex(async () => [], async () => '');
+
+    expect(compactSpy).toHaveBeenCalledOnce();
+  });
+
+  it('compactAfterReindex() 失敗어도 reindex は成功扱い', async () => {
+    const { metadataStore, vectorStore, chunker, registry } = await createPipeline();
+    vi.spyOn(vectorStore, 'compactAfterReindex').mockRejectedValue(new Error('compact failed'));
+    const pipeline = new IndexPipeline({
+      metadataStore,
+      vectorStore,
+      chunker,
+      embeddingProvider: new TestEmbeddingProvider(),
+      pluginRegistry: registry,
+    });
+
+    const result = await pipeline.reindex(async () => [], async () => '');
+    expect(result).not.toHaveProperty('status');
+  });
+
+  it('stop() 呼び出し時に vectorStore.close() が呼ばれる', async () => {
+    const { metadataStore, vectorStore, chunker, registry } = await createPipeline();
+    const closeSpy = vi.spyOn(vectorStore, 'close').mockResolvedValue(undefined);
+    const pipeline = new IndexPipeline({
+      metadataStore,
+      vectorStore,
+      chunker,
+      embeddingProvider: new TestEmbeddingProvider(),
+      pluginRegistry: registry,
+    });
+
+    await pipeline.stop();
+    expect(closeSpy).toHaveBeenCalledOnce();
   });
 });

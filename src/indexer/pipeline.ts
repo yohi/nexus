@@ -79,6 +79,8 @@ export class IndexPipeline implements IIndexPipeline {
       await this.dlqStopper();
       this.dlqStopper = undefined;
     }
+
+    await this.options.vectorStore.close();
   }
 
   async processEvents(
@@ -177,13 +179,18 @@ export class IndexPipeline implements IIndexPipeline {
           const finishedAt = new Date().toISOString();
           const durationMs = Date.now() - startTime;
 
-          // 計算ロジックを簡略化（必要に応じて詳細な集計を実装可能）
           const reconciliation = {
             added: events.filter((e) => e.type === 'added').length,
             modified: events.filter((e) => e.type === 'modified').length,
             deleted: events.filter((e) => e.type === 'deleted').length,
-            unchanged: 0, // フルスキャン時に判明するが、ここではeventsに含まれないものとする
+            unchanged: 0,
           };
+
+          try {
+            await this.options.vectorStore.compactAfterReindex();
+          } catch (compactionError) {
+            console.error('Post-reindex compaction failed (non-fatal):', compactionError);
+          }
 
           return {
             startedAt,
