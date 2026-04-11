@@ -34,6 +34,7 @@ interface LanceRow {
 }
 
 interface SidecarMetadata {
+  dimensions?: string;
   staleCount?: string;
   lastCompactedAt?: string;
 }
@@ -67,43 +68,72 @@ export class LanceVectorStore implements IVectorStore {
   }
 
   async initialize(): Promise<void> {
+    if (this.isClosed) {
+      throw new Error('VectorStore is closed');
+    }
     if (this.db) {
       return;
     }
-    if (this.dbPath && !this.dbPath.includes('://')) {
+
+    const isUri = this.dbPath.includes('://');
+    if (!isUri) {
       await mkdir(this.dbPath, { recursive: true });
     }
+
     this.db = await lancedb.connect(this.dbPath);
     const tableNames = await this.db.tableNames();
+    
+    // 1. Attempt to load sidecar metadata for URI consistency and dimensions
+    let metadata: SidecarMetadata | undefined;
+    if (!isUri) {
+      try {
+        const metaPath = join(this.dbPath, 'metadata.json');
+        const content = await readFile(metaPath, 'utf8');
+        metadata = JSON.parse(content) as SidecarMetadata;
+      } catch {
+        // Fallback for non-existent or corrupted metadata
+      }
+    }
+
+    // 2. Validate dimensions
+    if (metadata?.dimensions !== undefined) {
+      const persistedDim = parseInt(metadata.dimensions, 10);
+      if (persistedDim !== this.dimensions) {
+        throw new Error(
+          `VectorStore dimension mismatch: existing storage has ${persistedDim}, but expected ${this.dimensions}`
+        );
+      }
+    }
+
     if (tableNames.includes('chunks')) {
       this.table = await this.db.openTable('chunks');
 
-      // Validate dimensions against existing table schema
-      const schema = await this.table.schema();
-      const vectorField = schema.fields.find(f => f.name === 'vector');
-      if (vectorField) {
-        // vectorField.type は FixedSizeList などの型を持つ
-        // Node SDK では詳細な型情報へのアクセスが複雑な場合があるため、
-        // 最初の1行を取得して確認するか、メタデータを利用する
-        const firstRow = await this.table.query().limit(1).toArray() as unknown as LanceRow[];
-        if (firstRow.length > 0 && firstRow[0]?.vector) {
-          const actualDim = Array.isArray(firstRow[0].vector) 
-            ? firstRow[0].vector.length 
-            : firstRow[0].vector.length;
-          if (actualDim !== this.dimensions) {
+      // 3. Fallback dimension check from schema/data if metadata is missing
+      if (metadata?.dimensions === undefined) {
+        const schema = await this.table.schema();
+        const vectorField = schema.fields.find(f => f.name === 'vector');
+        if (vectorField) {
+          const firstRow = await this.table.query().limit(1).toArray() as unknown as LanceRow[];
+          if (firstRow.length > 0 && firstRow[0]?.vector) {
+            const actualDim = Array.isArray(firstRow[0].vector) 
+              ? firstRow[0].vector.length 
+              : firstRow[0].vector.length;
+            if (actualDim !== this.dimensions) {
+              throw new Error(
+                `VectorStore dimension mismatch: existing table has ${actualDim}, but expected ${this.dimensions}`
+              );
+            }
+          } else {
+            // Empty table without metadata is treated as a mismatch to avoid silent dimension errors
             throw new Error(
-              `VectorStore dimension mismatch: existing table has ${actualDim}, but expected ${this.dimensions}`
+              'VectorStore dimension mismatch: empty table without sidecar metadata. Explicit reinitialization required.'
             );
           }
         }
       }
 
-      // Restore metadata from sidecar file
-      try {
-        const metaPath = join(this.dbPath, 'metadata.json');
-        const content = await readFile(metaPath, 'utf8');
-        const metadata = JSON.parse(content) as SidecarMetadata;
-        
+      // Restore other metadata fields
+      if (metadata) {
         if (metadata.staleCount !== undefined) {
           const parsed = parseInt(metadata.staleCount, 10);
           if (Number.isFinite(parsed) && parsed >= 0) {
@@ -113,18 +143,19 @@ export class LanceVectorStore implements IVectorStore {
         if (metadata.lastCompactedAt !== undefined) {
           this.lastCompactedAt = metadata.lastCompactedAt;
         }
-      } catch {
-        // If file not found or corrupted, fallback to 0 or current state
       }
     }
   }
 
   private async updateMetadata(): Promise<void> {
-    if (!this.dbPath || this.dbPath.includes('://')) return;
+    if (!this.dbPath || this.dbPath.includes('://')) {
+      return;
+    }
     
     try {
       const metaPath = join(this.dbPath, 'metadata.json');
-      const metadata = {
+      const metadata: SidecarMetadata = {
+        dimensions: this.dimensions.toString(),
         staleCount: this.staleCount.toString(),
         lastCompactedAt: this.lastCompactedAt,
       };
@@ -276,9 +307,8 @@ export class LanceVectorStore implements IVectorStore {
       const db = this.db;
       if (!this.table) {
         if (rows.length === 0) return;
-        const initialMetadata = new Map<string, string>();
-        initialMetadata.set('staleCount', '0');
         this.table = await db.createTable('chunks', rows, { schema: undefined });
+        await this.updateMetadata();
         return;
       }
 
@@ -495,8 +525,10 @@ export class LanceVectorStore implements IVectorStore {
 
   async compactAfterReindex(config?: Partial<CompactionConfig>): Promise<CompactionResult> {
     return this.trackOp(async () => {
+      let didOptimize = false;
       if (this.table) {
         await this.table.optimize();
+        didOptimize = true;
       }
       
       const totalChunks = this.table ? await this.table.countRows() : 0;
@@ -510,7 +542,7 @@ export class LanceVectorStore implements IVectorStore {
       await this.updateMetadata();
 
       return {
-        compacted: wasStale || config?.fragmentationThreshold === 0,
+        compacted: didOptimize || wasStale || config?.fragmentationThreshold === 0,
         fragmentationRatioBefore,
         fragmentationRatioAfter: 0,
         chunksRemoved: wasStale ? removed : 0,

@@ -444,7 +444,7 @@ describe('IndexPipeline', () => {
     expect(closeSpy).toHaveBeenCalledOnce();
   });
 
-  it('start() で idle compaction タイマーが登録され unref() が適用される (二重呼び出しでも一回のみ)', async () => {
+  it('start() で idle compaction タイマーが登録され unref() が適用される (既存のタイマーをクリアして再スケジュール)', async () => {
     const { metadataStore, vectorStore, chunker, registry } = await createPipeline();
     const timerRef = { unref: vi.fn() };
     const scheduleSpy = vi.spyOn(vectorStore, 'scheduleIdleCompaction').mockReturnValue(
