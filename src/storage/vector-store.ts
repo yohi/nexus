@@ -198,32 +198,27 @@ export class LanceVectorStore implements IVectorStore {
         throw new Error('VectorStore not initialized');
       }
       const db = this.db;
-      this.staleCount = 0;
       if (!this.table) {
         if (rows.length === 0) return;
         this.table = await db.createTable('chunks', rows);
         return;
       }
 
-      const allRowsRaw = await this.table.query().toArray() as unknown as LanceRow[];
-      // vector をプレーンな配列に変換
-      const allRows = allRowsRaw.map(row => ({
-        ...row,
-        vector: Array.isArray(row.vector) ? row.vector : Array.from(row.vector as Iterable<number>)
-      }));
+      // パス B: delete-then-add
+      // 対象ファイルのチャンクを削除し、新データを追加する
       const filePaths = [...new Set(chunks.map((c) => c.filePath))];
-      const filteredRows = allRows.filter((row) => !filePaths.includes(row.filePath));
-      this.staleCount += allRows.length - filteredRows.length;
-      
-      const newRows = [...filteredRows, ...rows];
-      if (newRows.length === 0) {
-        await db.dropTable('chunks');
-        this.table = undefined;
-      } else {
-        this.table = await db.createTable('chunks', newRows, { mode: 'overwrite' });
-        await this.table.optimize();
+      for (const fp of filePaths) {
+        const filter = this.filePathFilter(fp);
+        const count = await this.table.countRows(filter);
+        if (count > 0) {
+          await this.table.delete(filter);
+          this.staleCount += count;
+        }
       }
-      this.staleCount = 0;
+      
+      if (rows.length > 0) {
+        await this.table.add(rows);
+      }
     });
   }
 
@@ -232,26 +227,13 @@ export class LanceVectorStore implements IVectorStore {
       if (!this.db) {
         throw new Error('VectorStore not initialized');
       }
-      const db = this.db;
       if (!this.table) return 0;
-      const allRowsRaw = await this.table.query().toArray() as unknown as LanceRow[];
-      const allRows = allRowsRaw.map(row => ({
-        ...row,
-        vector: Array.isArray(row.vector) ? row.vector : Array.from(row.vector as Iterable<number>)
-      }));
-      const filteredRows = allRows.filter((row) => row.filePath !== filePath);
-      const count = allRows.length - filteredRows.length;
       
+      const filter = this.filePathFilter(filePath);
+      const count = await this.table.countRows(filter);
       if (count > 0) {
-        if (filteredRows.length === 0) {
-          await db.dropTable('chunks');
-          this.table = undefined;
-          this.staleCount = 0;
-        } else {
-          this.table = await db.createTable('chunks', filteredRows, { mode: 'overwrite' });
-          await this.table.optimize();
-          this.staleCount = 0;
-        }
+        await this.table.delete(filter);
+        this.staleCount += count;
       }
       return count;
     });
@@ -262,30 +244,13 @@ export class LanceVectorStore implements IVectorStore {
       if (!this.db) {
         throw new Error('VectorStore not initialized');
       }
-      const db = this.db;
       if (!this.table) return 0;
-      const allRowsRaw = await this.table.query().toArray() as unknown as LanceRow[];
-      const allRows = allRowsRaw.map(row => ({
-        ...row,
-        vector: Array.isArray(row.vector) ? row.vector : Array.from(row.vector as Iterable<number>)
-      }));
-      const normalizedPrefix = pathPrefix.endsWith('/') ? pathPrefix : pathPrefix + '/';
-      const filteredRows = allRows.filter((row) => {
-        const fp = row.filePath;
-        return !(fp === pathPrefix || fp.startsWith(normalizedPrefix));
-      });
-      const count = allRows.length - filteredRows.length;
-      
+
+      const filter = this.filePathPrefixFilter(pathPrefix);
+      const count = await this.table.countRows(filter);
       if (count > 0) {
-        if (filteredRows.length === 0) {
-          await db.dropTable('chunks');
-          this.table = undefined;
-          this.staleCount = 0;
-        } else {
-          this.table = await db.createTable('chunks', filteredRows, { mode: 'overwrite' });
-          await this.table.optimize();
-          this.staleCount = 0;
-        }
+        await this.table.delete(filter);
+        this.staleCount += count;
       }
       return count;
     });
@@ -296,36 +261,17 @@ export class LanceVectorStore implements IVectorStore {
       if (!this.db) {
         throw new Error('VectorStore not initialized');
       }
-      const db = this.db;
       if (!this.table) return 0;
-      const allRowsRaw = await this.table.query().toArray() as unknown as LanceRow[];
-      const allRows = allRowsRaw.map(row => ({
-        ...row,
-        vector: Array.isArray(row.vector) ? row.vector : Array.from(row.vector as Iterable<number>)
-      }));
-      const matchingRows = allRows.filter((row) => row.filePath === oldPath);
-      const remainingRows = allRows.filter((row) => 
-        row.filePath !== oldPath && row.filePath !== newPath
-      );
-      const before = matchingRows.length;
-      
-      if (before > 0) {
-        const updatedRows = matchingRows.map((row) => {
-          const oldId = row.id;
-          const newId = oldId.split(oldPath).join(newPath);
-          
-          return {
-            ...row,
-            id: newId,
-            filePath: newPath,
-          };
+
+      const filter = this.filePathFilter(oldPath);
+      const count = await this.table.countRows(filter);
+      if (count > 0) {
+        await this.table.update({
+          where: filter,
+          values: { filePath: newPath },
         });
-        
-        this.table = await db.createTable('chunks', [...remainingRows, ...updatedRows], { mode: 'overwrite' });
-        await this.table.optimize();
-        this.staleCount = 0;
       }
-      return before;
+      return count;
     });
   }
 
@@ -347,13 +293,12 @@ export class LanceVectorStore implements IVectorStore {
     return this.trackOp(async () => {
       if (!this.table) return [];
       
-      let query = this.table.vectorSearch(queryVector).distanceType('cosine').limit(topK * 3);
+      let query = this.table.vectorSearch(queryVector).limit(topK);
       
       // SQL フィルタの構築
-      const sqlFilters: string[] = ['"filePath" IS NOT NULL'];
+      const sqlFilters: string[] = [];
       if (filter?.filePathPrefix !== undefined) {
-        this.validateFilterValue(filter.filePathPrefix, 'filePathPrefix');
-        sqlFilters.push(`"filePath" LIKE '${this.escapeLikeValue(filter.filePathPrefix)}%' ESCAPE '\\\\'`);
+        sqlFilters.push(this.filePathPrefixFilter(filter.filePathPrefix));
       }
       if (filter?.language !== undefined) {
         this.validateFilterValue(filter.language, 'language');
@@ -370,27 +315,7 @@ export class LanceVectorStore implements IVectorStore {
 
       const resultsRaw = await query.toArray() as unknown as LanceRow[];
       
-      // 削除された行を除外
-      let results = resultsRaw.filter(row => row.filePath != null);
-      
-      if (filter) {
-        // JS 側での追加フィルタリング（念のため）
-        results = results.filter((row) => {
-          if (filter.filePathPrefix !== undefined) {
-            const filePath = row.filePath;
-            if (!filePath.startsWith(filter.filePathPrefix)) return false;
-          }
-          if (filter.language !== undefined) {
-            if (row.language !== filter.language) return false;
-          }
-          if (filter.symbolKind !== undefined) {
-            if (row.symbolKind !== filter.symbolKind) return false;
-          }
-          return true;
-        });
-      }
-
-      return results.slice(0, topK).map((row) => ({
+      return resultsRaw.map((row) => ({
         chunk: {
           id: row.id,
           filePath: row.filePath,
@@ -414,21 +339,21 @@ export class LanceVectorStore implements IVectorStore {
           totalChunks: 0,
           totalFiles: 0,
           dimensions: this.dimensions,
-          fragmentationRatio: this.staleCount > 0 ? 1 : 0,
+          fragmentationRatio: 0,
           lastCompactedAt: this.lastCompactedAt,
         };
       }
 
-      const allRowsRaw = await this.table.query().toArray() as unknown as LanceRow[];
-      const totalChunks = allRowsRaw.length;
-      const fileCount = new Set(allRowsRaw.map((row) => row.filePath)).size;
+      const totalChunks = await this.table.countRows();
+      const rows = await this.table.query().select(['filePath']).toArray() as unknown as { filePath: string }[];
+      const totalFiles = new Set(rows.map(r => r.filePath)).size;
 
       const totalPossible = totalChunks + this.staleCount;
       const fragmentationRatio = totalPossible > 0 ? this.staleCount / totalPossible : 0;
 
       return {
         totalChunks,
-        totalFiles: fileCount,
+        totalFiles,
         dimensions: this.dimensions,
         fragmentationRatio,
         lastCompactedAt: this.lastCompactedAt,
@@ -441,13 +366,14 @@ export class LanceVectorStore implements IVectorStore {
       const threshold = config?.fragmentationThreshold ?? 0.2;
       const minStale = config?.minStaleChunks ?? 1;
 
-      const totalChunks = this.table ? (await this.table.query().toArray() as unknown as LanceRow[]).length : 0;
+      const totalChunks = this.table ? await this.table.countRows() : 0;
       const totalPossible = totalChunks + this.staleCount;
       const fragmentationRatioBefore = totalPossible > 0 ? this.staleCount / totalPossible : 0;
 
-      const shouldCompact = (threshold === 0 && this.staleCount > 0) || 
-                            (threshold < 1 && fragmentationRatioBefore >= threshold) ||
-                            (this.staleCount >= minStale);
+      const shouldCompact =
+        this.staleCount >= minStale &&
+        (threshold === 0 ? this.staleCount > 0 : fragmentationRatioBefore >= threshold);
+
       const wasStale = this.staleCount > 0;
 
       if (shouldCompact) {
@@ -480,8 +406,8 @@ export class LanceVectorStore implements IVectorStore {
         await this.table.optimize();
       }
       
-      const allRowsRaw = this.table ? await this.table.query().toArray() as unknown as LanceRow[] : [];
-      const totalPossible = allRowsRaw.length + this.staleCount;
+      const totalChunks = this.table ? await this.table.countRows() : 0;
+      const totalPossible = totalChunks + this.staleCount;
       const fragmentationRatioBefore = totalPossible > 0 ? this.staleCount / totalPossible : 0;
       
       const wasStale = this.staleCount > 0;
