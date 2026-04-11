@@ -412,7 +412,7 @@ export class LanceVectorStore implements IVectorStore {
     });
 
     const currentMutex = this.writeMutex;
-    this.writeMutex = (async () => {
+    const opPromise = (async () => {
       await currentMutex;
       await this.trackOp(async () => {
         if (!this.db) {
@@ -452,13 +452,14 @@ export class LanceVectorStore implements IVectorStore {
         }
       });
     })();
-    
-    return this.writeMutex;
+
+    this.writeMutex = opPromise.catch(() => {});
+    return await opPromise;
   }
 
   async deleteByFilePath(filePath: string): Promise<number> {
     const currentMutex = this.writeMutex;
-    this.writeMutex = (async () => {
+    const opPromise = (async () => {
       await currentMutex;
       return await this.trackOp(async () => {
         if (!this.db) {
@@ -477,12 +478,13 @@ export class LanceVectorStore implements IVectorStore {
         return count;
       });
     })();
-    return await (this.writeMutex as Promise<number>);
+    this.writeMutex = opPromise.then(() => {}).catch(() => {});
+    return await opPromise;
   }
 
   async deleteByPathPrefix(pathPrefix: string): Promise<number> {
     const currentMutex = this.writeMutex;
-    this.writeMutex = (async () => {
+    const opPromise = (async () => {
       await currentMutex;
       return await this.trackOp(async () => {
         if (!this.db) {
@@ -501,13 +503,14 @@ export class LanceVectorStore implements IVectorStore {
         return count;
       });
     })();
-    return await (this.writeMutex as Promise<number>);
+    this.writeMutex = opPromise.then(() => {}).catch(() => {});
+    return await opPromise;
   }
 
   async renameFilePath(oldPath: string, newPath: string): Promise<number> {
     this.validateFilterValue(newPath, 'newPath');
     const currentMutex = this.writeMutex;
-    this.writeMutex = (async () => {
+    const opPromise = (async () => {
       await currentMutex;
       return await this.trackOp(async () => {
         if (!this.db) {
@@ -528,7 +531,8 @@ export class LanceVectorStore implements IVectorStore {
         return count;
       });
     })();
-    return await (this.writeMutex as Promise<number>);
+    this.writeMutex = opPromise.then(() => {}).catch(() => {});
+    return await opPromise;
   }
 
   async search(
@@ -619,7 +623,7 @@ export class LanceVectorStore implements IVectorStore {
 
   async compactIfNeeded(config?: Partial<CompactionConfig>): Promise<CompactionResult> {
     const currentMutex = this.writeMutex;
-    this.writeMutex = (async () => {
+    const opPromise = (async () => {
       await currentMutex;
       return await this.trackOp(async () => {
         const threshold = config?.fragmentationThreshold ?? 0.2;
@@ -659,12 +663,13 @@ export class LanceVectorStore implements IVectorStore {
         };
       });
     })();
-    return await (this.writeMutex as Promise<CompactionResult>);
+    this.writeMutex = opPromise.then(() => {}).catch(() => {});
+    return await opPromise;
   }
 
   async compactAfterReindex(): Promise<CompactionResult> {
     const currentMutex = this.writeMutex;
-    this.writeMutex = (async () => {
+    const opPromise = (async () => {
       await currentMutex;
       return await this.trackOp(async () => {
         let didOptimize = false;
@@ -694,7 +699,8 @@ export class LanceVectorStore implements IVectorStore {
         };
       });
     })();
-    return await (this.writeMutex as Promise<CompactionResult>);
+    this.writeMutex = opPromise.then(() => {}).catch(() => {});
+    return await opPromise;
   }
 
   scheduleIdleCompaction(
