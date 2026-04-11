@@ -50,6 +50,7 @@ describe('LanceVectorStore compaction integration', () => {
 
     expect(result.compacted).toBe(false);
     expect(result.chunksRemoved).toBe(0);
+    expect(result.fragmentationRatioBefore).toBe(statsBefore.fragmentationRatio);
     expect(result.fragmentationRatioAfter).toBe(statsBefore.fragmentationRatio);
   });
 

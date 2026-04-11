@@ -447,9 +447,11 @@ describe('IndexPipeline', () => {
   it('start() で idle compaction タイマーが登録され unref() が適用される (二重呼び出しでも一回のみ)', async () => {
     const { metadataStore, vectorStore, chunker, registry } = await createPipeline();
     const timerRef = { unref: vi.fn() };
-    vi.spyOn(vectorStore, 'scheduleIdleCompaction').mockReturnValue(
+    const scheduleSpy = vi.spyOn(vectorStore, 'scheduleIdleCompaction').mockReturnValue(
       timerRef as unknown as NodeJS.Timeout,
     );
+    const clearTimeoutSpy = vi.spyOn(global, 'clearTimeout');
+    
     const pipeline = new IndexPipeline({
       metadataStore,
       vectorStore,
@@ -460,14 +462,14 @@ describe('IndexPipeline', () => {
 
     // 1回目の start
     pipeline.start();
-    expect(vectorStore.scheduleIdleCompaction).toHaveBeenCalledOnce();
+    expect(scheduleSpy).toHaveBeenCalledOnce();
     expect(timerRef.unref).toHaveBeenCalledOnce();
 
     // 2回目の start (べき等性の確認)
     pipeline.start();
-    // scheduleIdleCompaction は 2 回呼ばれるが (既存のタイマーをクリアして再登録するため)、
-    // 重要なのは既存のタイマーがクリアされ、最新のシグナルが渡されること
-    expect(vectorStore.scheduleIdleCompaction).toHaveBeenCalledTimes(2);
+    // 既存のタイマーをクリアして再登録するため、2回呼ばれる
+    expect(clearTimeoutSpy).toHaveBeenCalledOnce();
+    expect(scheduleSpy).toHaveBeenCalledTimes(2);
     expect(timerRef.unref).toHaveBeenCalledTimes(2);
 
     await pipeline.stop();

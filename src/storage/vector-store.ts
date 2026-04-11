@@ -88,7 +88,7 @@ export class LanceVectorStore implements IVectorStore {
         if (firstRow.length > 0 && firstRow[0]?.vector) {
           const actualDim = Array.isArray(firstRow[0].vector) 
             ? firstRow[0].vector.length 
-            : (firstRow[0].vector as Float32Array).length;
+            : firstRow[0].vector.length;
           if (actualDim !== this.dimensions) {
             throw new Error(
               `VectorStore dimension mismatch: existing table has ${actualDim}, but expected ${this.dimensions}`
@@ -125,7 +125,7 @@ export class LanceVectorStore implements IVectorStore {
       // If replaceMetadata is not available, we rely on in-memory state for this session.
       // A more robust implementation might use a sidecar file if persistence across 
       // restarts is strictly required and replaceMetadata is missing.
-    } catch (e) {
+    } catch {
       // Ignore metadata update errors to avoid blocking main operations
     }
   }
@@ -533,12 +533,19 @@ export class LanceVectorStore implements IVectorStore {
             controller.abort(new Error(`Compaction mutex acquisition timed out after ${mutexTimeoutMs}ms`));
           }, mutexTimeoutMs);
 
-          const onAbort = () => {
-            controller.abort();
+          const onAbort = (event: Event) => {
+            const signal = event.target as AbortSignal;
+            controller.abort(signal.reason);
           };
 
-          abortSignal?.addEventListener('abort', onAbort, { once: true });
-          this.abortController.signal.addEventListener('abort', onAbort, { once: true });
+          if (abortSignal?.aborted) {
+            controller.abort(abortSignal.reason);
+          } else if (this.abortController.signal.aborted) {
+            controller.abort(this.abortController.signal.reason);
+          } else {
+            abortSignal?.addEventListener('abort', onAbort, { once: true });
+            this.abortController.signal.addEventListener('abort', onAbort, { once: true });
+          }
 
           try {
             await mutex.waitForUnlock(controller.signal);
