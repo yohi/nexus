@@ -91,82 +91,109 @@ export class LanceVectorStore implements IVectorStore {
         await mkdir(this.dbPath, { recursive: true });
       }
 
-      const connection = await lancedb.connect(this.dbPath);
-      if (this.isClosed) {
-        if (connection && 'close' in connection && typeof (connection as unknown as Record<string, unknown>).close === 'function') {
-          await (connection as unknown as Closable).close();
-        }
-        return;
-      }
-      this.db = connection;
-      const tableNames = await this.db.tableNames();
-      
-      // 1. Attempt to load sidecar metadata for URI consistency and dimensions
-      let metadata: SidecarMetadata | undefined;
-      if (!isUri) {
-        try {
-          const metaPath = join(this.dbPath, 'metadata.json');
-          const content = await readFile(metaPath, 'utf8');
-          metadata = JSON.parse(content) as SidecarMetadata;
-        } catch {
-          // Fallback for non-existent or corrupted metadata
-        }
-      }
+      let localDb: lancedb.Connection | undefined;
+      let localTable: Table | undefined;
 
-      // 2. Validate dimensions
-      if (metadata?.dimensions !== undefined) {
-        const persistedDim = parseInt(metadata.dimensions, 10);
-        if (persistedDim !== this.dimensions) {
-          throw new Error(
-            `VectorStore dimension mismatch: existing storage has ${persistedDim}, but expected ${this.dimensions}`
-          );
-        }
-      }
-
-      if (tableNames.includes('chunks')) {
-        const table = await this.db.openTable('chunks');
+      try {
+        localDb = await lancedb.connect(this.dbPath);
         if (this.isClosed) {
-          if (table && 'close' in table && typeof (table as unknown as Record<string, unknown>).close === 'function') {
-            await (table as unknown as Closable).close();
-          }
           return;
         }
-        this.table = table;
 
-        // 3. Fallback dimension check from schema/data if metadata is missing
-        if (metadata?.dimensions === undefined) {
-          const schema = await this.table.schema();
-          const vectorField = schema.fields.find(f => f.name === 'vector');
-          if (vectorField) {
-            const firstRow = await this.table.query().limit(1).toArray() as unknown as LanceRow[];
-            if (firstRow.length > 0 && firstRow[0]?.vector) {
-              const actualDim = Array.isArray(firstRow[0].vector) 
-                ? firstRow[0].vector.length 
-                : firstRow[0].vector.length;
-              if (actualDim !== this.dimensions) {
+        const tableNames = await localDb.tableNames();
+        
+        // 1. Attempt to load sidecar metadata for URI consistency and dimensions
+        let metadata: SidecarMetadata | undefined;
+        if (!isUri) {
+          try {
+            const metaPath = join(this.dbPath, 'metadata.json');
+            const content = await readFile(metaPath, 'utf8');
+            metadata = JSON.parse(content) as SidecarMetadata;
+          } catch {
+            // Fallback for non-existent or corrupted metadata
+          }
+        }
+
+        // 2. Validate dimensions
+        if (metadata?.dimensions !== undefined) {
+          const persistedDim = parseInt(metadata.dimensions, 10);
+          if (persistedDim !== this.dimensions) {
+            throw new Error(
+              `VectorStore dimension mismatch: existing storage has ${persistedDim}, but expected ${this.dimensions}`
+            );
+          }
+        }
+
+        if (tableNames.includes('chunks')) {
+          localTable = await localDb.openTable('chunks');
+          if (this.isClosed) {
+            return;
+          }
+
+          // 3. Fallback dimension check from schema/data if metadata is missing
+          if (metadata?.dimensions === undefined) {
+            const schema = await localTable.schema();
+            const vectorField = schema.fields.find(f => f.name === 'vector');
+            if (vectorField) {
+              const firstRow = await localTable.query().limit(1).toArray() as unknown as LanceRow[];
+              if (firstRow.length > 0 && firstRow[0]?.vector) {
+                const actualDim = Array.isArray(firstRow[0].vector) 
+                  ? firstRow[0].vector.length 
+                  : firstRow[0].vector.length;
+                if (actualDim !== this.dimensions) {
+                  throw new Error(
+                    `VectorStore dimension mismatch: existing table has ${actualDim}, but expected ${this.dimensions}`
+                  );
+                }
+              } else {
+                // Empty table without metadata is treated as a mismatch to avoid silent dimension errors
                 throw new Error(
-                  `VectorStore dimension mismatch: existing table has ${actualDim}, but expected ${this.dimensions}`
+                  'VectorStore dimension mismatch: empty table without sidecar metadata. Explicit reinitialization required.'
                 );
               }
-            } else {
-              // Empty table without metadata is treated as a mismatch to avoid silent dimension errors
-              throw new Error(
-                'VectorStore dimension mismatch: empty table without sidecar metadata. Explicit reinitialization required.'
-              );
+            }
+          }
+
+          // Restore other metadata fields
+          if (metadata) {
+            if (metadata.staleCount !== undefined) {
+              const parsed = parseInt(metadata.staleCount, 10);
+              if (Number.isFinite(parsed) && parsed >= 0) {
+                this.staleCount = parsed;
+              }
+            }
+            if (metadata.lastCompactedAt !== undefined) {
+              this.lastCompactedAt = metadata.lastCompactedAt;
             }
           }
         }
 
-        // Restore other metadata fields
-        if (metadata) {
-          if (metadata.staleCount !== undefined) {
-            const parsed = parseInt(metadata.staleCount, 10);
-            if (Number.isFinite(parsed) && parsed >= 0) {
-              this.staleCount = parsed;
+        // All checks passed and not closed - commit to instance fields
+        if (!this.isClosed) {
+          this.db = localDb;
+          this.table = localTable;
+          // Prevent cleanup in finally block
+          localDb = undefined;
+          localTable = undefined;
+        }
+      } finally {
+        // Cleanup transient resources if they weren't committed (e.g., on error or close)
+        if (localTable) {
+          try {
+            if ('close' in localTable && typeof (localTable as unknown as Record<string, unknown>).close === 'function') {
+              await (localTable as unknown as Closable).close();
             }
+          } catch (e) {
+            console.error('[LanceVectorStore] Error cleaning up transient table:', e);
           }
-          if (metadata.lastCompactedAt !== undefined) {
-            this.lastCompactedAt = metadata.lastCompactedAt;
+        }
+        if (localDb) {
+          try {
+            if ('close' in localDb && typeof (localDb as unknown as Record<string, unknown>).close === 'function') {
+              await (localDb as unknown as Closable).close();
+            }
+          } catch (e) {
+            console.error('[LanceVectorStore] Error cleaning up transient DB:', e);
           }
         }
       }
