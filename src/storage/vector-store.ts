@@ -42,6 +42,14 @@ export class LanceVectorStore implements IVectorStore {
 
   private lastCompactedAt: string | undefined;
 
+  private readonly inFlightOps = new Set<Promise<unknown>>();
+
+  private readonly activeTimeouts = new Set<NodeJS.Timeout>();
+
+  private readonly abortController = new AbortController();
+
+  private isClosed = false;
+
   private readonly asyncBoundary = async (): Promise<void> =>
     new Promise((resolve) => {
       setImmediate(resolve);
@@ -55,188 +63,213 @@ export class LanceVectorStore implements IVectorStore {
   }
 
   async initialize(): Promise<void> {
-    await this.asyncBoundary();
-    return;
+    return this.trackOp((async () => {
+      await this.asyncBoundary();
+      this.checkClosed();
+    })());
   }
 
   async upsertChunks(chunks: CodeChunk[], embeddings?: number[][]): Promise<void> {
-    await this.asyncBoundary();
-    if (embeddings && embeddings.length !== chunks.length) {
-      throw new Error(`VectorStore.upsertChunks: embeddings length mismatch (expected ${chunks.length}, got ${embeddings.length})`);
-    }
+    return this.trackOp((async () => {
+      await this.asyncBoundary();
+      this.checkClosed();
 
-    for (let i = 0; i < chunks.length; i++) {
-      const chunk = chunks[i]!;
-      const vector = embeddings ? embeddings[i]! : this.vectorize(chunk.content);
-
-      if (vector.length !== this.dimensions) {
-        throw new Error(`VectorStore.upsertChunks: vector length mismatch for chunk ${chunk.id} (expected ${this.dimensions}, got ${vector.length})`);
-      }
-      if (!vector.every(Number.isFinite)) {
-        throw new Error(`VectorStore.upsertChunks: vector contains non-finite values for chunk ${chunk.id}`);
+      if (embeddings && embeddings.length !== chunks.length) {
+        throw new Error(`VectorStore.upsertChunks: embeddings length mismatch (expected ${chunks.length}, got ${embeddings.length})`);
       }
 
-      const existing = this.rows.get(chunk.id);
-      if (existing?.deleted) {
-        this.deletedCount -= 1;
+      for (let i = 0; i < chunks.length; i++) {
+        const chunk = chunks[i]!;
+        const vector = embeddings ? embeddings[i]! : this.vectorize(chunk.content);
+
+        if (vector.length !== this.dimensions) {
+          throw new Error(`VectorStore.upsertChunks: vector length mismatch for chunk ${chunk.id} (expected ${this.dimensions}, got ${vector.length})`);
+        }
+        if (!vector.every(Number.isFinite)) {
+          throw new Error(`VectorStore.upsertChunks: vector contains non-finite values for chunk ${chunk.id}`);
+        }
+
+        const existing = this.rows.get(chunk.id);
+        if (existing?.deleted) {
+          this.deletedCount -= 1;
+        }
+        this.rows.set(chunk.id, {
+          chunk,
+          vector,
+          deleted: false,
+        });
       }
-      this.rows.set(chunk.id, {
-        chunk,
-        vector,
-        deleted: false,
-      });
-    }
+    })());
   }
 
   async deleteByFilePath(filePath: string): Promise<number> {
-    await this.asyncBoundary();
-    let deleted = 0;
-    for (const row of this.rows.values()) {
-      if (row.chunk.filePath === filePath && !row.deleted) {
-        row.deleted = true;
-        deleted += 1;
-        this.deletedCount += 1;
+    return this.trackOp((async () => {
+      await this.asyncBoundary();
+      this.checkClosed();
+
+      let deleted = 0;
+      for (const row of this.rows.values()) {
+        if (row.chunk.filePath === filePath && !row.deleted) {
+          row.deleted = true;
+          deleted += 1;
+          this.deletedCount += 1;
+        }
       }
-    }
-    return deleted;
+      return deleted;
+    })());
   }
 
   async deleteByPathPrefix(pathPrefix: string): Promise<number> {
-    await this.asyncBoundary();
-    let deleted = 0;
-    const prefixWithSlash = pathPrefix.endsWith('/') ? pathPrefix : `${pathPrefix}/`;
-    for (const row of this.rows.values()) {
-      const isMatch = row.chunk.filePath === pathPrefix || row.chunk.filePath.startsWith(prefixWithSlash);
-      if (isMatch && !row.deleted) {
-        row.deleted = true;
-        deleted += 1;
-        this.deletedCount += 1;
+    return this.trackOp((async () => {
+      await this.asyncBoundary();
+      this.checkClosed();
+
+      let deleted = 0;
+      const prefixWithSlash = pathPrefix.endsWith('/') ? pathPrefix : `${pathPrefix}/`;
+      for (const row of this.rows.values()) {
+        const isMatch = row.chunk.filePath === pathPrefix || row.chunk.filePath.startsWith(prefixWithSlash);
+        if (isMatch && !row.deleted) {
+          row.deleted = true;
+          deleted += 1;
+          this.deletedCount += 1;
+        }
       }
-    }
-    return deleted;
+      return deleted;
+    })());
   }
 
   async renameFilePath(oldPath: string, newPath: string): Promise<number> {
-    await this.asyncBoundary();
+    return this.trackOp((async () => {
+      await this.asyncBoundary();
+      this.checkClosed();
 
-    if (oldPath === newPath) {
-      return 0;
-    }
-
-    // Check if oldPath exists first to avoid unnecessary mutations
-    let exists = false;
-    for (const row of this.rows.values()) {
-      if (row.chunk.filePath === oldPath && !row.deleted) {
-        exists = true;
-        break;
+      if (oldPath === newPath) {
+        return 0;
       }
-    }
 
-    if (!exists) {
-      return 0;
-    }
+      // Check if oldPath exists first to avoid unnecessary mutations
+      let exists = false;
+      for (const row of this.rows.values()) {
+        if (row.chunk.filePath === oldPath && !row.deleted) {
+          exists = true;
+          break;
+        }
+      }
 
-    // Clear any existing chunks at newPath to avoid mixing old/new data
-    for (const [id, row] of [...this.rows.entries()]) {
-      if (row.chunk.filePath === newPath) {
-        if (row.deleted) {
+      if (!exists) {
+        return 0;
+      }
+
+      // Clear any existing chunks at newPath to avoid mixing old/new data
+      for (const [id, row] of [...this.rows.entries()]) {
+        if (row.chunk.filePath === newPath) {
+          if (row.deleted) {
+            this.deletedCount -= 1;
+          }
+          this.rows.delete(id);
+        }
+      }
+
+      let renamed = 0;
+
+      for (const [id, row] of [...this.rows.entries()]) {
+        if (row.chunk.filePath !== oldPath || row.deleted) {
+          continue;
+        }
+
+        const nextChunk = {
+          ...row.chunk,
+          id: row.chunk.id.replaceAll(oldPath, newPath),
+          filePath: newPath,
+        };
+
+        this.rows.delete(id);
+        const existingAtTarget = this.rows.get(nextChunk.id);
+        if (existingAtTarget?.deleted) {
           this.deletedCount -= 1;
         }
-        this.rows.delete(id);
-      }
-    }
-
-    let renamed = 0;
-
-    for (const [id, row] of [...this.rows.entries()]) {
-      if (row.chunk.filePath !== oldPath || row.deleted) {
-        continue;
+        this.rows.set(nextChunk.id, {
+          chunk: nextChunk,
+          vector: row.vector,
+          deleted: false,
+        });
+        renamed += 1;
       }
 
-      const nextChunk = {
-        ...row.chunk,
-        id: row.chunk.id.replaceAll(oldPath, newPath),
-        filePath: newPath,
-      };
-
-      this.rows.delete(id);
-      const existingAtTarget = this.rows.get(nextChunk.id);
-      if (existingAtTarget?.deleted) {
-        this.deletedCount -= 1;
-      }
-      this.rows.set(nextChunk.id, {
-        chunk: nextChunk,
-        vector: row.vector,
-        deleted: false,
-      });
-      renamed += 1;
-    }
-
-    return renamed;
+      return renamed;
+    })());
   }
 
   async search(queryVector: number[], topK: number, filter?: VectorFilter): Promise<VectorSearchResult[]> {
-    if (queryVector.length !== this.dimensions) {
-      throw new Error(`queryVector length must be ${this.dimensions}`);
-    }
-    if (!queryVector.every(Number.isFinite)) {
-      throw new TypeError('queryVector contains non-finite values');
-    }
-    if (!Number.isInteger(topK) || topK <= 0) {
-      throw new RangeError('topK must be a positive integer');
-    }
+    return this.trackOp((async () => {
+      if (queryVector.length !== this.dimensions) {
+        throw new Error(`queryVector length must be ${this.dimensions}`);
+      }
+      if (!queryVector.every(Number.isFinite)) {
+        throw new TypeError('queryVector contains non-finite values');
+      }
+      if (!Number.isInteger(topK) || topK <= 0) {
+        throw new RangeError('topK must be a positive integer');
+      }
 
-    await this.asyncBoundary();
-    return [...this.rows.values()]
-      .filter((row) => !row.deleted)
-      .filter((row) => {
-        if (filter?.filePathPrefix !== undefined && !row.chunk.filePath.startsWith(filter.filePathPrefix)) {
-          return false;
-        }
-        if (filter?.language !== undefined && row.chunk.language !== filter.language) {
-          return false;
-        }
-        if (filter?.symbolKind !== undefined && row.chunk.symbolKind !== filter.symbolKind) {
-          return false;
-        }
-        return true;
-      })
-      .map((row) => ({
-        chunk: row.chunk,
-        score: cosineSimilarity(queryVector, row.vector),
-      }))
-      .sort((left, right) => right.score - left.score || left.chunk.filePath.localeCompare(right.chunk.filePath))
-      .slice(0, topK);
+      await this.asyncBoundary();
+      this.checkClosed();
+
+      return [...this.rows.values()]
+        .filter((row) => !row.deleted)
+        .filter((row) => {
+          if (filter?.filePathPrefix !== undefined && !row.chunk.filePath.startsWith(filter.filePathPrefix)) {
+            return false;
+          }
+          if (filter?.language !== undefined && row.chunk.language !== filter.language) {
+            return false;
+          }
+          if (filter?.symbolKind !== undefined && row.chunk.symbolKind !== filter.symbolKind) {
+            return false;
+          }
+          return true;
+        })
+        .map((row) => ({
+          chunk: row.chunk,
+          score: cosineSimilarity(queryVector, row.vector),
+        }))
+        .sort((left, right) => right.score - left.score || left.chunk.filePath.localeCompare(right.chunk.filePath))
+        .slice(0, topK);
+    })());
   }
 
   async compactIfNeeded(config?: Partial<CompactionConfig>): Promise<CompactionResult> {
-    await this.asyncBoundary();
-    const fragmentationRatioBefore = this.fragmentationRatio();
-    const threshold = config?.fragmentationThreshold ?? 0.2;
-    const minStale = config?.minStaleChunks ?? 1;
+    return this.trackOp((async () => {
+      await this.asyncBoundary();
+      this.checkClosed();
 
-    if (fragmentationRatioBefore <= threshold || this.deletedCount < minStale) {
+      const fragmentationRatioBefore = this.fragmentationRatio();
+      const threshold = config?.fragmentationThreshold ?? 0.2;
+      const minStale = config?.minStaleChunks ?? 1;
+
+      if (fragmentationRatioBefore <= threshold || this.deletedCount < minStale) {
+        return {
+          compacted: false,
+          fragmentationRatioBefore,
+          fragmentationRatioAfter: fragmentationRatioBefore,
+          chunksRemoved: 0,
+        };
+      }
+
+      const removedEntries = [...this.rows.entries()].filter(([, row]) => row.deleted);
+      for (const [id] of removedEntries) {
+        this.rows.delete(id);
+      }
+      this.deletedCount = 0;
+      this.lastCompactedAt = new Date().toISOString();
+
       return {
-        compacted: false,
+        compacted: true,
         fragmentationRatioBefore,
-        fragmentationRatioAfter: fragmentationRatioBefore,
-        chunksRemoved: 0,
+        fragmentationRatioAfter: this.fragmentationRatio(),
+        chunksRemoved: removedEntries.length,
       };
-    }
-
-    const removedEntries = [...this.rows.entries()].filter(([, row]) => row.deleted);
-    for (const [id] of removedEntries) {
-      this.rows.delete(id);
-    }
-    this.deletedCount = 0;
-    this.lastCompactedAt = new Date().toISOString();
-
-    return {
-      compacted: true,
-      fragmentationRatioBefore,
-      fragmentationRatioAfter: this.fragmentationRatio(),
-      chunksRemoved: removedEntries.length,
-    };
+    })());
   }
 
   async compactAfterReindex(config?: Partial<CompactionConfig>): Promise<CompactionResult> {
@@ -250,67 +283,82 @@ export class LanceVectorStore implements IVectorStore {
     abortSignal?: AbortSignal,
     mutexTimeoutMs = 30000,
   ): NodeJS.Timeout {
-    return setTimeout(() => {
-      if (abortSignal?.aborted) {
+    if (this.isClosed) {
+      // Return a dummy timeout if closed
+      return setTimeout(() => {}, 0);
+    }
+
+    const timeout = setTimeout(() => {
+      this.activeTimeouts.delete(timeout);
+      if (abortSignal?.aborted || this.abortController.signal.aborted) {
         return;
       }
 
-      Promise.resolve()
-        .then(async () => {
-          if (mutex) {
-            const controller = new AbortController();
-            const timeoutId = setTimeout(() => {
-              controller.abort(new Error(`Compaction mutex acquisition timed out after ${mutexTimeoutMs}ms`));
-            }, mutexTimeoutMs);
+      const operation = (async () => {
+        if (mutex) {
+          const controller = new AbortController();
+          const timeoutId = setTimeout(() => {
+            controller.abort(new Error(`Compaction mutex acquisition timed out after ${mutexTimeoutMs}ms`));
+          }, mutexTimeoutMs);
 
-            const onAbort = () => {
-              controller.abort();
-            };
-            if (abortSignal) {
-              abortSignal.addEventListener('abort', onAbort, { once: true });
-            }
+          const onAbort = () => {
+            controller.abort();
+          };
+          
+          const combinedSignal = abortSignal || this.abortController.signal;
+          combinedSignal.addEventListener('abort', onAbort, { once: true });
 
-            try {
-              await mutex.waitForUnlock(controller.signal);
-            } catch (error) {
-              if (controller.signal.aborted && controller.signal.reason) {
-                throw controller.signal.reason;
-              }
-              throw error;
-            } finally {
-              clearTimeout(timeoutId);
-              if (abortSignal) {
-                abortSignal.removeEventListener('abort', onAbort);
-              }
+          try {
+            await mutex.waitForUnlock(controller.signal);
+          } catch (error) {
+            if (controller.signal.aborted && controller.signal.reason) {
+              throw controller.signal.reason;
             }
+            throw error;
+          } finally {
+            clearTimeout(timeoutId);
+            combinedSignal.removeEventListener('abort', onAbort);
           }
-        })
-        .then(() => {
-          if (abortSignal?.aborted) {
-            return;
-          }
-          return runCompaction();
-        })
-        .catch((error: unknown) => {
-          if ((error instanceof Error && error.name === 'AbortError') || abortSignal?.aborted) {
-            return;
-          }
-          console.error('Compaction failed:', error);
-        });    }, delayMs);
+        }
+
+        if (abortSignal?.aborted || this.abortController.signal.aborted) {
+          return;
+        }
+        return runCompaction();
+      })();
+
+      this.trackOp(operation).catch((error: unknown) => {
+        if (
+          (error instanceof Error && (error.name === 'AbortError' || error.message.includes('abort'))) ||
+          abortSignal?.aborted ||
+          this.abortController.signal.aborted
+        ) {
+          return;
+        }
+        console.error('Compaction failed:', error);
+      });
+    }, delayMs);
+
+    this.activeTimeouts.add(timeout);
+    return timeout;
   }
 
   async getStats(): Promise<VectorStoreStats> {
-    await this.asyncBoundary();
-    const activeRows = [...this.rows.values()].filter((row) => !row.deleted);
-    const fileCount = new Set(activeRows.map((row) => row.chunk.filePath)).size;
+    return this.trackOp((async () => {
+      await this.asyncBoundary();
+      this.checkClosed();
 
-    return {
-      totalChunks: activeRows.length,
-      totalFiles: fileCount,
-      dimensions: this.dimensions,
-      fragmentationRatio: this.fragmentationRatio(),
-      lastCompactedAt: this.lastCompactedAt,
-    };
+      const activeRows = [...this.rows.values()].filter((row) => !row.deleted);
+      const fileCount = new Set(activeRows.map((row) => row.chunk.filePath)).size;
+
+      return {
+        totalChunks: activeRows.length,
+        totalFiles: fileCount,
+        dimensions: this.dimensions,
+        fragmentationRatio: this.fragmentationRatio(),
+        lastCompactedAt: this.lastCompactedAt,
+      };
+    })());
   }
 
   private vectorize(content: string): number[] {
@@ -327,7 +375,42 @@ export class LanceVectorStore implements IVectorStore {
     return this.deletedCount / this.rows.size;
   }
 
+  private async trackOp<T>(op: Promise<T>): Promise<T> {
+    this.inFlightOps.add(op);
+    try {
+      return await op;
+    } finally {
+      this.inFlightOps.delete(op);
+    }
+  }
+
+  private checkClosed(): void {
+    if (this.isClosed) {
+      throw new Error('VectorStore is closed');
+    }
+  }
+
   async close(): Promise<void> {
-    // TODO: LanceDB implementation with trackOp + inflight I/O wait
+    if (this.isClosed) {
+      return;
+    }
+    this.isClosed = true;
+
+    // 1. Abort ongoing operations
+    this.abortController.abort();
+
+    // 2. Clear all scheduled timeouts
+    for (const timeout of this.activeTimeouts) {
+      clearTimeout(timeout);
+    }
+    this.activeTimeouts.clear();
+
+    // 3. Wait for all in-flight operations to settle
+    if (this.inFlightOps.size > 0) {
+      await Promise.allSettled(this.inFlightOps);
+    }
+
+    // TODO: LanceDB specific cleanup (file handles, etc) once integrated
   }
 }
+
