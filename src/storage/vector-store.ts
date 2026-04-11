@@ -1,6 +1,6 @@
 import * as lancedb from '@lancedb/lancedb';
 import type { Table } from '@lancedb/lancedb';
-import { mkdir } from 'node:fs/promises';
+import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type {
@@ -31,10 +31,6 @@ interface LanceRow {
   hash: string;
   vector: number[] | Float32Array;
   [key: string]: unknown;
-}
-
-interface TableWithInternalMetadata {
-  replaceMetadata(metadata: Map<string, string>): Promise<void>;
 }
 
 export class LanceVectorStore implements IVectorStore {
@@ -97,39 +93,39 @@ export class LanceVectorStore implements IVectorStore {
         }
       }
 
-      // Restore metadata
-      const metadata = schema.metadata;
-      const storedStale = metadata.get('staleCount');
-      if (storedStale) {
-        const parsed = parseInt(storedStale, 10);
-        if (Number.isFinite(parsed) && parsed >= 0) {
-          this.staleCount = parsed;
-        } else {
-          this.staleCount = 0;
+      // Restore metadata from sidecar file
+      try {
+        const metaPath = join(this.dbPath, 'metadata.json');
+        const content = await readFile(metaPath, 'utf8');
+        const metadata = JSON.parse(content);
+        
+        if (metadata.staleCount !== undefined) {
+          const parsed = parseInt(metadata.staleCount, 10);
+          if (Number.isFinite(parsed) && parsed >= 0) {
+            this.staleCount = parsed;
+          }
         }
-      }
-      if (metadata.get('lastCompactedAt')) {
-        this.lastCompactedAt = metadata.get('lastCompactedAt');
+        if (metadata.lastCompactedAt) {
+          this.lastCompactedAt = metadata.lastCompactedAt;
+        }
+      } catch {
+        // If file not found or corrupted, fallback to 0 or current state
       }
     }
   }
 
   private async updateMetadata(): Promise<void> {
-    if (!this.table) return;
-    // Note: In LanceDB Node SDK, table metadata is often immutable after creation.
-    // Some versions may support replaceMetadata (as an internal or undocumented API).
+    if (!this.dbPath || this.dbPath.includes('://')) return;
+    
     try {
-      const tableWithMeta = this.table as unknown as Partial<TableWithInternalMetadata>;
-      if (typeof tableWithMeta.replaceMetadata === 'function') {
-        const newMetadata = new Map<string, string>();
-        newMetadata.set('staleCount', this.staleCount.toString());
-        if (this.lastCompactedAt) {
-          newMetadata.set('lastCompactedAt', this.lastCompactedAt);
-        }
-        await tableWithMeta.replaceMetadata(newMetadata);
-      }
+      const metaPath = join(this.dbPath, 'metadata.json');
+      const metadata = {
+        staleCount: this.staleCount.toString(),
+        lastCompactedAt: this.lastCompactedAt,
+      };
+      await writeFile(metaPath, JSON.stringify(metadata, null, 2), 'utf8');
     } catch (e) {
-      console.error('[LanceVectorStore] Failed to update table metadata:', e);
+      console.error('[LanceVectorStore] Failed to update sidecar metadata:', e);
     }
   }
 
