@@ -126,7 +126,7 @@ export interface IVectorStore {
     mutexTimeoutMs?: number,
   ): NodeJS.Timeout;
   getStats(): Promise<VectorStoreStats>;
-  close(): Promise<void>;
+  close(timeoutMs?: number): Promise<void>;
 }
 
 export interface MerkleNodeRow {

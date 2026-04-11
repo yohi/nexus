@@ -298,7 +298,7 @@ export class InMemoryVectorStore implements IVectorStore {
     };
   }
 
-  async close(): Promise<void> {
+  async close(_timeoutMs?: number): Promise<void> {
     // No-op: InMemoryVectorStore has no external resources to release.
   }
 

@@ -100,7 +100,7 @@ export class LanceVectorStore implements IVectorStore {
    * Performs an idempotent, safe shutdown of the vector store.
    * Stops all timers, aborts ongoing operations, and waits for in-flight I/O to settle.
    */
-  async close(): Promise<void> {
+  async close(timeoutMs?: number): Promise<void> {
     if (this.isClosed) {
       return;
     }
@@ -115,18 +115,19 @@ export class LanceVectorStore implements IVectorStore {
 
     // 2. Wait for in-flight operations to settle with a timeout
     if (this.inflightOps > 0) {
+      const effectiveTimeout = timeoutMs ?? LanceVectorStore.CLOSE_TIMEOUT_MS;
       const inflightDone = new Promise<void>((resolve) => {
         this.closingResolve = resolve;
       });
       let timerHandle: NodeJS.Timeout;
       const timeout = new Promise<'timeout'>((resolve) => {
-        timerHandle = setTimeout(() => { resolve('timeout'); }, LanceVectorStore.CLOSE_TIMEOUT_MS);
+        timerHandle = setTimeout(() => { resolve('timeout'); }, effectiveTimeout);
       });
       const result = await Promise.race([inflightDone.then(() => 'done' as const), timeout]);
       clearTimeout(timerHandle!);
       if (result === 'timeout') {
         console.error(
-          `[LanceVectorStore] close() timed out after ${LanceVectorStore.CLOSE_TIMEOUT_MS}ms ` +
+          `[LanceVectorStore] close() timed out after ${effectiveTimeout}ms ` +
           `with ${this.inflightOps} in-flight operation(s). Forcing resource release.`
         );
       }
