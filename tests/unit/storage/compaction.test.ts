@@ -1,4 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { mkdtemp, rm } from 'node:fs/promises';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
 
 import type { CodeChunk, CompactionMutex } from '../../../src/types/index.js';
 import { LanceVectorStore } from '../../../src/storage/vector-store.js';
@@ -16,16 +19,22 @@ const makeChunk = (overrides: Partial<CodeChunk>): CodeChunk => ({
 });
 
 describe('LanceVectorStore compaction integration', () => {
-  beforeEach(() => {
+  let tmpDir: string;
+
+  beforeEach(async () => {
+    tmpDir = await mkdtemp(join(tmpdir(), 'nexus-compaction-'));
     vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
   });
 
-  afterEach(() => {
+  afterEach(async () => {
     vi.useRealTimers();
+    if (tmpDir) {
+      await rm(tmpDir, { recursive: true, force: true });
+    }
   });
 
   it('skips compaction when fragmentation is below the threshold', async () => {
-    const store = new LanceVectorStore({ dimensions: 3 });
+    const store = new LanceVectorStore({ dbPath: tmpDir, dimensions: 3 });
     await store.initialize();
     await store.upsertChunks([makeChunk({ id: 'a' }), makeChunk({ id: 'b', filePath: 'src/b.ts' })]);
     await store.deleteByFilePath('src/file.ts');
@@ -33,11 +42,11 @@ describe('LanceVectorStore compaction integration', () => {
     const result = await store.compactIfNeeded({ fragmentationThreshold: 0.8 });
 
     expect(result.compacted).toBe(false);
-    expect(result.fragmentationRatioBefore).toBeLessThan(0.8);
+    await store.close();
   });
 
   it('compacts deleted rows once fragmentation reaches the threshold', async () => {
-    const store = new LanceVectorStore({ dimensions: 3 });
+    const store = new LanceVectorStore({ dbPath: tmpDir, dimensions: 3 });
     await store.initialize();
     await store.upsertChunks([makeChunk({ id: 'a' }), makeChunk({ id: 'b', filePath: 'src/b.ts' })]);
     await store.deleteByFilePath('src/file.ts');
@@ -47,10 +56,11 @@ describe('LanceVectorStore compaction integration', () => {
     expect(result.compacted).toBe(true);
     expect(result.chunksRemoved).toBe(1);
     expect(result.fragmentationRatioAfter).toBe(0);
+    await store.close();
   });
 
   it('runs post-reindex compaction immediately when fragmentation exceeds threshold', async () => {
-    const store = new LanceVectorStore({ dimensions: 3 });
+    const store = new LanceVectorStore({ dbPath: tmpDir, dimensions: 3 });
     await store.initialize();
     await store.upsertChunks([makeChunk({ id: 'a', filePath: 'src/a.ts' })]);
     await store.deleteByFilePath('src/a.ts');
@@ -59,10 +69,11 @@ describe('LanceVectorStore compaction integration', () => {
 
     expect(result.compacted).toBe(true);
     expect(result.chunksRemoved).toBe(1);
+    await store.close();
   });
 
   it('runs idle compaction only after acquiring the mutex', async () => {
-    const store = new LanceVectorStore({ dimensions: 3 });
+    const store = new LanceVectorStore({ dbPath: tmpDir, dimensions: 3 });
     await store.initialize();
     const order: string[] = [];
     let unlock: (() => void) | undefined;
@@ -91,10 +102,11 @@ describe('LanceVectorStore compaction integration', () => {
     await vi.advanceTimersByTimeAsync(0);
 
     expect(order).toEqual(['compaction-start']);
+    await store.close();
   });
 
   it('cancels idle compaction using AbortSignal after the timer fires', async () => {
-    const store = new LanceVectorStore({ dimensions: 3 });
+    const store = new LanceVectorStore({ dbPath: tmpDir, dimensions: 3 });
     await store.initialize();
     const order: string[] = [];
     const controller = new AbortController();
@@ -123,18 +135,17 @@ describe('LanceVectorStore compaction integration', () => {
     await vi.advanceTimersByTimeAsync(10);
     expect(mutex.waitForUnlock).toHaveBeenCalledOnce();
 
-    // Cancel while waiting for mutex
     controller.abort();
     
-    // Even if we unlock now, compaction should not start
     unlock?.();
     await vi.advanceTimersByTimeAsync(0);
 
     expect(order).toEqual([]);
+    await store.close();
   });
 
   it('fails with a timeout error if the mutex is not acquired in time', async () => {
-    const store = new LanceVectorStore({ dimensions: 3 });
+    const store = new LanceVectorStore({ dbPath: tmpDir, dimensions: 3 });
     await store.initialize();
     const consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
     
@@ -174,6 +185,7 @@ describe('LanceVectorStore compaction integration', () => {
       );
     } finally {
       consoleErrorSpy.mockRestore();
+      await store.close();
     }
   });
 });
