@@ -392,26 +392,35 @@ export class LanceVectorStore implements IVectorStore {
     }
   }
 
+  /**
+   * Performs an idempotent, safe shutdown of the vector store.
+   * Stops all timers, aborts ongoing operations, and waits for in-flight I/O to settle.
+   */
   async close(): Promise<void> {
     if (this.isClosed) {
       return;
     }
     this.isClosed = true;
 
-    // 1. Abort ongoing operations
+    // 1. Abort ongoing operations (signals trackOp and other async boundaries)
     this.abortController.abort();
 
-    // 2. Clear all scheduled timeouts
+    // 2. Clear all scheduled timeouts (idle compaction, etc)
     for (const timeout of this.activeTimeouts) {
       clearTimeout(timeout);
     }
     this.activeTimeouts.clear();
 
-    // 3. Wait for all in-flight operations to settle
+    // 3. Wait for all in-flight operations to settle (e.g., upsert, search, compact)
     if (this.inFlightOps.size > 0) {
-      await Promise.allSettled(this.inFlightOps);
+      try {
+        await Promise.allSettled(this.inFlightOps);
+      } catch (error) {
+        // Log non-fatal cleanup errors to avoid crashing during shutdown
+        console.error('VectorStore: Error during in-flight operations cleanup:', error);
+      }
     }
 
-    // TODO: LanceDB specific cleanup (file handles, etc) once integrated
+    // TODO: Phase 2 - Dispose LanceDB client/handles here once integrated.
   }
 }
