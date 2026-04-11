@@ -1,6 +1,6 @@
 import * as lancedb from '@lancedb/lancedb';
 import type { Table } from '@lancedb/lancedb';
-import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, writeFile, rename } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -31,6 +31,7 @@ interface LanceRow {
   endline: number;
   hash: string;
   vector: number[] | Float32Array;
+  _distance?: number;
   [key: string]: unknown;
 }
 
@@ -56,6 +57,7 @@ export class LanceVectorStore implements IVectorStore {
 
   private lastCompactedAt: string | undefined;
   private staleCount = 0;
+  private metadataMutex: Promise<void> = Promise.resolve();
 
   constructor(options: LanceVectorStoreOptions) {
     if (!Number.isInteger(options.dimensions) || options.dimensions <= 0) {
@@ -65,87 +67,106 @@ export class LanceVectorStore implements IVectorStore {
     this.dbPath = options.dbPath && options.dbPath !== 'memory://'
       ? options.dbPath
       : join(tmpdir(), `nexus-lance-${randomUUID()}`);
+    
+    // Path security check to prevent injection
+    if (this.dbPath.includes('\0')) {
+      throw new Error('Invalid dbPath: contains null byte');
+    }
+
     this.dimensions = options.dimensions;
   }
 
   async initialize(): Promise<void> {
-    if (this.isClosed) {
-      throw new Error('VectorStore is closed');
-    }
-    if (this.db) {
-      return;
-    }
-
-    const isUri = this.dbPath.includes('://');
-    if (!isUri) {
-      await mkdir(this.dbPath, { recursive: true });
-    }
-
-    this.db = await lancedb.connect(this.dbPath);
-    const tableNames = await this.db.tableNames();
-    
-    // 1. Attempt to load sidecar metadata for URI consistency and dimensions
-    let metadata: SidecarMetadata | undefined;
-    if (!isUri) {
-      try {
-        const metaPath = join(this.dbPath, 'metadata.json');
-        const content = await readFile(metaPath, 'utf8');
-        metadata = JSON.parse(content) as SidecarMetadata;
-      } catch {
-        // Fallback for non-existent or corrupted metadata
+    return this.trackOp(async () => {
+      if (this.db) {
+        return;
       }
-    }
 
-    // 2. Validate dimensions
-    if (metadata?.dimensions !== undefined) {
-      const persistedDim = parseInt(metadata.dimensions, 10);
-      if (persistedDim !== this.dimensions) {
-        throw new Error(
-          `VectorStore dimension mismatch: existing storage has ${persistedDim}, but expected ${this.dimensions}`
-        );
+      const isUri = this.dbPath.includes('://');
+      if (!isUri) {
+        await mkdir(this.dbPath, { recursive: true });
       }
-    }
 
-    if (tableNames.includes('chunks')) {
-      this.table = await this.db.openTable('chunks');
+      const connection = await lancedb.connect(this.dbPath);
+      if (this.isClosed) {
+        if (connection && 'close' in connection && typeof (connection as any).close === 'function') {
+          await (connection as any).close();
+        }
+        return;
+      }
+      this.db = connection;
+      const tableNames = await this.db.tableNames();
+      
+      // 1. Attempt to load sidecar metadata for URI consistency and dimensions
+      let metadata: SidecarMetadata | undefined;
+      if (!isUri) {
+        try {
+          const metaPath = join(this.dbPath, 'metadata.json');
+          const content = await readFile(metaPath, 'utf8');
+          metadata = JSON.parse(content) as SidecarMetadata;
+        } catch {
+          // Fallback for non-existent or corrupted metadata
+        }
+      }
 
-      // 3. Fallback dimension check from schema/data if metadata is missing
-      if (metadata?.dimensions === undefined) {
-        const schema = await this.table.schema();
-        const vectorField = schema.fields.find(f => f.name === 'vector');
-        if (vectorField) {
-          const firstRow = await this.table.query().limit(1).toArray() as unknown as LanceRow[];
-          if (firstRow.length > 0 && firstRow[0]?.vector) {
-            const actualDim = Array.isArray(firstRow[0].vector) 
-              ? firstRow[0].vector.length 
-              : firstRow[0].vector.length;
-            if (actualDim !== this.dimensions) {
+      // 2. Validate dimensions
+      if (metadata?.dimensions !== undefined) {
+        const persistedDim = parseInt(metadata.dimensions, 10);
+        if (persistedDim !== this.dimensions) {
+          throw new Error(
+            `VectorStore dimension mismatch: existing storage has ${persistedDim}, but expected ${this.dimensions}`
+          );
+        }
+      }
+
+      if (tableNames.includes('chunks')) {
+        const table = await this.db.openTable('chunks');
+        if (this.isClosed) {
+          if (table && 'close' in table && typeof (table as any).close === 'function') {
+            await (table as any).close();
+          }
+          return;
+        }
+        this.table = table;
+
+        // 3. Fallback dimension check from schema/data if metadata is missing
+        if (metadata?.dimensions === undefined) {
+          const schema = await this.table.schema();
+          const vectorField = schema.fields.find(f => f.name === 'vector');
+          if (vectorField) {
+            const firstRow = await this.table.query().limit(1).toArray() as unknown as LanceRow[];
+            if (firstRow.length > 0 && firstRow[0]?.vector) {
+              const actualDim = Array.isArray(firstRow[0].vector) 
+                ? firstRow[0].vector.length 
+                : firstRow[0].vector.length;
+              if (actualDim !== this.dimensions) {
+                throw new Error(
+                  `VectorStore dimension mismatch: existing table has ${actualDim}, but expected ${this.dimensions}`
+                );
+              }
+            } else {
+              // Empty table without metadata is treated as a mismatch to avoid silent dimension errors
               throw new Error(
-                `VectorStore dimension mismatch: existing table has ${actualDim}, but expected ${this.dimensions}`
+                'VectorStore dimension mismatch: empty table without sidecar metadata. Explicit reinitialization required.'
               );
             }
-          } else {
-            // Empty table without metadata is treated as a mismatch to avoid silent dimension errors
-            throw new Error(
-              'VectorStore dimension mismatch: empty table without sidecar metadata. Explicit reinitialization required.'
-            );
           }
         }
-      }
 
-      // Restore other metadata fields
-      if (metadata) {
-        if (metadata.staleCount !== undefined) {
-          const parsed = parseInt(metadata.staleCount, 10);
-          if (Number.isFinite(parsed) && parsed >= 0) {
-            this.staleCount = parsed;
+        // Restore other metadata fields
+        if (metadata) {
+          if (metadata.staleCount !== undefined) {
+            const parsed = parseInt(metadata.staleCount, 10);
+            if (Number.isFinite(parsed) && parsed >= 0) {
+              this.staleCount = parsed;
+            }
+          }
+          if (metadata.lastCompactedAt !== undefined) {
+            this.lastCompactedAt = metadata.lastCompactedAt;
           }
         }
-        if (metadata.lastCompactedAt !== undefined) {
-          this.lastCompactedAt = metadata.lastCompactedAt;
-        }
       }
-    }
+    });
   }
 
   private async updateMetadata(): Promise<void> {
@@ -153,17 +174,22 @@ export class LanceVectorStore implements IVectorStore {
       return;
     }
     
-    try {
-      const metaPath = join(this.dbPath, 'metadata.json');
-      const metadata: SidecarMetadata = {
-        dimensions: this.dimensions.toString(),
-        staleCount: this.staleCount.toString(),
-        lastCompactedAt: this.lastCompactedAt,
-      };
-      await writeFile(metaPath, JSON.stringify(metadata, null, 2), 'utf8');
-    } catch (e) {
-      console.error('[LanceVectorStore] Failed to update sidecar metadata:', e);
-    }
+    this.metadataMutex = this.metadataMutex.then(async () => {
+      try {
+        const metaPath = join(this.dbPath, 'metadata.json');
+        const tmpPath = `${metaPath}.${randomUUID()}.tmp`;
+        const metadata: SidecarMetadata = {
+          dimensions: this.dimensions.toString(),
+          staleCount: this.staleCount.toString(),
+          lastCompactedAt: this.lastCompactedAt,
+        };
+        await writeFile(tmpPath, JSON.stringify(metadata, null, 2), 'utf8');
+        await rename(tmpPath, metaPath);
+      } catch (e) {
+        console.error('[LanceVectorStore] Failed to update sidecar metadata:', e);
+      }
+    });
+    return this.metadataMutex;
   }
 
   async resetForTest(): Promise<void> {
@@ -222,7 +248,9 @@ export class LanceVectorStore implements IVectorStore {
         timerHandle = setTimeout(() => { resolve('timeout'); }, effectiveTimeout);
       });
       const result = await Promise.race([inflightDone.then(() => 'done' as const), timeout]);
-      clearTimeout(timerHandle!);
+      if (timerHandle) {
+        clearTimeout(timerHandle);
+      }
       if (result === 'timeout') {
         console.error(
           `[LanceVectorStore] close() timed out after ${effectiveTimeout}ms ` +
@@ -233,9 +261,8 @@ export class LanceVectorStore implements IVectorStore {
 
     // 3. Release LanceDB resources
     try {
-      const tableObj = this.table as unknown as Record<string, unknown>;
-      if (tableObj && typeof tableObj.close === 'function') {
-        await (tableObj.close as () => Promise<void>)();
+      if (this.table && 'close' in this.table && typeof (this.table as any).close === 'function') {
+        await (this.table as any).close();
       }
     } catch (e) {
       console.error('[LanceVectorStore] Error closing table resources:', e);
@@ -244,9 +271,8 @@ export class LanceVectorStore implements IVectorStore {
     }
 
     try {
-      const dbObj = this.db as unknown as Record<string, unknown>;
-      if (dbObj && typeof dbObj.close === 'function') {
-        await (dbObj.close as () => Promise<void>)();
+      if (this.db && 'close' in this.db && typeof (this.db as any).close === 'function') {
+        await (this.db as any).close();
       }
     } catch (e) {
       console.error('[LanceVectorStore] Error closing DB connection:', e);
@@ -281,7 +307,7 @@ export class LanceVectorStore implements IVectorStore {
         this.validateFilterValue(chunk.language, 'language');
       }
 
-      const vector = embeddings ? (embeddings[i] ?? Array(this.dimensions).fill(0)) : Array(this.dimensions).fill(0);
+      const vector = embeddings ? embeddings[i]! : Array(this.dimensions).fill(0);
       if (!vector.every(Number.isFinite)) {
         throw new Error(
           `VectorStore.upsertChunks: vector contains non-finite values for chunk ${chunk.id}`
@@ -450,7 +476,7 @@ export class LanceVectorStore implements IVectorStore {
           endLine: row.endline,
           hash: row.hash ?? '',
         },
-        score: row['_distance'] != null ? 1 - (row['_distance'] as number) : 0,
+        score: typeof row._distance === 'number' ? 1 - row._distance : 0,
       }));
     });
   }
@@ -543,7 +569,7 @@ export class LanceVectorStore implements IVectorStore {
       await this.updateMetadata();
 
       return {
-        compacted: didOptimize || wasStale || config?.fragmentationThreshold === 0,
+        compacted: didOptimize || wasStale,
         fragmentationRatioBefore,
         fragmentationRatioAfter: 0,
         chunksRemoved: wasStale ? removed : 0,
