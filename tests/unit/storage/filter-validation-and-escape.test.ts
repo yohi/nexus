@@ -169,7 +169,7 @@ describe('Filter Validation and Escape', () => {
 
     it('正常入力の貫通 — 正しいフィルタ文字列が構築される', () => {
       const result = store.testFilePathFilter('src/utils/parser.ts');
-      expect(result).toBe("filePath = 'src/utils/parser.ts'");
+      expect(result).toBe("\"filePath\" = 'src/utils/parser.ts'");
     });
 
     it('LIKE ワイルドカードの安全なプレフィックス検索', () => {
