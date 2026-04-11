@@ -93,7 +93,7 @@ export class LanceVectorStore implements IVectorStore {
 
       const connection = await lancedb.connect(this.dbPath);
       if (this.isClosed) {
-        if (connection && 'close' in connection && typeof (connection as Record<string, unknown>).close === 'function') {
+        if (connection && 'close' in connection && typeof (connection as unknown as Record<string, unknown>).close === 'function') {
           await (connection as unknown as Closable).close();
         }
         return;
@@ -126,7 +126,7 @@ export class LanceVectorStore implements IVectorStore {
       if (tableNames.includes('chunks')) {
         const table = await this.db.openTable('chunks');
         if (this.isClosed) {
-          if (table && 'close' in table && typeof (table as Record<string, unknown>).close === 'function') {
+          if (table && 'close' in table && typeof (table as unknown as Record<string, unknown>).close === 'function') {
             await (table as unknown as Closable).close();
           }
           return;
@@ -247,7 +247,7 @@ export class LanceVectorStore implements IVectorStore {
           this.closingResolve = resolve;
         }
       });
-      let timerHandle: NodeJS.Timeout;
+      let timerHandle: NodeJS.Timeout | undefined = undefined;
       const timeout = new Promise<'timeout'>((resolve) => {
         timerHandle = setTimeout(() => { resolve('timeout'); }, effectiveTimeout);
       });
@@ -265,7 +265,7 @@ export class LanceVectorStore implements IVectorStore {
 
     // 3. Release LanceDB resources
     try {
-      if (this.table && 'close' in this.table && typeof (this.table as Record<string, unknown>).close === 'function') {
+      if (this.table && 'close' in this.table && typeof (this.table as unknown as Record<string, unknown>).close === 'function') {
         await (this.table as unknown as Closable).close();
       }
     } catch (e) {
@@ -275,7 +275,7 @@ export class LanceVectorStore implements IVectorStore {
     }
 
     try {
-      if (this.db && 'close' in this.db && typeof (this.db as Record<string, unknown>).close === 'function') {
+      if (this.db && 'close' in this.db && typeof (this.db as unknown as Record<string, unknown>).close === 'function') {
         await (this.db as unknown as Closable).close();
       }
     } catch (e) {
@@ -554,7 +554,7 @@ export class LanceVectorStore implements IVectorStore {
     });
   }
 
-  async compactAfterReindex(config?: Partial<CompactionConfig>): Promise<CompactionResult> {
+  async compactAfterReindex(): Promise<CompactionResult> {
     return this.trackOp(async () => {
       let didOptimize = false;
       if (this.table) {
