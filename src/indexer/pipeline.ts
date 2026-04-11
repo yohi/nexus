@@ -75,6 +75,15 @@ export class IndexPipeline implements IIndexPipeline {
     if (this.dlqStopper === undefined) {
       this.dlqStopper = this.deadLetterQueue.startRecoveryLoop();
     }
+
+    if (this.idleCompactionTimer !== undefined) {
+      clearTimeout(this.idleCompactionTimer);
+    }
+
+    if (this.abortController.signal.aborted) {
+      this.abortController = new AbortController();
+    }
+
     this.idleCompactionTimer = this.options.vectorStore.scheduleIdleCompaction(
       async () => {
         await this.options.vectorStore.compactIfNeeded();

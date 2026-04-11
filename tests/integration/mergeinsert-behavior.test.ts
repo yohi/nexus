@@ -40,21 +40,12 @@ describe('Spike: mergeInsert behavior verification', () => {
     const allRows = await table.query().toArray();
     const allIds = allRows.map((row: Record<string, unknown>) => row['id']).sort();
 
-    const oldRowExists = allIds.includes('file:11-20');
-    console.log('--- Spike Result ---');
+    console.log('--- Spike Result (Path (B) confirmed) ---');
     console.log('All IDs after mergeInsert:', allIds);
-    console.log('Old row (file:11-20) exists:', oldRowExists);
 
-    if (oldRowExists) {
-      console.log('=> Path (B): mergeInsert does NOT remove unmatched old rows');
-      console.log('=> upsertChunks must use delete-then-add pattern');
-      expect(allRows).toHaveLength(3);
-      expect(allIds).toEqual(['file:1-10', 'file:11-20', 'file:21-30']);
-    } else {
-      console.log('=> Path (A): mergeInsert DOES remove unmatched old rows');
-      console.log('=> upsertChunks can use mergeInsert as single operation');
-      expect(allRows).toHaveLength(2);
-      expect(allIds).toEqual(['file:1-10', 'file:21-30']);
-    }
+    // Path (B): mergeInsert does NOT remove unmatched old rows
+    // upsertChunks must use delete-then-add pattern
+    expect(allRows).toHaveLength(3);
+    expect(allIds).toEqual(['file:1-10', 'file:11-20', 'file:21-30']);
   });
 });

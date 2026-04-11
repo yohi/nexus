@@ -87,11 +87,7 @@ export class LanceVectorStore implements IVectorStore {
     }
     this.inflightOps++;
     try {
-      const result = await op();
-      if (this.isClosed) {
-        throw new Error('VectorStore is closed');
-      }
-      return result;
+      return await op();
     } finally {
       this.inflightOps--;
       if (this.isClosed && this.inflightOps === 0 && this.closingResolve) {
@@ -227,13 +223,14 @@ export class LanceVectorStore implements IVectorStore {
       const count = allRows.length - filteredRows.length;
       
       if (count > 0) {
-        this.staleCount += count;
         if (filteredRows.length === 0) {
           await db.dropTable('chunks');
           this.table = undefined;
+          this.staleCount = 0;
         } else {
           this.table = await db.createTable('chunks', filteredRows, { mode: 'overwrite' });
           await this.table.optimize();
+          this.staleCount = 0;
         }
       }
       return count;
@@ -260,13 +257,14 @@ export class LanceVectorStore implements IVectorStore {
       const count = allRows.length - filteredRows.length;
       
       if (count > 0) {
-        this.staleCount += count;
         if (filteredRows.length === 0) {
           await db.dropTable('chunks');
           this.table = undefined;
+          this.staleCount = 0;
         } else {
           this.table = await db.createTable('chunks', filteredRows, { mode: 'overwrite' });
           await this.table.optimize();
+          this.staleCount = 0;
         }
       }
       return count;
@@ -421,6 +419,7 @@ export class LanceVectorStore implements IVectorStore {
   async compactIfNeeded(config?: Partial<CompactionConfig>): Promise<CompactionResult> {
     return this.trackOp(async () => {
       const threshold = config?.fragmentationThreshold ?? 0.2;
+      const minStale = config?.minStaleChunks ?? 1;
 
       const totalChunks = this.table ? (await this.table.query().toArray() as unknown as LanceRow[]).length : 0;
       const totalPossible = totalChunks + this.staleCount;
@@ -428,7 +427,7 @@ export class LanceVectorStore implements IVectorStore {
 
       const shouldCompact = (threshold === 0 && this.staleCount > 0) || 
                             (threshold < 1 && fragmentationRatioBefore >= threshold) ||
-                            (config?.minStaleChunks !== undefined && this.staleCount >= config.minStaleChunks);
+                            (this.staleCount >= minStale);
       const wasStale = this.staleCount > 0;
 
       if (shouldCompact) {
@@ -548,7 +547,7 @@ export class LanceVectorStore implements IVectorStore {
 
   // --- フィルタ値検証・エスケープユーティリティ ---
 
-  private static readonly ALLOWED_FILTER_VALUE_PATTERN = /^[\p{L}\p{N}\p{P}\p{Z}\p{S}]*$/u;
+  private static readonly ALLOWED_FILTER_VALUE_PATTERN = /^[\p{L}\p{N}\p{P}\p{Z}\p{S}\p{M}]*$/u;
   // eslint-disable-next-line no-control-regex
   private static readonly FORBIDDEN_CONTROL_CHARS = /[\x00-\x1f\x7f]/;
 

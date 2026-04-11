@@ -17,7 +17,7 @@ export function vectorStoreContractTests(
   factory: () => Promise<{ store: IVectorStore; cleanup: () => Promise<void> }>,
 ): void {
   let store: IVectorStore;
-  let cleanup: () => Promise<void>;
+  let cleanup: () => Promise<void> = async () => {};
 
   beforeEach(async () => {
     ({ store, cleanup } = await factory());
