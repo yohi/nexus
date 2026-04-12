@@ -91,8 +91,7 @@ describe('LanceVectorStore (LanceDB integration)', () => {
       await store1.close();
 
       // metadata.json を削除して「空テーブル＋メタデータなし」をシミュレート
-      const { rm: remove } = await import('node:fs/promises');
-      await remove(join(tmpDir, 'metadata.json'));
+      await rm(join(tmpDir, 'metadata.json'));
 
       const store2 = new LanceVectorStore({ dbPath: tmpDir, dimensions: 64 });
       await expect(store2.initialize()).rejects.toThrow(
