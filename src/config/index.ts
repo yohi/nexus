@@ -20,13 +20,15 @@ const DEFAULT_EMBEDDING: EmbeddingConfig = {
   retryBaseDelayMs: 250,
 };
 
+export const DEFAULT_BATCH_SIZE = 500;
+
 const DEFAULT_CONFIG = (projectRoot: string): Config => ({
   projectRoot,
   storage: {
     rootDir: path.join(projectRoot, '.nexus'),
     metadataDbPath: path.join(projectRoot, '.nexus', 'metadata.db'),
     vectorDbPath: path.join(projectRoot, '.nexus', 'vectors'),
-    batchSize: 500,
+    batchSize: DEFAULT_BATCH_SIZE,
   },
   watcher: {
     debounceMs: 100,
