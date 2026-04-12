@@ -1,5 +1,68 @@
 # Changelog
 
+## [1.2.0](https://github.com/yohi/nexus/compare/v1.1.0...v1.2.0) (2026-04-12)
+
+
+### Features
+
+* complete remaining implementation tasks ([c76abb5](https://github.com/yohi/nexus/commit/c76abb53fb6426181ac69f6e5bfe1349e057df61))
+* Nexusのセットアップとビルド構造の修正 ([9bfb69c](https://github.com/yohi/nexus/commit/9bfb69ca9cb81c3029382a79d03e8a3b4ec380c7))
+* **pipeline:** idle compaction タイマーとライフサイクル管理を追加 ([1e5dc6f](https://github.com/yohi/nexus/commit/1e5dc6f375513f660e7ffeaf2cbe3bed28c7fd04))
+* **pipeline:** reindex 後の compactAfterReindex と stop() での close() を追加 ([feb2b79](https://github.com/yohi/nexus/commit/feb2b79fd4fa2d10a95cd475da1ecdf68dbd7e70))
+* **plugins:** embedding プロバイダーの実装と基盤整備 ([9a3e0a2](https://github.com/yohi/nexus/commit/9a3e0a283fb72b36a1096410675a148514b2e93d))
+* storage config enhancements and vector store tests ([6bc4496](https://github.com/yohi/nexus/commit/6bc449647dcf7acb6d60ea1e1c736e1561426230))
+* **storage:** compactAfterReindexに設定オプションを追加 ([a2e4a6d](https://github.com/yohi/nexus/commit/a2e4a6dbb4664c74ee9941cbfa2dc9cca99cea36))
+* **storage:** LanceDB統合のためVectorStoreのクローズ処理を堅牢化 ([83bb526](https://github.com/yohi/nexus/commit/83bb526c36e7f8805c77a61beb5aef1054c5a84e))
+* **storage:** LanceVectorStore を @lancedb/lancedb 実装に全面書き換え ([e1f2782](https://github.com/yohi/nexus/commit/e1f2782e9ec8fdecc48233c1b3b8888a79be9528))
+* **storage:** LanceVectorStoreに距離フィールド追加と初期化処理の改善 ([f8c50fe](https://github.com/yohi/nexus/commit/f8c50fea55159379874339f67b59e16c3e8e38cb))
+* **storage:** LanceVectorStoreのライフサイクル管理と操作保護を強化 ([9e27297](https://github.com/yohi/nexus/commit/9e272978cb7ad6fce3accb4e04d80ce994a775fc))
+* **storage:** バッチサイズデフォルト値設定とバリデーション、テスト改善 ([927cb6d](https://github.com/yohi/nexus/commit/927cb6d9dff30c95125ab29389635a9c0ad2515f))
+* **storage:** フィルタ値検証・エスケープユーティリティを TDD で実装 ([ac8da36](https://github.com/yohi/nexus/commit/ac8da3662bd04700c64a6d96b5d1cc9093d92361))
+* **storage:** ベクトルストアの初期化と次元不整合チェックを強化 ([e15db10](https://github.com/yohi/nexus/commit/e15db10b235d70e1d70d64aff2ddfbeaed0fd7a1))
+* **storage:** ベクトルストアの総ファイル数追跡を実装 ([4e5dab2](https://github.com/yohi/nexus/commit/4e5dab236f2d44fa61047e374f59d588221470a2))
+* **types:** IVectorStore に close() メソッドを追加 ([52f3491](https://github.com/yohi/nexus/commit/52f34913230be818b4072c47360d1065918b9eaf))
+* エンベディング処理にタイムアウト設定を追加 ([96f7ea2](https://github.com/yohi/nexus/commit/96f7ea274aeecc05cbefb6cdc7156724a625ede8))
+
+
+### Bug Fixes
+
+* **embeddings:** Embeddingプロバイダーの堅牢性向上とテストヘルパーの改善 ([bbb8552](https://github.com/yohi/nexus/commit/bbb8552395980fed2aa823d18b3556b9e6e409d1))
+* **openai-compat:** OpenAI互換APIのレスポンス検証とエラーハンドリングを改善 ([89cc0c9](https://github.com/yohi/nexus/commit/89cc0c91a7ada02ba0a85ecebeef1259437e010d))
+* **plugins/embeddings:** OpenAI互換埋め込みプロバイダーのタイムアウトとURL構築を改善 ([423ec66](https://github.com/yohi/nexus/commit/423ec66f476b1f9fcbf11720629c96f3fcc616be))
+* **plugins/embeddings:** OpenAI互換埋め込みレスポンスのバリデーション強化 ([fde7010](https://github.com/yohi/nexus/commit/fde7010c9de1e33721a3070e7dfea43fb9f1dd6b))
+* **storage:** add optional timeoutMs argument to IVectorStore.close() ([1f4d323](https://github.com/yohi/nexus/commit/1f4d323435d7ee2ba8ce6d0e66df7337578506b1))
+* **storage:** LanceDB カラム名を小文字に統一し SQL フィルタの互換性を改善 ([bc6bdb4](https://github.com/yohi/nexus/commit/bc6bdb4a1c01c298164e0bd20d05f76b18b97c0a))
+* **storage:** LanceDB ネイティブ API への完全移行と close() / compactIfNeeded の堅牢化 ([2a3704e](https://github.com/yohi/nexus/commit/2a3704ead8cc66ba97d8ba51dcc6a35f91829541))
+* **storage:** LanceDBのテーブルメタデータ更新処理を安全に実行 ([c5486d1](https://github.com/yohi/nexus/commit/c5486d14347cf0d9822f7ee45d7873ee0899ddae))
+* **storage:** LanceVectorStore で埋め込みの欠損とDB未初期化に対応 ([adc2971](https://github.com/yohi/nexus/commit/adc2971815cbdd415eb121ba2f8988554a366128))
+* **storage:** LanceVectorStore の close メソッドにおける inflightOps=0 時の早期解決を保証 ([a68ddc5](https://github.com/yohi/nexus/commit/a68ddc5237591352808b791d99b593c47b75a961))
+* **storage:** LanceVectorStore の compact メソッドにおける Promise 処理を改善 ([0342990](https://github.com/yohi/nexus/commit/0342990e4b11444d8f21234c60212e691e7c57ff))
+* **storage:** LanceVectorStore の lint エラーとテスト失敗（削除・整合性・型推論）を修正 ([b9f40f4](https://github.com/yohi/nexus/commit/b9f40f43e21b8ffd5af4470e7ade1559fde113f9))
+* **storage:** LanceVectorStore のパスフィルタリングとコンパクションロジックを改善 ([080a40f](https://github.com/yohi/nexus/commit/080a40fb1941732e52cdc9b9b4ed1bbcd6283d9b))
+* **storage:** LanceVectorStore のベクトル初期化とハッシュ値処理を修正 ([8440823](https://github.com/yohi/nexus/commit/8440823d6ecfa908dbc441cb9f8ee4544f179a81))
+* **storage:** LanceVectorStore のメタデータ処理とリソース管理を改善 ([9e4075a](https://github.com/yohi/nexus/commit/9e4075a2a60ebb1d11243eee76ee3920c3ce7d8a))
+* **storage:** LanceVectorStore の接続処理と次元検証を強化 ([5a4bdf9](https://github.com/yohi/nexus/commit/5a4bdf9e20d08a7d4a0d8457bba23969e69504e4))
+* **storage:** LanceVectorStore の閾値 0 時のコンパクション条件を修正 ([40e8c71](https://github.com/yohi/nexus/commit/40e8c716a2f6df119eb7ee03c0960ccf899036f9))
+* **storage:** LanceVectorStore: クローズ時の初期化処理を防止 ([427bd92](https://github.com/yohi/nexus/commit/427bd922e4e760cb858ec0c9bdce2f2f24bbf4a0))
+* **storage:** LanceVectorStore: ミューテックス処理でのプロミスチェーンエラーを修正 ([09f1a02](https://github.com/yohi/nexus/commit/09f1a024e37a85cf0954d2bb5c6e24be9259e3b8))
+* **storage:** LanceVectorStore.search でコサイン類似度メトリックを明示的に指定 ([9ae1205](https://github.com/yohi/nexus/commit/9ae12058a20ca79c311504b80a1495649f035363))
+* **storage:** LanceVectorStoreのreset()でtotalFilesをリセットし、初期化時のエラーチェックを強化 ([1c5d40a](https://github.com/yohi/nexus/commit/1c5d40af02e719d0b89244ac5e7fd0ed82cd2b6f))
+* **storage:** LanceVectorStoreのクリーンアップ処理を型安全に ([d4c60ba](https://github.com/yohi/nexus/commit/d4c60ba3a7152022b4243d9716382031e9c714c3))
+* **storage:** LanceVectorStoreのメタデータ永続化とデータ検証を強化 ([f311963](https://github.com/yohi/nexus/commit/f311963f465b39159d3c82f082e61624d2bdfd6b))
+* **storage:** LanceVectorStoreのリソース解放とシグナル購読、検索メトリクスを修正 ([748f283](https://github.com/yohi/nexus/commit/748f283ce85720bdf03854f64bfdb6695a8dda39))
+* **storage:** replace 'any' casting with unknown Record type for LanceDB resource cleanup to resolve ESLint errors ([869827b](https://github.com/yohi/nexus/commit/869827b0bd828f9291ed4fac335f3f98bf2a9a26))
+* **storage:** コンパクション処理の堅牢性向上とテスト追加 ([6ad0ab1](https://github.com/yohi/nexus/commit/6ad0ab188c814c5a247a1996500483918c23d96e))
+* **storage:** テストのクリーンアップ処理のエラーハンドリングを改善 ([0a5d7ce](https://github.com/yohi/nexus/commit/0a5d7ce2afeb13c7425b0b10ea0697e3d9d129dc))
+* **storage:** ベクターストアの書き込み競合を防ぐミューテックスを導入 ([9d5771c](https://github.com/yohi/nexus/commit/9d5771c129d4ec8fcfd4ff902cc78bf4cee358e8))
+* **storage:** ベクトルストアの競合問題とエラーハンドリングを改善 ([4470c19](https://github.com/yohi/nexus/commit/4470c19ecd164419173c5ddf2111d253653fd037))
+* **storage:** メタデータが無効または欠落している場合にtotalFilesを計算するように保証 ([d166394](https://github.com/yohi/nexus/commit/d1663945a65238bd110be04cfbc6e42a8cf3ce10))
+* **storage:** メタデータの staleCount および lastCompactedAt 解析を修正 ([2ae5b89](https://github.com/yohi/nexus/commit/2ae5b8928177aad9b5904a97121ece0e456ac838))
+* **storage:** 一時ディレクトリ名生成の衝突問題をUUIDで解決 ([f4bcc88](https://github.com/yohi/nexus/commit/f4bcc886f785248479f17d6f62331fb0a6f2b953))
+* **vector-store:** closeメソッドの冪等性を確保 ([973ba44](https://github.com/yohi/nexus/commit/973ba44fb45b1b67de1bc0baf96e6718d1ddebe7))
+* **vector-store:** ベクトルストアのコンパクション、アップサート、およびパイプラインの開始処理を修正 ([14b62e9](https://github.com/yohi/nexus/commit/14b62e9533b4b5ae67829bb206aed973d8f3dd17))
+* 既存の LanceVectorStore ユニットテストに dbPath を追加 ([71c2c91](https://github.com/yohi/nexus/commit/71c2c910ef981c8e49d5291444fc9911b9bcb508))
+* 既存の LanceVectorStore ユニットテストに dbPath を追加 ([a0d15f5](https://github.com/yohi/nexus/commit/a0d15f571b7529c6a723ba40e624731b107e0e68))
+
 ## [1.1.0](https://github.com/yohi/nexus/compare/v1.0.0...v1.1.0) (2026-04-09)
 
 
