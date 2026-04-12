@@ -258,6 +258,7 @@ export class LanceVectorStore implements IVectorStore {
         await rename(tmpPath, metaPath);
       } catch (e) {
         console.error('[LanceVectorStore] Failed to update sidecar metadata:', e);
+        throw e;
       }
     });
     return this.metadataMutex;
@@ -549,6 +550,7 @@ export class LanceVectorStore implements IVectorStore {
     }
 
     return this.trackOp(async () => {
+      await this.writeMutex;
       if (!this.table) return [];
       
       // 明示的にコサイン類似度を使用し、スコア計算 (1 - distance) との整合性を確保する
@@ -595,6 +597,7 @@ export class LanceVectorStore implements IVectorStore {
 
   async getStats(): Promise<VectorStoreStats> {
     return this.trackOp(async () => {
+      await this.writeMutex;
       if (!this.table) {
         return {
           totalChunks: 0,
@@ -663,7 +666,7 @@ export class LanceVectorStore implements IVectorStore {
     return await opPromise;
   }
 
-  async compactAfterReindex(): Promise<CompactionResult> {
+  async compactAfterReindex(_config?: Partial<CompactionConfig>): Promise<CompactionResult> {
     const currentMutex = this.writeMutex;
     const opPromise = this.trackOp(async () => {
       await currentMutex;
