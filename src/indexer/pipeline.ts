@@ -58,6 +58,9 @@ export class IndexPipeline implements IIndexPipeline {
 
   private isTreeLoaded = false;
 
+  private abortController = new AbortController();
+  private idleCompactionTimer: NodeJS.Timeout | undefined;
+
   constructor(private readonly options: IndexPipelineOptions) {
     this.merkleTree = new MerkleTree(options.metadataStore);
     this.deadLetterQueue = new DeadLetterQueue({
@@ -72,13 +75,40 @@ export class IndexPipeline implements IIndexPipeline {
     if (this.dlqStopper === undefined) {
       this.dlqStopper = this.deadLetterQueue.startRecoveryLoop();
     }
+
+    if (this.idleCompactionTimer !== undefined) {
+      clearTimeout(this.idleCompactionTimer);
+    }
+
+    if (this.abortController.signal.aborted) {
+      this.abortController = new AbortController();
+    }
+
+    this.idleCompactionTimer = this.options.vectorStore.scheduleIdleCompaction(
+      async () => {
+        await this.options.vectorStore.compactIfNeeded();
+      },
+      300_000,
+      { waitForUnlock: () => this.mutex.waitForUnlock() },
+      this.abortController.signal,
+    );
+    this.idleCompactionTimer.unref();
   }
 
   async stop(): Promise<void> {
+    this.abortController.abort();
+
+    if (this.idleCompactionTimer !== undefined) {
+      clearTimeout(this.idleCompactionTimer);
+      this.idleCompactionTimer = undefined;
+    }
+
     if (this.dlqStopper !== undefined) {
       await this.dlqStopper();
       this.dlqStopper = undefined;
     }
+
+    await this.options.vectorStore.close();
   }
 
   async processEvents(
@@ -177,13 +207,18 @@ export class IndexPipeline implements IIndexPipeline {
           const finishedAt = new Date().toISOString();
           const durationMs = Date.now() - startTime;
 
-          // 計算ロジックを簡略化（必要に応じて詳細な集計を実装可能）
           const reconciliation = {
             added: events.filter((e) => e.type === 'added').length,
             modified: events.filter((e) => e.type === 'modified').length,
             deleted: events.filter((e) => e.type === 'deleted').length,
-            unchanged: 0, // フルスキャン時に判明するが、ここではeventsに含まれないものとする
+            unchanged: 0,
           };
+
+          try {
+            await this.options.vectorStore.compactAfterReindex();
+          } catch (compactionError) {
+            console.error('Post-reindex compaction failed (non-fatal):', compactionError);
+          }
 
           return {
             startedAt,

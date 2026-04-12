@@ -1,7 +1,7 @@
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import { Chunker } from '../../../src/indexer/chunker.js';
 import { IndexPipeline } from '../../../src/indexer/pipeline.js';
@@ -396,5 +396,121 @@ describe('IndexPipeline', () => {
     );
     const results = await vectorStore.search(ONE_HOT_64, 20);
     expect(results.every((result) => result.chunk.filePath === newPath)).toBe(true);
+  });
+
+  it('reindex() 完了後に compactAfterReindex() が呼ばれる', async () => {
+    const { metadataStore, vectorStore, chunker, registry } = await createPipeline();
+    const compactSpy = vi.spyOn(vectorStore, 'compactAfterReindex');
+    const pipeline = new IndexPipeline({
+      metadataStore,
+      vectorStore,
+      chunker,
+      embeddingProvider: new TestEmbeddingProvider(),
+      pluginRegistry: registry,
+    });
+
+    await pipeline.reindex(async () => [], async () => '');
+
+    expect(compactSpy).toHaveBeenCalledOnce();
+  });
+
+  it('compactAfterReindex() 失敗しても reindex は成功扱い', async () => {
+    const { metadataStore, vectorStore, chunker, registry } = await createPipeline();
+    vi.spyOn(vectorStore, 'compactAfterReindex').mockRejectedValue(new Error('compact failed'));
+    const pipeline = new IndexPipeline({
+      metadataStore,
+      vectorStore,
+      chunker,
+      embeddingProvider: new TestEmbeddingProvider(),
+      pluginRegistry: registry,
+    });
+
+    const result = await pipeline.reindex(async () => [], async () => '');
+    expect(result).not.toHaveProperty('status');
+  });
+
+  it('stop() 呼び出し時に vectorStore.close() が呼ばれる', async () => {
+    const { metadataStore, vectorStore, chunker, registry } = await createPipeline();
+    const closeSpy = vi.spyOn(vectorStore, 'close').mockResolvedValue(undefined);
+    const pipeline = new IndexPipeline({
+      metadataStore,
+      vectorStore,
+      chunker,
+      embeddingProvider: new TestEmbeddingProvider(),
+      pluginRegistry: registry,
+    });
+
+    await pipeline.stop();
+    expect(closeSpy).toHaveBeenCalledOnce();
+  });
+
+  it('start() で idle compaction タイマーが登録され unref() が適用される (既存のタイマーをクリアして再スケジュール)', async () => {
+    const { metadataStore, vectorStore, chunker, registry } = await createPipeline();
+    const timerRef = { unref: vi.fn() };
+    const scheduleSpy = vi.spyOn(vectorStore, 'scheduleIdleCompaction').mockReturnValue(
+      timerRef as unknown as NodeJS.Timeout,
+    );
+    const clearTimeoutSpy = vi.spyOn(global, 'clearTimeout');
+    
+    const pipeline = new IndexPipeline({
+      metadataStore,
+      vectorStore,
+      chunker,
+      embeddingProvider: new TestEmbeddingProvider(),
+      pluginRegistry: registry,
+    });
+
+    // 1回目の start
+    pipeline.start();
+    expect(scheduleSpy).toHaveBeenCalledOnce();
+    expect(timerRef.unref).toHaveBeenCalledOnce();
+
+    // 2回目の start (べき等性の確認)
+    pipeline.start();
+    // 既存のタイマーをクリアして再登録するため、2回呼ばれる
+    expect(clearTimeoutSpy).toHaveBeenCalledOnce();
+    expect(scheduleSpy).toHaveBeenCalledTimes(2);
+    expect(timerRef.unref).toHaveBeenCalledTimes(2);
+
+    await pipeline.stop();
+  });
+
+  it('stop() でタイマーがクリアされ abortController.signal が abort 状態になる', async () => {
+    const { metadataStore, vectorStore, chunker, registry } = await createPipeline();
+    const timerRef = { unref: vi.fn() };
+    vi.spyOn(vectorStore, 'scheduleIdleCompaction').mockReturnValue(
+      timerRef as unknown as NodeJS.Timeout,
+    );
+    vi.spyOn(vectorStore, 'close').mockResolvedValue(undefined);
+    const pipeline = new IndexPipeline({
+      metadataStore,
+      vectorStore,
+      chunker,
+      embeddingProvider: new TestEmbeddingProvider(),
+      pluginRegistry: registry,
+    });
+
+    pipeline.start();
+    await pipeline.stop();
+
+    const callArgs = vi.mocked(vectorStore.scheduleIdleCompaction).mock.calls[0];
+    const abortSignal = callArgs?.[3] as AbortSignal | undefined;
+    expect(abortSignal?.aborted).toBe(true);
+  });
+
+  it('stop() の二重呼び出しでエラーが発生しない', async () => {
+    const { metadataStore, vectorStore, chunker, registry } = await createPipeline();
+    vi.spyOn(vectorStore, 'close').mockResolvedValue(undefined);
+    const pipeline = new IndexPipeline({
+      metadataStore,
+      vectorStore,
+      chunker,
+      embeddingProvider: new TestEmbeddingProvider(),
+      pluginRegistry: registry,
+    });
+
+    pipeline.start();
+    await expect(pipeline.stop()).resolves.toBeUndefined();
+    await expect(pipeline.stop()).resolves.toBeUndefined();
   });
 });
