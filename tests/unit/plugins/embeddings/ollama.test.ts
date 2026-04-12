@@ -54,7 +54,8 @@ describe('OllamaEmbeddingProvider', () => {
     );
 
     await expect(provider.embed(['alpha'])).rejects.toBeInstanceOf(RetryExhaustedError);
-    expect(fetchMock).toHaveBeenCalledTimes(3);
+    // retryCount=3 means 1 initial try + 3 retries = 4 total attempts
+    expect(fetchMock).toHaveBeenCalledTimes(4);
   });
 
   it('healthCheck does not consume the concurrency semaphore', async () => {

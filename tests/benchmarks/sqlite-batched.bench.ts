@@ -10,6 +10,16 @@ import type { MerkleNodeRow } from '../../src/types/index.js';
 const NODE_COUNTS = [1000, 5000, 10000] as const;
 const BATCH_SIZES = [25, 50, 100, 250, 500] as const;
 
+// Benchmark conclusion (2026-04-12):
+// Within this specific test harness, which includes the overhead of
+// store initialization (mkdtemp, initialize) and cleanup (close, rm) in each
+// measurement, batchSize=500 yielded the best end-to-end throughput.
+// While these E2E results suggest 500 is optimal for batch operations under
+// these conditions, the default is kept at 100 to prioritize event-loop
+// responsiveness (frequent yielding) over raw throughput in long-running
+// server contexts.
+
+
 const makeNodes = (count: number): MerkleNodeRow[] =>
   Array.from({ length: count }, (_, index) => ({
     path: `src/file-${index}.ts`,

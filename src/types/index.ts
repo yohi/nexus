@@ -200,6 +200,7 @@ export interface EmbeddingConfig {
   batchSize: number;
   retryCount: number;
   retryBaseDelayMs: number;
+  timeoutMs?: number;
 }
 
 export interface EmbeddingProvider {
@@ -256,6 +257,13 @@ export interface DeadLetterEntry {
   createdAt: string;
   updatedAt: string;
   lastRetryAt: string | null;
+}
+
+export class DimensionMismatchError extends Error {
+  constructor(message: string, options?: ErrorOptions) {
+    super(message, options);
+    this.name = 'DimensionMismatchError';
+  }
 }
 
 export class RetryExhaustedError extends Error {
