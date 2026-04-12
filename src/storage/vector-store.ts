@@ -656,7 +656,8 @@ export class LanceVectorStore implements IVectorStore {
     });
   }
 
-  async compactAfterReindex(): Promise<CompactionResult> {
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  async compactAfterReindex(config?: Partial<CompactionConfig>): Promise<CompactionResult> {
     return this.runInWriteLock(async () => {
       let didOptimize = false;
       if (this.table) {
