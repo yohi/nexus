@@ -113,4 +113,4 @@ AI エージェントに公開される MCP ツールは以下の通りです:
 ### 7.2. Startup Reconciliation
 - サーバー起動時に SQLite の Merkle ハッシュと実際のファイルシステムのハッシュを突き合わせます。
 - クラッシュ等によって生じた LanceDB と SQLite 間のデータ不整合 (Orphan, Missing, Stale) を検出し、自動的に修復・再インデックスを行います。
-- これにより、複雑な Write-Ahead Log (WAM) なしに結果整合性を保証します。
+- これにより、複雑な Write-Ahead Log (WAL) なしに結果整合性を保証します。
