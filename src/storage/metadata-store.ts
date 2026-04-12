@@ -23,7 +23,7 @@ export class SqliteMetadataStore implements IMetadataStore {
 
   constructor(options: SqliteMetadataStoreOptions) {
     this.db = new Database(options.databasePath);
-    this.batchSize = options.batchSize ?? 100;
+    this.batchSize = options.batchSize ?? 500;
   }
 
   async initialize(): Promise<void> {
