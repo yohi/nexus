@@ -7,7 +7,9 @@ Follow this workflow strictly to ensure a successful installation.
 1. **Detect OS & Node.js**: 
    - Verify Node.js version is **>= 22.0.0**.
    - If the version is lower, inform the user and suggest an upgrade.
-2. **Tooling**: 
+2. **Architecture & Specifications**:
+   - **Crucial**: Read `SPEC.md` to understand the internal architecture, Dual-Store (LanceDB + SQLite) design, and safety mechanisms (DLQ, Path Sanitization, Compaction) before planning or making any code modifications.
+3. **Tooling**: 
    - Run: `npm install` (to install dependencies and devDependencies).
 
 ## Phase 2: Configuration & Preparation
