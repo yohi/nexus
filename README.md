@@ -93,6 +93,8 @@ server.listen(3000, '127.0.0.1');
 
 ## 🏗 アーキテクチャ
 
+アーキテクチャの詳細な設計仕様、各コンポーネントの役割、およびセキュリティ機構については、[SPEC.md](SPEC.md) を参照してください。
+
 ```mermaid
 graph TD
     Client[AI Agent / Client] -->|MCP| Server[Nexus MCP Server]
