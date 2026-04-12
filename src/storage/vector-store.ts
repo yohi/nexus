@@ -263,11 +263,6 @@ export class LanceVectorStore implements IVectorStore {
     return this.metadataMutex;
   }
 
-  private async refreshTotalFiles(table: Table): Promise<void> {
-    const rows = await table.query().select(['filepath']).toArray() as unknown as { filepath: string }[];
-    this.totalFiles = new Set(rows.map(r => r.filepath)).size;
-  }
-
   async resetForTest(): Promise<void> {
     if (this.table && this.db) {
       await this.table.delete('true');
@@ -412,97 +407,103 @@ export class LanceVectorStore implements IVectorStore {
     });
 
     const currentMutex = this.writeMutex;
-    const opPromise = (async () => {
+    const opPromise = this.trackOp(async () => {
       await currentMutex;
-      await this.trackOp(async () => {
-        if (!this.db) {
-          throw new Error('VectorStore not initialized');
-        }
-        const db = this.db;
-        if (!this.table) {
-          if (rows.length === 0) return;
-          this.table = await db.createTable('chunks', rows, { schema: undefined });
-          await this.refreshTotalFiles(this.table);
-          await this.updateMetadata();
-          return;
-        }
-
-        // パス B: delete-then-add
-        // 対象ファイルのチャンクを削除し、新データを追加する
+      if (!this.db) {
+        throw new Error('VectorStore not initialized');
+      }
+      const db = this.db;
+      if (!this.table) {
+        if (rows.length === 0) return;
+        this.table = await db.createTable('chunks', rows, { schema: undefined });
         const filePaths = [...new Set(chunks.map((c) => c.filePath))];
-        let staleAdded = 0;
-        for (const fp of filePaths) {
-          const filter = this.filePathFilter(fp);
-          const count = await this.table.countRows(filter);
-          if (count > 0) {
-            await this.table.delete(filter);
-            staleAdded += count;
-          }
-        }
-        
-        if (staleAdded > 0 || rows.length > 0) {
-          if (staleAdded > 0) {
-            this.staleCount += staleAdded;
-          }
-          if (rows.length > 0) {
-            await this.table.add(rows);
-          }
-          await this.refreshTotalFiles(this.table);
-          await this.updateMetadata();
-        }
-      });
-    })();
+        this.totalFiles = filePaths.length;
+        await this.updateMetadata();
+        return;
+      }
 
-    this.writeMutex = opPromise.catch(() => {});
-    return await opPromise;
+      // パス B: delete-then-add
+      // 対象ファイルのチャンクを削除し、新データを追加する
+      const uniqueFilePaths = [...new Set(chunks.map((c) => c.filePath))];
+      let staleAdded = 0;
+      let filesAdded = 0;
+      for (const fp of uniqueFilePaths) {
+        const filter = this.filePathFilter(fp);
+        const count = await this.table.countRows(filter);
+        if (count > 0) {
+          await this.table.delete(filter);
+          staleAdded += count;
+        } else {
+          filesAdded++;
+        }
+      }
+      
+      if (staleAdded > 0 || rows.length > 0 || filesAdded > 0) {
+        if (staleAdded > 0) {
+          this.staleCount += staleAdded;
+        }
+        if (filesAdded > 0) {
+          this.totalFiles += filesAdded;
+        }
+        if (rows.length > 0) {
+          await this.table.add(rows);
+        }
+        await this.updateMetadata();
+      }
+    });
+
+    this.writeMutex = opPromise.then(() => {}).catch(() => {});
+    await opPromise;
   }
 
   async deleteByFilePath(filePath: string): Promise<number> {
     const currentMutex = this.writeMutex;
-    const opPromise = (async () => {
+    const opPromise = this.trackOp(async () => {
       await currentMutex;
-      return await this.trackOp(async () => {
-        if (!this.db) {
-          throw new Error('VectorStore not initialized');
-        }
-        if (!this.table) return 0;
-        
-        const filter = this.filePathFilter(filePath);
-        const count = await this.table.countRows(filter);
-        if (count > 0) {
-          await this.table.delete(filter);
-          this.staleCount += count;
-          await this.refreshTotalFiles(this.table);
-          await this.updateMetadata();
-        }
-        return count;
-      });
-    })();
+      if (!this.db) {
+        throw new Error('VectorStore not initialized');
+      }
+      if (!this.table) return 0;
+      
+      const filter = this.filePathFilter(filePath);
+      const count = await this.table.countRows(filter);
+      if (count > 0) {
+        await this.table.delete(filter);
+        this.staleCount += count;
+        this.totalFiles--;
+        await this.updateMetadata();
+      }
+      return count;
+    });
     this.writeMutex = opPromise.then(() => {}).catch(() => {});
     return await opPromise;
   }
 
   async deleteByPathPrefix(pathPrefix: string): Promise<number> {
     const currentMutex = this.writeMutex;
-    const opPromise = (async () => {
+    const opPromise = this.trackOp(async () => {
       await currentMutex;
-      return await this.trackOp(async () => {
-        if (!this.db) {
-          throw new Error('VectorStore not initialized');
-        }
-        if (!this.table) return 0;
+      if (!this.db) {
+        throw new Error('VectorStore not initialized');
+      }
+      if (!this.table) return 0;
 
-        const filter = this.filePathPrefixFilter(pathPrefix);
-        const count = await this.table.countRows(filter);
-        if (count > 0) {
-          await this.table.delete(filter);
-          this.staleCount += count;
-          await this.refreshTotalFiles(this.table);
-          await this.updateMetadata();
-        }
-        return count;
-      });
-    })();
+      const filter = this.filePathPrefixFilter(pathPrefix);
+      const count = await this.table.countRows(filter);
+      if (count > 0) {
+        const rows = await this.table.query()
+          .where(filter)
+          .select(['filepath'])
+          .toArray() as unknown as { filepath: string }[];
+        const affectedFiles = new Set(rows.map(r => r.filepath)).size;
+        
+        await this.table.delete(filter);
+        this.staleCount += count;
+        this.totalFiles -= affectedFiles;
+        await this.updateMetadata();
+      }
+      return count;
+    });
     this.writeMutex = opPromise.then(() => {}).catch(() => {});
     return await opPromise;
   }
@@ -510,27 +511,24 @@ export class LanceVectorStore implements IVectorStore {
   async renameFilePath(oldPath: string, newPath: string): Promise<number> {
     this.validateFilterValue(newPath, 'newPath');
     const currentMutex = this.writeMutex;
-    const opPromise = (async () => {
+    const opPromise = this.trackOp(async () => {
       await currentMutex;
-      return await this.trackOp(async () => {
-        if (!this.db) {
-          throw new Error('VectorStore not initialized');
-        }
-        if (!this.table) return 0;
+      if (!this.db) {
+        throw new Error('VectorStore not initialized');
+      }
+      if (!this.table) return 0;
 
-        const filter = this.filePathFilter(oldPath);
-        const count = await this.table.countRows(filter);
-        if (count > 0) {
-          await this.table.update({
-            where: filter,
-            values: { filepath: newPath },
-          });
-          await this.refreshTotalFiles(this.table);
-          await this.updateMetadata();
-        }
-        return count;
-      });
-    })();
+      const filter = this.filePathFilter(oldPath);
+      const count = await this.table.countRows(filter);
+      if (count > 0) {
+        await this.table.update({
+          where: filter,
+          values: { filepath: newPath },
+        });
+        await this.updateMetadata();
+      }
+      return count;
+    });
     this.writeMutex = opPromise.then(() => {}).catch(() => {});
     return await opPromise;
   }
@@ -623,10 +621,9 @@ export class LanceVectorStore implements IVectorStore {
 
   async compactIfNeeded(config?: Partial<CompactionConfig>): Promise<CompactionResult> {
     const currentMutex = this.writeMutex;
-    const opPromise = (async () => {
+    const opPromise = this.trackOp(async () => {
       await currentMutex;
-      return await this.trackOp(async () => {
-        const threshold = config?.fragmentationThreshold ?? 0.2;
+      const threshold = config?.fragmentationThreshold ?? 0.2;
         const minStale = config?.minStaleChunks ?? 1;
 
         const totalChunks = this.table ? await this.table.countRows() : 0;
@@ -662,17 +659,15 @@ export class LanceVectorStore implements IVectorStore {
           chunksRemoved: 0,
         };
       });
-    })();
     this.writeMutex = opPromise.then(() => {}).catch(() => {});
     return await opPromise;
   }
 
   async compactAfterReindex(): Promise<CompactionResult> {
     const currentMutex = this.writeMutex;
-    const opPromise = (async () => {
+    const opPromise = this.trackOp(async () => {
       await currentMutex;
-      return await this.trackOp(async () => {
-        let didOptimize = false;
+      let didOptimize = false;
         if (this.table) {
           await this.table.optimize();
           didOptimize = true;
@@ -698,7 +693,6 @@ export class LanceVectorStore implements IVectorStore {
           chunksRemoved: wasStale ? removed : 0,
         };
       });
-    })();
     this.writeMutex = opPromise.then(() => {}).catch(() => {});
     return await opPromise;
   }
