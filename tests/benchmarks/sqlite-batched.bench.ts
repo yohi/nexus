@@ -11,13 +11,13 @@ const NODE_COUNTS = [1000, 5000, 10000] as const;
 const BATCH_SIZES = [25, 50, 100, 250, 500] as const;
 
 // Benchmark conclusion (2026-04-12):
-// Execution of this benchmark shows that batchSize=500 yields the best performance
-// across all tested node counts (1000, 5000, 10000). The gap between 250 and 500
-// is relatively small, but 500 consistently outperforms lower sizes, providing
-// up to ~2.6x speedup compared to batchSize=25 for upsert+delete operations.
-// The default batchSize is kept at 100 for a balance between responsiveness
-// (frequent yielding to the event loop) and throughput, but 500 is optimal
-// for maximum throughput.
+// Within this specific test harness, which includes the overhead of
+// store initialization (mkdtemp, initialize) and cleanup (close, rm) in each
+// measurement, batchSize=500 yielded the best end-to-end throughput.
+// While these E2E results suggest 500 is optimal for batch operations under
+// these conditions, the default is kept at 100 to prioritize event-loop
+// responsiveness (frequent yielding) over raw throughput in long-running
+// server contexts.
 
 
 const makeNodes = (count: number): MerkleNodeRow[] =>

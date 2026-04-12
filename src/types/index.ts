@@ -258,6 +258,13 @@ export interface DeadLetterEntry {
   lastRetryAt: string | null;
 }
 
+export class DimensionMismatchError extends Error {
+  constructor(message: string, options?: ErrorOptions) {
+    super(message, options);
+    this.name = 'DimensionMismatchError';
+  }
+}
+
 export class RetryExhaustedError extends Error {
   readonly attempts: number;
 

@@ -1,7 +1,8 @@
 import pLimit from 'p-limit';
 
-import type { EmbeddingConfig, EmbeddingProvider } from '../../types/index.js';
-import { RetryExhaustedError } from '../../types/index.js';
+import type { EmbeddingConfig } from '../../types/index.js';
+import { RetryExhaustedError, DimensionMismatchError } from '../../types/index.js';
+import { BaseEmbeddingProvider } from './base.js';
 
 interface OllamaDependencies {
   fetch: typeof fetch;
@@ -20,21 +21,25 @@ const defaultDependencies: OllamaDependencies = {
     }),
 };
 
-export class OllamaEmbeddingProvider implements EmbeddingProvider {
+export class OllamaEmbeddingProvider extends BaseEmbeddingProvider {
   readonly dimensions: number;
 
   private readonly limit;
 
   constructor(
-    private readonly config: Pick<EmbeddingConfig, 'baseUrl' | 'model' | 'dimensions' | 'maxConcurrency' | 'batchSize' | 'retryCount' | 'retryBaseDelayMs'>,
+    private readonly config: Pick<
+      EmbeddingConfig,
+      'baseUrl' | 'model' | 'dimensions' | 'maxConcurrency' | 'batchSize' | 'retryCount' | 'retryBaseDelayMs'
+    >,
     private readonly dependencies: OllamaDependencies = defaultDependencies,
   ) {
+    super();
     this.dimensions = config.dimensions;
     this.limit = pLimit(config.maxConcurrency);
   }
 
   async embed(texts: string[]): Promise<number[][]> {
-    const batches = this.chunkTexts(texts);
+    const batches = this.chunkTexts(texts, this.config.batchSize);
     const promises = batches.map(async (batch) => this.limit(async () => this.embedBatchWithRetry(batch)));
     const results = await Promise.all(promises);
 
@@ -56,23 +61,27 @@ export class OllamaEmbeddingProvider implements EmbeddingProvider {
     let attempt = 0;
     let lastError: Error | undefined;
 
-    while (attempt < this.config.retryCount) {
-      attempt += 1;
-
+    // attempt=0 is the first try, so we allow up to retryCount retries (total attempts: retryCount + 1)
+    while (attempt <= this.config.retryCount) {
       try {
         return await this.requestEmbeddings(batch);
       } catch (error) {
         lastError = error instanceof Error ? error : new Error(String(error));
 
+        if (error instanceof DimensionMismatchError) {
+          throw error;
+        }
+
         if (attempt >= this.config.retryCount) {
           break;
         }
 
+        attempt += 1;
         await this.dependencies.sleep(this.config.retryBaseDelayMs * 2 ** (attempt - 1));
       }
     }
 
-    throw new RetryExhaustedError('Failed to fetch embeddings from Ollama', attempt, {
+    throw new RetryExhaustedError('Failed to fetch embeddings from Ollama', attempt + 1, {
       cause: lastError,
     });
   }
@@ -96,22 +105,18 @@ export class OllamaEmbeddingProvider implements EmbeddingProvider {
 
     const payload = (await response.json()) as OllamaEmbedResponse;
 
+    if (payload.embeddings.length !== batch.length) {
+      throw new Error(`Ollama returned ${payload.embeddings.length} embeddings for ${batch.length} inputs`);
+    }
+
     for (const vector of payload.embeddings) {
       if (vector.length !== this.dimensions) {
-        throw new Error(`Unexpected embedding dimension: expected ${this.dimensions}, received ${vector.length}`);
+        throw new DimensionMismatchError(
+          `Unexpected embedding dimension: expected ${this.dimensions}, received ${vector.length}`,
+        );
       }
     }
 
     return payload.embeddings;
-  }
-
-  private chunkTexts(texts: string[]): string[][] {
-    const batches: string[][] = [];
-
-    for (let index = 0; index < texts.length; index += this.config.batchSize) {
-      batches.push(texts.slice(index, index + this.config.batchSize));
-    }
-
-    return batches;
   }
 }

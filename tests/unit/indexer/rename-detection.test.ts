@@ -7,23 +7,7 @@ import { TestEmbeddingProvider } from '../plugins/embeddings/test-embedding-prov
 import { InMemoryMetadataStore } from '../storage/in-memory-metadata-store.js';
 import { InMemoryVectorStore } from '../storage/in-memory-vector-store.js';
 import type { IndexEvent } from '../../../src/types/index.js';
-
-const createPipeline = async () => {
-  const metadataStore = new InMemoryMetadataStore();
-  const vectorStore = new InMemoryVectorStore({ dimensions: 64 });
-  const registry = new PluginRegistry();
-  registry.registerLanguage(new TypeScriptLanguagePlugin());
-
-  await metadataStore.initialize();
-  await vectorStore.initialize();
-
-  return {
-    metadataStore,
-    vectorStore,
-    chunker: new Chunker(registry),
-    registry,
-  };
-};
+import { createPipeline } from '../../shared/test-helpers.js';
 
 describe('IndexPipeline rename detection', () => {
   it('detects rename and reuses vector store entries', async () => {

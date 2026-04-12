@@ -7,8 +7,8 @@ import { Chunker } from '../../../src/indexer/chunker.js';
 import { IndexPipeline } from '../../../src/indexer/pipeline.js';
 import { PluginRegistry } from '../../../src/plugins/registry.js';
 import { TypeScriptLanguagePlugin } from '../../../src/plugins/languages/typescript.js';
-import type { ReindexResult } from '../../../src/types/index.js';
 import { RetryExhaustedError } from '../../../src/types/index.js';
+import { createPipeline } from '../../shared/test-helpers.js';
 import { TestEmbeddingProvider } from '../plugins/embeddings/test-embedding-provider.js';
 import { InMemoryMetadataStore } from '../storage/in-memory-metadata-store.js';
 import { InMemoryVectorStore } from '../storage/in-memory-vector-store.js';
@@ -30,23 +30,6 @@ class CountingEmbeddingProvider extends TestEmbeddingProvider {
 
 const fixturePath = path.join(process.cwd(), 'tests/fixtures/sample-project/src/auth.ts');
 const ONE_HOT_64 = new Array(64).fill(0).map((_, i) => (i === 0 ? 1 : 0));
-
-const createPipeline = async () => {
-  const metadataStore = new InMemoryMetadataStore();
-  const vectorStore = new InMemoryVectorStore({ dimensions: 64 });
-  const registry = new PluginRegistry();
-  registry.registerLanguage(new TypeScriptLanguagePlugin());
-
-  await metadataStore.initialize();
-  await vectorStore.initialize();
-
-  return {
-    metadataStore,
-    vectorStore,
-    chunker: new Chunker(registry),
-    registry,
-  };
-};
 
 describe('IndexPipeline', () => {
   it('indexes an added file into merkle metadata and vector storage', async () => {
@@ -236,7 +219,7 @@ describe('IndexPipeline', () => {
     await expect(second).resolves.toEqual({ status: 'already_running' });
     const result = await first;
 
-    if ('status' in result) {
+    if (result && 'status' in result) {
       throw new Error('Expected ReindexResult, got already_running status');
     }
 
@@ -244,7 +227,7 @@ describe('IndexPipeline', () => {
       reconciliation: { added: 0, modified: 0, deleted: 0, unchanged: 0 },
       chunksIndexed: 0,
     });
-    expect(typeof result.startedAt).toBe('string');
+    expect(typeof result?.startedAt).toBe('string');
   });
 
   it('tracks skipped files when embedding retries are exhausted', async () => {

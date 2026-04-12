@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 
-import { OpenAICompatEmbeddingProvider } from '../../../../src/plugins/embeddings/openai-compat.js';
-import { RetryExhaustedError } from '../../../../src/types/index.js';
+import { OpenAICompatEmbeddingProvider, EmbedError } from '../../../../src/plugins/embeddings/openai-compat.js';
+import { RetryExhaustedError, DimensionMismatchError } from '../../../../src/types/index.js';
 
 describe('OpenAICompatEmbeddingProvider', () => {
   const mockConfig = {
@@ -45,7 +45,13 @@ describe('OpenAICompatEmbeddingProvider', () => {
     expect(JSON.parse(callArgs[1].body as string)).toEqual({
       model: 'text-embedding-3-small',
       input: ['text1', 'text2'],
+      dimensions: 2,
     });
+  });
+
+  it('throws EmbedError immediately if dimensions are not positive', async () => {
+    const provider = new OpenAICompatEmbeddingProvider({ ...mockConfig, dimensions: 0 });
+    await expect(provider.embed(['text1'])).rejects.toThrow('Embedding dimensions must be a positive integer');
   });
 
   it('retries on failure and succeeds', async () => {
@@ -89,11 +95,31 @@ describe('OpenAICompatEmbeddingProvider', () => {
       sleep: vi.fn(),
     });
 
+    const retryCount = mockConfig.retryCount;
     await expect(provider.embed(['text1'])).rejects.toThrow(RetryExhaustedError);
-    expect(mockFetch).toHaveBeenCalledTimes(3);
+    // retryCount=3 means 1 initial try + 3 retries = 4 total attempts
+    expect(mockFetch).toHaveBeenCalledTimes(retryCount + 1);
   });
 
-  it('throws an error if returned dimensions do not match', async () => {
+  it('throws EmbedError immediately on 401 Unauthorized', async () => {
+    const mockFetch = vi.fn().mockResolvedValue({
+      ok: false,
+      status: 401,
+      text: async () => 'Unauthorized',
+    });
+
+    const provider = new OpenAICompatEmbeddingProvider(mockConfig, {
+      fetch: mockFetch,
+      sleep: vi.fn(),
+    });
+
+    const promise = provider.embed(['text1']);
+    await expect(promise).rejects.toThrow(EmbedError);
+    await expect(promise).rejects.toThrow(/401/);
+    expect(mockFetch).toHaveBeenCalledTimes(1); // No retry
+  });
+
+  it('throws DimensionMismatchError immediately if returned dimensions do not match', async () => {
     const mockFetch = vi.fn().mockResolvedValue({
       ok: true,
       json: async () => ({
@@ -106,8 +132,29 @@ describe('OpenAICompatEmbeddingProvider', () => {
       sleep: vi.fn(),
     });
 
-    await expect(provider.embed(['text1'])).rejects.toThrow(RetryExhaustedError);
-    await expect(provider.embed(['text1'])).rejects.toThrow(/Failed to fetch embeddings from OpenAI-compatible API/);
+    const promise = provider.embed(['text1']);
+    await expect(promise).rejects.toThrow(DimensionMismatchError);
+    await expect(promise).rejects.toThrow(/Unexpected embedding dimension/);
+    expect(mockFetch).toHaveBeenCalledTimes(1); // No retry
+  });
+
+  it('throws EmbedError immediately if returned embedding count does not match input count', async () => {
+    const mockFetch = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        data: [{ embedding: [0.1, 0.2] }], // Only 1 embedding for 2 inputs
+      }),
+    });
+
+    const provider = new OpenAICompatEmbeddingProvider(mockConfig, {
+      fetch: mockFetch,
+      sleep: vi.fn(),
+    });
+
+    const promise = provider.embed(['text1', 'text2']);
+    await expect(promise).rejects.toThrow(EmbedError);
+    await expect(promise).rejects.toThrow(/returned 1 embeddings for 2 inputs/);
+    expect(mockFetch).toHaveBeenCalledTimes(1); // No retry
   });
 
   it('returns true from healthCheck when API is reachable', async () => {
