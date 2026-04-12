@@ -164,15 +164,21 @@ export class OpenAICompatEmbeddingProvider extends BaseEmbeddingProvider {
     const embeddings: number[][] = [];
     for (let i = 0; i < payload.data.length; i += 1) {
       const entry = payload.data[i];
-      if (!entry || !Array.isArray(entry.embedding)) {
+      // Validate entry structure to address "Object Injection Sink" and remove redundant checks
+      if (typeof entry !== 'object' || entry === null || !Array.isArray(entry.embedding)) {
         throw new EmbedError(
-          `Missing embedding for response entry at index ${i} (status: ${response.status})`,
+          `Missing or malformed embedding for response entry at index ${i} (status: ${response.status})`,
           response.status,
           false,
         );
       }
 
       const vector = entry.embedding;
+      // Security: Ensure the embedding contains only numbers
+      if (!vector.every((v) => typeof v === 'number')) {
+        throw new EmbedError(`Invalid embedding data at index ${i}: not a number array`, undefined, false);
+      }
+
       if (vector.length !== this.dimensions) {
         throw new DimensionMismatchError(
           `Unexpected embedding dimension at index ${i}: expected ${this.dimensions}, received ${vector.length}`,
