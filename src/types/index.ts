@@ -200,6 +200,7 @@ export interface EmbeddingConfig {
   batchSize: number;
   retryCount: number;
   retryBaseDelayMs: number;
+  timeoutMs?: number;
 }
 
 export interface EmbeddingProvider {

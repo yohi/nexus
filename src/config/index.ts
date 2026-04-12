@@ -80,6 +80,7 @@ export const loadConfig = async (options: LoadConfigOptions): Promise<Config> =>
         asPositiveInt(env.NEXUS_EMBEDDING_RETRY_BASE_DELAY_MS) ??
         validatePositiveInt(fileConfig.embedding?.retryBaseDelayMs) ??
         defaults.embedding.retryBaseDelayMs,
+      timeoutMs: asPositiveInt(env.NEXUS_EMBEDDING_TIMEOUT_MS) ?? validatePositiveInt(fileConfig.embedding?.timeoutMs),
     },
   };
 

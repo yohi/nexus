@@ -23,6 +23,8 @@ const defaultDependencies: OpenAIDependencies = {
     }),
 };
 
+const DEFAULT_TIMEOUT_MS = 30000;
+
 export class EmbedError extends Error {
   constructor(
     message: string,
@@ -42,7 +44,15 @@ export class OpenAICompatEmbeddingProvider extends BaseEmbeddingProvider {
   constructor(
     private readonly config: Pick<
       EmbeddingConfig,
-      'baseUrl' | 'apiKey' | 'model' | 'dimensions' | 'maxConcurrency' | 'batchSize' | 'retryCount' | 'retryBaseDelayMs'
+      | 'baseUrl'
+      | 'apiKey'
+      | 'model'
+      | 'dimensions'
+      | 'maxConcurrency'
+      | 'batchSize'
+      | 'retryCount'
+      | 'retryBaseDelayMs'
+      | 'timeoutMs'
     >,
     private readonly dependencies: OpenAIDependencies = defaultDependencies,
   ) {
@@ -53,7 +63,7 @@ export class OpenAICompatEmbeddingProvider extends BaseEmbeddingProvider {
 
   async embed(texts: string[]): Promise<number[][]> {
     const batches = this.chunkTexts(texts, this.config.batchSize);
-    const promises = batches.map(async (batch) => this.limit(async () => this.embedBatchWithRetry(batch)));
+    const promises = batches.map((batch) => this.limit(() => this.embedBatchWithRetry(batch)));
     const results = await Promise.all(promises);
 
     return results.flat();
@@ -61,9 +71,10 @@ export class OpenAICompatEmbeddingProvider extends BaseEmbeddingProvider {
 
   async healthCheck(): Promise<boolean> {
     const controller = new AbortController();
+    const timeoutMs = this.config.timeoutMs || DEFAULT_TIMEOUT_MS;
     const timeout = setTimeout(() => {
       controller.abort();
-    }, 30000); // 30s timeout
+    }, timeoutMs);
 
     try {
       const url = this.buildUrl('v1/models');
@@ -132,13 +143,7 @@ export class OpenAICompatEmbeddingProvider extends BaseEmbeddingProvider {
   }
 
   private async requestEmbeddings(batch: string[]): Promise<number[][]> {
-    if (
-      this.dimensions === null ||
-      this.dimensions === undefined ||
-      !Number.isFinite(this.dimensions) ||
-      !Number.isInteger(this.dimensions) ||
-      this.dimensions <= 0
-    ) {
+    if (!Number.isInteger(this.dimensions) || this.dimensions <= 0) {
       throw new EmbedError('Embedding dimensions must be a positive integer', undefined, false);
     }
 
@@ -151,9 +156,10 @@ export class OpenAICompatEmbeddingProvider extends BaseEmbeddingProvider {
     }
 
     const controller = new AbortController();
+    const timeoutMs = this.config.timeoutMs || DEFAULT_TIMEOUT_MS;
     const timeout = setTimeout(() => {
       controller.abort();
-    }, 30000); // 30s timeout
+    }, timeoutMs);
 
     try {
       const response = await this.dependencies.fetch(url, {
@@ -176,7 +182,7 @@ export class OpenAICompatEmbeddingProvider extends BaseEmbeddingProvider {
       }
 
       const payload = (await response.json()) as OpenAIEmbedResponse;
-      if (!payload?.data || !Array.isArray(payload.data)) {
+      if (!Array.isArray(payload?.data)) {
         throw new EmbedError('Invalid response payload from OpenAI-compatible API', response.status, false);
       }
 
@@ -192,7 +198,7 @@ export class OpenAICompatEmbeddingProvider extends BaseEmbeddingProvider {
       for (let i = 0; i < payload.data.length; i += 1) {
         const entry = payload.data[i];
         // Validate entry structure and remove redundant checks
-        if (!entry || !Array.isArray(entry.embedding)) {
+        if (!Array.isArray(entry?.embedding)) {
           throw new EmbedError(
             `Missing or malformed embedding for response entry at index ${i} (status: ${response.status})`,
             response.status,
