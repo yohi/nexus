@@ -239,6 +239,7 @@ export interface StorageConfig {
   rootDir: string;
   metadataDbPath: string;
   vectorDbPath: string;
+  batchSize?: number;
 }
 
 export interface Config {

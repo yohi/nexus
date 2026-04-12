@@ -2,6 +2,7 @@ import { dirname } from 'node:path';
 import Database from 'better-sqlite3';
 
 import type { DeadLetterEntry, IMetadataStore, IndexStatsRow, MerkleNodeRow } from '../types/index.js';
+import { DEFAULT_BATCH_SIZE } from '../config/index.js';
 import { executeBatchedWithYield } from './batched-transaction.js';
 
 export interface SqliteMetadataStoreOptions {
@@ -23,7 +24,15 @@ export class SqliteMetadataStore implements IMetadataStore {
 
   constructor(options: SqliteMetadataStoreOptions) {
     this.db = new Database(options.databasePath);
-    this.batchSize = options.batchSize ?? 100;
+    
+    if (options.batchSize !== undefined) {
+      if (!Number.isInteger(options.batchSize) || options.batchSize <= 0) {
+        throw new TypeError('SqliteMetadataStore batchSize must be a positive integer');
+      }
+      this.batchSize = options.batchSize;
+    } else {
+      this.batchSize = DEFAULT_BATCH_SIZE;
+    }
   }
 
   async initialize(): Promise<void> {
