@@ -153,22 +153,32 @@ export class OpenAICompatEmbeddingProvider extends BaseEmbeddingProvider {
       throw new EmbedError('Invalid response payload from OpenAI-compatible API', response.status, false);
     }
 
-    const embeddings = payload.data.map((d) => d.embedding);
-
-    if (embeddings.length !== batch.length) {
+    if (payload.data.length !== batch.length) {
       throw new EmbedError(
-        `OpenAI-compatible API returned ${embeddings.length} embeddings for ${batch.length} inputs`,
+        `OpenAI-compatible API returned ${payload.data.length} embeddings for ${batch.length} inputs`,
         response.status,
         false,
       );
     }
 
-    for (const vector of embeddings) {
-      if (!Array.isArray(vector) || vector.length !== this.dimensions) {
-        throw new DimensionMismatchError(
-          `Unexpected embedding dimension: expected ${this.dimensions}, received ${vector?.length}`,
+    const embeddings: number[][] = [];
+    for (let i = 0; i < payload.data.length; i += 1) {
+      const entry = payload.data[i];
+      if (!entry || !Array.isArray(entry.embedding)) {
+        throw new EmbedError(
+          `Missing embedding for response entry at index ${i} (status: ${response.status})`,
+          response.status,
+          false,
         );
       }
+
+      const vector = entry.embedding;
+      if (vector.length !== this.dimensions) {
+        throw new DimensionMismatchError(
+          `Unexpected embedding dimension at index ${i}: expected ${this.dimensions}, received ${vector.length}`,
+        );
+      }
+      embeddings.push(vector);
     }
 
     return embeddings;
