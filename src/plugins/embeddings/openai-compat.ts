@@ -60,6 +60,9 @@ export class OpenAICompatEmbeddingProvider extends BaseEmbeddingProvider {
   }
 
   async healthCheck(): Promise<boolean> {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 30000); // 30s timeout
+
     try {
       const url = this.buildUrl('v1/models');
       const headers: Record<string, string> = {};
@@ -69,19 +72,28 @@ export class OpenAICompatEmbeddingProvider extends BaseEmbeddingProvider {
       const response = await this.dependencies.fetch(url, {
         method: 'GET',
         headers,
+        signal: controller.signal,
       });
       return response.ok;
     } catch {
       return false;
+    } finally {
+      clearTimeout(timeout);
     }
   }
 
   private buildUrl(path: string): string {
-    const base = this.config.baseUrl || 'https://api.openai.com';
-    const baseUrlWithSlash = base.endsWith('/') ? base : `${base}/`;
-    // Ensure path doesn't start with a slash to preserve baseUrl's subpath
+    const baseUrl = this.config.baseUrl || 'https://api.openai.com';
+    const url = new URL(baseUrl);
+
+    // Ensure pathname ends with a slash before joining
+    if (!url.pathname.endsWith('/')) {
+      url.pathname += '/';
+    }
+
+    // Resolve the clean path relative to the normalized base
     const cleanPath = path.replace(/^\//, '');
-    return new URL(cleanPath, baseUrlWithSlash).toString();
+    return new URL(cleanPath, url.toString()).toString();
   }
 
   private async embedBatchWithRetry(batch: string[]): Promise<number[][]> {
@@ -118,7 +130,13 @@ export class OpenAICompatEmbeddingProvider extends BaseEmbeddingProvider {
   }
 
   private async requestEmbeddings(batch: string[]): Promise<number[][]> {
-    if (!this.dimensions || this.dimensions <= 0) {
+    if (
+      this.dimensions === null ||
+      this.dimensions === undefined ||
+      !Number.isFinite(this.dimensions) ||
+      !Number.isInteger(this.dimensions) ||
+      this.dimensions <= 0
+    ) {
       throw new EmbedError('Embedding dimensions must be a positive integer', undefined, false);
     }
 
@@ -130,63 +148,76 @@ export class OpenAICompatEmbeddingProvider extends BaseEmbeddingProvider {
       headers['Authorization'] = `Bearer ${this.config.apiKey}`;
     }
 
-    const response = await this.dependencies.fetch(url, {
-      method: 'POST',
-      headers,
-      body: JSON.stringify({
-        model: this.config.model,
-        input: batch,
-        dimensions: this.dimensions,
-      }),
-    });
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 30000); // 30s timeout
 
-    if (!response.ok) {
-      const body = await response.text();
-      const status = response.status;
-      // 400 (Bad Request), 401 (Unauthorized), 403 (Forbidden), 404 (Not Found) are usually non-retriable
-      const retriable = status === 429 || status >= 500;
-      throw new EmbedError(`OpenAI-compatible API embed request failed (${status}): ${body}`, status, retriable);
-    }
+    try {
+      const response = await this.dependencies.fetch(url, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({
+          model: this.config.model,
+          input: batch,
+          dimensions: this.dimensions,
+        }),
+        signal: controller.signal,
+      });
 
-    const payload = (await response.json()) as OpenAIEmbedResponse;
-    if (!payload || !Array.isArray(payload.data)) {
-      throw new EmbedError('Invalid response payload from OpenAI-compatible API', response.status, false);
-    }
+      if (!response.ok) {
+        const body = await response.text();
+        const status = response.status;
+        // 400 (Bad Request), 401 (Unauthorized), 403 (Forbidden), 404 (Not Found) are usually non-retriable
+        const retriable = status === 429 || status >= 500;
+        throw new EmbedError(`OpenAI-compatible API embed request failed (${status}): ${body}`, status, retriable);
+      }
 
-    if (payload.data.length !== batch.length) {
-      throw new EmbedError(
-        `OpenAI-compatible API returned ${payload.data.length} embeddings for ${batch.length} inputs`,
-        response.status,
-        false,
-      );
-    }
+      const payload = (await response.json()) as OpenAIEmbedResponse;
+      if (!payload?.data || !Array.isArray(payload.data)) {
+        throw new EmbedError('Invalid response payload from OpenAI-compatible API', response.status, false);
+      }
 
-    const embeddings: number[][] = [];
-    for (let i = 0; i < payload.data.length; i += 1) {
-      const entry = payload.data[i];
-      // Validate entry structure to address "Object Injection Sink" and remove redundant checks
-      if (typeof entry !== 'object' || entry === null || !Array.isArray(entry.embedding)) {
+      if (payload.data.length !== batch.length) {
         throw new EmbedError(
-          `Missing or malformed embedding for response entry at index ${i} (status: ${response.status})`,
+          `OpenAI-compatible API returned ${payload.data.length} embeddings for ${batch.length} inputs`,
           response.status,
           false,
         );
       }
 
-      const vector = entry.embedding;
-      // Security: Ensure the embedding contains only numbers
-      if (!vector.every((v) => typeof v === 'number')) {
-        throw new EmbedError(`Invalid embedding data at index ${i}: not a number array`, undefined, false);
+      const embeddings: number[][] = [];
+      for (let i = 0; i < payload.data.length; i += 1) {
+        const entry = payload.data[i];
+        // Validate entry structure and remove redundant checks
+        if (!entry || !Array.isArray(entry.embedding)) {
+          throw new EmbedError(
+            `Missing or malformed embedding for response entry at index ${i} (status: ${response.status})`,
+            response.status,
+            false,
+          );
+        }
+
+        const vector = entry.embedding;
+        // Security: Ensure the embedding contains only numbers
+        if (!vector.every((v) => typeof v === 'number')) {
+          throw new EmbedError(`Invalid embedding data at index ${i}: not a number array`, undefined, false);
+        }
+
+        if (vector.length !== this.dimensions) {
+          throw new DimensionMismatchError(
+            `Unexpected embedding dimension at index ${i}: expected ${this.dimensions}, received ${vector.length}`,
+          );
+        }
+        embeddings.push(vector);
       }
 
-      if (vector.length !== this.dimensions) {
-        throw new DimensionMismatchError(
-          `Unexpected embedding dimension at index ${i}: expected ${this.dimensions}, received ${vector.length}`,
-        );
+      return embeddings;
+    } catch (error) {
+      if (error instanceof Error && error.name === 'AbortError') {
+        throw new EmbedError('OpenAI-compatible API request timed out', 408, true);
       }
-      embeddings.push(vector);
+      throw error;
+    } finally {
+      clearTimeout(timeout);
     }
-
-    return embeddings;
   }
 }
