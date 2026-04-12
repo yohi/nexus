@@ -243,8 +243,8 @@ export class LanceVectorStore implements IVectorStore {
     if (!this.dbPath || this.dbPath.includes('://')) {
       return;
     }
-    
-    this.metadataMutex = this.metadataMutex.then(async () => {
+
+    const p = this.metadataMutex.then(async () => {
       try {
         const metaPath = join(this.dbPath, 'metadata.json');
         const tmpPath = `${metaPath}.${randomUUID()}.tmp`;
@@ -261,9 +261,10 @@ export class LanceVectorStore implements IVectorStore {
         throw e;
       }
     });
-    return this.metadataMutex;
-  }
 
+    this.metadataMutex = p.catch(() => {});
+    await p;
+  }
   async resetForTest(): Promise<void> {
     if (this.table && this.db) {
       await this.table.delete('true');
@@ -666,7 +667,7 @@ export class LanceVectorStore implements IVectorStore {
     return await opPromise;
   }
 
-  async compactAfterReindex(_config?: Partial<CompactionConfig>): Promise<CompactionResult> {
+  async compactAfterReindex(): Promise<CompactionResult> {
     const currentMutex = this.writeMutex;
     const opPromise = this.trackOp(async () => {
       await currentMutex;
