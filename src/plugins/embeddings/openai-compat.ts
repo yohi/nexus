@@ -182,23 +182,24 @@ export class OpenAICompatEmbeddingProvider extends BaseEmbeddingProvider {
       }
 
       const payload = (await response.json()) as OpenAIEmbedResponse;
-      if (!Array.isArray(payload?.data)) {
+      const data = payload.data;
+      if (!Array.isArray(data)) {
         throw new EmbedError('Invalid response payload from OpenAI-compatible API', response.status, false);
       }
 
-      if (payload.data.length !== batch.length) {
+      if (data.length !== batch.length) {
         throw new EmbedError(
-          `OpenAI-compatible API returned ${payload.data.length} embeddings for ${batch.length} inputs`,
+          `OpenAI-compatible API returned ${data.length} embeddings for ${batch.length} inputs`,
           response.status,
           false,
         );
       }
 
       const embeddings: number[][] = [];
-      for (let i = 0; i < payload.data.length; i += 1) {
-        const entry = payload.data[i];
+      let i = 0;
+      for (const entry of data) {
         // Validate entry structure and remove redundant checks
-        if (!Array.isArray(entry?.embedding)) {
+        if (!Array.isArray(entry.embedding)) {
           throw new EmbedError(
             `Missing or malformed embedding for response entry at index ${i} (status: ${response.status})`,
             response.status,
@@ -218,6 +219,7 @@ export class OpenAICompatEmbeddingProvider extends BaseEmbeddingProvider {
           );
         }
         embeddings.push(vector);
+        i += 1;
       }
 
       return embeddings;
