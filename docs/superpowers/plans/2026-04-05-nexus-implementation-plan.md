@@ -846,11 +846,11 @@ license-checker, generate-license-file
 
 以下は実装完了後に確認された追加対応事項。
 
-- [ ] **LanceDB 実統合** — `LanceVectorStore` の内部実装が `Map` ベースのインメモリ実装のまま。`@lancedb/lancedb` による永続化・ANN 検索への差し替えが必要（`src/storage/vector-store.ts:35` の TODO）
-- [ ] **Compaction の Pipeline 統合** — `compactAfterReindex()` / `scheduleIdleCompaction()` が `pipeline.ts` から呼ばれておらず、Mutex 統合が実質的に未完了
-- [ ] **`rename-detection.test.ts` の作成** — リネーム検出の専用テストファイルが未作成（ロジック自体は `pipeline.test.ts` + `merkle-tree.test.ts` でカバー済み）
-- [ ] **`openai-compat` Embedding Provider の実装** — `src/plugins/embeddings/openai-compat.ts` が空ファイル（`export {}` のみ）だが、Config で有効な provider 値として登録されている
-- [ ] **SQLite バッチサイズ最適値の検証** — `sqlite-batched.bench.ts` は作成済みだが、ベンチマーク実行による検証は未実施
+- [x] **LanceDB 実統合** — `LanceVectorStore` の内部実装が `Map` ベースのインメモリ実装のまま。`@lancedb/lancedb` による永続化・ANN 検索への差し替えが必要（`src/storage/vector-store.ts:35` の TODO）
+- [x] **Compaction の Pipeline 統合** — `compactAfterReindex()` / `scheduleIdleCompaction()` が `pipeline.ts` から呼ばれておらず、Mutex 統合が実質的に未完了
+- [x] **`rename-detection.test.ts` の作成** — リネーム検出の専用テストファイルが未作成（ロジック自体は `pipeline.test.ts` + `merkle-tree.test.ts` でカバー済み）
+- [x] **`openai-compat` Embedding Provider の実装** — `src/plugins/embeddings/openai-compat.ts` が空ファイル（`export {}` のみ）だが、Config で有効な provider 値として登録されている
+- [x] **SQLite バッチサイズ最適値の検証** — `sqlite-batched.bench.ts` は作成済みだが、ベンチマーク実行による検証は未実施
 
 ---
 
