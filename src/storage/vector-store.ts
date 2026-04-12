@@ -275,6 +275,16 @@ export class LanceVectorStore implements IVectorStore {
     }
   }
 
+  private async runInWriteLock<T>(op: () => Promise<T>): Promise<T> {
+    const currentMutex = this.writeMutex;
+    const opPromise = this.trackOp(async () => {
+      await currentMutex;
+      return await op();
+    });
+    this.writeMutex = opPromise.then(() => {}).catch(() => {});
+    return await opPromise;
+  }
+
   private async trackOp<T>(op: () => Promise<T>): Promise<T> {
     if (this.isClosed) {
       throw new Error('VectorStore is closed');
@@ -408,9 +418,7 @@ export class LanceVectorStore implements IVectorStore {
       };
     });
 
-    const currentMutex = this.writeMutex;
-    const opPromise = this.trackOp(async () => {
-      await currentMutex;
+    await this.runInWriteLock(async () => {
       if (!this.db) {
         throw new Error('VectorStore not initialized');
       }
@@ -453,15 +461,10 @@ export class LanceVectorStore implements IVectorStore {
         await this.updateMetadata();
       }
     });
-
-    this.writeMutex = opPromise.then(() => {}).catch(() => {});
-    await opPromise;
   }
 
   async deleteByFilePath(filePath: string): Promise<number> {
-    const currentMutex = this.writeMutex;
-    const opPromise = this.trackOp(async () => {
-      await currentMutex;
+    return this.runInWriteLock(async () => {
       if (!this.db) {
         throw new Error('VectorStore not initialized');
       }
@@ -477,14 +480,10 @@ export class LanceVectorStore implements IVectorStore {
       }
       return count;
     });
-    this.writeMutex = opPromise.then(() => {}).catch(() => {});
-    return await opPromise;
   }
 
   async deleteByPathPrefix(pathPrefix: string): Promise<number> {
-    const currentMutex = this.writeMutex;
-    const opPromise = this.trackOp(async () => {
-      await currentMutex;
+    return this.runInWriteLock(async () => {
       if (!this.db) {
         throw new Error('VectorStore not initialized');
       }
@@ -506,15 +505,11 @@ export class LanceVectorStore implements IVectorStore {
       }
       return count;
     });
-    this.writeMutex = opPromise.then(() => {}).catch(() => {});
-    return await opPromise;
   }
 
   async renameFilePath(oldPath: string, newPath: string): Promise<number> {
     this.validateFilterValue(newPath, 'newPath');
-    const currentMutex = this.writeMutex;
-    const opPromise = this.trackOp(async () => {
-      await currentMutex;
+    return this.runInWriteLock(async () => {
       if (!this.db) {
         throw new Error('VectorStore not initialized');
       }
@@ -531,8 +526,6 @@ export class LanceVectorStore implements IVectorStore {
       }
       return count;
     });
-    this.writeMutex = opPromise.then(() => {}).catch(() => {});
-    return await opPromise;
   }
 
   async search(
@@ -624,83 +617,74 @@ export class LanceVectorStore implements IVectorStore {
   }
 
   async compactIfNeeded(config?: Partial<CompactionConfig>): Promise<CompactionResult> {
-    const currentMutex = this.writeMutex;
-    const opPromise = this.trackOp(async () => {
-      await currentMutex;
+    return this.runInWriteLock(async () => {
       const threshold = config?.fragmentationThreshold ?? 0.2;
-        const minStale = config?.minStaleChunks ?? 1;
+      const minStale = config?.minStaleChunks ?? 1;
 
-        const totalChunks = this.table ? await this.table.countRows() : 0;
-        const totalPossible = totalChunks + this.staleCount;
-        const fragmentationRatioBefore = totalPossible > 0 ? this.staleCount / totalPossible : 0;
+      const totalChunks = this.table ? await this.table.countRows() : 0;
+      const totalPossible = totalChunks + this.staleCount;
+      const fragmentationRatioBefore = totalPossible > 0 ? this.staleCount / totalPossible : 0;
 
-        const shouldCompact =
-          this.staleCount >= minStale &&
-          (threshold === 0 ? this.staleCount > 0 : fragmentationRatioBefore >= threshold);
+      const shouldCompact =
+        this.staleCount >= minStale &&
+        (threshold === 0 ? this.staleCount > 0 : fragmentationRatioBefore >= threshold);
 
-        const wasStale = this.staleCount > 0;
+      const wasStale = this.staleCount > 0;
 
-        if (shouldCompact) {
-          if (this.table) {
-            await this.table.optimize();
-          }
-          const removed = this.staleCount;
-          this.staleCount = 0;
-          this.lastCompactedAt = new Date().toISOString();
-          await this.updateMetadata();
-          return {
-            compacted: true,
-            fragmentationRatioBefore,
-            fragmentationRatioAfter: 0,
-            chunksRemoved: wasStale ? removed : 0,
-          };
-        }
-
-        return {
-          compacted: false,
-          fragmentationRatioBefore,
-          fragmentationRatioAfter: fragmentationRatioBefore,
-          chunksRemoved: 0,
-        };
-      });
-    this.writeMutex = opPromise.then(() => {}).catch(() => {});
-    return await opPromise;
-  }
-
-  async compactAfterReindex(): Promise<CompactionResult> {
-    const currentMutex = this.writeMutex;
-    const opPromise = this.trackOp(async () => {
-      await currentMutex;
-      let didOptimize = false;
+      if (shouldCompact) {
         if (this.table) {
           await this.table.optimize();
-          didOptimize = true;
         }
-        
-        const totalChunks = this.table ? await this.table.countRows() : 0;
-        const totalPossible = totalChunks + this.staleCount;
-        const fragmentationRatioBefore = totalPossible > 0 ? this.staleCount / totalPossible : 0;
-        
-        const wasStale = this.staleCount > 0;
         const removed = this.staleCount;
-        
-        if (didOptimize || wasStale) {
-          this.staleCount = 0;
-          this.lastCompactedAt = new Date().toISOString();
-          await this.updateMetadata();
-        }
-
+        this.staleCount = 0;
+        this.lastCompactedAt = new Date().toISOString();
+        await this.updateMetadata();
         return {
-          compacted: didOptimize || wasStale,
+          compacted: true,
           fragmentationRatioBefore,
           fragmentationRatioAfter: 0,
           chunksRemoved: wasStale ? removed : 0,
         };
-      });
-    this.writeMutex = opPromise.then(() => {}).catch(() => {});
-    return await opPromise;
+      }
+
+      return {
+        compacted: false,
+        fragmentationRatioBefore,
+        fragmentationRatioAfter: fragmentationRatioBefore,
+        chunksRemoved: 0,
+      };
+    });
   }
 
+  async compactAfterReindex(): Promise<CompactionResult> {
+    return this.runInWriteLock(async () => {
+      let didOptimize = false;
+      if (this.table) {
+        await this.table.optimize();
+        didOptimize = true;
+      }
+
+      const totalChunks = this.table ? await this.table.countRows() : 0;
+      const totalPossible = totalChunks + this.staleCount;
+      const fragmentationRatioBefore = totalPossible > 0 ? this.staleCount / totalPossible : 0;
+
+      const wasStale = this.staleCount > 0;
+      const removed = this.staleCount;
+
+      if (didOptimize || wasStale) {
+        this.staleCount = 0;
+        this.lastCompactedAt = new Date().toISOString();
+        await this.updateMetadata();
+      }
+
+      return {
+        compacted: didOptimize || wasStale,
+        fragmentationRatioBefore,
+        fragmentationRatioAfter: 0,
+        chunksRemoved: wasStale ? removed : 0,
+      };
+    });
+  }
   scheduleIdleCompaction(
     runCompaction: () => Promise<void>,
     delayMs = 0,
