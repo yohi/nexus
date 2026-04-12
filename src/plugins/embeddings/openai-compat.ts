@@ -61,7 +61,9 @@ export class OpenAICompatEmbeddingProvider extends BaseEmbeddingProvider {
 
   async healthCheck(): Promise<boolean> {
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 30000); // 30s timeout
+    const timeout = setTimeout(() => {
+      controller.abort();
+    }, 30000); // 30s timeout
 
     try {
       const url = this.buildUrl('v1/models');
@@ -149,7 +151,9 @@ export class OpenAICompatEmbeddingProvider extends BaseEmbeddingProvider {
     }
 
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 30000); // 30s timeout
+    const timeout = setTimeout(() => {
+      controller.abort();
+    }, 30000); // 30s timeout
 
     try {
       const response = await this.dependencies.fetch(url, {
