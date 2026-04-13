@@ -21,86 +21,69 @@ import { FileWatcher } from '../indexer/watcher.js';
 import { EventQueue } from '../indexer/event-queue.js';
 import type { Config, GrepMatch, IndexEvent } from '../types/index.js';
 
-export class NexusServerFactory {
-  /**
-   * Creates and initializes a NexusRuntime based on the provided configuration.
-   * Encapsulates the complexity of assembling dependencies for the MCP server.
-   */
-  static async createRuntime(config: Config): Promise<NexusRuntime> {
-    const { projectRoot } = config;
+/**
+ * Type-safe interface for ripgrep JSON output.
+ */
+interface RipgrepMatchData {
+  type: 'match' | 'begin' | 'end' | 'summary';
+  data: {
+    path: { text: string };
+    line_number: number;
+    lines: { text: string };
+    submatches: Array<{
+      start: number;
+      end: number;
+      match: { text: string };
+    }>;
+  };
+}
 
-    await this.ensureStorageDirectories(config);
+/**
+ * Handles directory scanning and file discovery.
+ */
+class DirectoryScanner {
+  static async scan(dir: string, projectRoot: string, ignorePaths: string[]): Promise<IndexEvent[]> {
+    const entries = await readdir(resolve(dir), { withFileTypes: true });
+    const events: IndexEvent[] = [];
 
-    const { metadataStore, vectorStore } = this.initializeStores(config);
-    const pluginRegistry = this.setupPluginRegistry(config);
+    for (const entry of entries) {
+      const fullPath = join(dir, entry.name);
+      const relPath = relative(projectRoot, fullPath);
+      const segments = relPath.split(sep);
 
-    const embeddingProvider = pluginRegistry.getEmbeddingProvider();
-    if (!embeddingProvider) {
-      throw new Error('No embedding provider configured. Please check your configuration.');
+      if (ignorePaths.some((p) => segments.includes(p))) continue;
+
+      if (entry.isDirectory()) {
+        events.push(...(await this.scan(fullPath, projectRoot, ignorePaths)));
+      } else if (entry.isFile()) {
+        events.push({
+          type: 'added',
+          filePath: relPath,
+          detectedAt: new Date().toISOString(),
+        });
+      }
     }
-
-    const semanticSearch = new SemanticSearch({ vectorStore, embeddingProvider });
-    const grepEngine = this.createGrepEngine(projectRoot);
-    const orchestrator = new SearchOrchestrator({ semanticSearch, grepEngine, projectRoot });
-    const chunker = new Chunker(pluginRegistry);
-
-    const pipeline = new IndexPipeline({
-      metadataStore,
-      vectorStore,
-      chunker,
-      embeddingProvider,
-      pluginRegistry,
-    });
-
-    const loadFileContent = (path: string) => {
-      const absolutePath = resolve(projectRoot, path);
-      return readFile(absolutePath, 'utf8');
-    };
-
-    const ignorePaths = this.getIgnorePaths();
-    const { watcher, onClose } = this.setupEventProcessing(config, projectRoot, ignorePaths, pipeline, loadFileContent);
-
-    const sanitizer = await PathSanitizer.create(projectRoot);
-
-    const runtime = await initializeNexusRuntime({
-      projectRoot,
-      sanitizer,
-      semanticSearch,
-      grepEngine,
-      orchestrator,
-      vectorStore,
-      metadataStore,
-      pipeline,
-      pluginRegistry,
-      watcher,
-      runReindex: async (args) => {
-        let scannedEvents: IndexEvent[] = [];
-        await pipeline.reindex(
-          async () => {
-            scannedEvents = await this.scanDirectory(projectRoot, projectRoot, ignorePaths);
-            return scannedEvents;
-          },
-          loadFileContent,
-          args?.fullScan,
-        );
-        return scannedEvents;
-      },
-      loadFileContent,
-      onClose,
-    });
-
-    return runtime;
+    return events;
   }
+}
 
-  private static async ensureStorageDirectories(config: Config): Promise<void> {
-    await mkdir(resolve(config.storage.rootDir), { recursive: true });
-    await mkdir(dirname(resolve(config.storage.metadataDbPath)), { recursive: true });
+/**
+ * Manages storage initialization and directory creation.
+ */
+class StorageManager {
+  static async ensureDirectories(config: Config): Promise<void> {
+    const root = resolve(config.storage.rootDir);
+    const meta = dirname(resolve(config.storage.metadataDbPath));
+    const vector = resolve(config.storage.vectorDbPath);
+
+    await mkdir(root, { recursive: true });
+    await mkdir(meta, { recursive: true });
     if (!config.storage.vectorDbPath.startsWith('memory://')) {
-      await mkdir(resolve(config.storage.vectorDbPath), { recursive: true });
+      await mkdir(vector, { recursive: true });
     }
   }
 
-  private static initializeStores(config: Config) {
+  static initializeStores(config: Config) {
     const metadataStore = new SqliteMetadataStore({
       databasePath: config.storage.metadataDbPath,
       batchSize: config.storage.batchSize,
@@ -113,138 +96,59 @@ export class NexusServerFactory {
 
     return { metadataStore, vectorStore };
   }
+}
 
-  private static setupPluginRegistry(config: Config): PluginRegistry {
-    const pluginRegistry = new PluginRegistry();
-    pluginRegistry.registerLanguage(new TypeScriptLanguagePlugin());
-    pluginRegistry.registerLanguage(new PythonLanguagePlugin());
-    pluginRegistry.registerLanguage(new GoLanguagePlugin());
+/**
+ * Orchestrates background event processing and file watching.
+ */
+class EventProcessingManager {
+  private abortController = new AbortController();
+  private drainTask?: Promise<void>;
 
-    if (config.embedding.provider === 'ollama') {
-      pluginRegistry.registerEmbeddingProvider('ollama', new OllamaEmbeddingProvider(config.embedding));
-      pluginRegistry.setActiveEmbeddingProvider('ollama');
-    } else if (config.embedding.provider === 'openai-compat') {
-      pluginRegistry.registerEmbeddingProvider(
-        'openai-compat',
-        new OpenAICompatEmbeddingProvider(config.embedding),
-      );
-      pluginRegistry.setActiveEmbeddingProvider('openai-compat');
-    }
+  constructor(
+    private config: Config,
+    private projectRoot: string,
+    private ignorePaths: string[],
+    private pipeline: IndexPipeline,
+    private loadFileContent: (path: string) => Promise<string>
+  ) {}
 
-    return pluginRegistry;
-  }
-
-  private static createGrepEngine(projectRoot: string): RipgrepEngine {
-    return new RipgrepEngine({
-      projectRoot,
-      spawn: async (params, signal) => {
-        return new Promise((resolvePromise, reject) => {
-          const args = ['--json'];
-          if (!params.caseSensitive) args.push('--ignore-case');
-          if (params.glob?.length) {
-            params.glob.forEach((g) => args.push('--glob', g));
-          }
-          args.push('--', params.query, params.cwd);
-
-          const child = spawn('rg', args, { signal });
-          let stdout = '';
-          let stderr = '';
-
-          child.stdout.on('data', (data: Buffer) => { stdout += data.toString(); });
-          child.stderr.on('data', (data: Buffer) => { stderr += data.toString(); });
-
-          child.on('close', (code) => {
-            if (code !== 0 && code !== 1) {
-              reject(new Error(`ripgrep failed with code ${code}: ${stderr}`));
-              return;
-            }
-            resolvePromise(this.parseGrepOutput(stdout));
-          });
-
-          child.on('error', (err) => {
-            if (err.name === 'AbortError') resolvePromise([]);
-            else reject(err);
-          });
-        });
+  setup() {
+    const eventQueue = new EventQueue({
+      debounceMs: this.config.watcher.debounceMs,
+      maxQueueSize: this.config.watcher.maxQueueSize,
+      fullScanThreshold: this.config.watcher.fullScanThreshold,
+      concurrency: 4,
+      onFullScanRequired: () => {
+        void this.triggerFullScan();
+        return Promise.resolve();
       },
     });
+
+    const watcher = new FileWatcher({ projectRoot: this.projectRoot, ignorePaths: this.ignorePaths }, eventQueue);
+
+    this.drainTask = this.startDrainLoop(eventQueue);
+
+    return { watcher, onClose: () => this.stop() };
   }
 
-  private static parseGrepOutput(stdout: string): GrepMatch[] {
-    const lines = stdout.split('\n').filter((l) => l.trim() !== '');
-    const matches: GrepMatch[] = [];
-
-    for (const line of lines) {
-      try {
-        const parsed = JSON.parse(line);
-        if (parsed.type === 'match') {
-          matches.push({
-            filePath: parsed.data.path.text,
-            lineNumber: parsed.data.line_number,
-            lineText: parsed.data.lines.text,
-            submatches: parsed.data.submatches.map((m: any) => ({
-              start: m.start,
-              end: m.end,
-              match: m.match.text,
-            })),
-          });
-        }
-      } catch { /* ignore */ }
-    }
-    return matches;
+  private async stop() {
+    this.abortController.abort();
+    await this.drainTask;
   }
 
-  private static async scanDirectory(dir: string, projectRoot: string, ignorePaths: string[]): Promise<IndexEvent[]> {
-    const entries = await readdir(resolve(dir), { withFileTypes: true });
-    const events: IndexEvent[] = [];
-
-    for (const entry of entries) {
-      const fullPath = join(dir, entry.name);
-      const relPath = relative(projectRoot, fullPath);
-      const segments = relPath.split(sep);
-
-      if (ignorePaths.some((p) => segments.includes(p))) continue;
-
-      if (entry.isDirectory()) {
-        events.push(...(await this.scanDirectory(fullPath, projectRoot, ignorePaths)));
-      } else if (entry.isFile()) {
-        events.push({
-          type: 'added',
-          filePath: relPath,
-          detectedAt: new Date().toISOString(),
-        });
-      }
-    }
-    return events;
-  }
-
-  private static getIgnorePaths(): string[] {
-    const envIgnore = process.env.NEXUS_IGNORE_PATHS
-      ? process.env.NEXUS_IGNORE_PATHS.split(',').map(p => p.trim()).filter(Boolean)
-      : [];
-    return Array.from(new Set([
-      'node_modules', '.git', '.nexus', 'dist',
-      ...envIgnore
-    ]));
-  }
-
-  private static async triggerFullScanWithRetry(
-    pipeline: IndexPipeline,
-    projectRoot: string,
-    ignorePaths: string[],
-    loadFileContent: (path: string) => Promise<string>,
-    retryCount = 3,
-    baseDelayMs = 1000
-  ): Promise<void> {
+  private async triggerFullScan(retryCount = 3, baseDelayMs = 1000) {
     for (let attempt = 0; attempt < retryCount; attempt += 1) {
+      if (this.abortController.signal.aborted) return;
+
       try {
-        const result = await pipeline.reindex(
-          () => this.scanDirectory(projectRoot, projectRoot, ignorePaths),
-          loadFileContent,
+        const result = await this.pipeline.reindex(
+          () => DirectoryScanner.scan(this.projectRoot, this.projectRoot, this.ignorePaths),
+          this.loadFileContent,
           true
         );
 
-        if (typeof result === 'object' && result !== null && 'status' in result && result.status === 'already_running') {
+        if (result && 'status' in result && result.status === 'already_running') {
           throw new Error('already_running');
         }
 
@@ -252,76 +156,142 @@ export class NexusServerFactory {
         return;
       } catch (err) {
         const isAlreadyRunning = err instanceof Error && err.message === 'already_running';
-        const logPrefix = `[Nexus] Background full scan ${isAlreadyRunning ? 'skipped (already running)' : 'failed'}`;
-        console.error(`${logPrefix} (attempt ${attempt + 1}/${retryCount})`);
+        console.error(`[Nexus] Background full scan ${isAlreadyRunning ? 'skipped' : 'failed'} (attempt ${attempt + 1}/${retryCount})`);
 
-        if (attempt < retryCount - 1) {
+        if (attempt < retryCount - 1 && !this.abortController.signal.aborted) {
           const delay = baseDelayMs * 2 ** attempt;
-          await new Promise(resolvePromise => setTimeout(resolvePromise, delay));
+          await new Promise(r => setTimeout(r, delay));
         }
       }
     }
-    console.error('[Nexus] Background full scan exhausted all retry attempts.');
   }
 
-  private static setupEventProcessing(
-    config: Config,
-    projectRoot: string,
-    ignorePaths: string[],
-    pipeline: IndexPipeline,
-    loadFileContent: (path: string) => Promise<string>
-  ) {
-    const abortController = new AbortController();
+  private async startDrainLoop(eventQueue: EventQueue) {
+    while (!this.abortController.signal.aborted) {
+      try {
+        await eventQueue.drain(async (event) => {
+          if (event.type === 'reindex') await this.triggerFullScan();
+          else await this.pipeline.processEvents([event], this.loadFileContent);
+        });
+      } catch (error) {
+        if (!this.abortController.signal.aborted) {
+          console.error('[Nexus] Error in event queue drain loop:', error);
+        }
+      }
+      
+      await new Promise(resolvePromise => {
+        const timer = setTimeout(resolvePromise, 500);
+        this.abortController.signal.addEventListener('abort', () => {
+          clearTimeout(timer);
+          resolvePromise(undefined);
+        }, { once: true });
+      });
+    }
+  }
+}
 
-    const triggerFullScan = async () => {
-      await this.triggerFullScanWithRetry(pipeline, projectRoot, ignorePaths, loadFileContent);
-    };
+export class NexusServerFactory {
+  /**
+   * Creates and initializes a NexusRuntime based on the provided configuration.
+   */
+  static async createRuntime(config: Config): Promise<NexusRuntime> {
+    const { projectRoot } = config;
+    await StorageManager.ensureDirectories(config);
 
-    const eventQueue = new EventQueue({
-      debounceMs: config.watcher.debounceMs,
-      maxQueueSize: config.watcher.maxQueueSize,
-      fullScanThreshold: config.watcher.fullScanThreshold,
-      concurrency: 4,
-      onFullScanRequired: () => {
-        void triggerFullScan();
-        return Promise.resolve();
-      },
+    const { metadataStore, vectorStore } = StorageManager.initializeStores(config);
+    const pluginRegistry = this.setupPluginRegistry(config);
+    const embeddingProvider = pluginRegistry.getEmbeddingProvider();
+    
+    if (!embeddingProvider) {
+      throw new Error('No embedding provider configured.');
+    }
+
+    const semanticSearch = new SemanticSearch({ vectorStore, embeddingProvider });
+    const grepEngine = this.createGrepEngine(projectRoot);
+    const orchestrator = new SearchOrchestrator({ semanticSearch, grepEngine, projectRoot });
+    const pipeline = new IndexPipeline({
+      metadataStore, vectorStore, chunker: new Chunker(pluginRegistry),
+      embeddingProvider, pluginRegistry
     });
 
-    const watcher = new FileWatcher({ projectRoot, ignorePaths }, eventQueue);
+    const loadFileContent = (path: string) => readFile(resolve(projectRoot, path), 'utf8');
+    const ignorePaths = this.getIgnorePaths();
+    const eventManager = new EventProcessingManager(config, projectRoot, ignorePaths, pipeline, loadFileContent);
+    const { watcher, onClose } = eventManager.setup();
 
-    // Start background drain loop with cancellation support
-    const drainTask = (async () => {
-      while (!abortController.signal.aborted) {
-        try {
-          // If eventQueue.drain supports signal, we should pass it. 
-          // Assuming it doesn't, we check signal after each drain.
-          await eventQueue.drain(async (event) => {
-            if (event.type === 'reindex') await triggerFullScan();
-            else await pipeline.processEvents([event], loadFileContent);
-          });
-        } catch (error) {
-          if (!abortController.signal.aborted) {
-            console.error('[Nexus] Error in event queue drain loop:', error);
-          }
-        }
-        
-        // Wait with cancellation awareness
-        await new Promise(resolvePromise => {
-          const timer = setTimeout(resolvePromise, 500);
-          abortController.signal.addEventListener('abort', () => {
-            clearTimeout(timer);
-            resolvePromise(undefined);
-          }, { once: true });
-        });
+    return initializeNexusRuntime({
+      projectRoot, sanitizer: await PathSanitizer.create(projectRoot),
+      semanticSearch, grepEngine, orchestrator, vectorStore, metadataStore,
+      pipeline, pluginRegistry, watcher, loadFileContent, onClose,
+      runReindex: async (args) => {
+        let scannedEvents: IndexEvent[] = [];
+        await pipeline.reindex(async () => {
+          scannedEvents = await DirectoryScanner.scan(projectRoot, projectRoot, ignorePaths);
+          return scannedEvents;
+        }, loadFileContent, args?.fullScan);
+        return scannedEvents;
       }
-    })();
+    });
+  }
 
-    const onClose = async () => {
-      abortController.abort();
-      await drainTask;
-    };
+  private static setupPluginRegistry(config: Config): PluginRegistry {
+    const registry = new PluginRegistry();
+    registry.registerLanguage(new TypeScriptLanguagePlugin());
+    registry.registerLanguage(new PythonLanguagePlugin());
+    registry.registerLanguage(new GoLanguagePlugin());
 
-    return { eventQueue, watcher, onClose };
+    const provider = config.embedding.provider === 'ollama' 
+      ? new OllamaEmbeddingProvider(config.embedding)
+      : new OpenAICompatEmbeddingProvider(config.embedding);
+    
+    registry.registerEmbeddingProvider(config.embedding.provider, provider);
+    registry.setActiveEmbeddingProvider(config.embedding.provider);
+    return registry;
+  }
+
+  private static createGrepEngine(projectRoot: string): RipgrepEngine {
+    return new RipgrepEngine({
+      projectRoot,
+      spawn: async (params, signal) => new Promise((res, rej) => {
+        const args = ['--json', ...(params.caseSensitive ? [] : ['--ignore-case'])];
+        if (params.glob?.length) params.glob.forEach(g => args.push('--glob', g));
+        args.push('--', params.query, params.cwd);
+
+        const child = spawn('rg', args, { signal });
+        let stdout = '', stderr = '';
+        child.stdout.on('data', d => { stdout += d.toString(); });
+        child.stderr.on('data', d => { stderr += d.toString(); });
+        child.on('close', code => {
+          if (code !== 0 && code !== 1) return rej(new Error(`ripgrep failed: ${stderr}`));
+          res(this.parseGrepOutput(stdout));
+        });
+        child.on('error', e => { if (e.name === 'AbortError') res([]); else rej(e); });
+      })
+    });
+  }
+
+  private static parseGrepOutput(stdout: string): GrepMatch[] {
+    return stdout.split('\n')
+      .filter(l => l.trim() !== '')
+      .map(line => {
+        try {
+          const parsed = JSON.parse(line) as RipgrepMatchData;
+          if (parsed.type !== 'match') return null;
+          return {
+            filePath: parsed.data.path.text,
+            lineNumber: parsed.data.line_number,
+            lineText: parsed.data.lines.text,
+            submatches: parsed.data.submatches.map(m => ({
+              start: m.start, end: m.end, match: m.match.text
+            }))
+          };
+        } catch { return null; }
+      })
+      .filter((m): m is GrepMatch => m !== null);
+  }
+
+  private static getIgnorePaths(): string[] {
+    const env = process.env.NEXUS_IGNORE_PATHS?.split(',').map(p => p.trim()).filter(Boolean) ?? [];
+    return Array.from(new Set(['node_modules', '.git', '.nexus', 'dist', ...env]));
   }
 }
