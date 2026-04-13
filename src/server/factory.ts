@@ -1,6 +1,7 @@
 import { spawn } from 'node:child_process';
 import { readFile, mkdir, readdir } from 'node:fs/promises';
 import { dirname, join, relative, sep, resolve } from 'node:path';
+import { setTimeout as sleep } from 'node:timers/promises';
 
 import { initializeNexusRuntime, type NexusRuntime } from './index.js';
 import { PathSanitizer } from './path-sanitizer.js';
@@ -183,14 +184,12 @@ class EventProcessingManager {
       } catch (error) {
         console.error('[Nexus] Error in event queue drain loop:', error);
       }
-      
-      await new Promise(resolvePromise => {
-        const timer = setTimeout(resolvePromise, 500);
-        this.abortController.signal.addEventListener('abort', () => {
-          clearTimeout(timer);
-          resolvePromise(undefined);
-        }, { once: true });
-      });
+
+      try {
+        await sleep(500, undefined, { signal: this.abortController.signal });
+      } catch {
+        // AbortError is expected when the loop should terminate
+      }
     }
   }
 }
