@@ -36,17 +36,19 @@ async function main() {
 
   console.error(`Nexus MCP server running on stdio (root: ${projectRoot})`);
 
-  process.on('SIGINT', () => {
-    void runtime.close().then(() => {
-      process.exit(0);
-    });
-  });
+  const handleShutdown = () => {
+    runtime.close()
+      .then(() => {
+        process.exit(0);
+      })
+      .catch((error) => {
+        console.error('Error during shutdown:', error);
+        process.exit(1);
+      });
+  };
 
-  process.on('SIGTERM', () => {
-    void runtime.close().then(() => {
-      process.exit(0);
-    });
-  });
+  process.on('SIGINT', handleShutdown);
+  process.on('SIGTERM', handleShutdown);
 }
 
 main().catch((error) => {

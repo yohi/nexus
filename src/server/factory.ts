@@ -1,6 +1,6 @@
 import { spawn } from 'node:child_process';
 import { readFile, mkdir, readdir } from 'node:fs/promises';
-import { dirname, join, relative, sep } from 'node:path';
+import { dirname, join, relative, sep, resolve } from 'node:path';
 
 import { initializeNexusRuntime, type NexusRuntime } from './index.js';
 import { PathSanitizer } from './path-sanitizer.js';
@@ -28,12 +28,19 @@ export class NexusServerFactory {
    */
   static async createRuntime(config: Config): Promise<NexusRuntime> {
     const { projectRoot } = config;
-    const ignorePaths = ['node_modules', '.git', '.nexus', 'dist'];
+    
+    // Merge default ignore paths with potential custom ones from config (not yet in Config type, but good to have)
+    const ignorePaths = Array.from(new Set([
+      'node_modules', '.git', '.nexus', 'dist',
+      ...(process.env.NEXUS_IGNORE_PATHS?.split(',') ?? [])
+    ]));
 
-    // Ensure storage directories exist
+    // Ensure storage directories exist (unless using memory storage)
     await mkdir(config.storage.rootDir, { recursive: true });
     await mkdir(dirname(config.storage.metadataDbPath), { recursive: true });
-    await mkdir(config.storage.vectorDbPath, { recursive: true });
+    if (!config.storage.vectorDbPath.startsWith('memory://')) {
+      await mkdir(config.storage.vectorDbPath, { recursive: true });
+    }
 
     const metadataStore = new SqliteMetadataStore({
       databasePath: config.storage.metadataDbPath,
@@ -94,7 +101,8 @@ export class NexusServerFactory {
 
           child.on('close', (code) => {
             if (code !== 0 && code !== 1) {
-              return reject(new Error(`ripgrep failed with code ${code}: ${stderr}`));
+              reject(new Error(`ripgrep failed with code ${code}: ${stderr}`));
+              return;
             }
 
             const lines = stdout.split('\n').filter((l) => l.trim() !== '');
@@ -143,7 +151,12 @@ export class NexusServerFactory {
 
     const orchestrator = new SearchOrchestrator({ semanticSearch, grepEngine, projectRoot });
     const chunker = new Chunker(pluginRegistry);
-    const loadFileContent = (path: string) => readFile(path, 'utf8');
+    
+    // Fix: Resolve path against projectRoot
+    const loadFileContent = (path: string) => {
+      const absolutePath = resolve(projectRoot, path);
+      return readFile(absolutePath, 'utf8');
+    };
 
     const pipeline = new IndexPipeline({
       metadataStore,
@@ -185,7 +198,6 @@ export class NexusServerFactory {
 
     /**
      * Triggers a full scan of the codebase to reconcile the index state.
-     * Includes basic retry logic for resilience during temporary failures.
      */
     const triggerFullScanWithRetry = async (retryCount = 3, baseDelayMs = 1000): Promise<void> => {
       for (let attempt = 0; attempt < retryCount; attempt += 1) {
@@ -214,7 +226,6 @@ export class NexusServerFactory {
       concurrency: 4,
       onFullScanRequired: () => {
         console.error('[Nexus] Event queue overflow detected. Scheduling full scan recovery...');
-        // Fire and forget recovery to let the event loop continue, but log failures.
         void triggerFullScanWithRetry();
         return Promise.resolve();
       },
@@ -230,7 +241,7 @@ export class NexusServerFactory {
 
     const sanitizer = await PathSanitizer.create(projectRoot);
 
-    return initializeNexusRuntime({
+    const runtime = await initializeNexusRuntime({
       projectRoot,
       sanitizer,
       semanticSearch,
@@ -242,6 +253,7 @@ export class NexusServerFactory {
       pluginRegistry,
       watcher,
       runReindex: async (args) => {
+        // Fix: Use the pipeline directly to avoid deadlock and return scanned events
         let scannedEvents: IndexEvent[] = [];
         const result = await pipeline.reindex(
           async () => {
@@ -259,5 +271,31 @@ export class NexusServerFactory {
       },
       loadFileContent,
     });
+
+    // Fix: Background loop to drain the EventQueue
+    const drainLoop = async () => {
+      while (true) {
+        try {
+          // Drain events and process them via the pipeline
+          await eventQueue.drain(async (event) => {
+            if (event.type === 'reindex') {
+              // Reindex events are handled via triggerFullScan logic or similar
+              await triggerFullScanWithRetry(1); // Single attempt for queue-based reindex
+            } else {
+              await pipeline.processEvents([event], loadFileContent);
+            }
+          });
+        } catch (error) {
+          console.error('[Nexus] Error in event queue drain loop:', error);
+        }
+        // Wait a bit before next drain attempt if queue was empty
+        await new Promise(resolve => setTimeout(resolve, 500));
+      }
+    };
+    
+    // Start the drain loop but don't await it (background)
+    void drainLoop();
+
+    return runtime;
   }
 }
