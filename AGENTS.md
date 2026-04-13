@@ -27,7 +27,7 @@ Use your interaction tool (e.g., `ask_user` with `type: choice` or similar) to d
 2. **Repository Context**: You are already in the `nexus` repository.
 
 ### Phase 2: Dependency Resolution (NO TOKEN REQUIRED)
-1.  **Standard Path (Happy Path)**: Try running `npm install` first. If it succeeds, proceed to Phase 3.
+1.  **Standard Path (Happy Path)**: Try running `npm install` and `npm run build` first. If both succeed, proceed to Phase 3.
 2.  **Automated Fallback**: If `npm install` fails due to authentication or missing `${NEXUS_GH_PACKAGE_TOKEN}`:
     - **Action**: Run `node scripts/bootstrap.mjs`.
     - **Behavior**: The script will automatically detect the missing token, temporarily bypass the `.npmrc` file, and complete the installation and build process.
