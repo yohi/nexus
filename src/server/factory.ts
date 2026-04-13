@@ -107,6 +107,7 @@ class StorageManager {
 class EventProcessingManager {
   private abortController = new AbortController();
   private drainTask?: Promise<void>;
+  private fullScanPromise?: Promise<void>;
 
   constructor(
     private config: Config,
@@ -123,7 +124,9 @@ class EventProcessingManager {
       fullScanThreshold: this.config.watcher.fullScanThreshold,
       concurrency: 4,
       onFullScanRequired: () => {
-        void this.triggerFullScan();
+        this.fullScanPromise = this.triggerFullScan().finally(() => {
+          this.fullScanPromise = undefined;
+        });
         return Promise.resolve();
       },
     });
@@ -137,7 +140,10 @@ class EventProcessingManager {
 
   private async stop() {
     this.abortController.abort();
-    await this.drainTask;
+    await Promise.allSettled([
+      this.drainTask ?? Promise.resolve(),
+      this.fullScanPromise ?? Promise.resolve()
+    ]);
   }
 
   private async triggerFullScan(retryCount = 3, baseDelayMs = 1000) {
@@ -165,7 +171,11 @@ class EventProcessingManager {
 
         if (attempt < retryCount - 1 && !this.abortController.signal.aborted) {
           const delay = baseDelayMs * 2 ** attempt;
-          await new Promise(r => setTimeout(r, delay));
+          try {
+            await sleep(delay, undefined, { signal: this.abortController.signal });
+          } catch {
+            // AbortError is expected
+          }
         }
       }
     }
@@ -223,19 +233,24 @@ export class NexusServerFactory {
     const eventManager = new EventProcessingManager(config, projectRoot, ignorePaths, pipeline, loadFileContent);
     const { watcher, onClose } = eventManager.setup();
 
-    return initializeNexusRuntime({
-      projectRoot, sanitizer: await PathSanitizer.create(projectRoot),
-      semanticSearch, grepEngine, orchestrator, vectorStore, metadataStore,
-      pipeline, pluginRegistry, watcher, loadFileContent, onClose,
-      runReindex: async (args) => {
-        let scannedEvents: IndexEvent[] = [];
-        await pipeline.reindex(async () => {
-          scannedEvents = await DirectoryScanner.scan(projectRoot, projectRoot, ignorePaths);
+    try {
+      return await initializeNexusRuntime({
+        projectRoot, sanitizer: await PathSanitizer.create(projectRoot),
+        semanticSearch, grepEngine, orchestrator, vectorStore, metadataStore,
+        pipeline, pluginRegistry, watcher, loadFileContent, onClose,
+        runReindex: async (args) => {
+          let scannedEvents: IndexEvent[] = [];
+          await pipeline.reindex(async () => {
+            scannedEvents = await DirectoryScanner.scan(projectRoot, projectRoot, ignorePaths);
+            return scannedEvents;
+          }, loadFileContent, args?.fullScan);
           return scannedEvents;
-        }, loadFileContent, args?.fullScan);
-        return scannedEvents;
-      }
-    });
+        }
+      });
+    } catch (error) {
+      await onClose();
+      throw error;
+    }
   }
 
   private static setupPluginRegistry(config: Config): PluginRegistry {
