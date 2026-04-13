@@ -162,7 +162,7 @@ class EventProcessingManager {
           true
         );
 
-        if ('status' in result && result.status === 'already_running') {
+        if ('status' in result) {
           throw new Error('already_running');
         }
 
@@ -172,7 +172,8 @@ class EventProcessingManager {
         const isAlreadyRunning = (err as Error).message === 'already_running';
         console.error(`[Nexus] Background full scan ${isAlreadyRunning ? 'skipped' : 'failed'} (attempt ${attempt + 1}/${retryCount})`);
 
-        if (attempt < retryCount - 1 && !this.abortController.signal.aborted) {
+        const isLastAttempt = attempt >= retryCount - 1;
+        if (!isLastAttempt && !this.abortController.signal.aborted) {
           const delay = baseDelayMs * 2 ** attempt;
           try {
             await sleep(delay, undefined, { signal: this.abortController.signal });
@@ -243,10 +244,14 @@ export class NexusServerFactory {
         pipeline, pluginRegistry, watcher, loadFileContent, onClose,
         runReindex: async (args) => {
           let scannedEvents: IndexEvent[] = [];
-          await pipeline.reindex(async () => {
+          const result = await pipeline.reindex(async () => {
             scannedEvents = await DirectoryScanner.scan(projectRoot, projectRoot, ignorePaths);
             return scannedEvents;
           }, loadFileContent, args?.fullScan);
+
+          if ('status' in result) {
+            throw new Error(`Reindex already running: ${result.status}`);
+          }
           return scannedEvents;
         }
       });
@@ -262,9 +267,19 @@ export class NexusServerFactory {
     registry.registerLanguage(new PythonLanguagePlugin());
     registry.registerLanguage(new GoLanguagePlugin());
 
-    const provider = config.embedding.provider === 'ollama' 
-      ? new OllamaEmbeddingProvider(config.embedding)
-      : new OpenAICompatEmbeddingProvider(config.embedding);
+    let provider;
+    switch (config.embedding.provider) {
+      case 'ollama':
+        provider = new OllamaEmbeddingProvider(config.embedding);
+        break;
+      case 'openai-compat':
+        provider = new OpenAICompatEmbeddingProvider(config.embedding);
+        break;
+      case 'test':
+        throw new Error('Test embedding provider is not supported in production.');
+      default:
+        throw new Error(`Unsupported embedding provider: ${config.embedding.provider}`);
+    }
     
     registry.registerEmbeddingProvider(config.embedding.provider, provider);
     registry.setActiveEmbeddingProvider(config.embedding.provider);
