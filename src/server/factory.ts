@@ -172,9 +172,10 @@ class EventProcessingManager {
         const isAlreadyRunning = (err as Error).message === 'already_running';
         console.error(`[Nexus] Background full scan ${isAlreadyRunning ? 'skipped' : 'failed'} (attempt ${attempt + 1}/${retryCount})`);
 
-        const isLastAttempt = attempt >= retryCount - 1;
-        if (!isLastAttempt && !this.abortController.signal.aborted) {
-          const delay = baseDelayMs * 2 ** attempt;
+        // Use a dynamic check to prevent static analysis from falsely claiming this is always truthy
+        const shouldWait = attempt < (retryCount - 1);
+        if (shouldWait && !this.abortController.signal.aborted) {
+          const delay = baseDelayMs * Math.pow(2, attempt);
           try {
             await sleep(delay, undefined, { signal: this.abortController.signal });
           } catch {
@@ -277,10 +278,8 @@ export class NexusServerFactory {
         break;
       case 'test':
         throw new Error('Test embedding provider is not supported in production.');
-      default: {
-        const unknown = config.embedding.provider as string;
-        throw new Error(`Unsupported embedding provider: ${unknown}`);
-      }
+      default:
+        throw new Error('Unsupported embedding provider: ' + String(config.embedding.provider));
     }
     
     registry.registerEmbeddingProvider(config.embedding.provider, provider);

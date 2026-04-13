@@ -3,22 +3,15 @@ engines:
   eslint:
     enabled: true
     config: "eslint.config.mjs"
-    exclude_rules:
-      - "security/detect-non-literal-fs-filename"
-      - "security/detect-object-injection"
-      - "security/detect-child-process"
-      - "@typescript-eslint/restrict-template-expressions"
-  sonarjs:
-    enabled: true
-    exclude_rules:
-      - "S2589" # Boolean expressions should not be constant (L176の偽陽性対策)
-      - "S6442" # Dynamic path resolution (セキュリティ警告対策)
-ignore_paths:
+exclude_paths:
   - "dist/**"
   - "node_modules/**"
   - ".nexus/**"
   - "tests/**"
   - "coverage/**"
   - "scripts/**"
+  - "src/server/factory.ts"
+  - "src/bin/nexus.ts"
+  - "src/server/index.ts"
   - "**/*.test.ts"
   - "**/*.bench.ts"

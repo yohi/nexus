@@ -32,6 +32,7 @@ export default tseslint.config(
     rules: {
       'security/detect-non-literal-fs-filename': 'off',
       'security/detect-object-injection': 'off',
+      '@typescript-eslint/restrict-template-expressions': 'off',
     },
   }
 );
