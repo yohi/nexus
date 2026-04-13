@@ -27,11 +27,9 @@ Use your interaction tool (e.g., `ask_user` with `type: choice` or similar) to d
 2. **Repository Context**: You are already in the `nexus` repository.
 
 ### Phase 2: Dependency Resolution (NO TOKEN REQUIRED)
-1. **Handle `.npmrc` Auth**: The root `.npmrc` might require `${NEXUS_GH_PACKAGE_TOKEN}`. Since this is a source build, you don't need to authenticate with GitHub Packages to install the dependencies (they are all public).
-2. **Action**: If `npm install` fails due to auth or missing environment variables:
-   - Temporarily rename `.npmrc` to `.npmrc.bak`.
-   - Run `node scripts/bootstrap.mjs`.
-   - Restore `.npmrc` after success.
+1. **Automatic `.npmrc` Handling**: The repository includes a root `.npmrc` that may require a token for GitHub Packages. However, for a "Source Build," all necessary dependencies are public. 
+2. **Action**: Simply run `node scripts/bootstrap.mjs`.
+   - The script will automatically detect the absence of `NEXUS_GH_PACKAGE_TOKEN` and bypass the `.npmrc` restrictions by temporarily moving it.
    - **DO NOT** ask the user for a token in this phase.
 
 ### Phase 3: Verification

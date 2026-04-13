@@ -18,7 +18,7 @@ const run = (cmd) => {
       error.code ? `(code: ${error.code})` : ''
     ].filter(Boolean).join(' ');
     console.error(`❌ Failed to execute: ${cmd}\n   ${details}`);
-    process.exit(1);
+    throw error; // Propagate error for try...finally
   }
 };
 
@@ -26,26 +26,30 @@ console.log('🚀 Nexus Bootstrap starting...');
 
 // 1. Install dependencies
 const hasToken = !!process.env.NEXUS_GH_PACKAGE_TOKEN;
-const npmrcExists = existsSync('.npmrc');
+const npmrc = '.npmrc';
+const npmrcBak = '.npmrc.tmp_bak';
+const npmrcExists = existsSync(npmrc);
 
 if (!hasToken && npmrcExists) {
   console.log('⚠️ NEXUS_GH_PACKAGE_TOKEN not found. Temporarily bypassing .npmrc for local build...');
   try {
-    const npmrcBak = '.npmrc.tmp_bak';
-    copyFileSync('.npmrc', npmrcBak);
-    const { unlinkSync, renameSync } = await import('node:fs');
-    unlinkSync('.npmrc');
-    
+    renameSync(npmrc, npmrcBak);
     run('npm install');
-    
-    renameSync(npmrcBak, '.npmrc');
-    console.log('✅ Restored .npmrc');
   } catch (error) {
-    console.error(`❌ Failed to bypass .npmrc: ${error.message}`);
+    console.error(`❌ Bootstrap failed during installation: ${error.message}`);
     process.exit(1);
+  } finally {
+    if (existsSync(npmrcBak)) {
+      renameSync(npmrcBak, npmrc);
+      console.log('✅ Restored .npmrc');
+    }
   }
 } else {
-  run('npm install');
+  try {
+    run('npm install');
+  } catch (error) {
+    process.exit(1);
+  }
 }
 
 // 2. Setup .env (if example exists)
@@ -60,9 +64,12 @@ if (!existsSync('.env') && existsSync('.env.example')) {
 }
 
 // 3. Build project
-run('npm run build');
-
-// 4. Lint
-run('npm run lint');
+try {
+  run('npm run build');
+  // 4. Lint
+  run('npm run lint');
+} catch (error) {
+  process.exit(1);
+}
 
 console.log('🎉 Bootstrap complete! Run "npm test" to verify.');
