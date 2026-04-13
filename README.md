@@ -34,7 +34,7 @@ Install and configure Nexus by following the instructions here: https://raw.gith
 - **A. ソースからビルド (推奨)**: フル機能（開発、テスト、カスタマイズ）を利用する場合。
 - **B. パッケージとして利用**: 既存のプロジェクトにライブラリとして組み込む場合。**（GitHub PAT がない場合は `npm install github:yohi/nexus` でトークンレス・インストールが可能です）**
 
-選択された方式に従って、[AGENTS.md](AGENTS.md) に集約されている詳細な手順（Phase 1〜4）を自律的に遂行してください。
+選択された方式に従って、[AGENTS.md](AGENTS.md) に集約されている詳細な手順を自律的に遂行してください。
 
 より詳細な運用方法については [AGENTS.md](AGENTS.md) を参照してください。
 
