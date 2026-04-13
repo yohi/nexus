@@ -23,6 +23,16 @@ export default tseslint.config(
     },
     rules: {
       '@typescript-eslint/consistent-type-imports': 'error',
+      'no-constant-condition': ['error', { checkLoops: false }],
     },
   },
+  {
+    // Restrict security exceptions to specific files that need dynamic path/object access
+    files: ['src/server/factory.ts', 'src/storage/metadata-store.ts', 'src/plugins/registry.ts'],
+    rules: {
+      'security/detect-non-literal-fs-filename': 'off',
+      'security/detect-object-injection': 'off',
+      '@typescript-eslint/restrict-template-expressions': 'off',
+    },
+  }
 );

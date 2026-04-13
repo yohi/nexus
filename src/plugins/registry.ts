@@ -152,7 +152,9 @@ export class PluginRegistry {
         embeddingHealthy = await Promise.race([
           activeProvider.healthCheck(),
           new Promise<boolean>((resolve) => {
-            timer = setTimeout(() => resolve(false), REGISTRY_TIMEOUT_MS);
+            timer = setTimeout(() => {
+              resolve(false);
+            }, REGISTRY_TIMEOUT_MS);
           }),
         ]);
       } catch {

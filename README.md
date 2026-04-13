@@ -73,7 +73,7 @@ Install and configure Nexus by following the instructions here: https://raw.gith
   "mcpServers": {
     "nexus": {
       "command": "node",
-      "args": ["/path/to/nexus/dist/index.js"],
+      "args": ["/path/to/nexus/dist/bin/nexus.js"],
       "env": {
         "NEXUS_STORAGE_ROOT_DIR": "/path/to/your/project/.nexus"
       }

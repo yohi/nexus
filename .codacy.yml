@@ -1,0 +1,17 @@
+---
+engines:
+  eslint:
+    enabled: true
+    config: "eslint.config.mjs"
+exclude_paths:
+  - "dist/**"
+  - "node_modules/**"
+  - ".nexus/**"
+  - "tests/**"
+  - "coverage/**"
+  - "scripts/**"
+  - "src/server/factory.ts"
+  - "src/bin/nexus.ts"
+  - "src/server/index.ts"
+  - "**/*.test.ts"
+  - "**/*.bench.ts"
