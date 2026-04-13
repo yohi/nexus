@@ -46,7 +46,7 @@ Use your interaction tool (e.g., `ask_user` with `type: choice` or similar) to d
    - Verify if the token is exported in the environment.
    - If missing, instruct the user: "Please export `NEXUS_GH_PACKAGE_TOKEN` in your shell, then confirm here." Use your **interaction tool** (e.g., `confirm` or similar) to wait for confirmation.
 2. **Choice B.2: Git URL (Tokenless)**: 
-   - Use `npm install github:yohi/nexus`. No PAT needed.
+   - Use `npm install github:yohi/nexus`. This uses the `github:` npm protocol prefix to install directly from the repository. No PAT needed.
 
 ### Phase 2: Project Setup
 1. **For Method B.1**: Configure the **external** project's `.npmrc`:
