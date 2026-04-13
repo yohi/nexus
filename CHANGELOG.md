@@ -1,5 +1,28 @@
 # Changelog
 
+## [1.3.0](https://github.com/yohi/nexus/compare/v1.2.0...v1.3.0) (2026-04-13)
+
+
+### Features
+
+* MCPサーバーとして起動するためのエントリーポイントを追加 ([5e6a456](https://github.com/yohi/nexus/commit/5e6a456b1f4098ad5c9e6f548044dd21083a17cf))
+* projectRootの動的解決と再インデックス・リカバリ機能の実装 ([4d95373](https://github.com/yohi/nexus/commit/4d953737fabf6cebf55ecde361bb01a5ba239077))
+* **server:** サーバーファクトリのリファクタリングとMCP連携のための基盤整備 ([1ab25fe](https://github.com/yohi/nexus/commit/1ab25fe1d2011ee37ca0a270c32f9b6ef711895d))
+
+
+### Bug Fixes
+
+* **docs:** AGENTS.md の記述重複と階層構造のバグを修正 ([45ca4b9](https://github.com/yohi/nexus/commit/45ca4b96ca6f52d8dcd5e69aeeb3c538d56e6f51))
+* **server:** resolve listener leak in startDrainLoop by using signal-aware sleep ([7cc00e2](https://github.com/yohi/nexus/commit/7cc00e24f4e4ee475a3bf536393e2e589d5baebf))
+* **server:** resolve unsafe any-type lint errors in RipgrepEngine spawn ([c0a500a](https://github.com/yohi/nexus/commit/c0a500a1fd4dc185153bd09277eb60581e3780b6))
+* **server:** イベント処理マネージャーにおけるフルスキャンPromiseの競合状態を修正 ([b62be67](https://github.com/yohi/nexus/commit/b62be67e8bcb569d25ea1ce9f476b1ab6c636b43))
+* **server:** サーバーファクトリのエラーハンドリングとリソース管理を強化 ([4909119](https://github.com/yohi/nexus/commit/49091198c46094ea88bcf2fc1808e6519ce9b459))
+* **server:** サーバー実行とバックグラウンド処理の安定性向上 ([497aca0](https://github.com/yohi/nexus/commit/497aca08f327e44be67283972a2db94c38647451))
+* **server:** 埋め込みプロバイダーのエラーハンドリングを改善し、CI設定を調整 ([83e2618](https://github.com/yohi/nexus/commit/83e26180e0695ba397a865e2761af0f1bad15e58))
+* src/bin/nexus.ts の ESLint エラーを修正 ([b8c7499](https://github.com/yohi/nexus/commit/b8c74999c839e1a7321698d4daf832753cfde7a8))
+* デッドロックの解消、イベントキューのドレイン、およびシャットダウン処理の改善 ([720e25a](https://github.com/yohi/nexus/commit/720e25a1115308a79a81c95c807db24da042c918))
+* 非同期コールバックの実行構造を修正 ([b1027e7](https://github.com/yohi/nexus/commit/b1027e75a0d3ce982c6e04feb16d069ccc28aada))
+
 ## [1.2.0](https://github.com/yohi/nexus/compare/v1.1.0...v1.2.0) (2026-04-12)
 
 
