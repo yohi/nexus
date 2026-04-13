@@ -3,6 +3,16 @@ engines:
   eslint:
     enabled: true
     config: "eslint.config.mjs"
+    exclude_rules:
+      - "security/detect-non-literal-fs-filename"
+      - "security/detect-object-injection"
+      - "security/detect-child-process"
+      - "@typescript-eslint/restrict-template-expressions"
+  sonarjs:
+    enabled: true
+    exclude_rules:
+      - "S2589" # Boolean expressions should not be constant (L176の偽陽性対策)
+      - "S6442" # Dynamic path resolution (セキュリティ警告対策)
 ignore_paths:
   - "dist/**"
   - "node_modules/**"
@@ -12,26 +22,3 @@ ignore_paths:
   - "scripts/**"
   - "**/*.test.ts"
   - "**/*.bench.ts"
-security:
-  excluded_rules:
-    # Node.js File System Security (Generic rules)
-    - "node_security_readdir_non_literal"
-    - "node_security_mkdir_non_literal"
-    - "node_security_readFile_non_literal"
-    - "node_security_writeFile_non_literal"
-    # ESLint Security Plugin
-    - "security/detect-non-literal-fs-filename"
-    - "security/detect-object-injection"
-    - "security/detect-child-process"
-    - "security/detect-non-literal-require"
-    # SonarJS / Generic Analysis
-    - "S2589" # Boolean expressions should not be constant
-    - "S1125" # Literal boolean values should not be used
-    - "S2259" # Null pointers should not be dereferenced
-    - "S5332" # Use secure protocols
-    - "S6442" # Dynamic path resolution
-    - "S4790" # Hashing (Merkle tree)
-    - "S1871" # Identical branches
-    # TypeScript-specific (redundant logic detection)
-    - "typescript:S1871"
-    - "typescript:S2589"

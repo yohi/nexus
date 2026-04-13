@@ -277,8 +277,10 @@ export class NexusServerFactory {
         break;
       case 'test':
         throw new Error('Test embedding provider is not supported in production.');
-      default:
-        throw new Error(`Unsupported embedding provider: ${config.embedding.provider}`);
+      default: {
+        const unknown = config.embedding.provider as string;
+        throw new Error(`Unsupported embedding provider: ${unknown}`);
+      }
     }
     
     registry.registerEmbeddingProvider(config.embedding.provider, provider);
