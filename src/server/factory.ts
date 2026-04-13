@@ -152,14 +152,14 @@ class EventProcessingManager {
           true
         );
 
-        if (result && 'status' in result && result.status === 'already_running') {
+        if ('status' in result && result.status === 'already_running') {
           throw new Error('already_running');
         }
 
         console.error('[Nexus] Background full scan completed successfully.');
         return;
       } catch (err) {
-        const isAlreadyRunning = err instanceof Error && err.message === 'already_running';
+        const isAlreadyRunning = (err as Error).message === 'already_running';
         console.error(`[Nexus] Background full scan ${isAlreadyRunning ? 'skipped' : 'failed'} (attempt ${attempt + 1}/${retryCount})`);
 
         if (attempt < retryCount - 1 && !this.abortController.signal.aborted) {
@@ -181,9 +181,7 @@ class EventProcessingManager {
           }
         });
       } catch (error) {
-        if (!this.abortController.signal.aborted) {
-          console.error('[Nexus] Error in event queue drain loop:', error);
-        }
+        console.error('[Nexus] Error in event queue drain loop:', error);
       }
       
       await new Promise(resolvePromise => {
@@ -269,8 +267,8 @@ export class NexusServerFactory {
         const child = spawn('rg', args, { signal });
         let stdout = '';
         let stderr = '';
-        child.stdout?.on('data', (d: Buffer | string) => { stdout += d.toString(); });
-        child.stderr?.on('data', (d: Buffer | string) => { stderr += d.toString(); });
+        child.stdout.on('data', (d: Buffer | string) => { stdout += d.toString(); });
+        child.stderr.on('data', (d: Buffer | string) => { stderr += d.toString(); });
         child.on('close', code => {
           if (code !== 0 && code !== 1) {
             rej(new Error(`ripgrep failed: ${stderr}`));
