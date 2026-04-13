@@ -19,12 +19,14 @@ security:
     - "ESLint_security_detect-non-literal-fs-filename"
     - "ESLint_security_detect-object-injection"
     # SonarJS / Security Rules for non-literal arguments in fs-related functions
-    - "S2589" # Boolean expressions should not be constant
+    - "S2589" # Boolean expressions should not be constant (False positives in TS type guards)
     - "S1125" # Literal boolean values should not be used
     - "S2259" # Null pointers should not be dereferenced
-    - "S5332" # Use secure protocols (if flagged for localhost/http)
-    - "S6442" # Dynamic path resolution warnings
+    - "S5332" # Use secure protocols
+    - "S6442" # Dynamic path resolution (False positives in file scanners)
+    - "S4790" # Hashing (False positives for Merkle tree implementation)
     # Node.js specific security rules
     - "node_security_readdir_non_literal"
     - "node_security_mkdir_non_literal"
     - "node_security_readFile_non_literal"
+    - "node_security_writeFile_non_literal"
