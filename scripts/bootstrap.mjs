@@ -1,5 +1,5 @@
 import { execSync } from 'node:child_process';
-import { existsSync, copyFileSync } from 'node:fs';
+import { existsSync, copyFileSync, unlinkSync, renameSync } from 'node:fs';
 
 const [major] = process.versions.node.split('.').map(Number);
 if (major < 22) {
@@ -25,7 +25,28 @@ const run = (cmd) => {
 console.log('🚀 Nexus Bootstrap starting...');
 
 // 1. Install dependencies
-run('npm install');
+const hasToken = !!process.env.NEXUS_GH_PACKAGE_TOKEN;
+const npmrcExists = existsSync('.npmrc');
+
+if (!hasToken && npmrcExists) {
+  console.log('⚠️ NEXUS_GH_PACKAGE_TOKEN not found. Temporarily bypassing .npmrc for local build...');
+  try {
+    const npmrcBak = '.npmrc.tmp_bak';
+    copyFileSync('.npmrc', npmrcBak);
+    const { unlinkSync, renameSync } = await import('node:fs');
+    unlinkSync('.npmrc');
+    
+    run('npm install');
+    
+    renameSync(npmrcBak, '.npmrc');
+    console.log('✅ Restored .npmrc');
+  } catch (error) {
+    console.error(`❌ Failed to bypass .npmrc: ${error.message}`);
+    process.exit(1);
+  }
+} else {
+  run('npm install');
+}
 
 // 2. Setup .env (if example exists)
 if (!existsSync('.env') && existsSync('.env.example')) {
