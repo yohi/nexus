@@ -1,6 +1,6 @@
 import { spawn } from 'node:child_process';
 import { readFile, mkdir } from 'node:fs/promises';
-import { dirname, join, relative, sep } from 'node:path';
+import { dirname } from 'node:path';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 
 import { loadConfig } from '../config/index.js';
@@ -79,8 +79,12 @@ async function main() {
         let stdout = '';
         let stderr = '';
 
-        child.stdout.on('data', (data) => (stdout += data));
-        child.stderr.on('data', (data) => (stderr += data));
+        child.stdout.on('data', (data: Buffer) => {
+          stdout += data.toString();
+        });
+        child.stderr.on('data', (data: Buffer) => {
+          stderr += data.toString();
+        });
 
         child.on('close', (code) => {
           if (code !== 0 && code !== 1) {
@@ -92,20 +96,28 @@ async function main() {
 
           for (const line of lines) {
             try {
-              const parsed = JSON.parse(line);
+              const parsed = JSON.parse(line) as {
+                type: string;
+                data: {
+                  path: { text: string };
+                  line_number: number;
+                  lines: { text: string };
+                  submatches: Array<{ start: number; end: number; match: { text: string } }>;
+                };
+              };
               if (parsed.type === 'match') {
                 matches.push({
                   filePath: parsed.data.path.text,
                   lineNumber: parsed.data.line_number,
                   lineText: parsed.data.lines.text,
-                  submatches: parsed.data.submatches.map((m: any) => ({
+                  submatches: parsed.data.submatches.map((m) => ({
                     start: m.start,
                     end: m.end,
                     match: m.match.text,
                   })),
                 });
               }
-            } catch (e) {
+            } catch {
               // Ignore parse errors for non-match lines
             }
           }
@@ -140,8 +152,9 @@ async function main() {
     maxQueueSize: config.watcher.maxQueueSize,
     fullScanThreshold: config.watcher.fullScanThreshold,
     concurrency: 4,
-    onFullScanRequired: async () => {
+    onFullScanRequired: () => {
       console.error('Full scan required due to queue overflow');
+      return Promise.resolve();
     },
   });
 
@@ -167,16 +180,18 @@ async function main() {
     pluginRegistry,
     watcher,
     runReindex: async (args) => {
-      const result = await pipeline.reindex(
-        async () => {
+      let events: IndexEvent[] = [];
+      await pipeline.reindex(
+        () => {
           // In a full CLI implementation, this would use a recursive directory walker.
           // For now, return an empty array or implement a basic scan if needed.
-          return [];
+          events = [];
+          return Promise.resolve(events);
         },
         loadFileContent,
         args?.fullScan,
       );
-      return (result as any).events ?? [];
+      return events;
     },
     loadFileContent,
   });
@@ -186,14 +201,16 @@ async function main() {
 
   console.error('Nexus MCP server running on stdio');
 
-  process.on('SIGINT', async () => {
-    await runtime.close();
-    process.exit(0);
+  process.on('SIGINT', () => {
+    void runtime.close().then(() => {
+      process.exit(0);
+    });
   });
 
-  process.on('SIGTERM', async () => {
-    await runtime.close();
-    process.exit(0);
+  process.on('SIGTERM', () => {
+    void runtime.close().then(() => {
+      process.exit(0);
+    });
   });
 }
 
