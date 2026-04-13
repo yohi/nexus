@@ -19,11 +19,11 @@ Call `ask_user` to choose between:
 1. **Detect OS & Node.js** (>= 22.0.0).
 2. **Architecture**: Read `SPEC.md`.
 
-### Phase 2: Credentials & .env Setup (CRITICAL)
-1. **Check for Token**: Verify if `NEXUS_GH_PACKAGE_TOKEN` is set in the environment or `.env`.
-2. **Handle Missing Token**: If missing or if `npm install` fails due to 401/403:
-   - **Action**: Inform the user: "Please add `NEXUS_GH_PACKAGE_TOKEN=your_pat_here` to the `.env` file in the project root."
-   - **Wait**: Call `ask_user` (type: `yesno`) with the question: "Have you updated the `.env` file with a valid GitHub PAT?"
+### Phase 2: Credentials Setup (CRITICAL)
+1. **Check for Token**: Verify if `NEXUS_GH_PACKAGE_TOKEN` is exported in the shell environment.
+2. **Handle Missing Token**: If missing or if `npm install` (in `scripts/bootstrap.mjs`) fails due to 401/403:
+   - **Action**: Inform the user: "Please run `export NEXUS_GH_PACKAGE_TOKEN=your_pat_here` in your terminal, or add it to a `.env` file and ensure it's loaded into the environment before running bootstrap."
+   - **Wait**: Call `ask_user` (type: `yesno`) with the question: "Have you exported `NEXUS_GH_PACKAGE_TOKEN` in your shell environment?"
    - **Retry**: Only proceed after the user confirms.
 3. **Bootstrap**: Run `node scripts/bootstrap.mjs`.
 
@@ -42,7 +42,11 @@ Call `ask_user` to choose between:
 2. **Alternative (Tokenless)**: If the user cannot provide a token, you **MUST** suggest installing via Git URL.
    - **Action**: Ask the user: "Would you like to install via Git URL (tokenless) instead of GitHub Packages?"
    - **Command**: `npm install github:yohi/nexus`.
-3. **.npmrc Config**: If using GitHub Packages (Method 1), ensure the project's `.npmrc` is configured to use the token (e.g., utilizing the tracked `.npmrc` provided in the repository).
+3. **.npmrc Config**: If using GitHub Packages (Method 1), ensure the **external project's** `.npmrc` is configured with the following two lines:
+   ```text
+   @yohi:registry=https://npm.pkg.github.com
+   //npm.pkg.github.com/:_authToken=${NEXUS_GH_PACKAGE_TOKEN}
+   ```
 
 ### Phase 2: Installation
 1. **Method 1 (GitHub Packages)**: If token exists, run `npm install @yohi/nexus`.
