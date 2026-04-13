@@ -28,6 +28,7 @@ export class NexusServerFactory {
    */
   static async createRuntime(config: Config): Promise<NexusRuntime> {
     const { projectRoot } = config;
+    const ignorePaths = ['node_modules', '.git', '.nexus', 'dist'];
 
     // Ensure storage directories exist
     await mkdir(config.storage.rootDir, { recursive: true });
@@ -152,18 +153,72 @@ export class NexusServerFactory {
       pluginRegistry,
     });
 
+    /**
+     * Recursively scans the project root to find all files to index,
+     * respecting the defined ignore paths.
+     */
+    const scanDirectory = async (dir: string): Promise<IndexEvent[]> => {
+      const entries = await readdir(dir, { withFileTypes: true });
+      const events: IndexEvent[] = [];
+
+      for (const entry of entries) {
+        const fullPath = join(dir, entry.name);
+        const relPath = relative(projectRoot, fullPath);
+        const segments = relPath.split(sep);
+
+        if (ignorePaths.some((p) => segments.includes(p))) {
+          continue;
+        }
+
+        if (entry.isDirectory()) {
+          events.push(...(await scanDirectory(fullPath)));
+        } else if (entry.isFile()) {
+          events.push({
+            type: 'added',
+            filePath: relPath,
+            detectedAt: new Date().toISOString(),
+          });
+        }
+      }
+      return events;
+    };
+
+    /**
+     * Triggers a full scan of the codebase to reconcile the index state.
+     * Includes basic retry logic for resilience during temporary failures.
+     */
+    const triggerFullScanWithRetry = async (retryCount = 3, baseDelayMs = 1000): Promise<void> => {
+      for (let attempt = 0; attempt < retryCount; attempt += 1) {
+        try {
+          console.error(`[Nexus] Full scan recovery starting (attempt ${attempt + 1}/${retryCount})`);
+          await pipeline.reindex(() => scanDirectory(projectRoot), loadFileContent, true);
+          console.error('[Nexus] Full scan recovery completed successfully.');
+          return;
+        } catch (err) {
+          console.error(`[Nexus] Full scan recovery failed (attempt ${attempt + 1}/${retryCount}):`, err);
+          if (attempt < retryCount - 1) {
+            const delay = baseDelayMs * 2 ** attempt;
+            await new Promise((resolve) => {
+              setTimeout(resolve, delay);
+            });
+          }
+        }
+      }
+      console.error('[Nexus] Full scan recovery exhausted all retry attempts.');
+    };
+
     const eventQueue = new EventQueue({
       debounceMs: config.watcher.debounceMs,
       maxQueueSize: config.watcher.maxQueueSize,
       fullScanThreshold: config.watcher.fullScanThreshold,
       concurrency: 4,
       onFullScanRequired: () => {
-        console.error('Full scan required due to queue overflow');
+        console.error('[Nexus] Event queue overflow detected. Scheduling full scan recovery...');
+        // Fire and forget recovery to let the event loop continue, but log failures.
+        void triggerFullScanWithRetry();
         return Promise.resolve();
       },
     });
-
-    const ignorePaths = ['node_modules', '.git', '.nexus', 'dist'];
 
     const watcher = new FileWatcher(
       {
@@ -187,36 +242,6 @@ export class NexusServerFactory {
       pluginRegistry,
       watcher,
       runReindex: async (args) => {
-        /**
-         * Recursively scans the project root to find all files to index,
-         * respecting the defined ignore paths.
-         */
-        const scanDirectory = async (dir: string): Promise<IndexEvent[]> => {
-          const entries = await readdir(dir, { withFileTypes: true });
-          const events: IndexEvent[] = [];
-
-          for (const entry of entries) {
-            const fullPath = join(dir, entry.name);
-            const relPath = relative(projectRoot, fullPath);
-            const segments = relPath.split(sep);
-
-            if (ignorePaths.some((p) => segments.includes(p))) {
-              continue;
-            }
-
-            if (entry.isDirectory()) {
-              events.push(...(await scanDirectory(fullPath)));
-            } else if (entry.isFile()) {
-              events.push({
-                type: 'added',
-                filePath: relPath,
-                detectedAt: new Date().toISOString(),
-              });
-            }
-          }
-          return events;
-        };
-
         let scannedEvents: IndexEvent[] = [];
         const result = await pipeline.reindex(
           async () => {
