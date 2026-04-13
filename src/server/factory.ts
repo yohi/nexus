@@ -124,9 +124,12 @@ class EventProcessingManager {
       fullScanThreshold: this.config.watcher.fullScanThreshold,
       concurrency: 4,
       onFullScanRequired: () => {
-        this.fullScanPromise = this.triggerFullScan().finally(() => {
-          this.fullScanPromise = undefined;
+        const p = this.triggerFullScan().finally(() => {
+          if (this.fullScanPromise === p) {
+            this.fullScanPromise = undefined;
+          }
         });
+        this.fullScanPromise = p;
         return Promise.resolve();
       },
     });
