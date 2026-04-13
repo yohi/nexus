@@ -29,29 +29,12 @@ Install and configure Nexus by following the instructions here: https://raw.gith
 ```
 ### FOR AGENTS (AIエージェント向け手順)
 
-あなたがターミナル操作可能なAIエージェントであるなら、まず `ask_user` 等を使用して、ユーザーに以下のいずれのインストール方式を希望するか確認してください：
+あなたがターミナル操作可能なAIエージェントであるなら、**まず `ask_user` 等を使用して、ユーザーに以下のいずれのインストール方式を希望するか必ず確認してください。** これは [AGENTS.md](AGENTS.md) で定義された **MANDATORY** ステップです。
 
 - **A. ソースからビルド (推奨)**: フル機能（開発、テスト、カスタマイズ）を利用する場合。
-- **B. パッケージとして利用**: 既存のプロジェクトにライブラリとして組み込む場合。
+- **B. パッケージとして利用**: 既存のプロジェクトにライブラリとして組み込む場合。**（GitHub PAT がない場合は `npm install github:yohi/nexus` でトークンレス・インストールが可能です）**
 
-選択された方式に従って、以下の手順を自律的に遂行してください。詳細は [AGENTS.md](AGENTS.md) に集約されています。
-
-#### A. ソースからビルドする場合 (推奨)
-
-このリポジトリを作業ディレクトリとして利用する場合の手順です。
-
-1. [ ] **プロトコルの確認**: まず [AGENTS.md](AGENTS.md) を読み、環境要件とセットアッププロトコルを理解してください。
-2. [ ] **環境構築 (ブートストラップ)**: `node scripts/bootstrap.mjs` を実行。
-   - このスクリプトは `npm install`, `.env` 初期化, `npm run build`, `npm run lint` を一括で行います。
-3. [ ] **動作確認**: `npm test` を実行し、すべてのテストがパスすることを確認。
-
-#### B. パッケージとして利用する場合
-
-`@yohi/nexus` をライブラリとして組み込む場合の手順です。
-
-1. [ ] **事前準備 (認証)**: GitHub Packages を利用するため、プロジェクトルートの `.npmrc` に `@yohi:registry=https://npm.pkg.github.com` を追加し、`read:packages` スコープを持つ GitHub Personal Access Token で認証されていることを確認してください。
-2. [ ] **パッケージのインストール**: `npm install @yohi/nexus` を実行。
-3. [ ] **インポートの確認**: `import { createNexusServer } from '@yohi/nexus'` が可能であることを確認。
+選択された方式に従って、[AGENTS.md](AGENTS.md) に集約されている詳細な手順を自律的に遂行してください。
 
 より詳細な運用方法については [AGENTS.md](AGENTS.md) を参照してください。
 
