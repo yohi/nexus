@@ -1,5 +1,4 @@
 # Instructions for AI Agents: Auto-Installation & Setup (Nexus)
-# Instructions for AI Agents: Auto-Installation & Setup (Nexus)
 
 You are an expert software engineer tasked with the setup of **Nexus**.
 **CRITICAL PROTOCOL**: 
@@ -28,23 +27,7 @@ Call `ask_user` to choose between:
    - **Retry**: Only proceed after the user confirms.
 3. **Bootstrap**: Run `node scripts/bootstrap.mjs`.
 
----
-
-## IF CHOICE B: PACKAGE USAGE
-
-### Phase 1: Credentials & .npmrc Preparation
-1. **Token Check**: Verify `NEXUS_GH_PACKAGE_TOKEN` exists.
-2. **Alternative (Tokenless)**: If the user cannot provide a token, you **MUST** suggest installing via Git URL.
-   - **Action**: Ask the user: "Would you like to install via Git URL (tokenless) instead of GitHub Packages?"
-   - **Command**: `npm install github:yohi/nexus`.
-
-### Phase 2: Installation
-1. **Method 1 (GitHub Packages)**: If token exists, ensure `.npmrc` is configured and run `npm install @yohi/nexus`.
-2. **Method 2 (Git URL)**: If tokenless is preferred, run `npm install github:yohi/nexus`.
-3. **Verify**: Check resolvability of `@yohi/nexus`.
-
-
-### Phase 2: Verification & Handover
+### Phase 3: Verification & Handover
 1. **Test**: Run `npm test` (Vitest). If tests fail, diagnose and attempt to fix common issues.
 2. **MCP Server Check**: 
    - Confirm the main entry point `dist/bin/nexus.js` is correctly generated.
@@ -54,11 +37,14 @@ Call `ask_user` to choose between:
 
 ## IF CHOICE B: PACKAGE USAGE
 
-### Phase 1: Preparation (Authentication)
-1. **GitHub Packages Configuration**:
-   - Ensure `@yohi:registry=https://npm.pkg.github.com` is in the project's `.npmrc`.
-   - Verify the user has a GitHub Personal Access Token with `read:packages` scope.
+### Phase 1: Credentials & .npmrc Preparation
+1. **Token Check**: Verify `NEXUS_GH_PACKAGE_TOKEN` exists.
+2. **Alternative (Tokenless)**: If the user cannot provide a token, you **MUST** suggest installing via Git URL.
+   - **Action**: Ask the user: "Would you like to install via Git URL (tokenless) instead of GitHub Packages?"
+   - **Command**: `npm install github:yohi/nexus`.
+3. **.npmrc Config**: If using GitHub Packages (Method 1), ensure the project's `.npmrc` is configured to use the token (e.g., utilizing the tracked `.npmrc` provided in the repository).
 
 ### Phase 2: Installation
-1. **Install Package**: Run `npm install @yohi/nexus`.
-2. **Verify Import**: Check if `import { createNexusServer } from '@yohi/nexus'` is resolvable.
+1. **Method 1 (GitHub Packages)**: If token exists, run `npm install @yohi/nexus`.
+2. **Method 2 (Git URL)**: If tokenless is preferred, run `npm install github:yohi/nexus`.
+3. **Verify Import**: Check if `import { createNexusServer } from '@yohi/nexus'` is resolvable.
