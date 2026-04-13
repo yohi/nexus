@@ -105,7 +105,9 @@ describe('LanceVectorStore compaction integration', () => {
       waitForUnlock: vi.fn().mockImplementation(async (signal: AbortSignal) => {
         // Wait until aborted
         return new Promise((_, reject) => {
-          signal.addEventListener('abort', () => reject(new Error('Aborted')));
+          signal.addEventListener('abort', () => {
+            reject(new Error('Aborted'));
+          });
         });
       }),
     };
@@ -128,7 +130,9 @@ describe('LanceVectorStore compaction integration', () => {
     const mutex = {
       waitForUnlock: vi.fn().mockImplementation(async (signal: AbortSignal) => {
         return new Promise((_, reject) => {
-          signal.addEventListener('abort', () => reject(signal.reason));
+          signal.addEventListener('abort', () => {
+            reject(signal.reason);
+          });
         });
       }),
     };
