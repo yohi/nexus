@@ -269,8 +269,8 @@ export class NexusServerFactory {
         const child = spawn('rg', args, { signal });
         let stdout = '';
         let stderr = '';
-        child.stdout.on('data', d => { stdout += d.toString(); });
-        child.stderr.on('data', d => { stderr += d.toString(); });
+        child.stdout?.on('data', (d: Buffer | string) => { stdout += d.toString(); });
+        child.stderr?.on('data', (d: Buffer | string) => { stderr += d.toString(); });
         child.on('close', code => {
           if (code !== 0 && code !== 1) {
             rej(new Error(`ripgrep failed: ${stderr}`));
