@@ -4,6 +4,7 @@ import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 
 import { loadConfig } from '../config/index.js';
 import { NexusServerFactory } from '../server/factory.js';
+import type { NexusRuntime } from '../server/index.js';
 
 /**
  * Main entry point for the Nexus MCP server CLI.
@@ -11,7 +12,22 @@ import { NexusServerFactory } from '../server/factory.js';
  * and connects to the MCP Stdio transport.
  */
 async function main() {
-  // Parse CLI arguments
+  const projectRoot = parseProjectRoot();
+  const config = await loadConfig({ projectRoot });
+  const runtime = await NexusServerFactory.createRuntime(config);
+
+  const transport = new StdioServerTransport();
+  await runtime.server.connect(transport);
+
+  console.error(`Nexus MCP server running on stdio (root: ${projectRoot})`);
+
+  setupSignalHandlers(runtime);
+}
+
+/**
+ * Resolves the project root from CLI arguments, environment variables, or CWD.
+ */
+function parseProjectRoot(): string {
   const { values } = parseArgs({
     options: {
       'project-root': {
@@ -21,21 +37,14 @@ async function main() {
     strict: false,
   });
 
-  // Priority: 1. CLI flag (--project-root)
-  //           2. Environment variable (NEXUS_PROJECT_ROOT)
-  //           3. Current working directory (process.cwd())
-  const rawProjectRoot = values['project-root'] ?? process.env.NEXUS_PROJECT_ROOT ?? process.cwd();
-  const projectRoot = typeof rawProjectRoot === 'string' ? rawProjectRoot : process.cwd();
+  const raw = values['project-root'] ?? process.env.NEXUS_PROJECT_ROOT ?? process.cwd();
+  return typeof raw === 'string' ? raw : process.cwd();
+}
 
-  const config = await loadConfig({ projectRoot });
-
-  const runtime = await NexusServerFactory.createRuntime(config);
-
-  const transport = new StdioServerTransport();
-  await runtime.server.connect(transport);
-
-  console.error(`Nexus MCP server running on stdio (root: ${projectRoot})`);
-
+/**
+ * Configures handlers for graceful shutdown.
+ */
+function setupSignalHandlers(runtime: NexusRuntime): void {
   const handleShutdown = () => {
     runtime.close()
       .then(() => {

@@ -30,6 +30,7 @@ export interface NexusServerOptions {
 
 export interface NexusRuntimeOptions extends NexusServerOptions {
   watcher: IFileWatcher;
+  onClose?: () => Promise<void>;
 }
 
 export interface NexusRuntime {
@@ -201,6 +202,15 @@ export const initializeNexusRuntime = async (options: NexusRuntimeOptions): Prom
       server,
       close: async () => {
         const shutdownErrors: unknown[] = [];
+
+        if (options.onClose) {
+          try {
+            await options.onClose();
+          } catch (error) {
+            shutdownErrors.push(error);
+          }
+        }
+
         try {
           await options.watcher.stop();
         } catch (error) {

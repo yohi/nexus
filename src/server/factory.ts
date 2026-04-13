@@ -28,20 +28,79 @@ export class NexusServerFactory {
    */
   static async createRuntime(config: Config): Promise<NexusRuntime> {
     const { projectRoot } = config;
-    
-    // Merge default ignore paths with potential custom ones from config (not yet in Config type, but good to have)
-    const ignorePaths = Array.from(new Set([
-      'node_modules', '.git', '.nexus', 'dist',
-      ...(process.env.NEXUS_IGNORE_PATHS?.split(',') ?? [])
-    ]));
 
-    // Ensure storage directories exist (unless using memory storage)
-    await mkdir(config.storage.rootDir, { recursive: true });
-    await mkdir(dirname(config.storage.metadataDbPath), { recursive: true });
-    if (!config.storage.vectorDbPath.startsWith('memory://')) {
-      await mkdir(config.storage.vectorDbPath, { recursive: true });
+    await this.ensureStorageDirectories(config);
+
+    const { metadataStore, vectorStore } = this.initializeStores(config);
+    const pluginRegistry = this.setupPluginRegistry(config);
+
+    const embeddingProvider = pluginRegistry.getEmbeddingProvider();
+    if (!embeddingProvider) {
+      throw new Error('No embedding provider configured. Please check your configuration.');
     }
 
+    const semanticSearch = new SemanticSearch({ vectorStore, embeddingProvider });
+    const grepEngine = this.createGrepEngine(projectRoot);
+    const orchestrator = new SearchOrchestrator({ semanticSearch, grepEngine, projectRoot });
+    const chunker = new Chunker(pluginRegistry);
+
+    const pipeline = new IndexPipeline({
+      metadataStore,
+      vectorStore,
+      chunker,
+      embeddingProvider,
+      pluginRegistry,
+    });
+
+    const loadFileContent = (path: string) => {
+      const absolutePath = resolve(projectRoot, path);
+      return readFile(absolutePath, 'utf8');
+    };
+
+    const ignorePaths = this.getIgnorePaths();
+    const { watcher, onClose } = this.setupEventProcessing(config, projectRoot, ignorePaths, pipeline, loadFileContent);
+
+    const sanitizer = await PathSanitizer.create(projectRoot);
+
+    const runtime = await initializeNexusRuntime({
+      projectRoot,
+      sanitizer,
+      semanticSearch,
+      grepEngine,
+      orchestrator,
+      vectorStore,
+      metadataStore,
+      pipeline,
+      pluginRegistry,
+      watcher,
+      runReindex: async (args) => {
+        let scannedEvents: IndexEvent[] = [];
+        await pipeline.reindex(
+          async () => {
+            scannedEvents = await this.scanDirectory(projectRoot, projectRoot, ignorePaths);
+            return scannedEvents;
+          },
+          loadFileContent,
+          args?.fullScan,
+        );
+        return scannedEvents;
+      },
+      loadFileContent,
+      onClose,
+    });
+
+    return runtime;
+  }
+
+  private static async ensureStorageDirectories(config: Config): Promise<void> {
+    await mkdir(resolve(config.storage.rootDir), { recursive: true });
+    await mkdir(dirname(resolve(config.storage.metadataDbPath)), { recursive: true });
+    if (!config.storage.vectorDbPath.startsWith('memory://')) {
+      await mkdir(resolve(config.storage.vectorDbPath), { recursive: true });
+    }
+  }
+
+  private static initializeStores(config: Config) {
     const metadataStore = new SqliteMetadataStore({
       databasePath: config.storage.metadataDbPath,
       batchSize: config.storage.batchSize,
@@ -52,6 +111,10 @@ export class NexusServerFactory {
       dimensions: config.embedding.dimensions,
     });
 
+    return { metadataStore, vectorStore };
+  }
+
+  private static setupPluginRegistry(config: Config): PluginRegistry {
     const pluginRegistry = new PluginRegistry();
     pluginRegistry.registerLanguage(new TypeScriptLanguagePlugin());
     pluginRegistry.registerLanguage(new PythonLanguagePlugin());
@@ -68,22 +131,17 @@ export class NexusServerFactory {
       pluginRegistry.setActiveEmbeddingProvider('openai-compat');
     }
 
-    const embeddingProvider = pluginRegistry.getEmbeddingProvider();
-    if (!embeddingProvider) {
-      throw new Error('No embedding provider configured. Please check your configuration.');
-    }
+    return pluginRegistry;
+  }
 
-    const semanticSearch = new SemanticSearch({ vectorStore, embeddingProvider });
-
-    const grepEngine = new RipgrepEngine({
+  private static createGrepEngine(projectRoot: string): RipgrepEngine {
+    return new RipgrepEngine({
       projectRoot,
       spawn: async (params, signal) => {
-        return new Promise((resolve, reject) => {
+        return new Promise((resolvePromise, reject) => {
           const args = ['--json'];
-          if (!params.caseSensitive) {
-            args.push('--ignore-case');
-          }
-          if (params.glob && params.glob.length > 0) {
+          if (!params.caseSensitive) args.push('--ignore-case');
+          if (params.glob?.length) {
             params.glob.forEach((g) => args.push('--glob', g));
           }
           args.push('--', params.query, params.cwd);
@@ -92,131 +150,131 @@ export class NexusServerFactory {
           let stdout = '';
           let stderr = '';
 
-          child.stdout.on('data', (data: Buffer) => {
-            stdout += data.toString();
-          });
-          child.stderr.on('data', (data: Buffer) => {
-            stderr += data.toString();
-          });
+          child.stdout.on('data', (data: Buffer) => { stdout += data.toString(); });
+          child.stderr.on('data', (data: Buffer) => { stderr += data.toString(); });
 
           child.on('close', (code) => {
             if (code !== 0 && code !== 1) {
               reject(new Error(`ripgrep failed with code ${code}: ${stderr}`));
               return;
             }
-
-            const lines = stdout.split('\n').filter((l) => l.trim() !== '');
-            const matches: GrepMatch[] = [];
-
-            for (const line of lines) {
-              try {
-                const parsed = JSON.parse(line) as {
-                  type: string;
-                  data: {
-                    path: { text: string };
-                    line_number: number;
-                    lines: { text: string };
-                    submatches: Array<{ start: number; end: number; match: { text: string } }>;
-                  };
-                };
-                if (parsed.type === 'match') {
-                  matches.push({
-                    filePath: parsed.data.path.text,
-                    lineNumber: parsed.data.line_number,
-                    lineText: parsed.data.lines.text,
-                    submatches: parsed.data.submatches.map((m) => ({
-                      start: m.start,
-                      end: m.end,
-                      match: m.match.text,
-                    })),
-                  });
-                }
-              } catch {
-                // Ignore non-match lines
-              }
-            }
-            resolve(matches);
+            resolvePromise(this.parseGrepOutput(stdout));
           });
 
           child.on('error', (err) => {
-            if (err.name === 'AbortError') {
-              resolve([]);
-            } else {
-              reject(err);
-            }
+            if (err.name === 'AbortError') resolvePromise([]);
+            else reject(err);
           });
         });
       },
     });
+  }
 
-    const orchestrator = new SearchOrchestrator({ semanticSearch, grepEngine, projectRoot });
-    const chunker = new Chunker(pluginRegistry);
-    
-    // Fix: Resolve path against projectRoot
-    const loadFileContent = (path: string) => {
-      const absolutePath = resolve(projectRoot, path);
-      return readFile(absolutePath, 'utf8');
-    };
+  private static parseGrepOutput(stdout: string): GrepMatch[] {
+    const lines = stdout.split('\n').filter((l) => l.trim() !== '');
+    const matches: GrepMatch[] = [];
 
-    const pipeline = new IndexPipeline({
-      metadataStore,
-      vectorStore,
-      chunker,
-      embeddingProvider,
-      pluginRegistry,
-    });
-
-    /**
-     * Recursively scans the project root to find all files to index,
-     * respecting the defined ignore paths.
-     */
-    const scanDirectory = async (dir: string): Promise<IndexEvent[]> => {
-      const entries = await readdir(dir, { withFileTypes: true });
-      const events: IndexEvent[] = [];
-
-      for (const entry of entries) {
-        const fullPath = join(dir, entry.name);
-        const relPath = relative(projectRoot, fullPath);
-        const segments = relPath.split(sep);
-
-        if (ignorePaths.some((p) => segments.includes(p))) {
-          continue;
-        }
-
-        if (entry.isDirectory()) {
-          events.push(...(await scanDirectory(fullPath)));
-        } else if (entry.isFile()) {
-          events.push({
-            type: 'added',
-            filePath: relPath,
-            detectedAt: new Date().toISOString(),
+    for (const line of lines) {
+      try {
+        const parsed = JSON.parse(line);
+        if (parsed.type === 'match') {
+          matches.push({
+            filePath: parsed.data.path.text,
+            lineNumber: parsed.data.line_number,
+            lineText: parsed.data.lines.text,
+            submatches: parsed.data.submatches.map((m: any) => ({
+              start: m.start,
+              end: m.end,
+              match: m.match.text,
+            })),
           });
         }
-      }
-      return events;
-    };
+      } catch { /* ignore */ }
+    }
+    return matches;
+  }
 
-    /**
-     * Triggers a full scan of the codebase to reconcile the index state.
-     */
-    const triggerFullScanWithRetry = async (retryCount = 3, baseDelayMs = 1000): Promise<void> => {
-      for (let attempt = 0; attempt < retryCount; attempt += 1) {
-        try {
-          console.error(`[Nexus] Full scan recovery starting (attempt ${attempt + 1}/${retryCount})`);
-          await pipeline.reindex(() => scanDirectory(projectRoot), loadFileContent, true);
-          console.error('[Nexus] Full scan recovery completed successfully.');
-          return;
-        } catch (err) {
-          console.error(`[Nexus] Full scan recovery failed (attempt ${attempt + 1}/${retryCount}):`, err);
-          if (attempt < retryCount - 1) {
-            const delay = baseDelayMs * 2 ** attempt;
-            await new Promise((resolve) => {
-              setTimeout(resolve, delay);
-            });
-          }
+  private static async scanDirectory(dir: string, projectRoot: string, ignorePaths: string[]): Promise<IndexEvent[]> {
+    const entries = await readdir(resolve(dir), { withFileTypes: true });
+    const events: IndexEvent[] = [];
+
+    for (const entry of entries) {
+      const fullPath = join(dir, entry.name);
+      const relPath = relative(projectRoot, fullPath);
+      const segments = relPath.split(sep);
+
+      if (ignorePaths.some((p) => segments.includes(p))) continue;
+
+      if (entry.isDirectory()) {
+        events.push(...(await this.scanDirectory(fullPath, projectRoot, ignorePaths)));
+      } else if (entry.isFile()) {
+        events.push({
+          type: 'added',
+          filePath: relPath,
+          detectedAt: new Date().toISOString(),
+        });
+      }
+    }
+    return events;
+  }
+
+  private static getIgnorePaths(): string[] {
+    const envIgnore = process.env.NEXUS_IGNORE_PATHS
+      ? process.env.NEXUS_IGNORE_PATHS.split(',').map(p => p.trim()).filter(Boolean)
+      : [];
+    return Array.from(new Set([
+      'node_modules', '.git', '.nexus', 'dist',
+      ...envIgnore
+    ]));
+  }
+
+  private static async triggerFullScanWithRetry(
+    pipeline: IndexPipeline,
+    projectRoot: string,
+    ignorePaths: string[],
+    loadFileContent: (path: string) => Promise<string>,
+    retryCount = 3,
+    baseDelayMs = 1000
+  ): Promise<void> {
+    for (let attempt = 0; attempt < retryCount; attempt += 1) {
+      try {
+        const result = await pipeline.reindex(
+          () => this.scanDirectory(projectRoot, projectRoot, ignorePaths),
+          loadFileContent,
+          true
+        );
+
+        if (typeof result === 'object' && result !== null && 'status' in result && result.status === 'already_running') {
+          throw new Error('already_running');
+        }
+
+        console.error('[Nexus] Background full scan completed successfully.');
+        return;
+      } catch (err) {
+        const isAlreadyRunning = err instanceof Error && err.message === 'already_running';
+        const logPrefix = `[Nexus] Background full scan ${isAlreadyRunning ? 'skipped (already running)' : 'failed'}`;
+        console.error(`${logPrefix} (attempt ${attempt + 1}/${retryCount})`);
+
+        if (attempt < retryCount - 1) {
+          const delay = baseDelayMs * 2 ** attempt;
+          await new Promise(resolvePromise => setTimeout(resolvePromise, delay));
         }
       }
-      console.error('[Nexus] Full scan recovery exhausted all retry attempts.');
+    }
+    console.error('[Nexus] Background full scan exhausted all retry attempts.');
+  }
+
+  private static setupEventProcessing(
+    config: Config,
+    projectRoot: string,
+    ignorePaths: string[],
+    pipeline: IndexPipeline,
+    loadFileContent: (path: string) => Promise<string>
+  ) {
+    const abortController = new AbortController();
+
+    const triggerFullScan = async () => {
+      await this.triggerFullScanWithRetry(pipeline, projectRoot, ignorePaths, loadFileContent);
     };
 
     const eventQueue = new EventQueue({
@@ -225,83 +283,45 @@ export class NexusServerFactory {
       fullScanThreshold: config.watcher.fullScanThreshold,
       concurrency: 4,
       onFullScanRequired: () => {
-        console.error('[Nexus] Event queue overflow detected. Scheduling full scan recovery...');
-        void triggerFullScanWithRetry();
+        void triggerFullScan();
         return Promise.resolve();
       },
     });
 
-    const watcher = new FileWatcher(
-      {
-        projectRoot,
-        ignorePaths,
-      },
-      eventQueue,
-    );
+    const watcher = new FileWatcher({ projectRoot, ignorePaths }, eventQueue);
 
-    const sanitizer = await PathSanitizer.create(projectRoot);
-
-    const runtime = await initializeNexusRuntime({
-      projectRoot,
-      sanitizer,
-      semanticSearch,
-      grepEngine,
-      orchestrator,
-      vectorStore,
-      metadataStore,
-      pipeline,
-      pluginRegistry,
-      watcher,
-      runReindex: async (args) => {
-        // Fix: Use the pipeline directly to avoid deadlock and return scanned events
-        let scannedEvents: IndexEvent[] = [];
-        const result = await pipeline.reindex(
-          async () => {
-            scannedEvents = await scanDirectory(projectRoot);
-            return scannedEvents;
-          },
-          loadFileContent,
-          args?.fullScan,
-        );
-
-        if ('status' in result) {
-          return [];
-        }
-        return scannedEvents;
-      },
-      loadFileContent,
-    });
-
-    // Fix: Background loop to drain the EventQueue
-    const drainLoop = async () => {
-      let isRunning = true;
-      while (isRunning) {
+    // Start background drain loop with cancellation support
+    const drainTask = (async () => {
+      while (!abortController.signal.aborted) {
         try {
-          // Drain events and process them via the pipeline
+          // If eventQueue.drain supports signal, we should pass it. 
+          // Assuming it doesn't, we check signal after each drain.
           await eventQueue.drain(async (event) => {
-            if (event.type === 'reindex') {
-              // Reindex events are handled via triggerFullScan logic or similar
-              await triggerFullScanWithRetry(1); // Single attempt for queue-based reindex
-            } else {
-              await pipeline.processEvents([event], loadFileContent);
-            }
+            if (event.type === 'reindex') await triggerFullScan();
+            else await pipeline.processEvents([event], loadFileContent);
           });
         } catch (error) {
-          console.error('[Nexus] Error in event queue drain loop:', error);
+          if (!abortController.signal.aborted) {
+            console.error('[Nexus] Error in event queue drain loop:', error);
+          }
         }
-        // Wait a bit before next drain attempt if queue was empty
-        await new Promise(resolve => setTimeout(resolve, 500));
         
-        // Ensure isRunning stays true but it's not a literal constant in the while check
-        if (process.env.STOP_DRAIN_LOOP) {
-          isRunning = false;
-        }
+        // Wait with cancellation awareness
+        await new Promise(resolvePromise => {
+          const timer = setTimeout(resolvePromise, 500);
+          abortController.signal.addEventListener('abort', () => {
+            clearTimeout(timer);
+            resolvePromise(undefined);
+          }, { once: true });
+        });
       }
-    };
-    
-    // Start the drain loop but don't await it (background)
-    void drainLoop();
+    })();
 
-    return runtime;
+    const onClose = async () => {
+      abortController.abort();
+      await drainTask;
+    };
+
+    return { eventQueue, watcher, onClose };
   }
 }
