@@ -51,7 +51,9 @@ class DirectoryScanner {
       const relPath = relative(projectRoot, fullPath);
       const segments = relPath.split(sep);
 
-      if (ignorePaths.some((p) => segments.includes(p))) continue;
+      if (ignorePaths.some((p) => segments.includes(p))) {
+        continue;
+      }
 
       if (entry.isDirectory()) {
         events.push(...(await this.scan(fullPath, projectRoot, ignorePaths)));
@@ -139,7 +141,9 @@ class EventProcessingManager {
 
   private async triggerFullScan(retryCount = 3, baseDelayMs = 1000) {
     for (let attempt = 0; attempt < retryCount; attempt += 1) {
-      if (this.abortController.signal.aborted) return;
+      if (this.abortController.signal.aborted) {
+        return;
+      }
 
       try {
         const result = await this.pipeline.reindex(
@@ -170,8 +174,11 @@ class EventProcessingManager {
     while (!this.abortController.signal.aborted) {
       try {
         await eventQueue.drain(async (event) => {
-          if (event.type === 'reindex') await this.triggerFullScan();
-          else await this.pipeline.processEvents([event], this.loadFileContent);
+          if (event.type === 'reindex') {
+            await this.triggerFullScan();
+          } else {
+            await this.pipeline.processEvents([event], this.loadFileContent);
+          }
         });
       } catch (error) {
         if (!this.abortController.signal.aborted) {
@@ -254,18 +261,30 @@ export class NexusServerFactory {
       projectRoot,
       spawn: async (params, signal) => new Promise((res, rej) => {
         const args = ['--json', ...(params.caseSensitive ? [] : ['--ignore-case'])];
-        if (params.glob?.length) params.glob.forEach(g => args.push('--glob', g));
+        if (params.glob?.length) {
+          params.glob.forEach(g => args.push('--glob', g));
+        }
         args.push('--', params.query, params.cwd);
 
         const child = spawn('rg', args, { signal });
-        let stdout = '', stderr = '';
+        let stdout = '';
+        let stderr = '';
         child.stdout.on('data', d => { stdout += d.toString(); });
         child.stderr.on('data', d => { stderr += d.toString(); });
         child.on('close', code => {
-          if (code !== 0 && code !== 1) return rej(new Error(`ripgrep failed: ${stderr}`));
+          if (code !== 0 && code !== 1) {
+            rej(new Error(`ripgrep failed: ${stderr}`));
+            return;
+          }
           res(this.parseGrepOutput(stdout));
         });
-        child.on('error', e => { if (e.name === 'AbortError') res([]); else rej(e); });
+        child.on('error', e => {
+          if (e.name === 'AbortError') {
+            res([]);
+          } else {
+            rej(e);
+          }
+        });
       })
     });
   }
@@ -276,7 +295,9 @@ export class NexusServerFactory {
       .map(line => {
         try {
           const parsed = JSON.parse(line) as RipgrepMatchData;
-          if (parsed.type !== 'match') return null;
+          if (parsed.type !== 'match') {
+            return null;
+          }
           return {
             filePath: parsed.data.path.text,
             lineNumber: parsed.data.line_number,
