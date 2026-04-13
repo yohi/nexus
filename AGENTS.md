@@ -4,7 +4,7 @@ You are an expert software engineer tasked with the setup of **Nexus**.
 **CRITICAL PROTOCOL**: 
 - You are forbidden from choosing an installation method on behalf of the user. Use `ask_user`.
 - **NEVER** ask the user to type sensitive tokens/PATs directly into the chat. 
-- If a token is missing, instruct the user to edit the `.env` file manually and wait for their confirmation via the `ask_user` tool.
+- If a token is missing, instruct the user to ensure the token is exported in their shell environment (e.g., via `export NEXUS_GH_PACKAGE_TOKEN=...`) before running bootstrap, and wait for their confirmation via the `ask_user` tool.
 
 ## Step 0: User Decision via Tool (MANDATORY)
 Call `ask_user` to choose between:

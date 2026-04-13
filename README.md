@@ -29,7 +29,7 @@ Install and configure Nexus by following the instructions here: https://raw.gith
 ```
 ### FOR AGENTS (AIエージェント向け手順)
 
-あなたがターミナル操作可能なAIエージェントであるなら、**まず最初に `ask_user` 等を使用して、ユーザーに以下のいずれのインストール方式を希望するか必ず確認してください。** これは [AGENTS.md](AGENTS.md) で定義された **MANDATORY** ステップです。
+あなたがターミナル操作可能なAIエージェントであるなら、**まず `ask_user` 等を使用して、ユーザーに以下のいずれのインストール方式を希望するか必ず確認してください。** これは [AGENTS.md](AGENTS.md) で定義された **MANDATORY** ステップです。
 
 - **A. ソースからビルド (推奨)**: フル機能（開発、テスト、カスタマイズ）を利用する場合。
 - **B. パッケージとして利用**: 既存のプロジェクトにライブラリとして組み込む場合。**（GitHub PAT がない場合は `npm install github:yohi/nexus` でトークンレス・インストールが可能です）**
