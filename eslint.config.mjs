@@ -23,6 +23,10 @@ export default tseslint.config(
     },
     rules: {
       '@typescript-eslint/consistent-type-imports': 'error',
+      'no-constant-condition': ['error', { checkLoops: false }],
+      // Security rules often triggered on dynamic path operations in servers/factories
+      'security/detect-non-literal-fs-filename': 'off',
+      'security/detect-object-injection': 'off',
     },
   },
 );

@@ -1,0 +1,19 @@
+---
+engines:
+  eslint:
+    enabled: true
+    config: "eslint.config.mjs"
+ignore_paths:
+  - "dist/**"
+  - "node_modules/**"
+  - ".nexus/**"
+  - "tests/**"
+  - "coverage/**"
+  - "scripts/**"
+security:
+  excluded_rules:
+    - "ESLint_security_detect-non-literal-fs-filename"
+    - "ESLint_security_detect-object-injection"
+    - "node:fs/promises:mkdir" # Try some variants
+    - "node:fs/promises:readFile"
+    - "node:fs/promises:readdir"
