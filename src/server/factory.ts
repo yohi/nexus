@@ -309,6 +309,7 @@ export class NexusServerFactory {
         drainListener = null;
       }
 
+      logStream.end();
       await finished(logStream).catch(() => {});
 
       for (let i = LOG_MAX_FILES - 1; i >= 1; i--) {
