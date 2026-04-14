@@ -1,5 +1,5 @@
 import { spawn } from 'node:child_process';
-import { readFile, mkdir, readdir } from 'node:fs/promises';
+import { readFile, mkdir, readdir, appendFile } from 'node:fs/promises';
 import { dirname, join, relative, sep, resolve } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
 
@@ -43,7 +43,7 @@ interface RipgrepMatchData {
  * Handles directory scanning and file discovery.
  */
 class DirectoryScanner {
-  static async scan(dir: string, projectRoot: string, ignorePaths: string[]): Promise<IndexEvent[]> {
+  static async scan(dir: string, projectRoot: string, ignorePaths: string[], onProgress?: (msg: string) => Promise<void>): Promise<IndexEvent[]> {
     const entries = await readdir(resolve(dir), { withFileTypes: true });
     const events: IndexEvent[] = [];
 
@@ -56,8 +56,12 @@ class DirectoryScanner {
         continue;
       }
 
+      if (onProgress) {
+        await onProgress(`Scanning: ${relPath}`);
+      }
+
       if (entry.isDirectory()) {
-        events.push(...(await this.scan(fullPath, projectRoot, ignorePaths)));
+        events.push(...(await this.scan(fullPath, projectRoot, ignorePaths, onProgress)));
       } else if (entry.isFile()) {
         events.push({
           type: 'added',
@@ -114,7 +118,8 @@ class EventProcessingManager {
     private projectRoot: string,
     private ignorePaths: string[],
     private pipeline: IndexPipeline,
-    private loadFileContent: (path: string) => Promise<string>
+    private loadFileContent: (path: string) => Promise<string>,
+    private onLog?: (msg: string) => Promise<void>
   ) {}
 
   setup() {
@@ -157,7 +162,7 @@ class EventProcessingManager {
 
       try {
         const result = await this.pipeline.reindex(
-          () => DirectoryScanner.scan(this.projectRoot, this.projectRoot, this.ignorePaths),
+          () => DirectoryScanner.scan(this.projectRoot, this.projectRoot, this.ignorePaths, this.onLog),
           this.loadFileContent,
           true
         );
@@ -166,11 +171,15 @@ class EventProcessingManager {
           throw new Error('already_running');
         }
 
-        console.error('[Nexus] Background full scan completed successfully.');
+        if (this.onLog) {
+          await this.onLog('[Nexus] Background full scan completed successfully.');
+        }
         return;
       } catch (err) {
         const isAlreadyRunning = (err as Error).message === 'already_running';
-        console.error(`[Nexus] Background full scan ${isAlreadyRunning ? 'skipped' : 'failed'} (attempt ${attempt + 1}/${retryCount})`);
+        if (this.onLog) {
+          await this.onLog(`[Nexus] Background full scan ${isAlreadyRunning ? 'skipped' : 'failed'} (attempt ${attempt + 1}/${retryCount})`);
+        }
 
         // Use a dynamic check to prevent static analysis from falsely claiming this is always truthy
         const shouldWait = attempt < (retryCount - 1);
@@ -197,7 +206,9 @@ class EventProcessingManager {
           }
         });
       } catch (error) {
-        console.error('[Nexus] Error in event queue drain loop:', error);
+        if (this.onLog) {
+          await this.onLog(`[Nexus] Error in event queue drain loop: ${error}`);
+        }
       }
 
       try {
@@ -225,17 +236,29 @@ export class NexusServerFactory {
       throw new Error('No embedding provider configured.');
     }
 
+    const logFilePath = join(config.storage.rootDir, 'indexer.log');
+    const onLog = async (msg: string) => {
+      const timestamp = new Date().toISOString();
+      try {
+        await appendFile(logFilePath, `[${timestamp}] ${msg}\n`);
+      } catch (e) {
+        // Fallback to stderr if file logging fails
+        console.error(`[Indexer Log Error] ${msg}`);
+      }
+    };
+
     const semanticSearch = new SemanticSearch({ vectorStore, embeddingProvider });
     const grepEngine = this.createGrepEngine(projectRoot);
     const orchestrator = new SearchOrchestrator({ semanticSearch, grepEngine, projectRoot });
     const pipeline = new IndexPipeline({
       metadataStore, vectorStore, chunker: new Chunker(pluginRegistry),
-      embeddingProvider, pluginRegistry
+      embeddingProvider, pluginRegistry,
+      onProgress: onLog
     });
 
     const loadFileContent = (path: string) => readFile(resolve(projectRoot, path), 'utf8');
-    const ignorePaths = this.getIgnorePaths();
-    const eventManager = new EventProcessingManager(config, projectRoot, ignorePaths, pipeline, loadFileContent);
+    const ignorePaths = config.watcher.ignorePaths ?? [];
+    const eventManager = new EventProcessingManager(config, projectRoot, ignorePaths, pipeline, loadFileContent, onLog);
     const { watcher, onClose } = eventManager.setup();
 
     try {
@@ -246,7 +269,7 @@ export class NexusServerFactory {
         runReindex: async (args) => {
           let scannedEvents: IndexEvent[] = [];
           const result = await pipeline.reindex(async () => {
-            scannedEvents = await DirectoryScanner.scan(projectRoot, projectRoot, ignorePaths);
+            scannedEvents = await DirectoryScanner.scan(projectRoot, projectRoot, ignorePaths, onLog);
             return scannedEvents;
           }, loadFileContent, args?.fullScan);
 
@@ -340,10 +363,5 @@ export class NexusServerFactory {
         } catch { return null; }
       })
       .filter((m): m is GrepMatch => m !== null);
-  }
-
-  private static getIgnorePaths(): string[] {
-    const env = process.env.NEXUS_IGNORE_PATHS?.split(',').map(p => p.trim()).filter(Boolean) ?? [];
-    return Array.from(new Set(['node_modules', '.git', '.nexus', 'dist', ...env]));
   }
 }

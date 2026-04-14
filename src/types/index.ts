@@ -222,6 +222,7 @@ export interface WatcherConfig {
   debounceMs: number;
   maxQueueSize: number;
   fullScanThreshold: number;
+  ignorePaths?: string[];
 }
 
 export interface FileWatcherOptions {

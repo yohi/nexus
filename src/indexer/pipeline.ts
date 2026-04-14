@@ -25,6 +25,7 @@ interface IndexPipelineOptions {
   embeddingProvider: EmbeddingProvider;
   pluginRegistry: PluginRegistry;
   eventQueue?: EventQueue;
+  onProgress?: (msg: string) => Promise<void>;
 }
 
 interface ProcessEventsResult {
@@ -201,6 +202,9 @@ export class IndexPipeline implements IIndexPipeline {
     try {
       return await tryAcquire(this.mutex).runExclusive(async () => {
         try {
+          if (this.options.onProgress) {
+            await this.options.onProgress(`Starting reindex (fullRebuild: ${!!fullRebuild})`);
+          }
           const events = await run({ fullScan: fullRebuild, reason: 'manual' });
           const { chunksIndexed } = await this.processEvents(events, loadContent);
 
@@ -271,6 +275,9 @@ export class IndexPipeline implements IIndexPipeline {
   }
 
   private async indexFile(filePath: string, content: string, contentHash: string): Promise<number> {
+    if (this.options.onProgress) {
+      await this.options.onProgress(`Indexing: ${filePath}`);
+    }
     const chunks = await this.options.chunker.chunkFiles([
       {
         filePath,
