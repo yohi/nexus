@@ -263,6 +263,9 @@ export class NexusServerFactory {
     const logFilePath = join(config.storage.rootDir, 'indexer.log');
     // Truncate file on startup by using 'w' flag
     const logStream = createWriteStream(logFilePath, { flags: 'w' });
+    logStream.on('error', (err) => {
+      console.error('[Nexus] Log stream error:', err);
+    });
     const onLog = (msg: string) => {
       const timestamp = new Date().toISOString();
       const line = `[${timestamp}] ${msg}\n`;

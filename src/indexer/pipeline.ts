@@ -25,7 +25,7 @@ interface IndexPipelineOptions {
   embeddingProvider: EmbeddingProvider;
   pluginRegistry: PluginRegistry;
   eventQueue?: EventQueue;
-  onProgress?: (msg: string) => Promise<void>;
+  onProgress?: (msg: string) => void;
 }
 
 interface ProcessEventsResult {
@@ -204,7 +204,7 @@ export class IndexPipeline implements IIndexPipeline {
         try {
           if (this.options.onProgress) {
             try {
-              await this.options.onProgress(`Starting reindex (fullRebuild: ${!!fullRebuild})`);
+              this.options.onProgress(`Starting reindex (fullRebuild: ${!!fullRebuild})`);
             } catch (error) {
               console.error('[IndexPipeline] Progress logging failed:', error);
             }
@@ -281,7 +281,7 @@ export class IndexPipeline implements IIndexPipeline {
   private async indexFile(filePath: string, content: string, contentHash: string): Promise<number> {
     if (this.options.onProgress) {
       try {
-        await this.options.onProgress(`Indexing: ${filePath}`);
+        this.options.onProgress(`Indexing: ${filePath}`);
       } catch (error) {
         console.error(`[IndexPipeline] Progress logging failed for ${filePath}:`, error);
       }
@@ -302,7 +302,7 @@ export class IndexPipeline implements IIndexPipeline {
 
     if (this.options.onProgress) {
       try {
-        await this.options.onProgress(`Finished indexing: ${filePath} (${chunks.length} chunks)`);
+        this.options.onProgress(`Finished indexing: ${filePath} (${chunks.length} chunks)`);
       } catch {
         // Already logged error above, just keep going
       }
