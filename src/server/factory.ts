@@ -312,7 +312,9 @@ export class NexusServerFactory {
         const newPath = join(config.storage.rootDir, `indexer.log.${i + 1}`);
         try {
           await rename(oldPath, newPath);
-        } catch {}
+        } catch {
+          // Ignore if file doesn't exist
+        }
       }
       await rename(logFilePath, join(config.storage.rootDir, "indexer.log.1"));
       logStream = createWriteStream(logFilePath, { flags: "w" });
@@ -346,7 +348,7 @@ export class NexusServerFactory {
         stat(logFilePath)
           .then((s) => {
             if (s.size >= LOG_MAX_BYTES) {
-              rotateLog();
+              void rotateLog();
             }
           })
           .catch(() => {});
