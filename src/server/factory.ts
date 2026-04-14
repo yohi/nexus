@@ -1,8 +1,9 @@
 import { spawn } from "node:child_process";
-import { readFile, mkdir, readdir } from "node:fs/promises";
+import { readFile, mkdir, readdir, rename, stat } from "node:fs/promises";
 import { createWriteStream } from "node:fs";
 import { dirname, join, relative, resolve, sep } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
+import { finished } from "node:stream/promises";
 import picomatch from "picomatch";
 
 import { initializeNexusRuntime, type NexusRuntime } from "./index.js";
@@ -285,18 +286,84 @@ export class NexusServerFactory {
       throw new Error("No embedding provider configured.");
     }
 
+    const LOG_MAX_BYTES = 10 * 1024 * 1024;
+    const LOG_MAX_FILES = 5;
+
     const logFilePath = join(config.storage.rootDir, "indexer.log");
-    // Truncate file on startup by using 'w' flag
-    const logStream = createWriteStream(logFilePath, { flags: "w" });
-    logStream.on("error", (err) => {
-      console.error("[Nexus] Log stream error:", err);
-    });
+    let logStream = createWriteStream(logFilePath, { flags: "w" });
+    let isBackedUp = false;
+    let drainListener: (() => void) | null = null;
+    const logQueue: string[] = [];
+    let isRotating = false;
+
+    const rotateLog = async () => {
+      if (isRotating) return;
+      isRotating = true;
+
+      if (drainListener) {
+        logStream.off("drain", drainListener);
+        drainListener = null;
+      }
+
+      await finished(logStream).catch(() => {});
+
+      for (let i = LOG_MAX_FILES - 1; i >= 1; i--) {
+        const oldPath = join(config.storage.rootDir, `indexer.log.${i}`);
+        const newPath = join(config.storage.rootDir, `indexer.log.${i + 1}`);
+        try {
+          await rename(oldPath, newPath);
+        } catch {}
+      }
+      await rename(logFilePath, join(config.storage.rootDir, "indexer.log.1"));
+      logStream = createWriteStream(logFilePath, { flags: "w" });
+      logStream.on("error", (err) => {
+        console.error("[Nexus] Log stream error:", err);
+      });
+      isBackedUp = false;
+      isRotating = false;
+      flushLogQueue();
+    };
+
+    const flushLogQueue = () => {
+      while (logQueue.length > 0 && !isBackedUp && !isRotating) {
+        const line = logQueue.shift()!;
+        if (!logStream.write(line)) {
+          isBackedUp = true;
+          drainListener = () => {
+            isBackedUp = false;
+            drainListener = null;
+            flushLogQueue();
+          };
+          logStream.once("drain", drainListener);
+        }
+      }
+    };
+
     const onLog = (msg: string) => {
       const timestamp = new Date().toISOString();
       const line = `[${timestamp}] ${msg}\n`;
       try {
+        stat(logFilePath)
+          .then((s) => {
+            if (s.size >= LOG_MAX_BYTES) {
+              rotateLog();
+            }
+          })
+          .catch(() => {});
+
+        if (isBackedUp) {
+          logQueue.push(line);
+          return;
+        }
+
         if (!logStream.write(line)) {
-          // If buffer is full, we just continue (next writes will be queued)
+          isBackedUp = true;
+          drainListener = () => {
+            isBackedUp = false;
+            drainListener = null;
+            flushLogQueue();
+          };
+          logStream.once("drain", drainListener);
         }
       } catch (e) {
         console.error(
@@ -354,7 +421,11 @@ export class NexusServerFactory {
         loadFileContent,
         onClose: async () => {
           await onClose();
+          if (drainListener) {
+            logStream.off("drain", drainListener);
+          }
           logStream.end();
+          await finished(logStream);
         },
         runReindex: async (args) => {
           let scannedEvents: IndexEvent[] = [];
