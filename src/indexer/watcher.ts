@@ -8,13 +8,7 @@ type WatcherFactory = (projectRoot: string, ignored: string[]) => FSWatcher;
 
 const defaultWatcherFactory: WatcherFactory = (projectRoot, ignored) =>
   chokidar.watch(projectRoot, {
-    ignored: [
-      '**/node_modules/**',
-      '**/.git/**',
-      '**/.nexus/**',
-      '**/dist/**',
-      ...ignored.map((p) => `**/${p}/**`),
-    ],
+    ignored: ignored.map((p) => `**/${p}/**`),
     ignoreInitial: true,
   });
 

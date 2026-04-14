@@ -1,5 +1,6 @@
 import { spawn } from 'node:child_process';
-import { readFile, mkdir, readdir, appendFile } from 'node:fs/promises';
+import { readFile, mkdir, readdir } from 'node:fs/promises';
+import { createWriteStream } from 'node:fs';
 import { dirname, join, relative, sep, resolve } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
 
@@ -43,7 +44,7 @@ interface RipgrepMatchData {
  * Handles directory scanning and file discovery.
  */
 class DirectoryScanner {
-  static async scan(dir: string, projectRoot: string, ignorePaths: string[], onProgress?: (msg: string) => Promise<void>): Promise<IndexEvent[]> {
+  static async scan(dir: string, projectRoot: string, ignorePaths: string[], onProgress?: (msg: string) => void): Promise<IndexEvent[]> {
     const entries = await readdir(resolve(dir), { withFileTypes: true });
     const events: IndexEvent[] = [];
 
@@ -57,7 +58,7 @@ class DirectoryScanner {
       }
 
       if (onProgress) {
-        await onProgress(`Scanning: ${relPath}`);
+        onProgress(`Scanning: ${relPath}`);
       }
 
       if (entry.isDirectory()) {
@@ -119,7 +120,7 @@ class EventProcessingManager {
     private ignorePaths: string[],
     private pipeline: IndexPipeline,
     private loadFileContent: (path: string) => Promise<string>,
-    private onLog?: (msg: string) => Promise<void>
+    private onLog?: (msg: string) => void
   ) {}
 
   setup() {
@@ -172,13 +173,16 @@ class EventProcessingManager {
         }
 
         if (this.onLog) {
-          await this.onLog('[Nexus] Background full scan completed successfully.');
+          this.onLog('[Nexus] Background full scan completed successfully.');
         }
         return;
       } catch (err) {
         const isAlreadyRunning = (err as Error).message === 'already_running';
+        const msg = `[Nexus] Background full scan ${isAlreadyRunning ? 'skipped' : 'failed'} (attempt ${attempt + 1}/${retryCount})`;
+        
+        console.error(msg, err);
         if (this.onLog) {
-          await this.onLog(`[Nexus] Background full scan ${isAlreadyRunning ? 'skipped' : 'failed'} (attempt ${attempt + 1}/${retryCount})`);
+          this.onLog(`${msg}: ${err}`);
         }
 
         // Use a dynamic check to prevent static analysis from falsely claiming this is always truthy
@@ -206,8 +210,9 @@ class EventProcessingManager {
           }
         });
       } catch (error) {
+        console.error('[Nexus] Error in event queue drain loop:', error);
         if (this.onLog) {
-          await this.onLog(`[Nexus] Error in event queue drain loop: ${error}`);
+          this.onLog(`[Nexus] Error in event queue drain loop: ${error}`);
         }
       }
 
@@ -237,14 +242,11 @@ export class NexusServerFactory {
     }
 
     const logFilePath = join(config.storage.rootDir, 'indexer.log');
-    const onLog = async (msg: string) => {
+    // Truncate file on startup by using 'w' flag
+    const logStream = createWriteStream(logFilePath, { flags: 'w' });
+    const onLog = (msg: string) => {
       const timestamp = new Date().toISOString();
-      try {
-        await appendFile(logFilePath, `[${timestamp}] ${msg}\n`);
-      } catch (e) {
-        // Fallback to stderr if file logging fails
-        console.error(`[Indexer Log Error] ${msg}`);
-      }
+      logStream.write(`[${timestamp}] ${msg}\n`);
     };
 
     const semanticSearch = new SemanticSearch({ vectorStore, embeddingProvider });
@@ -253,7 +255,7 @@ export class NexusServerFactory {
     const pipeline = new IndexPipeline({
       metadataStore, vectorStore, chunker: new Chunker(pluginRegistry),
       embeddingProvider, pluginRegistry,
-      onProgress: onLog
+      onProgress: async (msg) => onLog(msg)
     });
 
     const loadFileContent = (path: string) => readFile(resolve(projectRoot, path), 'utf8');
@@ -265,7 +267,11 @@ export class NexusServerFactory {
       return await initializeNexusRuntime({
         projectRoot, sanitizer: await PathSanitizer.create(projectRoot),
         semanticSearch, grepEngine, orchestrator, vectorStore, metadataStore,
-        pipeline, pluginRegistry, watcher, loadFileContent, onClose,
+        pipeline, pluginRegistry, watcher, loadFileContent,
+        onClose: async () => {
+          await onClose();
+          logStream.end();
+        },
         runReindex: async (args) => {
           let scannedEvents: IndexEvent[] = [];
           const result = await pipeline.reindex(async () => {
@@ -281,6 +287,7 @@ export class NexusServerFactory {
       });
     } catch (error) {
       await onClose();
+      logStream.end();
       throw error;
     }
   }
