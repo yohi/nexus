@@ -34,6 +34,7 @@ const DEFAULT_CONFIG = (projectRoot: string): Config => ({
     debounceMs: 100,
     maxQueueSize: 10_000,
     fullScanThreshold: 5_000,
+    ignorePaths: ['node_modules', '.git', '.nexus', 'dist'],
   },
   embedding: { ...DEFAULT_EMBEDDING },
 });
@@ -64,6 +65,8 @@ export const loadConfig = async (options: LoadConfigOptions): Promise<Config> =>
         asPositiveInt(env.NEXUS_WATCHER_FULL_SCAN_THRESHOLD) ??
         validatePositiveInt(fileConfig.watcher?.fullScanThreshold) ??
         defaults.watcher.fullScanThreshold,
+      ignorePaths:
+        asStringList(env.NEXUS_WATCHER_IGNORE_PATHS) ?? validateStringList(fileConfig.watcher?.ignorePaths) ?? defaults.watcher.ignorePaths,
     },
     embedding: {
       provider: asProvider(env.NEXUS_EMBEDDING_PROVIDER) ?? validateProvider(fileConfig.embedding?.provider) ?? defaults.embedding.provider,
@@ -135,6 +138,23 @@ const validateProvider = (value: unknown): EmbeddingConfig['provider'] | undefin
 
 const isProvider = (value: unknown): value is EmbeddingConfig['provider'] => {
   return value === 'ollama' || value === 'openai-compat' || value === 'test';
+};
+
+const asStringList = (value: string | undefined): string[] | undefined => {
+  if (value === undefined) return undefined;
+  return value
+    .split(',')
+    .map((s) => s.trim())
+    .filter((s) => s !== '');
+};
+
+const validateStringList = (value: unknown): string[] | undefined => {
+  if (Array.isArray(value) && value.every((v) => typeof v === 'string')) {
+    return value
+      .map((s) => s.trim())
+      .filter((s) => s !== '');
+  }
+  return undefined;
 };
 
 const readJsonFile = async (configPath: string): Promise<Partial<Config>> => {

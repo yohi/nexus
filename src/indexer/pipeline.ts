@@ -25,6 +25,7 @@ interface IndexPipelineOptions {
   embeddingProvider: EmbeddingProvider;
   pluginRegistry: PluginRegistry;
   eventQueue?: EventQueue;
+  onProgress?: (msg: string) => void;
 }
 
 interface ProcessEventsResult {
@@ -201,6 +202,13 @@ export class IndexPipeline implements IIndexPipeline {
     try {
       return await tryAcquire(this.mutex).runExclusive(async () => {
         try {
+          if (this.options.onProgress) {
+            try {
+              this.options.onProgress(`Starting reindex (fullRebuild: ${!!fullRebuild})`);
+            } catch (error) {
+              console.error('[IndexPipeline] Progress logging failed:', error);
+            }
+          }
           const events = await run({ fullScan: fullRebuild, reason: 'manual' });
           const { chunksIndexed } = await this.processEvents(events, loadContent);
 
@@ -271,6 +279,13 @@ export class IndexPipeline implements IIndexPipeline {
   }
 
   private async indexFile(filePath: string, content: string, contentHash: string): Promise<number> {
+    if (this.options.onProgress) {
+      try {
+        this.options.onProgress(`Indexing: ${filePath}`);
+      } catch (error) {
+        console.error(`[IndexPipeline] Progress logging failed for ${filePath}:`, error);
+      }
+    }
     const chunks = await this.options.chunker.chunkFiles([
       {
         filePath,
@@ -284,6 +299,15 @@ export class IndexPipeline implements IIndexPipeline {
     await this.options.vectorStore.upsertChunks(chunks, embeddings);
     await this.merkleTree.update(filePath, contentHash);
     this.skippedFiles.delete(filePath);
+
+    if (this.options.onProgress) {
+      try {
+        this.options.onProgress(`Finished indexing: ${filePath} (${chunks.length} chunks)`);
+      } catch {
+        // Already logged error above, just keep going
+      }
+    }
+
     return chunks.length;
   }
 
