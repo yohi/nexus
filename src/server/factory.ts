@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { readFile, mkdir, readdir, rename, stat } from "node:fs/promises";
+import { readFile, mkdir, readdir, rename } from "node:fs/promises";
 import { createWriteStream } from "node:fs";
 import { dirname, join, relative, resolve, sep } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
