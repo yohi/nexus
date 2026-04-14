@@ -291,10 +291,14 @@ export class NexusServerFactory {
 
     const logFilePath = join(config.storage.rootDir, "indexer.log");
     let logStream = createWriteStream(logFilePath, { flags: "w" });
+    logStream.on("error", (err) => {
+      console.error("[Nexus] Log stream error:", err);
+    });
     let isBackedUp = false;
     let drainListener: (() => void) | null = null;
     const logQueue: string[] = [];
     let isRotating = false;
+    let writtenBytes = 0;
 
     const rotateLog = async () => {
       if (isRotating) return;
@@ -316,11 +320,21 @@ export class NexusServerFactory {
           // Ignore if file doesn't exist
         }
       }
-      await rename(logFilePath, join(config.storage.rootDir, "indexer.log.1"));
+      try {
+        await rename(
+          logFilePath,
+          join(config.storage.rootDir, "indexer.log.1"),
+        );
+      } catch (err) {
+        if ((err as NodeJS.ErrnoException).code !== "ENOENT") {
+          console.error("[Nexus] Failed to rotate log:", err);
+        }
+      }
       logStream = createWriteStream(logFilePath, { flags: "w" });
       logStream.on("error", (err) => {
         console.error("[Nexus] Log stream error:", err);
       });
+      writtenBytes = 0;
       isBackedUp = false;
       isRotating = false;
       flushLogQueue();
@@ -345,13 +359,9 @@ export class NexusServerFactory {
       const timestamp = new Date().toISOString();
       const line = `[${timestamp}] ${msg}\n`;
       try {
-        stat(logFilePath)
-          .then((s) => {
-            if (s.size >= LOG_MAX_BYTES) {
-              void rotateLog();
-            }
-          })
-          .catch(() => {});
+        if (writtenBytes >= LOG_MAX_BYTES) {
+          void rotateLog();
+        }
 
         if (isBackedUp) {
           logQueue.push(line);
@@ -367,6 +377,8 @@ export class NexusServerFactory {
           };
           logStream.once("drain", drainListener);
         }
+
+        writtenBytes += line.length;
       } catch (e) {
         console.error(
           `[Indexer Log Error] Failed to write to ${logFilePath}:`,
@@ -453,7 +465,12 @@ export class NexusServerFactory {
       });
     } catch (error) {
       await onClose();
+      if (drainListener) {
+        logStream.off("drain", drainListener);
+        drainListener = null;
+      }
       logStream.end();
+      await finished(logStream).catch(() => {});
       throw error;
     }
   }
