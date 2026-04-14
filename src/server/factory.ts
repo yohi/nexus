@@ -1,34 +1,34 @@
-import { spawn } from 'node:child_process';
-import { readFile, mkdir, readdir } from 'node:fs/promises';
-import { createWriteStream } from 'node:fs';
-import { dirname, join, relative, resolve } from 'node:path';
-import { setTimeout as sleep } from 'node:timers/promises';
-import picomatch from 'picomatch';
+import { spawn } from "node:child_process";
+import { readFile, mkdir, readdir } from "node:fs/promises";
+import { createWriteStream } from "node:fs";
+import { dirname, join, relative, resolve, sep } from "node:path";
+import { setTimeout as sleep } from "node:timers/promises";
+import picomatch from "picomatch";
 
-import { initializeNexusRuntime, type NexusRuntime } from './index.js';
-import { PathSanitizer } from './path-sanitizer.js';
-import { SemanticSearch } from '../search/semantic.js';
-import { SearchOrchestrator } from '../search/orchestrator.js';
-import { PluginRegistry } from '../plugins/registry.js';
-import { IndexPipeline } from '../indexer/pipeline.js';
-import { Chunker } from '../indexer/chunker.js';
-import { TypeScriptLanguagePlugin } from '../plugins/languages/typescript.js';
-import { PythonLanguagePlugin } from '../plugins/languages/python.js';
-import { GoLanguagePlugin } from '../plugins/languages/go.js';
-import { OllamaEmbeddingProvider } from '../plugins/embeddings/ollama.js';
-import { OpenAICompatEmbeddingProvider } from '../plugins/embeddings/openai-compat.js';
-import { SqliteMetadataStore } from '../storage/metadata-store.js';
-import { LanceVectorStore } from '../storage/vector-store.js';
-import { RipgrepEngine } from '../search/grep.js';
-import { FileWatcher } from '../indexer/watcher.js';
-import { EventQueue } from '../indexer/event-queue.js';
-import type { Config, GrepMatch, IndexEvent } from '../types/index.js';
+import { initializeNexusRuntime, type NexusRuntime } from "./index.js";
+import { PathSanitizer } from "./path-sanitizer.js";
+import { SemanticSearch } from "../search/semantic.js";
+import { SearchOrchestrator } from "../search/orchestrator.js";
+import { PluginRegistry } from "../plugins/registry.js";
+import { IndexPipeline } from "../indexer/pipeline.js";
+import { Chunker } from "../indexer/chunker.js";
+import { TypeScriptLanguagePlugin } from "../plugins/languages/typescript.js";
+import { PythonLanguagePlugin } from "../plugins/languages/python.js";
+import { GoLanguagePlugin } from "../plugins/languages/go.js";
+import { OllamaEmbeddingProvider } from "../plugins/embeddings/ollama.js";
+import { OpenAICompatEmbeddingProvider } from "../plugins/embeddings/openai-compat.js";
+import { SqliteMetadataStore } from "../storage/metadata-store.js";
+import { LanceVectorStore } from "../storage/vector-store.js";
+import { RipgrepEngine } from "../search/grep.js";
+import { FileWatcher } from "../indexer/watcher.js";
+import { EventQueue } from "../indexer/event-queue.js";
+import type { Config, GrepMatch, IndexEvent } from "../types/index.js";
 
 /**
  * Type-safe interface for ripgrep JSON output.
  */
 interface RipgrepMatchData {
-  type: 'match' | 'begin' | 'end' | 'summary';
+  type: "match" | "begin" | "end" | "summary";
   data: {
     path: { text: string };
     line_number: number;
@@ -54,13 +54,15 @@ class DirectoryScanner {
     ignorePaths: string[],
     onProgress?: (msg: string) => void,
     isInitial = true,
-    isIgnored?: (path: string) => boolean
+    isIgnored?: (path: string) => boolean,
   ): Promise<IndexEvent[]> {
     if (isInitial) {
       this.scanCounter = 0;
-      // Pre-compile ignore patterns for consistency and performance
-      const patterns = ignorePaths.map((p) => `**/${p}/**`);
-      isIgnored = picomatch(patterns);
+      const patterns = ignorePaths.flatMap((p) => {
+        const normalized = p.replaceAll("\\", "/").replace(/^\.\/+|\/+$/g, "");
+        return [`**/${normalized}`, `**/${normalized}/**`];
+      });
+      isIgnored = picomatch(patterns, { windows: true });
     }
 
     const entries = await readdir(resolve(dir), { withFileTypes: true });
@@ -69,22 +71,33 @@ class DirectoryScanner {
     for (const entry of entries) {
       const fullPath = join(dir, entry.name);
       const relPath = relative(projectRoot, fullPath);
+      const relPathForMatch = relPath.split(sep).join("/");
 
-      // Use consistent glob matching
-      if (isIgnored?.(relPath)) {
+      if (isIgnored?.(relPathForMatch)) {
         continue;
       }
 
       this.scanCounter += 1;
       if (onProgress && this.scanCounter % this.LOG_THROTTLE_THRESHOLD === 0) {
-        onProgress(`Scanning progress: ${this.scanCounter} entries reached (currently at ${relPath})`);
+        onProgress(
+          `Scanning progress: ${this.scanCounter} entries reached (currently at ${relPath})`,
+        );
       }
 
       if (entry.isDirectory()) {
-        events.push(...(await this.scan(fullPath, projectRoot, ignorePaths, onProgress, false, isIgnored)));
+        events.push(
+          ...(await this.scan(
+            fullPath,
+            projectRoot,
+            ignorePaths,
+            onProgress,
+            false,
+            isIgnored,
+          )),
+        );
       } else if (entry.isFile()) {
         events.push({
-          type: 'added',
+          type: "added",
           filePath: relPath,
           detectedAt: new Date().toISOString(),
         });
@@ -105,7 +118,7 @@ class StorageManager {
 
     await mkdir(root, { recursive: true });
     await mkdir(meta, { recursive: true });
-    if (!config.storage.vectorDbPath.startsWith('memory://')) {
+    if (!config.storage.vectorDbPath.startsWith("memory://")) {
       await mkdir(vector, { recursive: true });
     }
   }
@@ -139,7 +152,7 @@ class EventProcessingManager {
     private ignorePaths: string[],
     private pipeline: IndexPipeline,
     private loadFileContent: (path: string) => Promise<string>,
-    private onLog?: (msg: string) => void
+    private onLog?: (msg: string) => void,
   ) {}
 
   setup() {
@@ -159,7 +172,10 @@ class EventProcessingManager {
       },
     });
 
-    const watcher = new FileWatcher({ projectRoot: this.projectRoot, ignorePaths: this.ignorePaths }, eventQueue);
+    const watcher = new FileWatcher(
+      { projectRoot: this.projectRoot, ignorePaths: this.ignorePaths },
+      eventQueue,
+    );
 
     this.drainTask = this.startDrainLoop(eventQueue);
 
@@ -170,7 +186,7 @@ class EventProcessingManager {
     this.abortController.abort();
     await Promise.allSettled([
       this.drainTask ?? Promise.resolve(),
-      this.fullScanPromise ?? Promise.resolve()
+      this.fullScanPromise ?? Promise.resolve(),
     ]);
   }
 
@@ -182,34 +198,42 @@ class EventProcessingManager {
 
       try {
         const result = await this.pipeline.reindex(
-          () => DirectoryScanner.scan(this.projectRoot, this.projectRoot, this.ignorePaths, this.onLog),
+          () =>
+            DirectoryScanner.scan(
+              this.projectRoot,
+              this.projectRoot,
+              this.ignorePaths,
+              this.onLog,
+            ),
           this.loadFileContent,
-          true
+          true,
         );
 
-        if ('status' in result) {
-          throw new Error('already_running');
+        if ("status" in result) {
+          throw new Error("already_running");
         }
 
         if (this.onLog) {
-          this.onLog('[Nexus] Background full scan completed successfully.');
+          this.onLog("[Nexus] Background full scan completed successfully.");
         }
         return;
       } catch (err) {
-        const isAlreadyRunning = (err as Error).message === 'already_running';
-        const msg = `[Nexus] Background full scan ${isAlreadyRunning ? 'skipped' : 'failed'} (attempt ${attempt + 1}/${retryCount})`;
-        
+        const isAlreadyRunning = (err as Error).message === "already_running";
+        const msg = `[Nexus] Background full scan ${isAlreadyRunning ? "skipped" : "failed"} (attempt ${attempt + 1}/${retryCount})`;
+
         console.error(msg, err);
         if (this.onLog) {
           this.onLog(`${msg}: ${err}`);
         }
 
         // Use a dynamic check to prevent static analysis from falsely claiming this is always truthy
-        const shouldWait = attempt < (retryCount - 1);
+        const shouldWait = attempt < retryCount - 1;
         if (shouldWait && !this.abortController.signal.aborted) {
           const delay = baseDelayMs * Math.pow(2, attempt);
           try {
-            await sleep(delay, undefined, { signal: this.abortController.signal });
+            await sleep(delay, undefined, {
+              signal: this.abortController.signal,
+            });
           } catch {
             // AbortError is expected
           }
@@ -222,14 +246,14 @@ class EventProcessingManager {
     while (!this.abortController.signal.aborted) {
       try {
         await eventQueue.drain(async (event) => {
-          if (event.type === 'reindex') {
+          if (event.type === "reindex") {
             await this.triggerFullScan();
           } else {
             await this.pipeline.processEvents([event], this.loadFileContent);
           }
         });
       } catch (error) {
-        console.error('[Nexus] Error in event queue drain loop:', error);
+        console.error("[Nexus] Error in event queue drain loop:", error);
         if (this.onLog) {
           this.onLog(`[Nexus] Error in event queue drain loop: ${error}`);
         }
@@ -252,19 +276,20 @@ export class NexusServerFactory {
     const { projectRoot } = config;
     await StorageManager.ensureDirectories(config);
 
-    const { metadataStore, vectorStore } = StorageManager.initializeStores(config);
+    const { metadataStore, vectorStore } =
+      StorageManager.initializeStores(config);
     const pluginRegistry = this.setupPluginRegistry(config);
     const embeddingProvider = pluginRegistry.getEmbeddingProvider();
-    
+
     if (!embeddingProvider) {
-      throw new Error('No embedding provider configured.');
+      throw new Error("No embedding provider configured.");
     }
 
-    const logFilePath = join(config.storage.rootDir, 'indexer.log');
+    const logFilePath = join(config.storage.rootDir, "indexer.log");
     // Truncate file on startup by using 'w' flag
-    const logStream = createWriteStream(logFilePath, { flags: 'w' });
-    logStream.on('error', (err) => {
-      console.error('[Nexus] Log stream error:', err);
+    const logStream = createWriteStream(logFilePath, { flags: "w" });
+    logStream.on("error", (err) => {
+      console.error("[Nexus] Log stream error:", err);
     });
     const onLog = (msg: string) => {
       const timestamp = new Date().toISOString();
@@ -274,46 +299,84 @@ export class NexusServerFactory {
           // If buffer is full, we just continue (next writes will be queued)
         }
       } catch (e) {
-        console.error(`[Indexer Log Error] Failed to write to ${logFilePath}:`, e);
+        console.error(
+          `[Indexer Log Error] Failed to write to ${logFilePath}:`,
+          e,
+        );
         console.error(`Original message: ${msg}`);
       }
     };
 
-    const semanticSearch = new SemanticSearch({ vectorStore, embeddingProvider });
+    const semanticSearch = new SemanticSearch({
+      vectorStore,
+      embeddingProvider,
+    });
     const grepEngine = this.createGrepEngine(projectRoot);
-    const orchestrator = new SearchOrchestrator({ semanticSearch, grepEngine, projectRoot });
+    const orchestrator = new SearchOrchestrator({
+      semanticSearch,
+      grepEngine,
+      projectRoot,
+    });
     const pipeline = new IndexPipeline({
-      metadataStore, vectorStore, chunker: new Chunker(pluginRegistry),
-      embeddingProvider, pluginRegistry,
-      onProgress: (msg) => onLog(msg)
+      metadataStore,
+      vectorStore,
+      chunker: new Chunker(pluginRegistry),
+      embeddingProvider,
+      pluginRegistry,
+      onProgress: (msg) => onLog(msg),
     });
 
-    const loadFileContent = (path: string) => readFile(resolve(projectRoot, path), 'utf8');
+    const loadFileContent = (path: string) =>
+      readFile(resolve(projectRoot, path), "utf8");
     const ignorePaths = config.watcher.ignorePaths ?? [];
-    const eventManager = new EventProcessingManager(config, projectRoot, ignorePaths, pipeline, loadFileContent, onLog);
+    const eventManager = new EventProcessingManager(
+      config,
+      projectRoot,
+      ignorePaths,
+      pipeline,
+      loadFileContent,
+      onLog,
+    );
     const { watcher, onClose } = eventManager.setup();
 
     try {
       return await initializeNexusRuntime({
-        projectRoot, sanitizer: await PathSanitizer.create(projectRoot),
-        semanticSearch, grepEngine, orchestrator, vectorStore, metadataStore,
-        pipeline, pluginRegistry, watcher, loadFileContent,
+        projectRoot,
+        sanitizer: await PathSanitizer.create(projectRoot),
+        semanticSearch,
+        grepEngine,
+        orchestrator,
+        vectorStore,
+        metadataStore,
+        pipeline,
+        pluginRegistry,
+        watcher,
+        loadFileContent,
         onClose: async () => {
           await onClose();
           logStream.end();
         },
         runReindex: async (args) => {
           let scannedEvents: IndexEvent[] = [];
-          const result = await pipeline.reindex(async () => {
-            scannedEvents = await DirectoryScanner.scan(projectRoot, projectRoot, ignorePaths, onLog);
-            return scannedEvents;
-          }, loadFileContent, args?.fullScan);
+          const result = await pipeline.reindex(
+            async () => {
+              scannedEvents = await DirectoryScanner.scan(
+                projectRoot,
+                projectRoot,
+                ignorePaths,
+                onLog,
+              );
+              return scannedEvents;
+            },
+            loadFileContent,
+            args?.fullScan,
+          );
 
-          if ('status' in result) {
+          if ("status" in result) {
             throw new Error(`Reindex already running: ${result.status}`);
           }
           return scannedEvents;
-        }
+        },
       });
     } catch (error) {
       await onClose();
@@ -330,18 +393,23 @@ export class NexusServerFactory {
 
     let provider;
     switch (config.embedding.provider) {
-      case 'ollama':
+      case "ollama":
         provider = new OllamaEmbeddingProvider(config.embedding);
         break;
-      case 'openai-compat':
+      case "openai-compat":
         provider = new OpenAICompatEmbeddingProvider(config.embedding);
         break;
-      case 'test':
-        throw new Error('Test embedding provider is not supported in production.');
+      case "test":
+        throw new Error(
+          "Test embedding provider is not supported in production.",
+        );
       default:
-        throw new Error('Unsupported embedding provider: ' + String(config.embedding.provider));
+        throw new Error(
+          "Unsupported embedding provider: " +
+            String(config.embedding.provider),
+        );
     }
-    
+
     registry.registerEmbeddingProvider(config.embedding.provider, provider);
     registry.setActiveEmbeddingProvider(config.embedding.provider);
     return registry;
@@ -350,56 +418,68 @@ export class NexusServerFactory {
   private static createGrepEngine(projectRoot: string): RipgrepEngine {
     return new RipgrepEngine({
       projectRoot,
-      spawn: async (params, signal) => new Promise((res, rej) => {
-        const args = ['--json', ...(params.caseSensitive ? [] : ['--ignore-case'])];
-        if (params.glob?.length) {
-          params.glob.forEach(g => args.push('--glob', g));
-        }
-        args.push('--', params.query, params.cwd);
+      spawn: async (params, signal) =>
+        new Promise((res, rej) => {
+          const args = [
+            "--json",
+            ...(params.caseSensitive ? [] : ["--ignore-case"]),
+          ];
+          if (params.glob?.length) {
+            params.glob.forEach((g) => args.push("--glob", g));
+          }
+          args.push("--", params.query, params.cwd);
 
-        const child = spawn('rg', args, { signal });
-        let stdout = '';
-        let stderr = '';
-        child.stdout.on('data', (d: Buffer | string) => { stdout += d.toString(); });
-        child.stderr.on('data', (d: Buffer | string) => { stderr += d.toString(); });
-        child.on('close', code => {
-          if (code !== 0 && code !== 1) {
-            rej(new Error(`ripgrep failed: ${stderr}`));
-            return;
-          }
-          res(this.parseGrepOutput(stdout));
-        });
-        child.on('error', e => {
-          if (e.name === 'AbortError') {
-            res([]);
-          } else {
-            rej(e);
-          }
-        });
-      })
+          const child = spawn("rg", args, { signal });
+          let stdout = "";
+          let stderr = "";
+          child.stdout.on("data", (d: Buffer | string) => {
+            stdout += d.toString();
+          });
+          child.stderr.on("data", (d: Buffer | string) => {
+            stderr += d.toString();
+          });
+          child.on("close", (code) => {
+            if (code !== 0 && code !== 1) {
+              rej(new Error(`ripgrep failed: ${stderr}`));
+              return;
+            }
+            res(this.parseGrepOutput(stdout));
+          });
+          child.on("error", (e) => {
+            if (e.name === "AbortError") {
+              res([]);
+            } else {
+              rej(e);
+            }
+          });
+        }),
     });
   }
 
   private static parseGrepOutput(stdout: string): GrepMatch[] {
-    return stdout.split('\n')
-      .filter(l => l.trim() !== '')
-      .map(line => {
+    return stdout
+      .split("\n")
+      .filter((l) => l.trim() !== "")
+      .map((line) => {
         try {
           const parsed = JSON.parse(line) as RipgrepMatchData;
-          if (parsed.type !== 'match') {
+          if (parsed.type !== "match") {
             return null;
           }
           return {
             filePath: parsed.data.path.text,
             lineNumber: parsed.data.line_number,
             lineText: parsed.data.lines.text,
-            submatches: parsed.data.submatches.map(m => ({
-              start: m.start, end: m.end, match: m.match.text
-            }))
+            submatches: parsed.data.submatches.map((m) => ({
+              start: m.start,
+              end: m.end,
+              match: m.match.text,
+            })),
           };
-        } catch { return null; }
+        } catch {
+          return null;
+        }
       })
       .filter((m): m is GrepMatch => m !== null);
   }
 }
-
