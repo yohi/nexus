@@ -1,7 +1,7 @@
 import { spawn } from 'node:child_process';
 import { readFile, mkdir, readdir } from 'node:fs/promises';
 import { createWriteStream } from 'node:fs';
-import { dirname, join, relative, sep, resolve } from 'node:path';
+import { dirname, join, relative, resolve } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
 import picomatch from 'picomatch';
 
@@ -282,7 +282,7 @@ export class NexusServerFactory {
     const pipeline = new IndexPipeline({
       metadataStore, vectorStore, chunker: new Chunker(pluginRegistry),
       embeddingProvider, pluginRegistry,
-      onProgress: async (msg) => onLog(msg)
+      onProgress: (msg) => onLog(msg)
     });
 
     const loadFileContent = (path: string) => readFile(resolve(projectRoot, path), 'utf8');
@@ -399,3 +399,4 @@ export class NexusServerFactory {
       .filter((m): m is GrepMatch => m !== null);
   }
 }
+

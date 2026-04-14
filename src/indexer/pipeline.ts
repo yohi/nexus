@@ -303,7 +303,7 @@ export class IndexPipeline implements IIndexPipeline {
     if (this.options.onProgress) {
       try {
         await this.options.onProgress(`Finished indexing: ${filePath} (${chunks.length} chunks)`);
-      } catch (error) {
+      } catch {
         // Already logged error above, just keep going
       }
     }
