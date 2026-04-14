@@ -150,7 +150,9 @@ const asStringList = (value: string | undefined): string[] | undefined => {
 
 const validateStringList = (value: unknown): string[] | undefined => {
   if (Array.isArray(value) && value.every((v) => typeof v === 'string')) {
-    return value as string[];
+    return value
+      .map((s) => s.trim())
+      .filter((s) => s !== '');
   }
   return undefined;
 };

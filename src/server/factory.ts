@@ -3,6 +3,7 @@ import { readFile, mkdir, readdir } from 'node:fs/promises';
 import { createWriteStream } from 'node:fs';
 import { dirname, join, relative, sep, resolve } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
+import picomatch from 'picomatch';
 
 import { initializeNexusRuntime, type NexusRuntime } from './index.js';
 import { PathSanitizer } from './path-sanitizer.js';
@@ -44,25 +45,43 @@ interface RipgrepMatchData {
  * Handles directory scanning and file discovery.
  */
 class DirectoryScanner {
-  static async scan(dir: string, projectRoot: string, ignorePaths: string[], onProgress?: (msg: string) => void): Promise<IndexEvent[]> {
+  private static scanCounter = 0;
+  private static readonly LOG_THROTTLE_THRESHOLD = 100;
+
+  static async scan(
+    dir: string,
+    projectRoot: string,
+    ignorePaths: string[],
+    onProgress?: (msg: string) => void,
+    isInitial = true,
+    isIgnored?: (path: string) => boolean
+  ): Promise<IndexEvent[]> {
+    if (isInitial) {
+      this.scanCounter = 0;
+      // Pre-compile ignore patterns for consistency and performance
+      const patterns = ignorePaths.map((p) => `**/${p}/**`);
+      isIgnored = picomatch(patterns);
+    }
+
     const entries = await readdir(resolve(dir), { withFileTypes: true });
     const events: IndexEvent[] = [];
 
     for (const entry of entries) {
       const fullPath = join(dir, entry.name);
       const relPath = relative(projectRoot, fullPath);
-      const segments = relPath.split(sep);
 
-      if (ignorePaths.some((p) => segments.includes(p))) {
+      // Use consistent glob matching
+      if (isIgnored?.(relPath)) {
         continue;
       }
 
-      if (onProgress) {
-        onProgress(`Scanning: ${relPath}`);
+      this.scanCounter += 1;
+      if (onProgress && this.scanCounter % this.LOG_THROTTLE_THRESHOLD === 0) {
+        onProgress(`Scanning progress: ${this.scanCounter} entries reached (currently at ${relPath})`);
       }
 
       if (entry.isDirectory()) {
-        events.push(...(await this.scan(fullPath, projectRoot, ignorePaths, onProgress)));
+        events.push(...(await this.scan(fullPath, projectRoot, ignorePaths, onProgress, false, isIgnored)));
       } else if (entry.isFile()) {
         events.push({
           type: 'added',
@@ -246,7 +265,15 @@ export class NexusServerFactory {
     const logStream = createWriteStream(logFilePath, { flags: 'w' });
     const onLog = (msg: string) => {
       const timestamp = new Date().toISOString();
-      logStream.write(`[${timestamp}] ${msg}\n`);
+      const line = `[${timestamp}] ${msg}\n`;
+      try {
+        if (!logStream.write(line)) {
+          // If buffer is full, we just continue (next writes will be queued)
+        }
+      } catch (e) {
+        console.error(`[Indexer Log Error] Failed to write to ${logFilePath}:`, e);
+        console.error(`Original message: ${msg}`);
+      }
     };
 
     const semanticSearch = new SemanticSearch({ vectorStore, embeddingProvider });
