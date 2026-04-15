@@ -100,4 +100,22 @@ describe('initializeNexusRuntime', () => {
 
     expect(calls.at(-1)).toBe('watcher.stop');
   });
+
+  it('starts the server even if watcher.start fails (e.g. EMFILE)', async () => {
+    const options = makeServerOptions();
+    const watcher = {
+      start: async () => {
+        const error = new Error('EMFILE: too many open files');
+        (error as any).code = 'EMFILE';
+        throw error;
+      },
+      stop: async () => {},
+    };
+
+    // Should not throw
+    const runtime = await initializeNexusRuntime({ ...options, watcher } as unknown as NexusRuntimeOptions);
+    expect(runtime.server).toBeDefined();
+
+    await runtime.close();
+  });
 });
