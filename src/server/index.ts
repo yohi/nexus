@@ -276,7 +276,7 @@ const sanitizeErrorMessage = (error: unknown): string => {
 
   // Check for absolute or relative path-like strings that might be sensitive.
   // We block things like /home/user, C:\Users, /tmp/secret, or ../../secret
-  const hasSensitivePath = /(\/(home|Users|tmp|var|etc|opt)\/|^[a-zA-Z]:\\\\|^\/[^\\/]+\/|\.\.\/)/i.test(message);
+  const hasSensitivePath = /(\/(home|Users|tmp|var|etc|opt)\/|[a-zA-Z]:\\|\/[^/]+\/|\.\.\/)/i.test(message);
   if (hasSensitivePath) {
     return 'Internal server error (potential path leak prevented)';
   }
