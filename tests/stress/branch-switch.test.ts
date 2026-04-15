@@ -31,7 +31,10 @@ describe('stress: branch switch watcher load', () => {
     const watcher = new FileWatcher(
       { projectRoot: '/repo', ignorePaths: ['.nexus', 'node_modules'] },
       queue,
-      () => fakeWatcher as never,
+      () => {
+        setImmediate(() => fakeWatcher.emit('ready'));
+        return fakeWatcher as never;
+      },
     );
 
     await watcher.start();
