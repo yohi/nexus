@@ -11,12 +11,12 @@ type WatcherFactory = (projectRoot: string, ignored: string[]) => FSWatcher;
 
 const defaultWatcherFactory: WatcherFactory = (projectRoot, ignored) => {
   const normalizedRoot = projectRoot.split(path.sep).join('/');
-  const patterns = ignored.flatMap((p) => {
-    const isNegated = p.startsWith('!');
-    const rawPattern = isNegated ? p.slice(1) : p;
+  const patterns = ignored.flatMap((entry) => {
+    const isNegated = entry.startsWith('!');
+    const rawPattern = isNegated ? entry.slice(1) : entry;
     const normalized = normalizeIgnorePaths([rawPattern]);
-    return normalized.map((p) => {
-      const absolutePath = path.resolve(projectRoot, p).split(path.sep).join('/');
+    return normalized.map((normalizedPath) => {
+      const absolutePath = path.resolve(projectRoot, normalizedPath).split(path.sep).join('/');
       return isNegated ? `!${absolutePath}` : absolutePath;
     });
   });
@@ -49,11 +49,11 @@ export class FileWatcher {
     private readonly createWatcher: WatcherFactory = defaultWatcherFactory,
   ) {
     const ignored = [...(this.options.ignorePaths ?? [])];
-    const patterns = ignored.flatMap((p) => {
-      const isNegated = p.startsWith('!');
-      const rawPattern = isNegated ? p.slice(1) : p;
+    const patterns = ignored.flatMap((entry) => {
+      const isNegated = entry.startsWith('!');
+      const rawPattern = isNegated ? entry.slice(1) : entry;
       const normalized = normalizeIgnorePaths([rawPattern]);
-      return normalized.map((n) => (isNegated ? `!${n}` : n));
+      return normalized.map((normalizedPath) => (isNegated ? `!${normalizedPath}` : normalizedPath));
     });
     this.isIgnored = picomatch(patterns, { windows: true });
   }
