@@ -11,15 +11,16 @@ type WatcherFactory = (projectRoot: string, ignored: string[]) => FSWatcher;
 
 const defaultWatcherFactory: WatcherFactory = (projectRoot, ignored) => {
   const normalizedRoot = projectRoot.split(path.sep).join('/');
-  const patterns = ignored.flatMap((entry) => {
+  const patterns: string[] = [];
+
+  for (const entry of ignored) {
     const isNegated = entry.startsWith('!');
     const rawPattern = isNegated ? entry.slice(1) : entry;
-    const normalized = normalizeIgnorePaths([rawPattern]);
-    return normalized.map((normalizedPath) => {
+    for (const normalizedPath of normalizeIgnorePaths([rawPattern])) {
       const absolutePath = path.resolve(projectRoot, normalizedPath).split(path.sep).join('/');
-      return isNegated ? `!${absolutePath}` : absolutePath;
-    });
-  });
+      patterns.push(isNegated ? `!${absolutePath}` : absolutePath);
+    }
+  }
 
   return chokidar.watch(normalizedRoot, {
     ignored: patterns,
@@ -48,13 +49,17 @@ export class FileWatcher {
     private readonly eventQueue: EventQueue,
     private readonly createWatcher: WatcherFactory = defaultWatcherFactory,
   ) {
-    const ignored = [...(this.options.ignorePaths ?? [])];
-    const patterns = ignored.flatMap((entry) => {
+    const ignored = this.options.ignorePaths ?? [];
+    const patterns: string[] = [];
+
+    for (const entry of ignored) {
       const isNegated = entry.startsWith('!');
       const rawPattern = isNegated ? entry.slice(1) : entry;
-      const normalized = normalizeIgnorePaths([rawPattern]);
-      return normalized.map((normalizedPath) => (isNegated ? `!${normalizedPath}` : normalizedPath));
-    });
+      for (const normalizedPath of normalizeIgnorePaths([rawPattern])) {
+        patterns.push(isNegated ? `!${normalizedPath}` : normalizedPath);
+      }
+    }
+
     this.isIgnored = picomatch(patterns, { windows: true });
   }
 

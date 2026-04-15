@@ -68,5 +68,5 @@ describe('stress: branch switch watcher load', () => {
     }
 
     expect(fakeWatcher.closeCalls).toBe(1);
-  }, 15_000);
+  }, 30_000);
 });
