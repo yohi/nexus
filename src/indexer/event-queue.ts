@@ -3,6 +3,7 @@ import { inspect } from 'node:util';
 import pLimit from 'p-limit';
 
 import type { IndexEvent, ReindexOptions, ReindexQueueEvent } from '../types/index.js';
+import type { MetricsHooks } from '../observability/types.js';
 
 export interface EventQueueOptions {
   debounceMs: number;
@@ -10,6 +11,7 @@ export interface EventQueueOptions {
   fullScanThreshold: number;
   concurrency: number;
   onFullScanRequired?: () => Promise<void>;
+  metricsHooks?: Pick<MetricsHooks, 'onQueueSnapshot'>;
 }
 
 export type QueueEvent = IndexEvent | ReindexQueueEvent;
@@ -45,6 +47,11 @@ export class EventQueue {
   enqueue(event: IndexEvent): boolean {
     if (this.state !== 'normal') {
       this.droppedEventCount += 1;
+      this.options.metricsHooks?.onQueueSnapshot(
+        this.size(),
+        this.state,
+        this.droppedEventCount
+      );
       return false;
     }
 
@@ -107,6 +114,12 @@ export class EventQueue {
       this.enterOverflow();
     }
 
+    this.options.metricsHooks?.onQueueSnapshot(
+      this.size(),
+      this.state,
+      this.droppedEventCount
+    );
+
     return true;
   }
 
@@ -132,6 +145,12 @@ export class EventQueue {
     if (this.size() >= this.options.fullScanThreshold) {
       this.enterOverflow();
     }
+
+    this.options.metricsHooks?.onQueueSnapshot(
+      this.size(),
+      this.state,
+      this.droppedEventCount
+    );
 
     return true;
   }
@@ -243,6 +262,12 @@ export class EventQueue {
       }
       throw new Error(message);
     }
+
+    this.options.metricsHooks?.onQueueSnapshot(
+      this.size(),
+      this.state,
+      this.droppedEventCount
+    );
 
     return results;
   }
