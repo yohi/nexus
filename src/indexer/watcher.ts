@@ -66,14 +66,20 @@ export class FileWatcher {
         resolve();
       });
 
-      watcher.on('error', (error: any) => {
+      watcher.on('error', (error: unknown) => {
         if (!isReady) {
           // Initialization failure (e.g. EMFILE during initial scan or setup)
           reject(error);
           return;
         }
 
-        if (error?.code === 'EMFILE') {
+        const hasEmfileCode =
+          error !== null &&
+          typeof error === 'object' &&
+          'code' in error &&
+          error.code === 'EMFILE';
+
+        if (hasEmfileCode) {
           console.error(
             '[Nexus Watcher Error] System limit hit (EMFILE). File watching is suspended.',
             error,
