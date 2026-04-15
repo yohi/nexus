@@ -344,6 +344,8 @@ export class NexusServerFactory {
     const flushLogQueue = () => {
       while (logQueue.length > 0 && !isBackedUp && !isRotating) {
         const line = logQueue.shift()!;
+        const byteLength = Buffer.byteLength(line, "utf8");
+
         if (!logStream.write(line)) {
           isBackedUp = true;
           drainListener = () => {
@@ -352,6 +354,13 @@ export class NexusServerFactory {
             flushLogQueue();
           };
           logStream.once("drain", drainListener);
+        }
+
+        writtenBytes += byteLength;
+
+        if (writtenBytes >= LOG_MAX_BYTES) {
+          void rotateLog();
+          // The loop will exit on next iteration because isRotating is now true
         }
       }
     };
@@ -369,6 +378,7 @@ export class NexusServerFactory {
           return;
         }
 
+        const byteLength = Buffer.byteLength(line, "utf8");
         if (!logStream.write(line)) {
           isBackedUp = true;
           drainListener = () => {
@@ -379,7 +389,7 @@ export class NexusServerFactory {
           logStream.once("drain", drainListener);
         }
 
-        writtenBytes += line.length;
+        writtenBytes += byteLength;
       } catch (e) {
         console.error(
           `[Indexer Log Error] Failed to write to ${logFilePath}:`,
