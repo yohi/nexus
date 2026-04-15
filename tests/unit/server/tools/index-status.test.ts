@@ -38,7 +38,15 @@ describe('executeIndexStatus', () => {
       },
     ]);
 
-    const result = await executeIndexStatus(metadataStore, vectorStore, registry);
+    const mockPipeline = {
+      getProgress: () => ({
+        status: 'idle' as const,
+        processedFiles: 0,
+        totalFiles: 0,
+      }),
+    };
+
+    const result = await executeIndexStatus(metadataStore, vectorStore, registry, mockPipeline as any);
 
     expect(result.skippedFiles).toBe(1);
     expect(result.indexStats).toMatchObject({ totalFiles: 1, totalChunks: 2 });

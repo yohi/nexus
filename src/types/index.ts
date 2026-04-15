@@ -323,3 +323,24 @@ export interface ReindexResult {
   reconciliation: ReconciliationResult;
   chunksIndexed: number;
 }
+
+export interface PipelineProgress {
+  totalFiles: number;
+  processedFiles: number;
+  currentFile?: string;
+  status: 'idle' | 'running' | 'stopping';
+  lastError?: string;
+}
+
+export interface IIndexPipeline {
+  start(): void;
+  stop(): Promise<void>;
+  reindex(
+    run: (options?: { fullScan?: boolean; reason?: 'manual' }) => Promise<IndexEvent[]>,
+    loadContent: (filePath: string) => Promise<string>,
+    fullRebuild?: boolean,
+  ): Promise<ReindexResult | { status: 'already_running' }>;
+  getSkippedFiles(): ReadonlyMap<string, string>;
+  reconcileOnStartup(): Promise<RuntimeInitializationResult>;
+  getProgress(): PipelineProgress;
+}

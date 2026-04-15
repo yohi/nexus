@@ -1,11 +1,18 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
 
-import type { IIndexPipeline } from '../indexer/pipeline.js';
-import type { PluginRegistry } from '../plugins/registry.js';
 import type { SearchOrchestrator } from '../search/orchestrator.js';
 import type { ISemanticSearch } from '../search/semantic.js';
-import type { IMetadataStore, IVectorStore, IGrepEngine, IndexEvent, IFileWatcher, ReindexOptions } from '../types/index.js';
+import type { PluginRegistry } from '../plugins/registry.js';
+import type {
+  IMetadataStore,
+  IVectorStore,
+  IGrepEngine,
+  IndexEvent,
+  IFileWatcher,
+  ReindexOptions,
+  IIndexPipeline,
+} from '../types/index.js';
 import { PathTraversalError, type PathSanitizer } from './path-sanitizer.js';
 import { executeGetContext } from './tools/get-context.js';
 import { executeGrepSearch } from './tools/grep-search.js';
@@ -158,6 +165,7 @@ export const createNexusServer = (options: NexusServerOptions): McpServer => {
             options.metadataStore,
             options.vectorStore,
             options.pluginRegistry,
+            options.pipeline,
           ),
         );
       } catch (error) {
@@ -240,10 +248,10 @@ export const initializeNexusRuntime = async (options: NexusRuntimeOptions): Prom
       },
     };
   } catch (error) {
-    await options.pipeline.stop().catch((stopError) => {
+    await options.pipeline.stop().catch((stopError: unknown) => {
       console.error('Failed to stop pipeline during initialization rollback:', stopError);
     });
-    await options.watcher.stop().catch((stopError) => {
+    await options.watcher.stop().catch((stopError: unknown) => {
       console.error('Failed to stop watcher during initialization rollback:', stopError);
     });
     throw error;
@@ -251,18 +259,28 @@ export const initializeNexusRuntime = async (options: NexusRuntimeOptions): Prom
 };
 
 /**
- * Sanitizes error messages to prevent leaking internal file paths.
+ * Sanitizes error messages to prevent leaking internal file paths while
+ * preserving useful information like connection errors or validation failures.
  */
 const sanitizeErrorMessage = (error: unknown): string => {
   if (error instanceof PathTraversalError) {
     return 'Access denied: path is outside project root';
   }
   const message = error instanceof Error ? error.message : String(error);
-  // Basic check for absolute or relative path-like strings that might be sensitive
-  const hasPathInfo = /\/|[a-zA-Z]:\\|\.\.\//.test(message);
-  if (hasPathInfo) {
-    return 'Internal server error';
+
+  // Check for absolute or relative path-like strings that might be sensitive.
+  // We block things like /home/user, C:\Users, /tmp/secret, or ../../secret
+  const hasSensitivePath = /(\/(home|Users|tmp|var|etc|opt)\/|[a-zA-Z]:\\|\/[^/]+\/|\.\.\/)/i.test(message);
+  if (hasSensitivePath) {
+    return 'Internal server error (potential path leak prevented)';
   }
+
+  // Allow common network-related error messages even if they contain slashes (URLs)
+  const isNetworkError = /fetch failed|ECONNREFUSED|ECONNRESET|ETIMEDOUT|http:\/\/|https:\/\//i.test(message);
+  if (isNetworkError) {
+    return message;
+  }
+
   return message;
 };
 

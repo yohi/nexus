@@ -5,18 +5,20 @@ import { DeadLetterQueue } from './dead-letter-queue.js';
 import { MerkleTree } from './merkle-tree.js';
 import { computeFileHashStreaming } from './hash.js';
 import type { Chunker } from './chunker.js';
-import type {
-  EmbeddingProvider,
-  IMetadataStore,
-  IVectorStore,
-  IndexEvent,
-  RuntimeInitializationResult,
-  ReindexResult,
-  DeadLetterEntry,
-} from '../types/index.js';
-import { RetryExhaustedError } from '../types/index.js';
 import type { PluginRegistry } from '../plugins/registry.js';
 import type { EventQueue } from './event-queue.js';
+import {
+  type EmbeddingProvider,
+  type IMetadataStore,
+  type IVectorStore,
+  type IndexEvent,
+  type RuntimeInitializationResult,
+  type ReindexResult,
+  type DeadLetterEntry,
+  type IIndexPipeline,
+  type PipelineProgress,
+  RetryExhaustedError,
+} from '../types/index.js';
 
 interface IndexPipelineOptions {
   metadataStore: IMetadataStore;
@@ -34,18 +36,6 @@ interface ProcessEventsResult {
 
 type ContentLoader = (filePath: string) => Promise<string>;
 
-export interface IIndexPipeline {
-  start(): void;
-  stop(): Promise<void>;
-  reindex(
-    run: (options?: { fullScan?: boolean; reason?: 'manual' }) => Promise<IndexEvent[]>,
-    loadContent: ContentLoader,
-    fullRebuild?: boolean,
-  ): Promise<ReindexResult | { status: 'already_running' }>;
-  getSkippedFiles(): ReadonlyMap<string, string>;
-  reconcileOnStartup(): Promise<RuntimeInitializationResult>;
-}
-
 export class IndexPipeline implements IIndexPipeline {
   private readonly merkleTree: MerkleTree;
 
@@ -61,6 +51,12 @@ export class IndexPipeline implements IIndexPipeline {
 
   private abortController = new AbortController();
   private idleCompactionTimer: NodeJS.Timeout | undefined;
+
+  private progress: PipelineProgress = {
+    totalFiles: 0,
+    processedFiles: 0,
+    status: 'idle',
+  };
 
   constructor(private readonly options: IndexPipelineOptions) {
     this.merkleTree = new MerkleTree(options.metadataStore);
@@ -97,6 +93,7 @@ export class IndexPipeline implements IIndexPipeline {
   }
 
   async stop(): Promise<void> {
+    this.progress.status = 'stopping';
     this.abortController.abort();
 
     if (this.idleCompactionTimer !== undefined) {
@@ -110,6 +107,7 @@ export class IndexPipeline implements IIndexPipeline {
     }
 
     await this.options.vectorStore.close();
+    this.progress.status = 'idle';
   }
 
   async processEvents(
@@ -139,6 +137,8 @@ export class IndexPipeline implements IIndexPipeline {
         continue;
       }
 
+      this.progress.currentFile = event.filePath;
+
       if (event.type === 'deleted') {
         const existingNode = await this.options.metadataStore.getMerkleNode(event.filePath);
         if (existingNode?.isDirectory) {
@@ -160,6 +160,7 @@ export class IndexPipeline implements IIndexPipeline {
           this.skippedFiles.delete(event.filePath);
           await this.deadLetterQueue.removeByFilePath(event.filePath);
         }
+        this.progress.processedFiles++;
         continue;
       }
 
@@ -167,9 +168,8 @@ export class IndexPipeline implements IIndexPipeline {
         throw new Error('loadContent is required for added/modified events');
       }
 
-      const content = await loadContent(event.filePath);
-
       try {
+        const content = await loadContent(event.filePath);
         const count = await this.indexFile(event.filePath, content, event.contentHash ?? '');
         chunksIndexed += count;
       } catch (error) {
@@ -181,13 +181,17 @@ export class IndexPipeline implements IIndexPipeline {
             errorMessage: error.message,
             attempts: (error as RetryExhaustedError).attempts,
           });
+          this.progress.processedFiles++;
           continue;
         }
 
+        this.progress.lastError = error instanceof Error ? error.message : String(error);
         throw error;
       }
+      this.progress.processedFiles++;
     }
 
+    this.progress.currentFile = undefined;
     return { chunksIndexed };
   }
 
@@ -201,6 +205,11 @@ export class IndexPipeline implements IIndexPipeline {
 
     try {
       return await tryAcquire(this.mutex).runExclusive(async () => {
+        this.progress.status = 'running';
+        this.progress.processedFiles = 0;
+        this.progress.totalFiles = 0;
+        this.progress.lastError = undefined;
+
         try {
           if (this.options.onProgress) {
             try {
@@ -210,6 +219,8 @@ export class IndexPipeline implements IIndexPipeline {
             }
           }
           const events = await run({ fullScan: fullRebuild, reason: 'manual' });
+          this.progress.totalFiles = events.length;
+
           const { chunksIndexed } = await this.processEvents(events, loadContent);
 
           const finishedAt = new Date().toISOString();
@@ -228,6 +239,7 @@ export class IndexPipeline implements IIndexPipeline {
             console.error('Post-reindex compaction failed (non-fatal):', compactionError);
           }
 
+          this.progress.status = 'idle';
           return {
             startedAt,
             finishedAt,
@@ -235,6 +247,10 @@ export class IndexPipeline implements IIndexPipeline {
             reconciliation,
             chunksIndexed,
           };
+        } catch (error) {
+          this.progress.status = 'idle';
+          this.progress.lastError = error instanceof Error ? error.message : String(error);
+          throw error;
         } finally {
           if (fullRebuild && this.options.eventQueue) {
             this.options.eventQueue.markFullScanComplete();
@@ -247,6 +263,10 @@ export class IndexPipeline implements IIndexPipeline {
       }
       throw e;
     }
+  }
+
+  getProgress(): PipelineProgress {
+    return { ...this.progress };
   }
 
   async reconcileOnStartup(): Promise<RuntimeInitializationResult> {

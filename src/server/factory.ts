@@ -6,6 +6,7 @@ import { setTimeout as sleep } from "node:timers/promises";
 import { finished } from "node:stream/promises";
 import picomatch from "picomatch";
 
+import { normalizeIgnorePaths } from "../utils/path-normalization.js";
 import { initializeNexusRuntime, type NexusRuntime } from "./index.js";
 import { PathSanitizer } from "./path-sanitizer.js";
 import { SemanticSearch } from "../search/semantic.js";
@@ -59,10 +60,7 @@ class DirectoryScanner {
   ): Promise<IndexEvent[]> {
     if (isInitial) {
       this.scanCounter = 0;
-      const patterns = ignorePaths.flatMap((p) => {
-        const normalized = p.replaceAll("\\", "/").replace(/^\.\/+|\/+$/g, "");
-        return [`**/${normalized}`, `**/${normalized}/**`];
-      });
+      const patterns = normalizeIgnorePaths(ignorePaths);
       isIgnored = picomatch(patterns, { windows: true });
     }
 
