@@ -161,10 +161,13 @@ describe('OllamaEmbeddingProvider', () => {
     const fetchMock = vi.fn().mockImplementation(
       (_url: unknown, options: RequestInit) =>
         new Promise((_resolve, reject) => {
+          if (options.signal?.aborted) {
+            reject(new DOMException('The operation was aborted.', 'AbortError'));
+            return;
+          }
           options.signal?.addEventListener('abort', () => {
             reject(new DOMException('The operation was aborted.', 'AbortError'));
           });
-          // intentionally never resolves — simulates Ollama hanging
         }),
     );
 
@@ -183,9 +186,14 @@ describe('OllamaEmbeddingProvider', () => {
     );
 
     const pending = provider.embed(['alpha']);
+    
+    // Use a Promise to catch the rejection as soon as it happens
+    const catchPromise = expect(pending).rejects.toThrow(RetryExhaustedError);
+
+    // Trigger the timeout
     await vi.runAllTimersAsync();
 
-    await expect(pending).rejects.toBeInstanceOf(RetryExhaustedError);
+    await catchPromise;
     expect(fetchMock).toHaveBeenCalledOnce();
   });
 });

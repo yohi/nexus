@@ -21,6 +21,8 @@ const defaultDependencies: OllamaDependencies = {
     }),
 };
 
+const DEFAULT_TIMEOUT_MS = 60_000; // 60 seconds
+
 export class OllamaEmbeddingProvider extends BaseEmbeddingProvider {
   readonly dimensions: number;
 
@@ -87,10 +89,14 @@ export class OllamaEmbeddingProvider extends BaseEmbeddingProvider {
   }
 
   private async requestEmbeddings(batch: string[]): Promise<number[][]> {
+    const timeoutMs = this.config.timeoutMs ?? DEFAULT_TIMEOUT_MS;
     const controller = new AbortController();
     let timer: ReturnType<typeof setTimeout> | undefined;
-    if (this.config.timeoutMs !== undefined) {
-      timer = setTimeout(() => controller.abort(), this.config.timeoutMs);
+
+    if (timeoutMs > 0) {
+      timer = setTimeout(() => {
+        controller.abort();
+      }, timeoutMs);
     }
 
     try {

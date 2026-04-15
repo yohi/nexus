@@ -364,7 +364,7 @@ export class NexusServerFactory {
           void rotateLog();
         }
 
-        if (isBackedUp) {
+        if (isRotating || isBackedUp) {
           logQueue.push(line);
           return;
         }
