@@ -11,11 +11,14 @@ type WatcherFactory = (projectRoot: string, ignored: string[]) => FSWatcher;
 
 const defaultWatcherFactory: WatcherFactory = (projectRoot, ignored) => {
   const normalizedRoot = projectRoot.split(path.sep).join('/');
-  const patterns = normalizeIgnorePaths(ignored).map((p) => {
+  const patterns = ignored.flatMap((p) => {
     const isNegated = p.startsWith('!');
-    const pattern = isNegated ? p.slice(1) : p;
-    const absolutePath = path.resolve(projectRoot, pattern).split(path.sep).join('/');
-    return isNegated ? `!${absolutePath}` : absolutePath;
+    const rawPattern = isNegated ? p.slice(1) : p;
+    const normalized = normalizeIgnorePaths([rawPattern]);
+    return normalized.map((p) => {
+      const absolutePath = path.resolve(projectRoot, p).split(path.sep).join('/');
+      return isNegated ? `!${absolutePath}` : absolutePath;
+    });
   });
 
   return chokidar.watch(normalizedRoot, {
@@ -27,6 +30,7 @@ const defaultWatcherFactory: WatcherFactory = (projectRoot, ignored) => {
 export class FileWatcher {
   private watcher: FSWatcher | undefined;
   private startPromise: Promise<void> | undefined;
+  private isStopped = false;
   private isIgnored: (path: string) => boolean = () => false;
 
   /**
@@ -45,7 +49,12 @@ export class FileWatcher {
     private readonly createWatcher: WatcherFactory = defaultWatcherFactory,
   ) {
     const ignored = [...(this.options.ignorePaths ?? [])];
-    const patterns = normalizeIgnorePaths(ignored);
+    const patterns = ignored.flatMap((p) => {
+      const isNegated = p.startsWith('!');
+      const rawPattern = isNegated ? p.slice(1) : p;
+      const normalized = normalizeIgnorePaths([rawPattern]);
+      return normalized.map((n) => (isNegated ? `!${n}` : n));
+    });
     this.isIgnored = picomatch(patterns, { windows: true });
   }
 
@@ -58,6 +67,7 @@ export class FileWatcher {
       return this.startPromise;
     }
 
+    this.isStopped = false;
     this.startPromise = (async () => {
       await this.asyncBoundary();
 
@@ -65,11 +75,20 @@ export class FileWatcher {
 
       return new Promise<void>((resolve, reject) => {
         const watcher = this.createWatcher(this.options.projectRoot, ignored);
+        this.watcher = watcher;
         let isReady = false;
 
         watcher.on('ready', () => {
+          if (this.isStopped) {
+            void watcher.close().finally(() => {
+              this.watcher = undefined;
+              this.startPromise = undefined;
+              resolve();
+            });
+            return;
+          }
+
           isReady = true;
-          this.watcher = watcher;
           this.startPromise = undefined;
           resolve();
         });
@@ -117,7 +136,12 @@ export class FileWatcher {
   }
 
   async stop(): Promise<void> {
+    this.isStopped = true;
+
     if (this.watcher === undefined) {
+      if (this.startPromise) {
+        await this.startPromise;
+      }
       return;
     }
 

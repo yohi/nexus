@@ -204,7 +204,13 @@ export const initializeNexusRuntime = async (options: NexusRuntimeOptions): Prom
   try {
     options.pipeline.start();
     await options.watcher.start().catch((error) => {
-      console.error('[Nexus Server Warning] Failed to start FileWatcher:', error);
+      const isEmfile =
+        error !== null && typeof error === 'object' && 'code' in error && error.code === 'EMFILE';
+      if (isEmfile) {
+        console.error('[Nexus Server Warning] Failed to start FileWatcher (EMFILE):', error);
+      } else {
+        throw error;
+      }
     });
     const server = createNexusServer(options);
 
