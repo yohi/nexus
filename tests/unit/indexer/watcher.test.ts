@@ -11,6 +11,11 @@ class FakeWatcher extends EventEmitter {
   async close(): Promise<void> {
     this.closeCalls += 1;
   }
+
+  // Helper to simulate 'ready' event after start() is called in FileWatcher
+  simulateReady() {
+    setImmediate(() => this.emit('ready'));
+  }
 }
 
 describe('FileWatcher', () => {
@@ -20,7 +25,10 @@ describe('FileWatcher', () => {
     const watcher = new FileWatcher(
       { projectRoot: '/repo', ignorePaths: [] },
       queue,
-      () => fakeWatcher as never,
+      (_root, _ignored) => {
+        fakeWatcher.simulateReady();
+        return fakeWatcher as never;
+      },
     );
 
     await watcher.start();
@@ -42,7 +50,10 @@ describe('FileWatcher', () => {
     const watcher = new FileWatcher(
       { projectRoot: '/repo', ignorePaths: [] },
       queue,
-      () => fakeWatcher as never,
+      (_root, _ignored) => {
+        fakeWatcher.simulateReady();
+        return fakeWatcher as never;
+      },
     );
 
     await watcher.start();
@@ -64,7 +75,10 @@ describe('FileWatcher', () => {
     const watcher = new FileWatcher(
       { projectRoot: '/repo', ignorePaths: [] },
       queue,
-      () => fakeWatcher as never,
+      (_root, _ignored) => {
+        fakeWatcher.simulateReady();
+        return fakeWatcher as never;
+      },
     );
 
     await watcher.start();
@@ -86,7 +100,10 @@ describe('FileWatcher', () => {
     const watcher = new FileWatcher(
       { projectRoot: '/repo', ignorePaths: ['node_modules', '.nexus'] },
       queue,
-      () => fakeWatcher as never,
+      (_root, _ignored) => {
+        fakeWatcher.simulateReady();
+        return fakeWatcher as never;
+      },
     );
 
     await watcher.start();
@@ -104,7 +121,10 @@ describe('FileWatcher', () => {
     const watcher = new FileWatcher(
       { projectRoot: '/repo', ignorePaths: [] },
       queue,
-      () => fakeWatcher as never,
+      (_root, _ignored) => {
+        fakeWatcher.simulateReady();
+        return fakeWatcher as never;
+      },
     );
 
     await watcher.start();

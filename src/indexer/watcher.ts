@@ -10,23 +10,29 @@ import type { EventQueue } from './event-queue.js';
 type WatcherFactory = (projectRoot: string, ignored: string[]) => FSWatcher;
 
 const defaultWatcherFactory: WatcherFactory = (projectRoot, ignored) => {
-  const patterns = normalizeIgnorePaths(ignored);
-  const isIgnored = picomatch(patterns, { windows: true });
+  const normalizedRoot = projectRoot.split(path.sep).join('/');
+  const patterns: string[] = [];
 
-  return chokidar.watch(projectRoot, {
-    ignored: (path: string) => {
-      const relativePath = path.startsWith(projectRoot)
-        ? path.slice(projectRoot.length).replace(/^[\\\\/]/, '')
-        : path;
-      const normalizedPath = relativePath.split(/[\\\\/]/).join('/');
-      return isIgnored(normalizedPath);
-    },
+  for (const entry of ignored) {
+    const isNegated = entry.startsWith('!');
+    const rawPattern = isNegated ? entry.slice(1) : entry;
+    for (const normalizedPath of normalizeIgnorePaths([rawPattern])) {
+      const absolutePath = path.resolve(projectRoot, normalizedPath).split(path.sep).join('/');
+      patterns.push(isNegated ? `!${absolutePath}` : absolutePath);
+    }
+  }
+
+  return chokidar.watch(normalizedRoot, {
+    ignored: patterns,
     ignoreInitial: true,
   });
 };
 
 export class FileWatcher {
   private watcher: FSWatcher | undefined;
+  private startPromise: Promise<void> | undefined;
+  private settleStartPromise: (() => void) | undefined;
+  private isStopped = false;
   private isIgnored: (path: string) => boolean = () => false;
 
   /**
@@ -44,38 +50,117 @@ export class FileWatcher {
     private readonly eventQueue: EventQueue,
     private readonly createWatcher: WatcherFactory = defaultWatcherFactory,
   ) {
-    const ignored = [...(this.options.ignorePaths ?? [])];
-    const patterns = normalizeIgnorePaths(ignored);
+    const ignored = this.options.ignorePaths ?? [];
+    const patterns: string[] = [];
+
+    for (const entry of ignored) {
+      const isNegated = entry.startsWith('!');
+      const rawPattern = isNegated ? entry.slice(1) : entry;
+      for (const normalizedPath of normalizeIgnorePaths([rawPattern])) {
+        patterns.push(isNegated ? `!${normalizedPath}` : normalizedPath);
+      }
+    }
+
     this.isIgnored = picomatch(patterns, { windows: true });
   }
 
   async start(): Promise<void> {
-    await this.asyncBoundary();
     if (this.watcher !== undefined) {
       return;
     }
 
-    const ignored = [...(this.options.ignorePaths ?? [])];
-    this.watcher = this.createWatcher(this.options.projectRoot, ignored);
+    if (this.startPromise !== undefined) {
+      return this.startPromise;
+    }
 
-    this.watcher.on('add', (filePath) => {
-      this.handleFsEvent('added', filePath);
-    });
-    this.watcher.on('change', (filePath) => {
-      this.handleFsEvent('modified', filePath);
-    });
-    this.watcher.on('unlink', (filePath) => {
-      this.handleFsEvent('deleted', filePath);
-    });
+    this.isStopped = false;
+    this.startPromise = (async () => {
+      await this.asyncBoundary();
+
+      const ignored = [...(this.options.ignorePaths ?? [])];
+
+      return new Promise<void>((resolve, reject) => {
+        this.settleStartPromise = () => {
+          this.settleStartPromise = undefined;
+          this.startPromise = undefined;
+          resolve();
+        };
+
+        const watcher = this.createWatcher(this.options.projectRoot, ignored);
+        this.watcher = watcher;
+        let isReady = false;
+
+        watcher.on('ready', () => {
+          if (this.isStopped) {
+            void watcher.close().finally(() => {
+              this.watcher = undefined;
+              this.settleStartPromise?.();
+            });
+            return;
+          }
+
+          isReady = true;
+          this.settleStartPromise?.();
+        });
+
+        watcher.on('error', (error: unknown) => {
+          if (!isReady) {
+            // Initialization failure: cleanup resources
+            this.watcher = undefined;
+            const wrappedError = error instanceof Error ? error : new Error(String(error));
+            void watcher.close().finally(() => {
+              this.settleStartPromise = undefined;
+              this.startPromise = undefined;
+              reject(wrappedError);
+            });
+            return;
+          }
+
+          const hasEmfileCode =
+            error !== null &&
+            typeof error === 'object' &&
+            'code' in error &&
+            error.code === 'EMFILE';
+
+          if (hasEmfileCode) {
+            console.error(
+              '[Nexus Watcher Error] System limit hit (EMFILE). File watching is suspended.',
+              error,
+            );
+          } else {
+            console.error('[Nexus Watcher Error]', error);
+          }
+        });
+
+        watcher.on('add', (filePath) => {
+          this.handleFsEvent('added', filePath);
+        });
+        watcher.on('change', (filePath) => {
+          this.handleFsEvent('modified', filePath);
+        });
+        watcher.on('unlink', (filePath) => {
+          this.handleFsEvent('deleted', filePath);
+        });
+      });
+    })();
+
+    return this.startPromise;
   }
 
   async stop(): Promise<void> {
+    this.isStopped = true;
+
     if (this.watcher === undefined) {
+      this.settleStartPromise?.();
+      if (this.startPromise) {
+        await this.startPromise;
+      }
       return;
     }
 
     const currentWatcher = this.watcher;
     this.watcher = undefined;
+    this.settleStartPromise?.();
     await currentWatcher.close();
   }
 

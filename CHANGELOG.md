@@ -1,5 +1,16 @@
 # Changelog
 
+## [1.4.1](https://github.com/yohi/nexus/compare/v1.4.0...v1.4.1) (2026-04-15)
+
+
+### Bug Fixes
+
+* **indexer:** .git などの不要なディレクトリの監視を最適化 ([2604740](https://github.com/yohi/nexus/commit/2604740642f18d459c023959a0e4dc37e2ffa3ce))
+* **security:** エラーメッセージのパス漏洩防止を強化し、無視パスの正規化ロジックを共通化 ([d393410](https://github.com/yohi/nexus/commit/d393410e5f12f10926c34aba069127934a8dc1b3))
+* **server:** エラーメッセージからのパス漏洩を防ぐためのサニタイズを改善 ([d2b491c](https://github.com/yohi/nexus/commit/d2b491cc6dee0f4835924797bad2acf8c86b6967))
+* **server:** エラーメッセージのパス漏洩防止と無視パス正規化の改善 ([feb076b](https://github.com/yohi/nexus/commit/feb076bd164afbbf0453f7a1c881dc4b1a7b5f61))
+* ファイル監視の無視パス処理強化とパス漏洩防止 ([7744eaa](https://github.com/yohi/nexus/commit/7744eaa08079d5de5342e6f78c5f56fc95233ec8))
+
 ## [1.4.0](https://github.com/yohi/nexus/compare/v1.3.0...v1.4.0) (2026-04-15)
 
 
