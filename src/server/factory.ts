@@ -390,6 +390,9 @@ export class NexusServerFactory {
         }
 
         writtenBytes += byteLength;
+        if (writtenBytes >= LOG_MAX_BYTES) {
+          void rotateLog();
+        }
       } catch (e) {
         console.error(
           `[Indexer Log Error] Failed to write to ${logFilePath}:`,
