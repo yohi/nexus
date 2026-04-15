@@ -1,5 +1,26 @@
 # Changelog
 
+## [1.4.0](https://github.com/yohi/nexus/compare/v1.3.0...v1.4.0) (2026-04-15)
+
+
+### Features
+
+* **indexer:** インデクサーログにローテーションとキューイング機能を追加 ([0267c27](https://github.com/yohi/nexus/commit/0267c27eae053b22360194325544e44b4e751b67))
+* **indexer:** ディレクトリ走査時の無視パス検出ロジックを強化 ([0e0ae3b](https://github.com/yohi/nexus/commit/0e0ae3bf42e88f63eff0ac854ac1984b1792cd1c))
+* **indexer:** 進捗ログ処理の改善 ([3b6e947](https://github.com/yohi/nexus/commit/3b6e947f681afa7817ee61b0a3a864c7fa8161da))
+* インデクサーの進捗ログ出力機能を追加および除外パス設定の改善 ([590acea](https://github.com/yohi/nexus/commit/590acea7e58ca754daa134d1ea6ae3ab3d24b37d))
+
+
+### Bug Fixes
+
+* **indexer:** Ollamaのハング対策とログローテーションのデッドロックを修正 ([bde7830](https://github.com/yohi/nexus/commit/bde7830af7a605917f0e0eda5d84b04f03727773))
+* Lint エラー（未使用変数・不要な async）を修正 ([c20e242](https://github.com/yohi/nexus/commit/c20e2427119cec4fa9036f1a1f7588b66864e1a1))
+* **plugins:** Ollama タイムアウト処理を改善し、ハングを防止 ([83c379c](https://github.com/yohi/nexus/commit/83c379c1085a0b4f87f586cf4b4159d031669d07))
+* **server/factory:** ログファイルローテーションの失敗を無視するように修正 ([f396cd1](https://github.com/yohi/nexus/commit/f396cd13d030902e95aa7ea702c9a83e221e6643))
+* **server:** インデクサーのログローテーションとエラーハンドリングを強化 ([a7ef072](https://github.com/yohi/nexus/commit/a7ef0723f2739d4d195c0a9a88f7f80cf6faa699))
+* **server:** インデクサーのログローテーションにおけるバイト数誤算を修正 ([0ffe9bc](https://github.com/yohi/nexus/commit/0ffe9bc6fad428abd1c1c9c5558dc3bc7654e66a))
+* **server:** ログローテーションのサイズ制限を修正 ([b8861ee](https://github.com/yohi/nexus/commit/b8861ee72a82530c7f740ebf2c60ea7430191ea4))
+
 ## [1.3.0](https://github.com/yohi/nexus/compare/v1.2.0...v1.3.0) (2026-04-13)
 
 
