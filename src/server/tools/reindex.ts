@@ -1,5 +1,4 @@
-import type { IndexEvent, ReindexResult, ReindexOptions } from '../../types/index.js';
-import type { IIndexPipeline } from '../../indexer/pipeline.js';
+import type { IndexEvent, ReindexResult, ReindexOptions, IIndexPipeline } from '../../types/index.js';
 
 export interface ReindexToolArgs {
   fullRebuild?: boolean;

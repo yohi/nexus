@@ -8,7 +8,10 @@ type WatcherFactory = (projectRoot: string, ignored: string[]) => FSWatcher;
 
 const defaultWatcherFactory: WatcherFactory = (projectRoot, ignored) =>
   chokidar.watch(projectRoot, {
-    ignored: ignored.map((p) => `**/${p}/**`),
+    ignored: (path: string) => {
+      const segments = path.split(/[\\/]/);
+      return ignored.some((p) => segments.includes(p));
+    },
     ignoreInitial: true,
   });
 
