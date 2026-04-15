@@ -80,7 +80,7 @@ export class FileWatcher {
             this.startPromise = undefined;
             this.watcher = undefined;
             void watcher.close().finally(() => {
-              reject(error);
+              reject(error instanceof Error ? error : new Error(String(error)));
             });
             return;
           }
