@@ -1,20 +1,16 @@
-import chokidar, { type FSWatcher } from 'chokidar';
+import { type FSWatcher } from 'chokidar';
+import chokidar from 'chokidar';
 import path from 'node:path';
 import picomatch from 'picomatch';
 
 import type { FileWatcherOptions, IndexEventType } from '../types/index.js';
+import { normalizeIgnorePaths } from '../utils/path-normalization.js';
 import type { EventQueue } from './event-queue.js';
 
 type WatcherFactory = (projectRoot: string, ignored: string[]) => FSWatcher;
 
-const normalizePatterns = (ignorePaths: string[]) =>
-  ignorePaths.flatMap((p) => {
-    const normalized = p.replaceAll('\\\\', '/').replace(/^\.\/+|\/+$/g, '');
-    return [`**/${normalized}`, `**/${normalized}/**`];
-  });
-
 const defaultWatcherFactory: WatcherFactory = (projectRoot, ignored) => {
-  const patterns = normalizePatterns(ignored);
+  const patterns = normalizeIgnorePaths(ignored);
   const isIgnored = picomatch(patterns, { windows: true });
 
   return chokidar.watch(projectRoot, {
@@ -49,7 +45,7 @@ export class FileWatcher {
     private readonly createWatcher: WatcherFactory = defaultWatcherFactory,
   ) {
     const ignored = [...(this.options.ignorePaths ?? [])];
-    const patterns = normalizePatterns(ignored);
+    const patterns = normalizeIgnorePaths(ignored);
     this.isIgnored = picomatch(patterns, { windows: true });
   }
 
