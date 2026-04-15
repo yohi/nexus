@@ -10,17 +10,12 @@ import type { EventQueue } from './event-queue.js';
 type WatcherFactory = (projectRoot: string, ignored: string[]) => FSWatcher;
 
 const defaultWatcherFactory: WatcherFactory = (projectRoot, ignored) => {
-  const patterns = normalizeIgnorePaths(ignored);
-  const isIgnored = picomatch(patterns, { windows: true });
+  const patterns = normalizeIgnorePaths(ignored).map((p) =>
+    path.resolve(projectRoot, p),
+  );
 
   return chokidar.watch(projectRoot, {
-    ignored: (path: string) => {
-      const relativePath = path.startsWith(projectRoot)
-        ? path.slice(projectRoot.length).replace(/^[\\\\/]/, '')
-        : path;
-      const normalizedPath = relativePath.split(/[\\\\/]/).join('/');
-      return isIgnored(normalizedPath);
-    },
+    ignored: patterns,
     ignoreInitial: true,
   });
 };
@@ -57,6 +52,10 @@ export class FileWatcher {
 
     const ignored = [...(this.options.ignorePaths ?? [])];
     this.watcher = this.createWatcher(this.options.projectRoot, ignored);
+
+    this.watcher.on('error', (error) => {
+      console.error('[Nexus Watcher Error]', error);
+    });
 
     this.watcher.on('add', (filePath) => {
       this.handleFsEvent('added', filePath);

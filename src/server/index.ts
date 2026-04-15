@@ -203,7 +203,9 @@ export const initializeNexusRuntime = async (options: NexusRuntimeOptions): Prom
 
   try {
     options.pipeline.start();
-    await options.watcher.start();
+    await options.watcher.start().catch((error) => {
+      console.error('[Nexus Server Warning] Failed to start FileWatcher:', error);
+    });
     const server = createNexusServer(options);
 
     return {
