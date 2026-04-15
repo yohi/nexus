@@ -316,11 +316,73 @@ tests/
 ├── unit/
 │   └── observability/
 │       ├── metrics-collector.test.ts  # コールバック→prom-client 変換
-│       └── metrics-server.test.ts     # HTTP エンドポイント応答
+│       ├── metrics-server.test.ts     # HTTP エンドポイント応答・ポート競合
+│       └── use-metrics.test.ts        # ポーリングフック・接続フォールバック
 └── integration/
     └── observability/
         └── metrics-e2e.test.ts        # コアモジュール→HTTP→JSON 一気通貫
 ```
+
+#### Unit: metrics-collector.test.ts
+
+コールバック呼び出しが prom-client のメトリクスへ正しく変換されることを検証する。
+
+| テストケース | 入力 | 期待出力 |
+|---|---|---|
+| onQueueSnapshot で Gauge が更新される | `onQueueSnapshot(42, 'normal', 0)` | `nexus_event_queue_size` = 42, `nexus_event_queue_state{state="normal"}` = 1, 他の state ラベル = 0 |
+| onQueueSnapshot で dropped Counter が累積する | `onQueueSnapshot(10, 'overflow', 3)` → `onQueueSnapshot(10, 'overflow', 7)` | `nexus_event_queue_dropped_total` = 7（Counter は最新の累積値をセット） |
+| 急激な Queue サイズ変動に追従する | `onQueueSnapshot(0, 'normal', 0)` → `onQueueSnapshot(10000, 'full_scan', 500)` | Gauge が 0 → 10000 に即時反映。state ラベルが `full_scan` = 1 に切り替わり、`normal` = 0 |
+| state の高速遷移を正確に追跡する | `normal` → `overflow` → `full_scan` → `normal` を連続呼び出し | 各呼び出し後に対応する state のみ値 1、他は 0 |
+| onChunksIndexed で Counter が加算される | `onChunksIndexed(100)` × 3 回 | `nexus_indexing_chunks_total` = 300 |
+| onChunksIndexed にゼロを渡しても安全 | `onChunksIndexed(0)` | Counter 値は変化なし、例外なし |
+| onReindexComplete で Histogram にサンプルが記録される | `onReindexComplete(1204, false)` | `nexus_reindex_duration_seconds{full_rebuild="false"}` の count = 1, sum ≈ 1.204 |
+| onReindexComplete の極端な duration | `onReindexComplete(0.5, true)` (0.5ms), `onReindexComplete(180000, true)` (3 分) | Histogram に正常記録。0.5ms → 0.0005s は最小バケット (0.1) 以下に分類。180s は最大バケット (120) 超に分類 |
+| onDlqSnapshot で Gauge が更新される | `onDlqSnapshot(3)` → `onDlqSnapshot(0)` | `nexus_dlq_size` が 3 → 0 に変化 |
+| onRecoverySweepComplete で Counter が加算される | `onRecoverySweepComplete(5, 2, 1)` | `nexus_dlq_recovery_total{result="retried"}` = 5, `{result="purged"}` = 2, `{result="skipped"}` = 1 |
+| カスタム Registry を注入できる | コンストラクタに新規 Registry を渡す | デフォルト Registry は汚染されず、カスタム Registry にのみメトリクスが登録される |
+
+#### Unit: metrics-server.test.ts
+
+HTTP エンドポイントの応答内容およびポート競合時の挙動を検証する。
+
+| テストケース | 入力 | 期待出力 |
+|---|---|---|
+| GET /metrics が Prometheus 形式を返す | `GET /metrics` | ステータス 200, Content-Type: `text/plain`, ボディに `nexus_event_queue_size` を含む |
+| GET /metrics/json が JSON 配列を返す | `GET /metrics/json` | ステータス 200, Content-Type: `application/json`, JSON パース可能な配列 |
+| GET /health が ok を返す | `GET /health` | ステータス 200, `{ "status": "ok" }` |
+| 未定義パスに 404 を返す | `GET /unknown` | ステータス 404 |
+| **EADDRINUSE 時に MCP サーバーが継続稼働する** | ポート 9464 を事前に `net.createServer` で占有した状態で `MetricsHttpServer.start()` を呼ぶ | `start()` が reject せず resolve する。警告ログが出力される。`MetricsHttpServer.isListening()` は `false` を返す |
+| EADDRINUSE 後もコアモジュールのコールバックが動作する | 上記状態で `onQueueSnapshot()` を呼ぶ | MetricsCollector 内の Gauge が更新される（HTTP サーバーが停止していてもメトリクス収集自体は継続） |
+| stop() が未起動状態でも安全 | `start()` 前または EADDRINUSE 後に `stop()` を呼ぶ | 例外なく resolve する |
+
+#### Unit: use-metrics.test.ts
+
+TUI 側のポーリングフックおよび接続フォールバック動作を検証する。
+`fetch` をモックし、タイマーは `vi.useFakeTimers()` で制御する。
+
+| テストケース | 入力（fetch モック条件） | 期待出力（hook 返却値） |
+|---|---|---|
+| サーバー未起動時に接続待機状態を返す | `fetch` が `ECONNREFUSED` で reject | `{ status: 'connecting', data: null, error: 'ECONNREFUSED' }` |
+| サーバー起動後に正常データを返す | `fetch` が 200 + JSON を resolve | `{ status: 'connected', data: <MetricsJSON>, error: null }` |
+| 非 JSON レスポンス時に待機状態を返す | `fetch` が 200 + `text/plain` を resolve | `{ status: 'waiting', data: null, error: 'Invalid JSON' }` |
+| 接続断後にリトライする | 正常応答 → `ECONNREFUSED` → 正常応答 | `connected` → `reconnecting` → `connected` の遷移。データは最後の正常取得値を保持 |
+| ポーリング間隔が設定通り | `interval: 2000` を指定 | `setInterval` が 2000ms で呼ばれる |
+| クリーンアップ時にタイマーが解除される | hook のアンマウント | `clearInterval` が呼ばれ、以降の fetch は発生しない |
+| カスタムポートが URL に反映される | `port: 3000` を指定 | fetch URL が `http://localhost:3000/metrics/json` |
+
+#### Integration: metrics-e2e.test.ts
+
+コアモジュールからメトリクス HTTP エンドポイントまでの一気通貫テスト。
+実際の `MetricsCollector` + `MetricsHttpServer` を起動し、ランダム空きポートを
+使用してポート競合を回避する。
+
+| テストケース | 入力 | 期待出力 |
+|---|---|---|
+| EventQueue 操作が /metrics/json に反映される | EventQueue に 50 件 enqueue → drain | `/metrics/json` のレスポンスに `nexus_event_queue_size` と `nexus_indexing_chunks_total` が含まれ、値が操作結果と一致 |
+| DLQ 操作が /metrics/json に反映される | DLQ に 3 件 enqueue → recoverySweep 実行 | `/metrics/json` に `nexus_dlq_size` = 0, `nexus_dlq_recovery_total` の各ラベル値が sweep 結果と一致 |
+| 極端なメトリクス変動のエンドツーエンド追従 | Queue に 0 → 10000 件を高速 enqueue → 全件 drain → 再度 5000 件 enqueue | 各段階で `/metrics/json` を取得し、`nexus_event_queue_size` が 10000 → 0 → 5000 と正確に追従 |
+| ポート競合時もコアモジュール→メトリクス収集は動作する | 指定ポートを事前占有 → MetricsHttpServer.start() → EventQueue 操作 | HTTP サーバーは起動しないが、MetricsCollector 内部の Registry にメトリクスが記録される（`registry.getMetricsAsJSON()` で直接検証） |
+| シャットダウンチェーンが正常に完了する | MetricsHttpServer 起動中 → `close()` 呼び出し | HTTP サーバーが停止し、ポートが解放される。再度同じポートで `listen` 可能 |
 
 ---
 
