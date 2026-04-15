@@ -105,7 +105,9 @@ describe('initializeNexusRuntime', () => {
     const options = makeServerOptions();
     const watcher = {
       start: async () => {
-        throw new Error('EMFILE: too many open files');
+        const error = new Error('EMFILE: too many open files');
+        (error as any).code = 'EMFILE';
+        throw error;
       },
       stop: async () => {},
     };

@@ -26,6 +26,7 @@ const defaultWatcherFactory: WatcherFactory = (projectRoot, ignored) => {
 
 export class FileWatcher {
   private watcher: FSWatcher | undefined;
+  private startPromise: Promise<void> | undefined;
   private isIgnored: (path: string) => boolean = () => false;
 
   /**
@@ -49,56 +50,70 @@ export class FileWatcher {
   }
 
   async start(): Promise<void> {
-    await this.asyncBoundary();
     if (this.watcher !== undefined) {
       return;
     }
 
-    const ignored = [...(this.options.ignorePaths ?? [])];
-    const watcher = this.createWatcher(this.options.projectRoot, ignored);
+    if (this.startPromise !== undefined) {
+      return this.startPromise;
+    }
 
-    return new Promise((resolve, reject) => {
-      let isReady = false;
+    this.startPromise = (async () => {
+      await this.asyncBoundary();
 
-      watcher.on('ready', () => {
-        isReady = true;
-        this.watcher = watcher;
-        resolve();
+      const ignored = [...(this.options.ignorePaths ?? [])];
+
+      return new Promise<void>((resolve, reject) => {
+        const watcher = this.createWatcher(this.options.projectRoot, ignored);
+        let isReady = false;
+
+        watcher.on('ready', () => {
+          isReady = true;
+          this.watcher = watcher;
+          this.startPromise = undefined;
+          resolve();
+        });
+
+        watcher.on('error', (error: unknown) => {
+          if (!isReady) {
+            // Initialization failure: cleanup resources
+            this.startPromise = undefined;
+            this.watcher = undefined;
+            void watcher.close().finally(() => {
+              reject(error);
+            });
+            return;
+          }
+
+          const hasEmfileCode =
+            error !== null &&
+            typeof error === 'object' &&
+            'code' in error &&
+            error.code === 'EMFILE';
+
+          if (hasEmfileCode) {
+            console.error(
+              '[Nexus Watcher Error] System limit hit (EMFILE). File watching is suspended.',
+              error,
+            );
+          } else {
+            console.error('[Nexus Watcher Error]', error);
+          }
+        });
+
+        watcher.on('add', (filePath) => {
+          this.handleFsEvent('added', filePath);
+        });
+        watcher.on('change', (filePath) => {
+          this.handleFsEvent('modified', filePath);
+        });
+        watcher.on('unlink', (filePath) => {
+          this.handleFsEvent('deleted', filePath);
+        });
       });
+    })();
 
-      watcher.on('error', (error: unknown) => {
-        if (!isReady) {
-          // Initialization failure (e.g. EMFILE during initial scan or setup)
-          reject(error);
-          return;
-        }
-
-        const hasEmfileCode =
-          error !== null &&
-          typeof error === 'object' &&
-          'code' in error &&
-          error.code === 'EMFILE';
-
-        if (hasEmfileCode) {
-          console.error(
-            '[Nexus Watcher Error] System limit hit (EMFILE). File watching is suspended.',
-            error,
-          );
-        } else {
-          console.error('[Nexus Watcher Error]', error);
-        }
-      });
-
-      watcher.on('add', (filePath) => {
-        this.handleFsEvent('added', filePath);
-      });
-      watcher.on('change', (filePath) => {
-        this.handleFsEvent('modified', filePath);
-      });
-      watcher.on('unlink', (filePath) => {
-        this.handleFsEvent('deleted', filePath);
-      });
-    });
+    return this.startPromise;
   }
 
   async stop(): Promise<void> {
