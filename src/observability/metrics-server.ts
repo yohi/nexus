@@ -8,9 +8,13 @@ export class MetricsHttpServer {
   constructor(private readonly registry: Registry) {}
 
   async start(port: number, host = '127.0.0.1'): Promise<void> {
+    if (this.listening || this.server) {
+      return;
+    }
+
     const reg = this.registry;
-    this.server = createServer((req, res) => {
-      (async () => {
+    const server = createServer((req, res) => {
+      void (async () => {
         try {
           if (req.url === '/metrics') {
             const metrics = await reg.metrics();
@@ -27,18 +31,21 @@ export class MetricsHttpServer {
             res.writeHead(404);
             res.end();
           }
-        } catch {
+        } catch (err) {
+          console.error('[Nexus Metrics] Request failed:', err);
           if (!res.headersSent) {
             res.writeHead(500);
           }
           res.end();
         }
-      })();
+      })().catch((err) => {
+        console.error('[Nexus Metrics] Unhandled request error:', err);
+      });
     });
 
     return new Promise<void>((resolve, reject) => {
       const portNum = port;
-      this.server!.on('error', (err: NodeJS.ErrnoException) => {
+      server.on('error', (err: NodeJS.ErrnoException) => {
         if (err.code === 'EADDRINUSE') {
           console.warn(`[Nexus] Metrics port ${portNum} already in use. Metrics HTTP server disabled.`);
           this.listening = false;
@@ -48,7 +55,8 @@ export class MetricsHttpServer {
         }
       });
 
-      this.server!.listen(portNum, host, () => {
+      server.listen(portNum, host, () => {
+        this.server = server;
         this.listening = true;
         resolve();
       });
@@ -56,11 +64,15 @@ export class MetricsHttpServer {
   }
 
   async stop(): Promise<void> {
-    if (!this.server || !this.listening) {
+    const currentServer = this.server;
+    if (!currentServer || !this.listening) {
+      this.server = undefined;
       return;
     }
+
     return new Promise<void>((resolve, reject) => {
-      this.server!.close((err) => {
+      currentServer.close((err) => {
+        this.server = undefined;
         this.listening = false;
         if (err) reject(err);
         else resolve();

@@ -29,7 +29,13 @@ interface IndexPipelineOptions {
   pluginRegistry: PluginRegistry;
   eventQueue?: EventQueue;
   onProgress?: (msg: string) => void;
-  metricsHooks?: Pick<MetricsHooks, 'onChunksIndexed' | 'onReindexComplete'>;
+  metricsHooks?: Pick<
+    MetricsHooks,
+    | 'onChunksIndexed'
+    | 'onReindexComplete'
+    | 'onDlqSnapshot'
+    | 'onRecoverySweepComplete'
+  >;
 }
 
 interface ProcessEventsResult {
@@ -67,7 +73,18 @@ export class IndexPipeline implements IIndexPipeline {
       embeddingHealthy: () => this.embeddingHealthy(),
       computeFileHash: (path) => this.computeFileHash(path),
       reprocess: (entry) => this.reprocess(entry),
+      metricsHooks: options.metricsHooks,
     });
+  }
+
+  private safeNotifyMetrics(fn: (hooks: NonNullable<IndexPipelineOptions['metricsHooks']>) => void): void {
+    const { metricsHooks } = this.options;
+    if (!metricsHooks) return;
+    try {
+      fn(metricsHooks);
+    } catch (err) {
+      console.warn('[Nexus Pipeline] Metrics hook failed:', err);
+    }
   }
 
   start(): void {
@@ -194,7 +211,7 @@ export class IndexPipeline implements IIndexPipeline {
     }
 
     this.progress.currentFile = undefined;
-    this.options.metricsHooks?.onChunksIndexed(chunksIndexed);
+    this.safeNotifyMetrics((h) => h.onChunksIndexed(chunksIndexed));
     return { chunksIndexed };
   }
 
@@ -242,7 +259,7 @@ export class IndexPipeline implements IIndexPipeline {
             console.error('Post-reindex compaction failed (non-fatal):', compactionError);
           }
 
-          this.options.metricsHooks?.onReindexComplete(durationMs, !!fullRebuild);
+          this.safeNotifyMetrics((h) => h.onReindexComplete(durationMs, !!fullRebuild));
 
           this.progress.status = 'idle';
           return {

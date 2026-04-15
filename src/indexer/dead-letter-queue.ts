@@ -11,6 +11,7 @@ export interface RecoverySweepResult {
 }
 
 export interface DeadLetterQueueOptions {
+  name?: string;
   metadataStore: IMetadataStore;
   maxEntries?: number;
   ttlMs?: number;
@@ -90,7 +91,7 @@ export class DeadLetterQueue {
     this.entries.set(entry.id, entry);
     await this.trimToCapacity();
 
-    this.options.metricsHooks?.onDlqSnapshot(this.entries.size);
+    this.safeNotifyMetrics((h) => h.onDlqSnapshot(this.entries.size, this.options.name));
 
     return entry;
   }
@@ -125,6 +126,8 @@ export class DeadLetterQueue {
       this.entries.delete(id);
     }
 
+    this.safeNotifyMetrics((h) => h.onDlqSnapshot(this.entries.size, this.options.name));
+
     return expiredIds.length;
   }
 
@@ -135,15 +138,15 @@ export class DeadLetterQueue {
 
     this.recoveryRunning = true;
     this.currentSweep = (async () => {
+      let retried = 0;
+      let purged = 0;
+      let skipped = 0;
       try {
         await this.ensureLoaded();
         if (!(await this.embeddingHealthy())) {
-          return { retried: 0, purged: 0, skipped: this.entries.size };
+          skipped = this.entries.size;
+          return { retried: 0, purged: 0, skipped };
         }
-
-        let retried = 0;
-        let purged = 0;
-        let skipped = 0;
 
         for (const entry of [...this.entries.values()]) {
           try {
@@ -171,10 +174,9 @@ export class DeadLetterQueue {
           }
         }
 
-        this.options.metricsHooks?.onRecoverySweepComplete(retried, purged, skipped);
-
         return { retried, purged, skipped };
       } finally {
+        this.safeNotifyMetrics((h) => h.onRecoverySweepComplete(retried, purged, skipped, this.options.name));
         this.recoveryRunning = false;
         this.currentSweep = undefined;
       }
@@ -243,7 +245,17 @@ export class DeadLetterQueue {
       this.entries.delete(id);
     }
 
-    this.options.metricsHooks?.onDlqSnapshot(this.entries.size);
+    this.safeNotifyMetrics((h) => h.onDlqSnapshot(this.entries.size, this.options.name));
+  }
+
+  private safeNotifyMetrics(fn: (hooks: NonNullable<DeadLetterQueueOptions['metricsHooks']>) => void): void {
+    const { metricsHooks } = this.options;
+    if (!metricsHooks) return;
+    try {
+      fn(metricsHooks);
+    } catch (err) {
+      console.warn('[Nexus DLQ] Metrics hook failed:', err);
+    }
   }
 
   private async ensureLoaded(): Promise<void> {
@@ -268,5 +280,6 @@ export class DeadLetterQueue {
     }
 
     await this.options.metadataStore.removeDeadLetterEntries(removedIds);
+    this.safeNotifyMetrics((h) => h.onDlqSnapshot(this.entries.size, this.options.name));
   }
 }

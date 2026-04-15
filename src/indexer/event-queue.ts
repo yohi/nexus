@@ -6,6 +6,7 @@ import type { IndexEvent, ReindexOptions, ReindexQueueEvent } from '../types/ind
 import type { MetricsHooks } from '../observability/types.js';
 
 export interface EventQueueOptions {
+  name?: string;
   debounceMs: number;
   maxQueueSize: number;
   fullScanThreshold: number;
@@ -47,11 +48,7 @@ export class EventQueue {
   enqueue(event: IndexEvent): boolean {
     if (this.state !== 'normal') {
       this.droppedEventCount += 1;
-      this.options.metricsHooks?.onQueueSnapshot(
-        this.size(),
-        this.state,
-        this.droppedEventCount
-      );
+      this.safeNotifyMetrics();
       return false;
     }
 
@@ -91,6 +88,7 @@ export class EventQueue {
     if (nextSize > this.options.maxQueueSize) {
       this.enterOverflow();
       this.droppedEventCount += 1;
+      this.safeNotifyMetrics();
       return false;
     }
 
@@ -114,11 +112,7 @@ export class EventQueue {
       this.enterOverflow();
     }
 
-    this.options.metricsHooks?.onQueueSnapshot(
-      this.size(),
-      this.state,
-      this.droppedEventCount
-    );
+    this.safeNotifyMetrics();
 
     return true;
   }
@@ -126,12 +120,14 @@ export class EventQueue {
   enqueueReindex(options: ReindexOptions): boolean {
     if (this.state !== 'normal') {
       this.droppedEventCount += 1;
+      this.safeNotifyMetrics();
       return false;
     }
 
     if (this.size() >= this.options.maxQueueSize) {
       this.enterOverflow();
       this.droppedEventCount += 1;
+      this.safeNotifyMetrics();
       return false;
     }
 
@@ -146,11 +142,7 @@ export class EventQueue {
       this.enterOverflow();
     }
 
-    this.options.metricsHooks?.onQueueSnapshot(
-      this.size(),
-      this.state,
-      this.droppedEventCount
-    );
+    this.safeNotifyMetrics();
 
     return true;
   }
@@ -263,11 +255,7 @@ export class EventQueue {
       throw new Error(message);
     }
 
-    this.options.metricsHooks?.onQueueSnapshot(
-      this.size(),
-      this.state,
-      this.droppedEventCount
-    );
+    this.safeNotifyMetrics();
 
     return results;
   }
@@ -278,6 +266,7 @@ export class EventQueue {
     this.watcherQueue.length = 0;
     this.reindexQueue.length = 0;
     this.state = 'normal';
+    this.safeNotifyMetrics();
   }
 
   markFullScanComplete(): void {
@@ -290,6 +279,7 @@ export class EventQueue {
     this.watcherQueue.length = 0;
     this.reindexQueue.length = 0;
     this.state = 'normal';
+    this.safeNotifyMetrics();
   }
 
   /**
@@ -302,6 +292,21 @@ export class EventQueue {
 
   isOverflowing(): boolean {
     return this.state !== 'normal';
+  }
+
+  private safeNotifyMetrics(): void {
+    const { metricsHooks } = this.options;
+    if (!metricsHooks) return;
+    try {
+      metricsHooks.onQueueSnapshot(
+        this.size(),
+        this.state,
+        this.droppedEventCount,
+        this.options.name,
+      );
+    } catch (err) {
+      console.warn('[Nexus EventQueue] Metrics hook failed:', err);
+    }
   }
 
   private flushDebouncedEvent(filePath: string): void {
@@ -333,6 +338,8 @@ export class EventQueue {
     if (this.size() >= this.options.fullScanThreshold) {
       this.enterOverflow();
     }
+
+    this.safeNotifyMetrics();
   }
 
   private flushAllDebounced(): void {
@@ -356,5 +363,6 @@ export class EventQueue {
     }
 
     this.state = 'overflow';
+    this.safeNotifyMetrics();
   }
 }
