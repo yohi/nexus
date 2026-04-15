@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { Registry } from 'prom-client';
+import { MetricsCollector } from '../../../src/observability/metrics-collector.js';
 import type { BackpressureState } from '../../../src/indexer/event-queue.js';
 
 describe('MetricsCollector', () => {
@@ -10,7 +11,6 @@ describe('MetricsCollector', () => {
   });
 
   it('onQueueSnapshot で Gauge が更新される', async () => {
-    const { MetricsCollector } = await import('../../../src/observability/metrics-collector.js');
     const collector = new MetricsCollector(registry);
 
     collector.onQueueSnapshot(42, 'normal', 0);
@@ -23,7 +23,6 @@ describe('MetricsCollector', () => {
   });
 
   it('onQueueSnapshot で dropped Counter が累積する', async () => {
-    const { MetricsCollector } = await import('../../../src/observability/metrics-collector.js');
     const collector = new MetricsCollector(registry);
 
     collector.onQueueSnapshot(10, 'overflow', 3);
@@ -37,8 +36,23 @@ describe('MetricsCollector', () => {
     expect(metrics2).toContain('nexus_event_queue_dropped_total 7');
   });
 
+  it('onQueueSnapshot で droppedTotal がリセットされても正しく計測を継続する', async () => {
+    const collector = new MetricsCollector(registry);
+
+    // 1. 初回のドロップ計上 (0 -> 3)
+    collector.onQueueSnapshot(10, 'overflow', 3);
+    expect(await registry.metrics()).toContain('nexus_event_queue_dropped_total 3');
+
+    // 2. ソースのリセット (3 -> 0) : カウンタは 3 のまま維持されるべき
+    collector.onQueueSnapshot(10, 'overflow', 0);
+    expect(await registry.metrics()).toContain('nexus_event_queue_dropped_total 3');
+
+    // 3. リセット後の新規ドロップ (0 -> 1) : 合計は 4 (3 + 1) になるべき
+    collector.onQueueSnapshot(10, 'overflow', 1);
+    expect(await registry.metrics()).toContain('nexus_event_queue_dropped_total 4');
+  });
+
   it('急激な Queue サイズ変動に追従する', async () => {
-    const { MetricsCollector } = await import('../../../src/observability/metrics-collector.js');
     const collector = new MetricsCollector(registry);
 
     collector.onQueueSnapshot(0, 'normal', 0);
@@ -51,7 +65,6 @@ describe('MetricsCollector', () => {
   });
 
   it('state の高速遷移を正確に追跡する', async () => {
-    const { MetricsCollector } = await import('../../../src/observability/metrics-collector.js');
     const collector = new MetricsCollector(registry);
 
     collector.onQueueSnapshot(5, 'normal' as BackpressureState, 0);
@@ -66,7 +79,6 @@ describe('MetricsCollector', () => {
   });
 
   it('onChunksIndexed で Counter が加算される', async () => {
-    const { MetricsCollector } = await import('../../../src/observability/metrics-collector.js');
     const collector = new MetricsCollector(registry);
 
     collector.onChunksIndexed(100);
@@ -78,7 +90,6 @@ describe('MetricsCollector', () => {
   });
 
   it('onChunksIndexed にゼロを渡しても安全', async () => {
-    const { MetricsCollector } = await import('../../../src/observability/metrics-collector.js');
     const collector = new MetricsCollector(registry);
 
     collector.onChunksIndexed(50);
@@ -90,7 +101,6 @@ describe('MetricsCollector', () => {
   });
 
   it('onReindexComplete で Histogram にサンプルが記録される', async () => {
-    const { MetricsCollector } = await import('../../../src/observability/metrics-collector.js');
     const collector = new MetricsCollector(registry);
 
     collector.onReindexComplete(1204, false);
@@ -100,7 +110,6 @@ describe('MetricsCollector', () => {
   });
 
   it('onReindexComplete の極端な duration', async () => {
-    const { MetricsCollector } = await import('../../../src/observability/metrics-collector.js');
     const collector = new MetricsCollector(registry);
 
     collector.onReindexComplete(0.5, true);
@@ -111,7 +120,6 @@ describe('MetricsCollector', () => {
   });
 
   it('onDlqSnapshot で Gauge が更新される', async () => {
-    const { MetricsCollector } = await import('../../../src/observability/metrics-collector.js');
     const collector = new MetricsCollector(registry);
 
     collector.onDlqSnapshot(3);
@@ -122,7 +130,6 @@ describe('MetricsCollector', () => {
   });
 
   it('onRecoverySweepComplete で Counter が加算される', async () => {
-    const { MetricsCollector } = await import('../../../src/observability/metrics-collector.js');
     const collector = new MetricsCollector(registry);
 
     collector.onRecoverySweepComplete(5, 2, 1);
@@ -134,7 +141,6 @@ describe('MetricsCollector', () => {
   });
 
   it('カスタム Registry を注入できる', async () => {
-    const { MetricsCollector } = await import('../../../src/observability/metrics-collector.js');
     const customRegistry = new Registry();
     const anotherRegistry = new Registry();
 

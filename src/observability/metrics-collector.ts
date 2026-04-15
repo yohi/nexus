@@ -2,7 +2,7 @@ import { Registry, Gauge, Counter, Histogram } from 'prom-client';
 import type { MetricsHooks } from './types.js';
 import type { BackpressureState } from '../indexer/event-queue.js';
 
-const BACKPRESSURE_STATES: readonly BackpressureState[] = ['normal', 'overflow', 'full_scan'];
+const BACKPRESSURE_STATES = ['normal', 'overflow', 'full_scan'] as const satisfies readonly BackpressureState[];
 
 const REINDEX_BUCKETS = [0.1, 0.5, 1, 2, 5, 10, 30, 60, 120];
 
@@ -77,8 +77,8 @@ export class MetricsCollector implements MetricsHooks {
     const delta = droppedTotal - this.prevDropped;
     if (delta > 0) {
       this.droppedCounter.inc(delta);
-      this.prevDropped = droppedTotal;
     }
+    this.prevDropped = droppedTotal;
   }
 
   onChunksIndexed(count: number): void {
