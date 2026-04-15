@@ -549,29 +549,38 @@ export class MetricsHttpServer {
 
   async start(port: number, host = '127.0.0.1'): Promise<void> {
     this.server = createServer(async (req, res) => {
-      if (req.url === '/metrics') {
-        const metrics = await this.registry.metrics();
-        res.writeHead(200, { 'Content-Type': this.registry.contentType });
-        res.end(metrics);
-      } else if (req.url === '/metrics/json') {
-        const json = await this.registry.getMetricsAsJSON();
-        res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify(json));
-      } else if (req.url === '/health') {
-        res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ status: 'ok' }));
-      } else {
-        res.writeHead(404);
+      try {
+        if (req.url === '/metrics') {
+          const metrics = await this.registry.metrics();
+          res.writeHead(200, { 'Content-Type': this.registry.contentType });
+          res.end(metrics);
+        } else if (req.url === '/metrics/json') {
+          const json = await this.registry.getMetricsAsJSON();
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify(json));
+        } else if (req.url === '/health') {
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ status: 'ok' }));
+        } else {
+          res.writeHead(404);
+          res.end();
+        }
+      } catch (err) {
+        if (!res.headersSent) {
+          res.writeHead(500);
+        }
         res.end();
       }
     });
 
-    return new Promise<void>((resolve) => {
+    return new Promise<void>((resolve, reject) => {
       this.server!.on('error', (err: NodeJS.ErrnoException) => {
         if (err.code === 'EADDRINUSE') {
           console.warn(`[Nexus] Metrics port ${port} already in use. Metrics HTTP server disabled.`);
           this.listening = false;
           resolve();
+        } else {
+          reject(err);
         }
       });
 
@@ -765,6 +774,10 @@ EOF
   "bin": {
     "nexus-dashboard": "./dist/cli.js"
   },
+  "exports": {
+    ".": "./dist/cli.js",
+    "./cli": "./dist/cli.js"
+  },
   "scripts": {
     "build": "tsc",
     "test": "vitest run --passWithNoTests"
@@ -885,11 +898,13 @@ export function useMetrics(options: UseMetricsOptions = {}): UseMetricsResult {
   const hadConnection = useRef(false);
 
   useEffect(() => {
+    hadConnection.current = false; // port/interval 変更時にリセット
+    const abortController = new AbortController();
     const url = `http://localhost:${port}/metrics/json`;
 
     const poll = async () => {
       try {
-        const res = await fetch(url);
+        const res = await fetch(url, { signal: abortController.signal });
         const contentType = res.headers.get('content-type') ?? '';
         if (!contentType.includes('application/json')) {
           setStatus('waiting');
@@ -902,6 +917,7 @@ export function useMetrics(options: UseMetricsOptions = {}): UseMetricsResult {
         setStatus('connected');
         hadConnection.current = true;
       } catch (err) {
+        if (abortController.signal.aborted) return;
         const msg = err instanceof Error ? err.message : String(err);
         setError(msg);
         if (hadConnection.current) {
@@ -914,7 +930,10 @@ export function useMetrics(options: UseMetricsOptions = {}): UseMetricsResult {
 
     void poll();
     const id = setInterval(() => void poll(), interval);
-    return () => clearInterval(id);
+    return () => {
+      abortController.abort();
+      clearInterval(id);
+    };
   }, [port, interval]);
 
   return { status, data, error };
@@ -1000,7 +1019,8 @@ const { values } = parseArgs({
 const port = parseInt(values.port ?? '9464', 10);
 const interval = parseInt(values.interval ?? '2000', 10);
 
-render(React.createElement(App, { port, interval }));
+const { waitUntilExit } = render(React.createElement(App, { port, interval }));
+await waitUntilExit();
 ```
 
 **Step 2: src/bin/nexus.ts にサブコマンド分岐を追加**
