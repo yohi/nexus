@@ -7,6 +7,7 @@ import { computeFileHashStreaming } from './hash.js';
 import type { Chunker } from './chunker.js';
 import type { PluginRegistry } from '../plugins/registry.js';
 import type { EventQueue } from './event-queue.js';
+import type { MetricsHooks } from '../observability/types.js';
 import {
   type EmbeddingProvider,
   type IMetadataStore,
@@ -28,6 +29,7 @@ interface IndexPipelineOptions {
   pluginRegistry: PluginRegistry;
   eventQueue?: EventQueue;
   onProgress?: (msg: string) => void;
+  metricsHooks?: Pick<MetricsHooks, 'onChunksIndexed' | 'onReindexComplete'>;
 }
 
 interface ProcessEventsResult {
@@ -192,6 +194,7 @@ export class IndexPipeline implements IIndexPipeline {
     }
 
     this.progress.currentFile = undefined;
+    this.options.metricsHooks?.onChunksIndexed(chunksIndexed);
     return { chunksIndexed };
   }
 
@@ -238,6 +241,8 @@ export class IndexPipeline implements IIndexPipeline {
           } catch (compactionError) {
             console.error('Post-reindex compaction failed (non-fatal):', compactionError);
           }
+
+          this.options.metricsHooks?.onReindexComplete(durationMs, !!fullRebuild);
 
           this.progress.status = 'idle';
           return {
