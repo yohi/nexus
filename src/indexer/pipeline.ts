@@ -207,6 +207,7 @@ export class IndexPipeline implements IIndexPipeline {
       return await tryAcquire(this.mutex).runExclusive(async () => {
         this.progress.status = 'running';
         this.progress.processedFiles = 0;
+        this.progress.totalFiles = 0;
         this.progress.lastError = undefined;
 
         try {

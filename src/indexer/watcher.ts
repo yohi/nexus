@@ -1,22 +1,37 @@
 import chokidar, { type FSWatcher } from 'chokidar';
 import path from 'node:path';
+import picomatch from 'picomatch';
 
 import type { FileWatcherOptions, IndexEventType } from '../types/index.js';
 import type { EventQueue } from './event-queue.js';
 
 type WatcherFactory = (projectRoot: string, ignored: string[]) => FSWatcher;
 
-const defaultWatcherFactory: WatcherFactory = (projectRoot, ignored) =>
-  chokidar.watch(projectRoot, {
+const normalizePatterns = (ignorePaths: string[]) =>
+  ignorePaths.flatMap((p) => {
+    const normalized = p.replaceAll('\\\\', '/').replace(/^\.\/+|\/+$/g, '');
+    return [`**/${normalized}`, `**/${normalized}/**`];
+  });
+
+const defaultWatcherFactory: WatcherFactory = (projectRoot, ignored) => {
+  const patterns = normalizePatterns(ignored);
+  const isIgnored = picomatch(patterns, { windows: true });
+
+  return chokidar.watch(projectRoot, {
     ignored: (path: string) => {
-      const segments = path.split(/[\\/]/);
-      return ignored.some((p) => segments.includes(p));
+      const relativePath = path.startsWith(projectRoot)
+        ? path.slice(projectRoot.length).replace(/^[\\\\/]/, '')
+        : path;
+      const normalizedPath = relativePath.split(/[\\\\/]/).join('/');
+      return isIgnored(normalizedPath);
     },
     ignoreInitial: true,
   });
+};
 
 export class FileWatcher {
   private watcher: FSWatcher | undefined;
+  private isIgnored: (path: string) => boolean = () => false;
 
   /**
    * Separates filesystem event callbacks from the initialization flow.
@@ -32,7 +47,11 @@ export class FileWatcher {
     private readonly options: FileWatcherOptions,
     private readonly eventQueue: EventQueue,
     private readonly createWatcher: WatcherFactory = defaultWatcherFactory,
-  ) {}
+  ) {
+    const ignored = [...(this.options.ignorePaths ?? [])];
+    const patterns = normalizePatterns(ignored);
+    this.isIgnored = picomatch(patterns, { windows: true });
+  }
 
   async start(): Promise<void> {
     await this.asyncBoundary();
@@ -90,14 +109,9 @@ export class FileWatcher {
   }
 
   private shouldIgnore(absolutePath: string): boolean {
-    const ignorePaths = this.options.ignorePaths ?? [];
-    if (ignorePaths.length === 0) {
-      return false;
-    }
-
     const relativePath = path.relative(this.options.projectRoot, absolutePath);
-    const segments = relativePath.split(path.sep);
+    const normalizedPath = relativePath.split(path.sep).join('/');
 
-    return ignorePaths.some((ignorePath) => segments.includes(ignorePath));
+    return this.isIgnored(normalizedPath);
   }
 }
