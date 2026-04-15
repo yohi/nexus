@@ -36,18 +36,21 @@ describe('NexusServer helpers', () => {
       const error = new Error('Failed to read /home/user/secret.txt');
       const result = errorResult(error);
       expect(result.structuredContent.message).toBe('Internal server error (potential path leak prevented)');
+      expect(result.content[0]!.text).toBe('Error: Internal server error (potential path leak prevented)');
     });
 
     it('sanitizes messages containing Windows-style absolute paths', () => {
       const error = new Error('Failed to read C:\\Users\\user\\secret.txt');
       const result = errorResult(error);
       expect(result.structuredContent.message).toBe('Internal server error (potential path leak prevented)');
+      expect(result.content[0]!.text).toBe('Error: Internal server error (potential path leak prevented)');
     });
 
     it('sanitizes messages containing directory traversal', () => {
       const error = new Error('Invalid path: ../../etc/passwd');
       const result = errorResult(error);
       expect(result.structuredContent.message).toBe('Internal server error (potential path leak prevented)');
+      expect(result.content[0]!.text).toBe('Error: Internal server error (potential path leak prevented)');
     });
 
     it('handles non-Error objects gracefully', () => {
