@@ -10,11 +10,15 @@ import type { EventQueue } from './event-queue.js';
 type WatcherFactory = (projectRoot: string, ignored: string[]) => FSWatcher;
 
 const defaultWatcherFactory: WatcherFactory = (projectRoot, ignored) => {
-  const patterns = normalizeIgnorePaths(ignored).map((p) =>
-    path.resolve(projectRoot, p),
-  );
+  const normalizedRoot = projectRoot.split(path.sep).join('/');
+  const patterns = normalizeIgnorePaths(ignored).map((p) => {
+    const isNegated = p.startsWith('!');
+    const pattern = isNegated ? p.slice(1) : p;
+    const absolutePath = path.resolve(projectRoot, pattern).split(path.sep).join('/');
+    return isNegated ? `!${absolutePath}` : absolutePath;
+  });
 
-  return chokidar.watch(projectRoot, {
+  return chokidar.watch(normalizedRoot, {
     ignored: patterns,
     ignoreInitial: true,
   });
@@ -51,20 +55,43 @@ export class FileWatcher {
     }
 
     const ignored = [...(this.options.ignorePaths ?? [])];
-    this.watcher = this.createWatcher(this.options.projectRoot, ignored);
+    const watcher = this.createWatcher(this.options.projectRoot, ignored);
 
-    this.watcher.on('error', (error) => {
-      console.error('[Nexus Watcher Error]', error);
-    });
+    return new Promise((resolve, reject) => {
+      let isReady = false;
 
-    this.watcher.on('add', (filePath) => {
-      this.handleFsEvent('added', filePath);
-    });
-    this.watcher.on('change', (filePath) => {
-      this.handleFsEvent('modified', filePath);
-    });
-    this.watcher.on('unlink', (filePath) => {
-      this.handleFsEvent('deleted', filePath);
+      watcher.on('ready', () => {
+        isReady = true;
+        this.watcher = watcher;
+        resolve();
+      });
+
+      watcher.on('error', (error: any) => {
+        if (!isReady) {
+          // Initialization failure (e.g. EMFILE during initial scan or setup)
+          reject(error);
+          return;
+        }
+
+        if (error?.code === 'EMFILE') {
+          console.error(
+            '[Nexus Watcher Error] System limit hit (EMFILE). File watching is suspended.',
+            error,
+          );
+        } else {
+          console.error('[Nexus Watcher Error]', error);
+        }
+      });
+
+      watcher.on('add', (filePath) => {
+        this.handleFsEvent('added', filePath);
+      });
+      watcher.on('change', (filePath) => {
+        this.handleFsEvent('modified', filePath);
+      });
+      watcher.on('unlink', (filePath) => {
+        this.handleFsEvent('deleted', filePath);
+      });
     });
   }
 
