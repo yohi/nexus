@@ -31,6 +31,7 @@ const defaultWatcherFactory: WatcherFactory = (projectRoot, ignored) => {
 export class FileWatcher {
   private watcher: FSWatcher | undefined;
   private startPromise: Promise<void> | undefined;
+  private settleStartPromise: (() => void) | undefined;
   private isStopped = false;
   private isIgnored: (path: string) => boolean = () => false;
 
@@ -79,6 +80,12 @@ export class FileWatcher {
       const ignored = [...(this.options.ignorePaths ?? [])];
 
       return new Promise<void>((resolve, reject) => {
+        this.settleStartPromise = () => {
+          this.settleStartPromise = undefined;
+          this.startPromise = undefined;
+          resolve();
+        };
+
         const watcher = this.createWatcher(this.options.projectRoot, ignored);
         this.watcher = watcher;
         let isReady = false;
@@ -87,24 +94,24 @@ export class FileWatcher {
           if (this.isStopped) {
             void watcher.close().finally(() => {
               this.watcher = undefined;
-              this.startPromise = undefined;
-              resolve();
+              this.settleStartPromise?.();
             });
             return;
           }
 
           isReady = true;
-          this.startPromise = undefined;
-          resolve();
+          this.settleStartPromise?.();
         });
 
         watcher.on('error', (error: unknown) => {
           if (!isReady) {
             // Initialization failure: cleanup resources
-            this.startPromise = undefined;
             this.watcher = undefined;
+            const wrappedError = error instanceof Error ? error : new Error(String(error));
             void watcher.close().finally(() => {
-              reject(error instanceof Error ? error : new Error(String(error)));
+              this.settleStartPromise = undefined;
+              this.startPromise = undefined;
+              reject(wrappedError);
             });
             return;
           }
@@ -144,6 +151,7 @@ export class FileWatcher {
     this.isStopped = true;
 
     if (this.watcher === undefined) {
+      this.settleStartPromise?.();
       if (this.startPromise) {
         await this.startPromise;
       }
@@ -152,6 +160,7 @@ export class FileWatcher {
 
     const currentWatcher = this.watcher;
     this.watcher = undefined;
+    this.settleStartPromise?.();
     await currentWatcher.close();
   }
 
