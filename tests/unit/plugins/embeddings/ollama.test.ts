@@ -1,10 +1,14 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { RetryExhaustedError } from '../../../../src/types/index.js';
 import { OllamaEmbeddingProvider } from '../../../../src/plugins/embeddings/ollama.js';
 import { TestEmbeddingProvider } from './test-embedding-provider.js';
 
 describe('OllamaEmbeddingProvider', () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
   it('returns vectors with the configured dimensions for batched embedding', async () => {
     const fetchMock = vi.fn().mockResolvedValue({
       ok: true,
@@ -149,6 +153,48 @@ describe('OllamaEmbeddingProvider', () => {
     await Promise.all([first, second]);
 
     expect(order).toEqual(['first-start', 'first-end', 'second-start']);
+  });
+
+  it('aborts hanging fetch after timeoutMs elapses and throws RetryExhaustedError', async () => {
+    vi.useFakeTimers();
+
+    const fetchMock = vi.fn().mockImplementation(
+      (_url: unknown, options: RequestInit) =>
+        new Promise((_resolve, reject) => {
+          if (options.signal?.aborted) {
+            reject(new DOMException('The operation was aborted.', 'AbortError'));
+            return;
+          }
+          options.signal?.addEventListener('abort', () => {
+            reject(new DOMException('The operation was aborted.', 'AbortError'));
+          });
+        }),
+    );
+
+    const provider = new OllamaEmbeddingProvider(
+      {
+        baseUrl: 'http://localhost:11434',
+        model: 'nomic-embed-text',
+        dimensions: 4,
+        maxConcurrency: 1,
+        batchSize: 1,
+        retryCount: 0,
+        retryBaseDelayMs: 1,
+        timeoutMs: 5_000,
+      },
+      { fetch: fetchMock, sleep: async () => {} },
+    );
+
+    const pending = provider.embed(['alpha']);
+    
+    // Use a Promise to catch the rejection as soon as it happens
+    const catchPromise = expect(pending).rejects.toThrow(RetryExhaustedError);
+
+    // Trigger the timeout
+    await vi.runAllTimersAsync();
+
+    await catchPromise;
+    expect(fetchMock).toHaveBeenCalledOnce();
   });
 });
 

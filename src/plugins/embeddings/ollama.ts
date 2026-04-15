@@ -21,6 +21,8 @@ const defaultDependencies: OllamaDependencies = {
     }),
 };
 
+const DEFAULT_TIMEOUT_MS = 60_000; // 60 seconds
+
 export class OllamaEmbeddingProvider extends BaseEmbeddingProvider {
   readonly dimensions: number;
 
@@ -29,7 +31,7 @@ export class OllamaEmbeddingProvider extends BaseEmbeddingProvider {
   constructor(
     private readonly config: Pick<
       EmbeddingConfig,
-      'baseUrl' | 'model' | 'dimensions' | 'maxConcurrency' | 'batchSize' | 'retryCount' | 'retryBaseDelayMs'
+      'baseUrl' | 'model' | 'dimensions' | 'maxConcurrency' | 'batchSize' | 'retryCount' | 'retryBaseDelayMs' | 'timeoutMs'
     >,
     private readonly dependencies: OllamaDependencies = defaultDependencies,
   ) {
@@ -87,36 +89,51 @@ export class OllamaEmbeddingProvider extends BaseEmbeddingProvider {
   }
 
   private async requestEmbeddings(batch: string[]): Promise<number[][]> {
-    const response = await this.dependencies.fetch(new URL('/api/embed', this.config.baseUrl).toString(), {
-      method: 'POST',
-      headers: {
-        'content-type': 'application/json',
-      },
-      body: JSON.stringify({
-        model: this.config.model,
-        input: batch,
-      }),
-    });
+    const timeoutMs = this.config.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+    const controller = new AbortController();
+    let timer: ReturnType<typeof setTimeout> | undefined;
 
-    if (!response.ok) {
-      const body = await response.text();
-      throw new Error(`Ollama embed request failed (${response.status}): ${body}`);
+    if (timeoutMs > 0) {
+      timer = setTimeout(() => {
+        controller.abort();
+      }, timeoutMs);
     }
 
-    const payload = (await response.json()) as OllamaEmbedResponse;
+    try {
+      const response = await this.dependencies.fetch(new URL('/api/embed', this.config.baseUrl).toString(), {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+        },
+        body: JSON.stringify({
+          model: this.config.model,
+          input: batch,
+        }),
+        signal: controller.signal,
+      });
 
-    if (payload.embeddings.length !== batch.length) {
-      throw new Error(`Ollama returned ${payload.embeddings.length} embeddings for ${batch.length} inputs`);
-    }
-
-    for (const vector of payload.embeddings) {
-      if (vector.length !== this.dimensions) {
-        throw new DimensionMismatchError(
-          `Unexpected embedding dimension: expected ${this.dimensions}, received ${vector.length}`,
-        );
+      if (!response.ok) {
+        const body = await response.text();
+        throw new Error(`Ollama embed request failed (${response.status}): ${body}`);
       }
-    }
 
-    return payload.embeddings;
+      const payload = (await response.json()) as OllamaEmbedResponse;
+
+      if (payload.embeddings.length !== batch.length) {
+        throw new Error(`Ollama returned ${payload.embeddings.length} embeddings for ${batch.length} inputs`);
+      }
+
+      for (const vector of payload.embeddings) {
+        if (vector.length !== this.dimensions) {
+          throw new DimensionMismatchError(
+            `Unexpected embedding dimension: expected ${this.dimensions}, received ${vector.length}`,
+          );
+        }
+      }
+
+      return payload.embeddings;
+    } finally {
+      clearTimeout(timer);
+    }
   }
 }
