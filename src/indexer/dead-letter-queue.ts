@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 
 import { computeFileHashStreaming } from './hash.js';
 import type { DeadLetterEntry, IMetadataStore } from '../types/index.js';
+import type { MetricsHooks } from '../observability/types.js';
 
 export interface RecoverySweepResult {
   retried: number;
@@ -18,6 +19,7 @@ export interface DeadLetterQueueOptions {
   computeFileHash?: (filePath: string) => Promise<string>;
   reprocess?: (entry: DeadLetterEntry) => Promise<void>;
   logger?: Pick<Console, 'warn' | 'error'>;
+  metricsHooks?: Pick<MetricsHooks, 'onDlqSnapshot' | 'onRecoverySweepComplete'>;
 }
 
 export class DeadLetterQueue {
@@ -87,6 +89,9 @@ export class DeadLetterQueue {
     await this.options.metadataStore.upsertDeadLetterEntries([entry]);
     this.entries.set(entry.id, entry);
     await this.trimToCapacity();
+
+    this.options.metricsHooks?.onDlqSnapshot(this.entries.size);
+
     return entry;
   }
 
@@ -166,6 +171,8 @@ export class DeadLetterQueue {
           }
         }
 
+        this.options.metricsHooks?.onRecoverySweepComplete(retried, purged, skipped);
+
         return { retried, purged, skipped };
       } finally {
         this.recoveryRunning = false;
@@ -235,6 +242,8 @@ export class DeadLetterQueue {
     for (const id of ids) {
       this.entries.delete(id);
     }
+
+    this.options.metricsHooks?.onDlqSnapshot(this.entries.size);
   }
 
   private async ensureLoaded(): Promise<void> {
