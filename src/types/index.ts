@@ -111,7 +111,7 @@ export interface CompactionMutex {
 
 export interface IVectorStore {
   initialize(): Promise<void>;
-  upsertChunks(chunks: CodeChunk[], embeddings?: number[][]): Promise<void>;
+  upsertChunks(chunks: CodeChunk[], embeddings?: number[][], affectedFilePaths?: string[]): Promise<void>;
   deleteByFilePath(filePath: string): Promise<number>;
   deleteByPathPrefix(pathPrefix: string): Promise<number>;
   renameFilePath(oldPath: string, newPath: string): Promise<number>;
