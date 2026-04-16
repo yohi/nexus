@@ -576,8 +576,9 @@ export class LanceVectorStore implements IVectorStore {
       await this.writeMutex;
       if (!this.table) return [];
       
-      // 明示的にコサイン類似度を指定し、スコア計算 (1 - distance) との整合性を確保する
+      // 明示的にベクトル列とコサイン類似度を指定し、スコア計算 (1 - distance) との整合性を確保する
       let query = this.table.vectorSearch(queryVector)
+        .column('vector')
         .distanceType('cosine')
         .limit(topK);
       
