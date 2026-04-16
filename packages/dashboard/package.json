@@ -1,0 +1,29 @@
+{
+  "name": "@yohi/nexus-dashboard",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "main": "./dist/cli.js",
+  "bin": {
+    "nexus-dashboard": "./dist/cli.js"
+  },
+  "exports": {
+    ".": "./dist/cli.js",
+    "./cli": "./dist/cli.js"
+  },
+  "scripts": {
+    "build": "node ../../node_modules/esbuild src/cli.ts --bundle --platform=node --outfile=dist/cli.js --format=esm --external:react --external:ink --outdir=dist",
+    "test": "vitest run --passWithNoTests"
+  },
+  "dependencies": {
+    "ink": "^5.2.0",
+    "react": "^19.0.0"
+  },
+  "devDependencies": {
+    "@testing-library/react": "^16.1.0",
+    "@types/react": "^19.0.0",
+    "jsdom": "^26.0.0",
+    "typescript": "^5.9.3",
+    "vitest": "^3.1.1"
+  }
+}
