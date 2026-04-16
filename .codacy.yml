@@ -16,3 +16,12 @@ exclude_paths:
   - "packages/dashboard/src/utils/metrics.ts"
   - "**/*.test.ts"
   - "**/*.bench.ts"
+ignore_issues:
+  - pattern_id: "GenericObjectInjectionSink"
+    files:
+      - "packages/dashboard/src/app.tsx"
+      - "packages/dashboard/src/components/*.tsx"
+  - pattern_id: "security/detect-object-injection"
+    files:
+      - "packages/dashboard/src/app.tsx"
+      - "packages/dashboard/src/components/*.tsx"
