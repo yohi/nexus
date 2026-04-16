@@ -451,13 +451,11 @@ export class LanceVectorStore implements IVectorStore {
         }
       }
 
-      // 3. Post-insert Cleanup: Remove old rows for these files
-      if (this.table) {
-        for (const fp of uniqueFilePaths) {
-          // Delete rows for this file that DON'T have the current updateId
-          const filter = `filepath = '${this.escapeFilterValue(fp)}' AND _update_id != '${updateId}'`;
-          await this.table.delete(filter);
-        }
+      // 3. Post-insert Cleanup: Remove old rows for these files in a single batch
+      if (this.table && uniqueFilePaths.length > 0) {
+        const escapedPaths = uniqueFilePaths.map(fp => `'${this.escapeFilterValue(fp)}'`).join(', ');
+        const filter = `filepath IN (${escapedPaths}) AND _update_id != '${updateId}'`;
+        await this.table.delete(filter);
       }
 
       if (staleAdded > 0 || chunks.length > 0 || filesAdded > 0) {

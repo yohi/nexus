@@ -110,8 +110,14 @@ export class MerkleTree {
    */
   private async bubbleUpHash(startDirPath: string): Promise<void> {
     let current: string | null = startDirPath;
+    const visited = new Set<string>();
 
     while (current !== null && current !== '.' && current !== path.sep) {
+      if (visited.has(current)) {
+        break; // Prevent infinite loops
+      }
+      visited.add(current);
+
       const children: MerkleNodeRow[] = await this.metadataStore.getChildren(current);
       const hash = await this.calculateDirectoryHash(children);
       
@@ -126,6 +132,8 @@ export class MerkleTree {
       await this.metadataStore.bulkUpsertMerkleNodes([dirNode]);
       this.addToCache(current, dirNode);
 
+      // Important: prevent getting stuck if dirname doesn't change anything
+      if (parentPath === current) break;
       current = parentPath;
     }
 
