@@ -67,6 +67,7 @@ export class DeadLetterQueue {
       this.entries.set(entry.id, entry);
     }
     await this.trimToCapacity();
+    this.safeNotifyMetrics((h) => { h.onDlqSnapshot(this.entries.size, this.options.name); });
     this.loaded = true;
   }
 
@@ -90,6 +91,7 @@ export class DeadLetterQueue {
     await this.options.metadataStore.upsertDeadLetterEntries([entry]);
     this.entries.set(entry.id, entry);
     await this.trimToCapacity();
+    this.safeNotifyMetrics((h) => { h.onDlqSnapshot(this.entries.size, this.options.name); });
 
     return entry;
   }
@@ -115,13 +117,11 @@ export class DeadLetterQueue {
       .filter((entry) => new Date(entry.createdAt).getTime() < cutoff)
       .map((entry) => entry.id);
 
-    if (expiredIds.length === 0) {
-      this.safeNotifyMetrics((h) => { h.onDlqSnapshot(this.entries.size, this.options.name); });
-      return 0;
+    if (expiredIds.length > 0) {
+      await this.removeEntries(expiredIds);
     }
 
-    await this.removeEntries(expiredIds);
-
+    this.safeNotifyMetrics((h) => { h.onDlqSnapshot(this.entries.size, this.options.name); });
     return expiredIds.length;
   }
 
@@ -170,7 +170,10 @@ export class DeadLetterQueue {
 
         return { retried, purged, skipped };
       } finally {
-        this.safeNotifyMetrics((h) => { h.onRecoverySweepComplete(retried, purged, skipped, this.options.name); });
+        this.safeNotifyMetrics((h) => {
+          h.onDlqSnapshot(this.entries.size, this.options.name);
+          h.onRecoverySweepComplete(retried, purged, skipped, this.options.name);
+        });
         this.recoveryRunning = false;
         this.currentSweep = undefined;
       }
@@ -214,6 +217,7 @@ export class DeadLetterQueue {
       .filter((entry) => entry.filePath === filePath)
       .map((entry) => entry.id);
     await this.removeEntries(idsToRemove);
+    this.safeNotifyMetrics((h) => { h.onDlqSnapshot(this.entries.size, this.options.name); });
   }
 
   async removeByPathPrefix(prefix: string): Promise<void> {
@@ -227,6 +231,7 @@ export class DeadLetterQueue {
       })
       .map((entry) => entry.id);
     await this.removeEntries(idsToRemove);
+    this.safeNotifyMetrics((h) => { h.onDlqSnapshot(this.entries.size, this.options.name); });
   }
 
   private async removeEntries(ids: string[]): Promise<void> {
@@ -238,11 +243,9 @@ export class DeadLetterQueue {
     for (const id of ids) {
       this.entries.delete(id);
     }
-
-    this.safeNotifyMetrics((h) => { h.onDlqSnapshot(this.entries.size, this.options.name); });
   }
 
-  private safeNotifyMetrics(fn: (hooks: NonNullable<DeadLetterQueueOptions['metricsHooks']>) => void): void {
+  private async safeNotifyMetrics(fn: (hooks: NonNullable<DeadLetterQueueOptions['metricsHooks']>) => void): void {
     const { metricsHooks } = this.options;
     if (!metricsHooks) return;
     try {
@@ -267,8 +270,6 @@ export class DeadLetterQueue {
       const removedIds = toRemove.map((e) => e.id);
 
       await this.removeEntries(removedIds);
-    } else {
-      this.safeNotifyMetrics((h) => { h.onDlqSnapshot(this.entries.size, this.options.name); });
     }
   }
 }
