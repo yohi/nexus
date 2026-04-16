@@ -36,6 +36,7 @@ export default tseslint.config(
     ],
     rules: {
       '@typescript-eslint/restrict-template-expressions': 'off',
+      '@typescript-eslint/no-unnecessary-condition': 'off',
     },
   }
 );
