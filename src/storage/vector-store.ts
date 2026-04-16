@@ -423,75 +423,51 @@ export class LanceVectorStore implements IVectorStore {
         filesAdded = uniqueFilePaths.length;
       }
 
-      // 2. Stage data into a temporary table (Atomic approach)
-      const stagedTableName = `chunks_staged_${randomUUID().replace(/-/g, '')}`;
-      let stagedTable: Table | undefined;
+      // 2. Batch process data into the store (Memory efficient & Fast)
+      const BATCH_SIZE = 500;
+      for (let i = 0; i < chunks.length; i += BATCH_SIZE) {
+        const chunkBatch = chunks.slice(i, i + BATCH_SIZE);
+        const rows = chunkBatch.map((chunk, j) => {
+          const globalIdx = i + j;
+          const vectorData = embeddings?.at(globalIdx);
+          const vector =
+            vectorData && vectorData.every(Number.isFinite)
+              ? new Float32Array(vectorData)
+              : new Float32Array(this.dimensions);
 
-      try {
-        const BATCH_SIZE = 500;
-        for (let i = 0; i < chunks.length; i += BATCH_SIZE) {
-          const chunkBatch = chunks.slice(i, i + BATCH_SIZE);
-          const rows = chunkBatch.map((chunk, j) => {
-            const globalIdx = i + j;
-            const vectorData = embeddings?.at(globalIdx);
-            const vector =
-              vectorData && vectorData.every(Number.isFinite)
-                ? new Float32Array(vectorData)
-                : new Float32Array(this.dimensions);
+          this.validateFilterValue(chunk.filePath, 'filePath');
+          this.validateFilterValue(chunk.language, 'language');
+          this.validateFilterValue(chunk.symbolKind, 'symbolKind');
+          if (chunk.symbolName != null) this.validateFilterValue(chunk.symbolName, 'symbolName');
 
-            this.validateFilterValue(chunk.filePath, 'filePath');
-            this.validateFilterValue(chunk.language, 'language');
-            this.validateFilterValue(chunk.symbolKind, 'symbolKind');
-            if (chunk.symbolName != null) this.validateFilterValue(chunk.symbolName, 'symbolName');
+          return {
+            vector,
+            id: chunk.id,
+            filepath: chunk.filePath,
+            content: chunk.content,
+            language: chunk.language,
+            symbolname: chunk.symbolName ?? '',
+            symbolkind: chunk.symbolKind,
+            startline: chunk.startLine,
+            endline: chunk.endLine,
+            hash: chunk.hash,
+            _update_id: updateId, // Tag new rows
+          };
+        });
 
-            return {
-              vector,
-              id: chunk.id,
-              filepath: chunk.filePath,
-              content: chunk.content,
-              language: chunk.language,
-              symbolname: chunk.symbolName ?? '',
-              symbolkind: chunk.symbolKind,
-              startline: chunk.startLine,
-              endline: chunk.endLine,
-              hash: chunk.hash,
-              _update_id: updateId,
-            };
-          });
-
-          if (!stagedTable) {
-            stagedTable = await db.createTable(stagedTableName, rows);
-          } else {
-            await stagedTable.add(rows);
-          }
+        if (!this.table) {
+          this.table = await db.createTable('chunks', rows);
+        } else {
+          await this.table.add(rows);
         }
+      }
 
-        // 3. Commit staged changes to the primary table
-        if (stagedTable) {
-          const stagedRows = await stagedTable.query().toArray() as unknown as LanceRow[];
-          // Re-ensure Float32Array for vectors when moving between tables
-          const typedRows = stagedRows.map(row => ({
-            ...row,
-            vector: new Float32Array(row.vector as Iterable<number>)
-          }));
-
-          if (!this.table) {
-            this.table = await db.createTable('chunks', typedRows);
-          } else {
-            // Delete old records for these files in the primary table
-            const escapedPaths = uniqueFilePaths.map(fp => `'${this.escapeFilterValue(fp)}'`).join(', ');
-            await this.table.delete(`filepath IN (${escapedPaths})`);
-            
-            // Append new records from the staged table
-            await this.table.add(typedRows);
-          }
-        }
-      } finally {
-        try {
-          await db.dropTable(stagedTableName);
-        } catch {
-          // Ignore errors during cleanup of temporary table
-        }
+      // 3. Post-insert Cleanup: Remove old rows for these files in a single batch
+      // Since we just added rows with _update_id, the column is guaranteed to exist.
+      if (this.table && uniqueFilePaths.length > 0) {
+        const escapedPaths = uniqueFilePaths.map(fp => `'${this.escapeFilterValue(fp)}'`).join(', ');
+        const filter = `filepath IN (${escapedPaths}) AND _update_id != '${updateId}'`;
+        await this.table.delete(filter);
       }
 
       if (staleAdded > 0 || chunks.length > 0 || filesAdded > 0) {

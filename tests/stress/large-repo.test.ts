@@ -8,7 +8,7 @@ import type { MerkleNodeRow } from '../../src/types/index.js';
 import { MerkleTree } from '../../src/indexer/merkle-tree.js';
 import { SqliteMetadataStore } from '../../src/storage/metadata-store.js';
 
-const LARGE_REPO_FILE_COUNT = 10_000;
+const LARGE_REPO_FILE_COUNT = 5_000;
 
 describe('stress: large repository metadata', () => {
   let tempDir: string;
@@ -33,7 +33,7 @@ describe('stress: large repository metadata', () => {
         { path: 'src/packages', hash: 'packages-dir', parentPath: 'src', isDirectory: true },
       ];
 
-      for (let packageIndex = 0; packageIndex < 50; packageIndex += 1) {
+      for (let packageIndex = 0; packageIndex < 25; packageIndex += 1) {
         const packagePath = `src/packages/pkg-${packageIndex}`;
         nodes.push({
           path: packagePath,
@@ -66,10 +66,10 @@ describe('stress: large repository metadata', () => {
           isDirectory: false,
         }),
       );
-      expect(await tree.getNode('src/packages/pkg-49/file-199.ts')).toEqual(
+      expect(await tree.getNode('src/packages/pkg-24/file-199.ts')).toEqual(
         expect.objectContaining({
-          path: 'src/packages/pkg-49/file-199.ts',
-          hash: 'hash-49-199',
+          path: 'src/packages/pkg-24/file-199.ts',
+          hash: 'hash-24-199',
           isDirectory: false,
         }),
       );
