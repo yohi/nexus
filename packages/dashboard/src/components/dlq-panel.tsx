@@ -1,8 +1,7 @@
 import React from "react";
 import { Box, Text } from "ink";
 import type { MetricsJSON } from "../hooks/use-metrics.js";
-import { getValue } from "../utils/metrics.js";
-import { MetricPanel } from "./metric-panel.js";
+import { getValue, getSumByLabel } from "../utils/metrics.js";
 
 interface DlqPanelProps {
   data: MetricsJSON[] | null;
@@ -10,8 +9,8 @@ interface DlqPanelProps {
 
 export const DlqPanel: React.FC<DlqPanelProps> = ({ data }) => {
   const size = getValue(data, "nexus_dlq_size");
-  const retried = getValue(data, "nexus_dlq_recovery_total", "result", "retried");
-  const purged = getValue(data, "nexus_dlq_recovery_total", "result", "purged");
+  const retried = getSumByLabel(data, "nexus_dlq_recovery_total", "result", "retried");
+  const purged = getSumByLabel(data, "nexus_dlq_recovery_total", "result", "purged");
 
   const getStatus = (s: number) => {
     if (s === 0) return { label: "Healthy", color: "green" };
