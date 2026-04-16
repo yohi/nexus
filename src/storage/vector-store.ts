@@ -432,7 +432,7 @@ export class LanceVectorStore implements IVectorStore {
         // 1. Create a temporary table for the new data
         // 2. If successful, delete old data from primary and move new data in
         const tmpTableName = `chunks_tmp_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
-        const tmpTable = await db.createTable(tmpTableName, rows);
+        await db.createTable(tmpTableName, rows);
         
         try {
           // Calculate stats before swapping
