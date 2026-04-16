@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 
 import { computeFileHashStreaming } from './hash.js';
 import type { DeadLetterEntry, IMetadataStore } from '../types/index.js';
+import type { MetricsHooks } from '../observability/types.js';
 
 export interface RecoverySweepResult {
   retried: number;
@@ -10,6 +11,7 @@ export interface RecoverySweepResult {
 }
 
 export interface DeadLetterQueueOptions {
+  name?: string;
   metadataStore: IMetadataStore;
   maxEntries?: number;
   ttlMs?: number;
@@ -18,6 +20,7 @@ export interface DeadLetterQueueOptions {
   computeFileHash?: (filePath: string) => Promise<string>;
   reprocess?: (entry: DeadLetterEntry) => Promise<void>;
   logger?: Pick<Console, 'warn' | 'error'>;
+  metricsHooks?: Pick<MetricsHooks, 'onDlqSnapshot' | 'onRecoverySweepComplete'>;
 }
 
 export class DeadLetterQueue {
@@ -64,6 +67,7 @@ export class DeadLetterQueue {
       this.entries.set(entry.id, entry);
     }
     await this.trimToCapacity();
+    this.safeNotifyMetrics((h) => { h.onDlqSnapshot(this.entries.size, this.options.name); });
     this.loaded = true;
   }
 
@@ -87,6 +91,8 @@ export class DeadLetterQueue {
     await this.options.metadataStore.upsertDeadLetterEntries([entry]);
     this.entries.set(entry.id, entry);
     await this.trimToCapacity();
+    this.safeNotifyMetrics((h) => { h.onDlqSnapshot(this.entries.size, this.options.name); });
+
     return entry;
   }
 
@@ -111,15 +117,11 @@ export class DeadLetterQueue {
       .filter((entry) => new Date(entry.createdAt).getTime() < cutoff)
       .map((entry) => entry.id);
 
-    if (expiredIds.length === 0) {
-      return 0;
+    if (expiredIds.length > 0) {
+      await this.removeEntries(expiredIds);
     }
 
-    await this.options.metadataStore.removeDeadLetterEntries(expiredIds);
-    for (const id of expiredIds) {
-      this.entries.delete(id);
-    }
-
+    this.safeNotifyMetrics((h) => { h.onDlqSnapshot(this.entries.size, this.options.name); });
     return expiredIds.length;
   }
 
@@ -130,15 +132,15 @@ export class DeadLetterQueue {
 
     this.recoveryRunning = true;
     this.currentSweep = (async () => {
+      let retried = 0;
+      let purged = 0;
+      let skipped = 0;
       try {
         await this.ensureLoaded();
         if (!(await this.embeddingHealthy())) {
-          return { retried: 0, purged: 0, skipped: this.entries.size };
+          skipped = this.entries.size;
+          return { retried: 0, purged: 0, skipped };
         }
-
-        let retried = 0;
-        let purged = 0;
-        let skipped = 0;
 
         for (const entry of [...this.entries.values()]) {
           try {
@@ -168,6 +170,10 @@ export class DeadLetterQueue {
 
         return { retried, purged, skipped };
       } finally {
+        this.safeNotifyMetrics((h) => {
+          h.onDlqSnapshot(this.entries.size, this.options.name);
+          h.onRecoverySweepComplete(retried, purged, skipped, this.options.name);
+        });
         this.recoveryRunning = false;
         this.currentSweep = undefined;
       }
@@ -211,6 +217,7 @@ export class DeadLetterQueue {
       .filter((entry) => entry.filePath === filePath)
       .map((entry) => entry.id);
     await this.removeEntries(idsToRemove);
+    this.safeNotifyMetrics((h) => { h.onDlqSnapshot(this.entries.size, this.options.name); });
   }
 
   async removeByPathPrefix(prefix: string): Promise<void> {
@@ -224,6 +231,7 @@ export class DeadLetterQueue {
       })
       .map((entry) => entry.id);
     await this.removeEntries(idsToRemove);
+    this.safeNotifyMetrics((h) => { h.onDlqSnapshot(this.entries.size, this.options.name); });
   }
 
   private async removeEntries(ids: string[]): Promise<void> {
@@ -237,6 +245,16 @@ export class DeadLetterQueue {
     }
   }
 
+  private safeNotifyMetrics(fn: (hooks: NonNullable<DeadLetterQueueOptions['metricsHooks']>) => void): void {
+    const { metricsHooks } = this.options;
+    if (!metricsHooks) return;
+    try {
+      fn(metricsHooks);
+    } catch (err) {
+      this.logger.warn('[Nexus DLQ] Metrics hook failed:', err);
+    }
+  }
+
   private async ensureLoaded(): Promise<void> {
     if (!this.loaded) {
       await this.load();
@@ -244,20 +262,14 @@ export class DeadLetterQueue {
   }
 
   private async trimToCapacity(): Promise<void> {
-    if (this.entries.size <= this.maxEntries) {
-      return;
+    if (this.entries.size > this.maxEntries) {
+      const sortedEntries = [...this.entries.values()]
+        .sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+
+      const toRemove = sortedEntries.slice(0, this.entries.size - this.maxEntries);
+      const removedIds = toRemove.map((e) => e.id);
+
+      await this.removeEntries(removedIds);
     }
-
-    const sortedEntries = [...this.entries.values()]
-      .sort((a, b) => a.createdAt.localeCompare(b.createdAt));
-
-    const toRemove = sortedEntries.slice(0, this.entries.size - this.maxEntries);
-    const removedIds = toRemove.map((e) => e.id);
-
-    for (const id of removedIds) {
-      this.entries.delete(id);
-    }
-
-    await this.options.metadataStore.removeDeadLetterEntries(removedIds);
   }
 }

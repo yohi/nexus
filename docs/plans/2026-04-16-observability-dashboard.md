@@ -39,7 +39,7 @@ import type { BackpressureState } from '../indexer/event-queue.js';
 
 export interface MetricsHooks {
   /** EventQueue の enqueue/drain 完了時に呼ばれる */
-  onQueueSnapshot(size: number, state: BackpressureState, droppedTotal: number): void;
+  onQueueSnapshot(size: number, state: BackpressureState, droppedTotal: number, source?: string): void;
 
   /** Pipeline.processEvents() 完了時に呼ばれる */
   onChunksIndexed(count: number): void;
@@ -48,10 +48,10 @@ export interface MetricsHooks {
   onReindexComplete(durationMs: number, fullRebuild: boolean): void;
 
   /** DLQ のエントリ数変動時に呼ばれる */
-  onDlqSnapshot(size: number): void;
+  onDlqSnapshot(size: number, source?: string): void;
 
   /** DLQ.recoverySweep() 完了時に呼ばれる */
-  onRecoverySweepComplete(retried: number, purged: number, skipped: number): void;
+  onRecoverySweepComplete(retried: number, purged: number, skipped: number, source?: string): void;
 }
 ```
 
@@ -135,27 +135,29 @@ export class MetricsCollector implements MetricsHooks {
   private readonly dlqSizeGauge: Gauge;
   private readonly recoveryCounter: Counter;
 
-  private prevDropped = 0;
+  private readonly prevDroppedBySource = new Map<string, number>();
 
   constructor(registry?: Registry) {
     this.registry = registry ?? new Registry();
 
     this.queueSizeGauge = new Gauge({
-      name: 'nexus_event_queue_size',
-      help: 'Current event queue size',
+      name: 'nexus_queue_size',
+      help: 'Current number of events in the queue',
+      labelNames: ['queue_id'] as const,
       registers: [this.registry],
     });
 
     this.queueStateGauge = new Gauge({
-      name: 'nexus_event_queue_state',
-      help: 'Current backpressure state (1 = active)',
-      labelNames: ['state'] as const,
+      name: 'nexus_queue_state',
+      help: 'Current backpressure state (0=idle, 1=active)',
+      labelNames: ['queue_id', 'state'] as const,
       registers: [this.registry],
     });
 
     this.droppedCounter = new Counter({
       name: 'nexus_event_queue_dropped_total',
       help: 'Total dropped events',
+      labelNames: ['queue_id'] as const,
       registers: [this.registry],
     });
 
@@ -175,28 +177,33 @@ export class MetricsCollector implements MetricsHooks {
 
     this.dlqSizeGauge = new Gauge({
       name: 'nexus_dlq_size',
-      help: 'Current DLQ entry count',
+      help: 'Current number of events in the Dead Letter Queue',
+      labelNames: ['dlq_id'] as const,
       registers: [this.registry],
     });
 
     this.recoveryCounter = new Counter({
       name: 'nexus_dlq_recovery_total',
       help: 'DLQ recovery sweep results',
-      labelNames: ['result'] as const,
+      labelNames: ['dlq_id', 'result'] as const,
       registers: [this.registry],
     });
   }
 
-  onQueueSnapshot(size: number, state: BackpressureState, droppedTotal: number): void {
-    this.queueSizeGauge.set(size);
+  onQueueSnapshot(size: number, state: BackpressureState, droppedTotal: number, source = 'default'): void {
+    const labels = { queue_id: source };
+    this.queueSizeGauge.labels(labels).set(size);
     for (const s of BACKPRESSURE_STATES) {
-      this.queueStateGauge.labels(s).set(s === state ? 1 : 0);
+      this.queueStateGauge.labels({ ...labels, state: s }).set(s === state ? 1 : 0);
     }
-    const delta = droppedTotal - this.prevDropped;
-    if (delta > 0) {
-      this.droppedCounter.inc(delta);
-      this.prevDropped = droppedTotal;
+    const prevDropped = this.prevDroppedBySource.get(source) ?? 0;
+    if (droppedTotal < prevDropped) {
+      if (droppedTotal > 0) this.droppedCounter.labels(labels).inc(droppedTotal);
+    } else {
+      const delta = droppedTotal - prevDropped;
+      if (delta > 0) this.droppedCounter.labels(labels).inc(delta);
     }
+    this.prevDroppedBySource.set(source, droppedTotal);
   }
 
   onChunksIndexed(count: number): void {
@@ -209,14 +216,15 @@ export class MetricsCollector implements MetricsHooks {
     this.reindexHistogram.labels(String(fullRebuild)).observe(durationMs / 1000);
   }
 
-  onDlqSnapshot(size: number): void {
-    this.dlqSizeGauge.set(size);
+  onDlqSnapshot(size: number, source = 'default'): void {
+    this.dlqSizeGauge.labels({ dlq_id: source }).set(size);
   }
 
-  onRecoverySweepComplete(retried: number, purged: number, skipped: number): void {
-    if (retried > 0) this.recoveryCounter.labels('retried').inc(retried);
-    if (purged > 0) this.recoveryCounter.labels('purged').inc(purged);
-    if (skipped > 0) this.recoveryCounter.labels('skipped').inc(skipped);
+  onRecoverySweepComplete(retried: number, purged: number, skipped: number, source = 'default'): void {
+    const labels = { dlq_id: source };
+    if (retried > 0) this.recoveryCounter.labels({ ...labels, result: 'retried' }).inc(retried);
+    if (purged > 0) this.recoveryCounter.labels({ ...labels, result: 'purged' }).inc(purged);
+    if (skipped > 0) this.recoveryCounter.labels({ ...labels, result: 'skipped' }).inc(skipped);
   }
 }
 ```
@@ -310,7 +318,7 @@ export interface EventQueueOptions {
 
 ```typescript
 this.options.metricsHooks?.onQueueSnapshot(
-  this.size(), this.state, this.droppedEventCount
+  this.size(), this.state, this.droppedEventCount, this.options.name
 );
 ```
 
@@ -322,7 +330,7 @@ this.options.metricsHooks?.onQueueSnapshot(
 
 ```typescript
 this.options.metricsHooks?.onQueueSnapshot(
-  this.size(), this.state, this.droppedEventCount
+  this.size(), this.state, this.droppedEventCount, this.options.name
 );
 ```
 
@@ -412,29 +420,16 @@ export interface DeadLetterQueueOptions {
 
 **Step 2: 各発火ポイントにコールバックを追加**
 
-- `enqueue()` の `return entry;`（L91 付近）の直前:
-
-  ```typescript
-  this.options.metricsHooks?.onDlqSnapshot(this.entries.size);
-  ```
+- `enqueue()` は内部で `trimToCapacity()` を呼び出すため、通知は `trimToCapacity()` 内で一括して行われる。
 
 - `recoverySweep()` の `return { retried, purged, skipped };`（L169）の直前:
 
   ```typescript
-  this.options.metricsHooks?.onRecoverySweepComplete(retried, purged, skipped);
+  this.safeNotifyMetrics((h) => { h.onRecoverySweepComplete(retried, purged, skipped, this.options.name); });
   ```
 
-- `removeByFilePath()` の末尾（L214 の `}` の直前）:
+- `removeByFilePath()` / `removeByPathPrefix()` などの完了後、`safeNotifyMetrics` を経由して通知される（L246, L281 等のロジックと同様に更新）。
 
-  ```typescript
-  this.options.metricsHooks?.onDlqSnapshot(this.entries.size);
-  ```
-
-- `removeByPathPrefix()` の末尾（L227 の `}` の直前）:
-
-  ```typescript
-  this.options.metricsHooks?.onDlqSnapshot(this.entries.size);
-  ```
 
 **Step 3: 既存テスト通過確認**
 
@@ -576,7 +571,7 @@ export class MetricsHttpServer {
     return new Promise<void>((resolve, reject) => {
       this.server!.on('error', (err: NodeJS.ErrnoException) => {
         if (err.code === 'EADDRINUSE') {
-          console.warn(`[Nexus] Metrics port ${port} already in use. Metrics HTTP server disabled.`);
+          this.logger.warn(`[Nexus] Metrics port ${port} already in use. Metrics HTTP server disabled.`);
           this.listening = false;
           resolve();
         } else {
@@ -1117,3 +1112,4 @@ Task 14-18 → commit × 5 → PR4 (Draft)
 4. PR レビュー承認
 
 積み上げ方式のため、PR1 → PR2 → PR3 → PR4 の順にマージする。
+

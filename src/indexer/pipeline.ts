@@ -7,6 +7,7 @@ import { computeFileHashStreaming } from './hash.js';
 import type { Chunker } from './chunker.js';
 import type { PluginRegistry } from '../plugins/registry.js';
 import type { EventQueue } from './event-queue.js';
+import type { MetricsHooks } from '../observability/types.js';
 import {
   type EmbeddingProvider,
   type IMetadataStore,
@@ -28,6 +29,13 @@ interface IndexPipelineOptions {
   pluginRegistry: PluginRegistry;
   eventQueue?: EventQueue;
   onProgress?: (msg: string) => void;
+  metricsHooks?: Pick<
+    MetricsHooks,
+    | 'onChunksIndexed'
+    | 'onReindexComplete'
+    | 'onDlqSnapshot'
+    | 'onRecoverySweepComplete'
+  >;
 }
 
 interface ProcessEventsResult {
@@ -65,7 +73,18 @@ export class IndexPipeline implements IIndexPipeline {
       embeddingHealthy: () => this.embeddingHealthy(),
       computeFileHash: (path) => this.computeFileHash(path),
       reprocess: (entry) => this.reprocess(entry),
+      metricsHooks: options.metricsHooks,
     });
+  }
+
+  private safeNotifyMetrics(fn: (hooks: NonNullable<IndexPipelineOptions['metricsHooks']>) => void): void {
+    const { metricsHooks } = this.options;
+    if (!metricsHooks) return;
+    try {
+      fn(metricsHooks);
+    } catch (err) {
+      console.warn('[Nexus Pipeline] Metrics hook failed:', err);
+    }
   }
 
   start(): void {
@@ -110,6 +129,16 @@ export class IndexPipeline implements IIndexPipeline {
     this.progress.status = 'idle';
   }
 
+  private safeLogProgress(msg: string, filePath?: string): void {
+    if (!this.options.onProgress) return;
+    try {
+      this.options.onProgress(msg);
+    } catch (error) {
+      const context = filePath ? ` for ${filePath}` : '';
+      console.error(`[IndexPipeline] Progress logging failed${context}:`, error);
+    }
+  }
+
   async processEvents(
     events: IndexEvent[],
     loadContent?: ContentLoader,
@@ -140,26 +169,7 @@ export class IndexPipeline implements IIndexPipeline {
       this.progress.currentFile = event.filePath;
 
       if (event.type === 'deleted') {
-        const existingNode = await this.options.metadataStore.getMerkleNode(event.filePath);
-        if (existingNode?.isDirectory) {
-          const prefix = event.filePath.endsWith('/') ? event.filePath : event.filePath + '/';
-          await this.options.vectorStore.deleteByPathPrefix(prefix);
-          await this.options.metadataStore.deleteSubtree(event.filePath);
-          await this.merkleTree.load();
-
-          this.skippedFiles.delete(event.filePath);
-          await this.deadLetterQueue.removeByPathPrefix(event.filePath);
-          for (const path of this.skippedFiles.keys()) {
-            if (path.startsWith(prefix)) {
-              this.skippedFiles.delete(path);
-            }
-          }
-        } else {
-          await this.options.vectorStore.deleteByFilePath(event.filePath);
-          await this.merkleTree.remove(event.filePath);
-          this.skippedFiles.delete(event.filePath);
-          await this.deadLetterQueue.removeByFilePath(event.filePath);
-        }
+        await this.handleDeleteEvent(event.filePath);
         this.progress.processedFiles++;
         continue;
       }
@@ -192,7 +202,31 @@ export class IndexPipeline implements IIndexPipeline {
     }
 
     this.progress.currentFile = undefined;
+    this.safeNotifyMetrics((h) => { h.onChunksIndexed(chunksIndexed); });
     return { chunksIndexed };
+  }
+
+  private async handleDeleteEvent(filePath: string): Promise<void> {
+    const existingNode = await this.options.metadataStore.getMerkleNode(filePath);
+    if (existingNode?.isDirectory) {
+      const prefix = filePath.endsWith('/') ? filePath : filePath + '/';
+      await this.options.vectorStore.deleteByPathPrefix(prefix);
+      await this.options.metadataStore.deleteSubtree(filePath);
+      await this.merkleTree.load();
+
+      this.skippedFiles.delete(filePath);
+      await this.deadLetterQueue.removeByPathPrefix(filePath);
+      for (const path of this.skippedFiles.keys()) {
+        if (path.startsWith(prefix)) {
+          this.skippedFiles.delete(path);
+        }
+      }
+    } else {
+      await this.options.vectorStore.deleteByFilePath(filePath);
+      await this.merkleTree.remove(filePath);
+      this.skippedFiles.delete(filePath);
+      await this.deadLetterQueue.removeByFilePath(filePath);
+    }
   }
 
   async reindex(
@@ -210,14 +244,8 @@ export class IndexPipeline implements IIndexPipeline {
         this.progress.totalFiles = 0;
         this.progress.lastError = undefined;
 
+        this.safeLogProgress(`Starting reindex (fullRebuild: ${!!fullRebuild})`);
         try {
-          if (this.options.onProgress) {
-            try {
-              this.options.onProgress(`Starting reindex (fullRebuild: ${!!fullRebuild})`);
-            } catch (error) {
-              console.error('[IndexPipeline] Progress logging failed:', error);
-            }
-          }
           const events = await run({ fullScan: fullRebuild, reason: 'manual' });
           this.progress.totalFiles = events.length;
 
@@ -238,6 +266,8 @@ export class IndexPipeline implements IIndexPipeline {
           } catch (compactionError) {
             console.error('Post-reindex compaction failed (non-fatal):', compactionError);
           }
+
+          this.safeNotifyMetrics((h) => { h.onReindexComplete(durationMs, !!fullRebuild); });
 
           this.progress.status = 'idle';
           return {
@@ -299,13 +329,7 @@ export class IndexPipeline implements IIndexPipeline {
   }
 
   private async indexFile(filePath: string, content: string, contentHash: string): Promise<number> {
-    if (this.options.onProgress) {
-      try {
-        this.options.onProgress(`Indexing: ${filePath}`);
-      } catch (error) {
-        console.error(`[IndexPipeline] Progress logging failed for ${filePath}:`, error);
-      }
-    }
+    this.safeLogProgress(`Indexing: ${filePath}`, filePath);
     const chunks = await this.options.chunker.chunkFiles([
       {
         filePath,
@@ -315,18 +339,11 @@ export class IndexPipeline implements IIndexPipeline {
     ]);
 
     const embeddings = await this.embedWithRetry(chunks.map((chunk) => chunk.content));
-    await this.options.vectorStore.deleteByFilePath(filePath);
-    await this.options.vectorStore.upsertChunks(chunks, embeddings);
+    await this.options.vectorStore.upsertChunks(chunks, embeddings, [filePath]);
     await this.merkleTree.update(filePath, contentHash);
     this.skippedFiles.delete(filePath);
 
-    if (this.options.onProgress) {
-      try {
-        this.options.onProgress(`Finished indexing: ${filePath} (${chunks.length} chunks)`);
-      } catch {
-        // Already logged error above, just keep going
-      }
-    }
+    this.safeLogProgress(`Finished indexing: ${filePath} (${chunks.length} chunks)`, filePath);
 
     return chunks.length;
   }

@@ -370,7 +370,7 @@ export class LanceVectorStore implements IVectorStore {
     await this.closePromise;
   }
 
-  async upsertChunks(chunks: CodeChunk[], embeddings?: number[][]): Promise<void> {
+  async upsertChunks(chunks: CodeChunk[], embeddings?: number[][], affectedFilePaths?: string[]): Promise<void> {
     if (embeddings && embeddings.length !== chunks.length) {
       throw new Error(
         `VectorStore.upsertChunks: embeddings length mismatch (expected ${chunks.length}, got ${embeddings.length})`
@@ -432,9 +432,9 @@ export class LanceVectorStore implements IVectorStore {
         return;
       }
 
-      // パス B: delete-then-add
       // 対象ファイルのチャンクを削除し、新データを追加する
-      const uniqueFilePaths = [...new Set(chunks.map((c) => c.filePath))];
+      // affectedFilePaths が渡された場合はそれを使用し、そうでなければ chunks から抽出する
+      const uniqueFilePaths = affectedFilePaths ?? [...new Set(chunks.map((c) => c.filePath))];
       let staleAdded = 0;
       let filesAdded = 0;
       for (const fp of uniqueFilePaths) {

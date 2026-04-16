@@ -17,7 +17,7 @@ export class MetricsCollector implements MetricsHooks {
   private readonly dlqSizeGauge: Gauge;
   private readonly recoveryCounter: Counter;
 
-  private prevDropped = 0;
+  private readonly prevDroppedBySource = new Map<string, number>();
 
   constructor(registry?: Registry) {
     this.registry = registry ?? new Registry();
@@ -25,19 +25,21 @@ export class MetricsCollector implements MetricsHooks {
     this.queueSizeGauge = new Gauge({
       name: 'nexus_event_queue_size',
       help: 'Current event queue size',
+      labelNames: ['queue_id'] as const,
       registers: [this.registry],
     });
 
     this.queueStateGauge = new Gauge({
       name: 'nexus_event_queue_state',
       help: 'Current backpressure state (1 = active)',
-      labelNames: ['state'] as const,
+      labelNames: ['queue_id', 'state'] as const,
       registers: [this.registry],
     });
 
     this.droppedCounter = new Counter({
       name: 'nexus_event_queue_dropped_total',
       help: 'Total dropped events',
+      labelNames: ['queue_id'] as const,
       registers: [this.registry],
     });
 
@@ -58,27 +60,40 @@ export class MetricsCollector implements MetricsHooks {
     this.dlqSizeGauge = new Gauge({
       name: 'nexus_dlq_size',
       help: 'Current DLQ entry count',
+      labelNames: ['dlq_id'] as const,
       registers: [this.registry],
     });
 
     this.recoveryCounter = new Counter({
       name: 'nexus_dlq_recovery_total',
       help: 'DLQ recovery sweep results',
-      labelNames: ['result'] as const,
+      labelNames: ['dlq_id', 'result'] as const,
       registers: [this.registry],
     });
   }
 
-  onQueueSnapshot(size: number, state: BackpressureState, droppedTotal: number): void {
-    this.queueSizeGauge.set(size);
+  onQueueSnapshot(size: number, state: BackpressureState, droppedTotal: number, source = 'default'): void {
+    const labels = { queue_id: source };
+    this.queueSizeGauge.labels(labels).set(size);
     for (const s of BACKPRESSURE_STATES) {
-      this.queueStateGauge.labels(s).set(s === state ? 1 : 0);
+      this.queueStateGauge.labels({ ...labels, state: s }).set(s === state ? 1 : 0);
     }
-    const delta = droppedTotal - this.prevDropped;
-    if (delta > 0) {
-      this.droppedCounter.inc(delta);
+
+    const prevDropped = this.prevDroppedBySource.get(source) ?? 0;
+    
+    if (droppedTotal < prevDropped) {
+      // Counter reset detected (e.g. source restart)
+      if (droppedTotal > 0) {
+        this.droppedCounter.labels(labels).inc(droppedTotal);
+      }
+    } else {
+      const delta = droppedTotal - prevDropped;
+      if (delta > 0) {
+        this.droppedCounter.labels(labels).inc(delta);
+      }
     }
-    this.prevDropped = droppedTotal;
+    
+    this.prevDroppedBySource.set(source, droppedTotal);
   }
 
   onChunksIndexed(count: number): void {
@@ -91,13 +106,14 @@ export class MetricsCollector implements MetricsHooks {
     this.reindexHistogram.labels(String(fullRebuild)).observe(durationMs / 1000);
   }
 
-  onDlqSnapshot(size: number): void {
-    this.dlqSizeGauge.set(size);
+  onDlqSnapshot(size: number, source = 'default'): void {
+    this.dlqSizeGauge.labels({ dlq_id: source }).set(size);
   }
 
-  onRecoverySweepComplete(retried: number, purged: number, skipped: number): void {
-    if (retried > 0) this.recoveryCounter.labels('retried').inc(retried);
-    if (purged > 0) this.recoveryCounter.labels('purged').inc(purged);
-    if (skipped > 0) this.recoveryCounter.labels('skipped').inc(skipped);
+  onRecoverySweepComplete(retried: number, purged: number, skipped: number, source = 'default'): void {
+    const labels = { dlq_id: source };
+    if (retried > 0) this.recoveryCounter.labels({ ...labels, result: 'retried' }).inc(retried);
+    if (purged > 0) this.recoveryCounter.labels({ ...labels, result: 'purged' }).inc(purged);
+    if (skipped > 0) this.recoveryCounter.labels({ ...labels, result: 'skipped' }).inc(skipped);
   }
 }

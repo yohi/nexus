@@ -247,4 +247,42 @@ describe('EventQueue', () => {
       expect(queue.size()).toBe(1); // fast-fail.ts should be re-enqueued
     });
   });
+
+  describe('MetricsHooks integration', () => {
+    it('notifies metrics hooks on important events', async () => {
+      vi.useFakeTimers();
+      const onQueueSnapshot = vi.fn();
+      const queue = new EventQueue({
+        name: 'test-queue',
+        debounceMs: 10,
+        maxQueueSize: 2,
+        fullScanThreshold: 2,
+        concurrency: 1,
+        metricsHooks: { onQueueSnapshot }
+      });
+
+      // 1. Initial enqueue (debounced)
+      queue.enqueue(makeEvent({ filePath: 'src/a.ts' }));
+      expect(onQueueSnapshot).toHaveBeenLastCalledWith(1, 'normal', 0, 'test-queue');
+
+      // 2. Reach threshold (enter overflow)
+      queue.enqueue(makeEvent({ filePath: 'src/b.ts' }));
+      // Last called when entering overflow and then when finishing enqueue
+      expect(onQueueSnapshot).toHaveBeenLastCalledWith(2, 'overflow', 0, 'test-queue');
+
+      // 3. Drop event
+      const accepted = queue.enqueue(makeEvent({ filePath: 'src/c.ts' }));
+      expect(accepted).toBe(false);
+      expect(onQueueSnapshot).toHaveBeenLastCalledWith(2, 'overflow', 1, 'test-queue');
+
+      // 4. Drain (results in full_scan)
+      vi.runAllTimers();
+      await queue.drain(async (e) => e);
+      expect(onQueueSnapshot).toHaveBeenLastCalledWith(0, 'full_scan', 1, 'test-queue');
+
+      // 5. Clear
+      queue.clear();
+      expect(onQueueSnapshot).toHaveBeenLastCalledWith(0, 'normal', 1, 'test-queue');
+    });
+  });
 });

@@ -49,37 +49,55 @@ export class MerkleTree {
   }
 
   async remove(filePath: string, skipPersist = false): Promise<void> {
+    const node = this.nodes.get(filePath);
+    if (node?.isDirectory) {
+      const prefix = filePath.endsWith(path.sep) ? filePath : filePath + path.sep;
+      for (const nodePath of this.nodes.keys()) {
+        if (nodePath.startsWith(prefix)) {
+          this.nodes.delete(nodePath);
+        }
+      }
+    }
+
     this.nodes.delete(filePath);
     this.pruneEmptyDirectories(path.dirname(filePath));
 
     this.rootHash = await this.computeRootHash();
     if (!skipPersist) {
+      if (node?.isDirectory) {
+        await this.metadataStore.bulkDeleteSubtrees([filePath]);
+      }
       await this.persistCurrentState();
     }
   }
 
   async move(oldPath: string, newPath: string, contentHash: string): Promise<void> {
-    // 1. Remove old path in memory
+    const node = this.nodes.get(oldPath);
+    const isDirectory = node?.isDirectory ?? false;
+
+    // 1. Update in-memory state
     this.nodes.delete(oldPath);
     this.pruneEmptyDirectories(path.dirname(oldPath));
 
-    // 2. Add new path in memory
     const directories = this.collectDirectories(newPath);
-    const fileNode: MerkleNodeRow = {
+    const newNode: MerkleNodeRow = {
       path: newPath,
       hash: contentHash,
       parentPath: path.dirname(newPath) === '.' ? null : path.dirname(newPath),
-      isDirectory: false,
+      isDirectory,
     };
 
-    this.nodes.set(newPath, fileNode);
+    this.nodes.set(newPath, newNode);
     for (const directory of directories) {
       if (!this.nodes.has(directory.path)) {
         this.nodes.set(directory.path, directory);
       }
     }
 
-    // 3. Recompute hash and persist once
+    // 2. Perform atomic rename in metadata store
+    await this.metadataStore.renamePath(oldPath, newPath, contentHash);
+
+    // 3. Recompute and sync remaining state (e.g. newly created parent directories)
     this.rootHash = await this.computeRootHash();
     await this.persistCurrentState();
   }

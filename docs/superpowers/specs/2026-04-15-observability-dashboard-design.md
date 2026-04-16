@@ -94,7 +94,7 @@ import type { BackpressureState } from '../indexer/event-queue.js';
 
 export interface MetricsHooks {
   /** EventQueue の enqueue/drain 完了時に呼ばれる */
-  onQueueSnapshot(size: number, state: BackpressureState, droppedTotal: number): void;
+  onQueueSnapshot(size: number, state: BackpressureState, droppedTotal: number, source?: string): void;
 
   /** Pipeline.processEvents() 完了時に呼ばれる */
   onChunksIndexed(count: number): void;
@@ -103,10 +103,10 @@ export interface MetricsHooks {
   onReindexComplete(durationMs: number, fullRebuild: boolean): void;
 
   /** DLQ のエントリ数変動時に呼ばれる */
-  onDlqSnapshot(size: number): void;
+  onDlqSnapshot(size: number, source?: string): void;
 
   /** DLQ.recoverySweep() 完了時に呼ばれる */
-  onRecoverySweepComplete(retried: number, purged: number, skipped: number): void;
+  onRecoverySweepComplete(retried: number, purged: number, skipped: number, source?: string): void;
 }
 ```
 
@@ -114,13 +114,13 @@ export interface MetricsHooks {
 
 | メトリクス名 | 種別 | ラベル | ソース |
 |---|---|---|---|
-| `nexus_event_queue_size` | Gauge | — | EventQueue.size() |
-| `nexus_event_queue_state` | Gauge | `state` (normal/overflow/full_scan) | EventQueue.getState() ※ 現在の state のみ値 1、他は 0 |
-| `nexus_event_queue_dropped_total` | Counter | — | EventQueue.getDroppedEventCount() |
+| `nexus_event_queue_size` | Gauge | `queue_id` | EventQueue.size() |
+| `nexus_event_queue_state` | Gauge | `queue_id`, `state` (normal/overflow/full_scan) | EventQueue.getState() ※ 現在の state のみ値 1、他は 0 |
+| `nexus_event_queue_dropped_total` | Counter | `queue_id` | EventQueue.getDroppedEventCount() |
 | `nexus_indexing_chunks_total` | Counter | — | Pipeline.processEvents() |
 | `nexus_reindex_duration_seconds` | Histogram | `full_rebuild` (true/false) | Pipeline.reindex() |
-| `nexus_dlq_size` | Gauge | — | DLQ.snapshot().size |
-| `nexus_dlq_recovery_total` | Counter | `result` (retried/purged/skipped) | DLQ.recoverySweep() |
+| `nexus_dlq_size` | Gauge | `dlq_id` | DLQ.snapshot().size |
+| `nexus_dlq_recovery_total` | Counter | `dlq_id`, `result` (retried/purged/skipped) | DLQ.recoverySweep() |
 
 ### MetricsCollector 実装方針
 
@@ -137,16 +137,21 @@ export interface MetricsHooks {
   の累積絶対値のため、MetricsCollector 内部で前回値を保持してデルタを算出する:
 
   ```typescript
-  private prevDropped = 0;
+  private readonly prevDroppedBySource = new Map<string, number>();
 
-  onQueueSnapshot(size: number, state: BackpressureState, droppedTotal: number): void {
-    this.queueSizeGauge.set(size);
-    // ...state gauge 更新...
-    const delta = droppedTotal - this.prevDropped;
-    if (delta > 0) {
-      this.droppedCounter.inc(delta);
-      this.prevDropped = droppedTotal;
+  onQueueSnapshot(size: number, state: BackpressureState, droppedTotal: number, source = 'default'): void {
+    const labels = { queue_id: source };
+    this.queueSizeGauge.labels(labels).set(size);
+    // ...state gauge labels 更新...
+
+    const prevDropped = this.prevDroppedBySource.get(source) ?? 0;
+    if (droppedTotal < prevDropped) {
+      if (droppedTotal > 0) this.droppedCounter.labels(labels).inc(droppedTotal);
+    } else {
+      const delta = droppedTotal - prevDropped;
+      if (delta > 0) this.droppedCounter.labels(labels).inc(delta);
     }
+    this.prevDroppedBySource.set(source, droppedTotal);
   }
   ```
 
