@@ -20,7 +20,7 @@ const DEFAULT_EMBEDDING: EmbeddingConfig = {
   retryBaseDelayMs: 250,
 };
 
-export const DEFAULT_BATCH_SIZE = 500;
+export const DEFAULT_BATCH_SIZE = 1000;
 
 const DEFAULT_CONFIG = (projectRoot: string): Config => ({
   projectRoot,

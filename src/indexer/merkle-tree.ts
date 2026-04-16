@@ -111,6 +111,7 @@ export class MerkleTree {
   private async bubbleUpHash(startDirPath: string): Promise<void> {
     let current: string | null = startDirPath;
     const visited = new Set<string>();
+    const nodesToUpsert: MerkleNodeRow[] = [];
 
     while (current !== null && current !== '.' && current !== path.sep) {
       if (visited.has(current)) {
@@ -129,12 +130,16 @@ export class MerkleTree {
         isDirectory: true,
       };
 
-      await this.metadataStore.bulkUpsertMerkleNodes([dirNode]);
+      nodesToUpsert.push(dirNode);
       this.addToCache(current, dirNode);
 
       // Important: prevent getting stuck if dirname doesn't change anything
       if (parentPath === current) break;
       current = parentPath;
+    }
+
+    if (nodesToUpsert.length > 0) {
+      await this.metadataStore.bulkUpsertMerkleNodes(nodesToUpsert);
     }
 
     this.rootHash = await this.computeRootHashFromStore();
