@@ -2,6 +2,7 @@ import React from "react";
 import { Box, Text } from "ink";
 import type { MetricsJSON } from "../hooks/use-metrics.js";
 import { getValue } from "../utils/metrics.js";
+import { MetricPanel } from "./metric-panel.js";
 
 interface DlqPanelProps {
   data: MetricsJSON[] | null;
@@ -14,14 +15,8 @@ export const DlqPanel: React.FC<DlqPanelProps> = ({ data }) => {
     health === "healthy" ? "green" : health === "warning" ? "yellow" : "red";
 
   return (
-    <Box
-      flexDirection="column"
-      borderStyle="round"
-      borderColor="red"
-      padding={1}
-    >
-      <Text bold>🪦 Dead Letter Queue</Text>
-      <Box marginTop={1}>
+    <MetricPanel title="Dead Letter Queue" icon="🪦" borderColor="red">
+      <Box>
         <Text>Size: </Text>
         <Text color={healthColor}>{size}</Text>
       </Box>
@@ -31,6 +26,6 @@ export const DlqPanel: React.FC<DlqPanelProps> = ({ data }) => {
           {health.toUpperCase()}
         </Text>
       </Box>
-    </Box>
+    </MetricPanel>
   );
 };

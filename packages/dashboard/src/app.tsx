@@ -1,10 +1,10 @@
 import React from "react";
 import { Box, Text, useInput, useApp } from "ink";
-import { useMetrics } from "src/hooks/use-metrics.js";
-import type { MetricsJSON } from "src/hooks/use-metrics.js";
-import { QueuePanel } from "src/components/queue-panel.js";
-import { ThroughputPanel } from "src/components/throughput-panel.js";
-import { DlqPanel } from "src/components/dlq-panel.js";
+import { useMetrics } from "./hooks/use-metrics.js";
+import type { MetricsJSON } from "./hooks/use-metrics.js";
+import { QueuePanel } from "./components/queue-panel.js";
+import { ThroughputPanel } from "./components/throughput-panel.js";
+import { DlqPanel } from "./components/dlq-panel.js";
 
 interface AppProps {
   port?: number;
@@ -62,8 +62,8 @@ export const App: React.FC<AppProps> = ({ port = 9464, interval = 2000 }) => {
       <Box marginTop={1} flexDirection="column">
         <Box>
           <Text dimColor>Status: </Text>
-          <Text color={STATUS_COLORS[status] || "white"}>
-            {STATUS_MESSAGES[status] || status}
+          <Text color={(status in STATUS_COLORS) ? STATUS_COLORS[status] : "white"}>
+            {(status in STATUS_MESSAGES) ? STATUS_MESSAGES[status] : status}
           </Text>
         </Box>
         {error && (
