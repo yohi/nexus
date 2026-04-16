@@ -59,14 +59,14 @@ describe('stress: large repository metadata', () => {
       const tree = new MerkleTree(store);
       await tree.load();
 
-      expect(tree.getNode('src/packages/pkg-0/file-0.ts')).toEqual(
+      expect(await tree.getNode('src/packages/pkg-0/file-0.ts')).toEqual(
         expect.objectContaining({
           path: 'src/packages/pkg-0/file-0.ts',
           hash: 'hash-0-0',
           isDirectory: false,
         }),
       );
-      expect(tree.getNode('src/packages/pkg-99/file-199.ts')).toEqual(
+      expect(await tree.getNode('src/packages/pkg-99/file-199.ts')).toEqual(
         expect.objectContaining({
           path: 'src/packages/pkg-99/file-199.ts',
           hash: 'hash-99-199',
@@ -89,9 +89,9 @@ describe('stress: large repository metadata', () => {
       const reloadedTree = new MerkleTree(store);
       await reloadedTree.load();
 
-      expect(reloadedTree.getNode('src/packages/pkg-42')).toBeUndefined();
-      expect(reloadedTree.getNode('src/packages/pkg-42/file-0.ts')).toBeUndefined();
-      expect(reloadedTree.getNode('src/packages/pkg-41/file-199.ts')).toEqual(
+      expect(await reloadedTree.getNode('src/packages/pkg-42')).toBeUndefined();
+      expect(await reloadedTree.getNode('src/packages/pkg-42/file-0.ts')).toBeUndefined();
+      expect(await reloadedTree.getNode('src/packages/pkg-41/file-199.ts')).toEqual(
         expect.objectContaining({
           path: 'src/packages/pkg-41/file-199.ts',
           hash: 'hash-41-199',

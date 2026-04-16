@@ -59,7 +59,11 @@ export class MerkleTree {
     this.addToCache(filePath, fileNode);
 
     // 2. Recalculate hashes up to the root
-    await this.bubbleUpHash(filePath);
+    if (parentPath) {
+      await this.bubbleUpHash(parentPath);
+    } else {
+      this.rootHash = await this.computeRootHashFromStore();
+    }
   }
 
   async remove(filePath: string): Promise<void> {
@@ -91,28 +95,23 @@ export class MerkleTree {
         await this.metadataStore.bulkDeleteMerkleNodes([current]);
         this.cache.delete(current);
         current = parentOfCurrent;
-      } else {        await this.bubbleUpHash(current);
-        break;
+      } else {
+        await this.bubbleUpHash(current);
+        return;
       }
     }
     
     // Always refresh root hash if we pruned up to the top
-    if (current === null || current === '.' || current === path.sep) {
-      this.rootHash = await this.computeRootHashFromStore();
-    }
+    this.rootHash = await this.computeRootHashFromStore();
   }
 
   /**
    * Updates directory hashes from the given path up to the root.
    */
-  private async bubbleUpHash(nodePath: string): Promise<void> {
-    let current = path.dirname(nodePath);
-    if (current === '.' || current === path.sep) {
-      this.rootHash = await this.computeRootHashFromStore();
-      return;
-    }
+  private async bubbleUpHash(startDirPath: string): Promise<void> {
+    let current: string | null = startDirPath;
 
-    while (current !== '.' && current !== path.sep) {
+    while (current !== null && current !== '.' && current !== path.sep) {
       const children = await this.metadataStore.getChildren(current);
       const hash = await this.calculateDirectoryHash(children);
       
@@ -127,7 +126,7 @@ export class MerkleTree {
       await this.metadataStore.bulkUpsertMerkleNodes([dirNode]);
       this.addToCache(current, dirNode);
 
-      current = parentPath ?? '.';
+      current = parentPath;
     }
 
     this.rootHash = await this.computeRootHashFromStore();

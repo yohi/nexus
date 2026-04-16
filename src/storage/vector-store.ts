@@ -446,10 +446,12 @@ export class LanceVectorStore implements IVectorStore {
           };
         });
 
-        if (!this.table) {
-          this.table = await db.createTable('chunks', rows, { schema: undefined });
-        } else {
-          await this.table.add(rows);
+        if (rows.length > 0) {
+          if (!this.table) {
+            this.table = await db.createTable('chunks', rows);
+          } else {
+            await this.table.add(rows);
+          }
         }
       }
 
