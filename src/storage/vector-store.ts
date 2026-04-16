@@ -386,77 +386,69 @@ export class LanceVectorStore implements IVectorStore {
       }
     }
 
-    const rows = chunks.map((chunk, i) => {
-      this.validateFilterValue(chunk.filePath, 'filePath');
-      if (chunk.symbolName) {
-        this.validateFilterValue(chunk.symbolName, 'symbolName');
-      }
-      if (chunk.language) {
-        this.validateFilterValue(chunk.language, 'language');
-      }
-      if (chunk.symbolKind) {
-        this.validateFilterValue(chunk.symbolKind, 'symbolKind');
-      }
-
-      const vector = embeddings && embeddings[i] ? embeddings[i] : Array(this.dimensions).fill(0);
-      if (!vector.every(Number.isFinite)) {
-        throw new Error(
-          `VectorStore.upsertChunks: vector contains non-finite values for chunk ${chunk.id}`
-        );
-      }
-      return {
-        id: chunk.id,
-        filepath: chunk.filePath,
-        content: chunk.content,
-        language: chunk.language,
-        symbolname: chunk.symbolName ?? '',
-        symbolkind: chunk.symbolKind,
-        startline: chunk.startLine,
-        endline: chunk.endLine,
-        hash: chunk.hash,
-        vector,
-      };
-    });
-
     await this.runInWriteLock(async () => {
       if (!this.db) {
         throw new Error('VectorStore not initialized');
       }
       const db = this.db;
-      if (!this.table) {
-        if (rows.length === 0) return;
-        this.table = await db.createTable('chunks', rows, { schema: undefined });
-        const filePaths = [...new Set(chunks.map((c) => c.filePath))];
-        this.totalFiles = filePaths.length;
-        await this.updateMetadata();
-        return;
-      }
 
-      // パス B: delete-then-add
-      // 対象ファイルのチャンクを削除し、新データを追加する
+      // 対象ファイルのチャンクを削除する (delete-then-add)
       const uniqueFilePaths = [...new Set(chunks.map((c) => c.filePath))];
       let staleAdded = 0;
       let filesAdded = 0;
-      for (const fp of uniqueFilePaths) {
-        const filter = this.filePathFilter(fp);
-        const count = await this.table.countRows(filter);
-        if (count > 0) {
-          await this.table.delete(filter);
-          staleAdded += count;
+
+      if (this.table) {
+        for (const fp of uniqueFilePaths) {
+          const filter = this.filePathFilter(fp);
+          const count = await this.table.countRows(filter);
+          if (count > 0) {
+            await this.table.delete(filter);
+            staleAdded += count;
+          } else {
+            filesAdded++;
+          }
+        }
+      } else {
+        filesAdded = uniqueFilePaths.length;
+      }
+
+      // バッチ処理でデータを追加
+      const BATCH_SIZE = 500;
+      for (let i = 0; i < chunks.length; i += BATCH_SIZE) {
+        const chunkBatch = chunks.slice(i, i + BATCH_SIZE);
+        const rows = chunkBatch.map((chunk, j) => {
+          const globalIdx = i + j;
+          const vector = embeddings && embeddings[globalIdx] 
+            ? new Float32Array(embeddings[globalIdx]) 
+            : new Float32Array(this.dimensions);
+          
+          return {
+            id: chunk.id,
+            filepath: chunk.filePath,
+            content: chunk.content,
+            language: chunk.language,
+            symbolname: chunk.symbolName ?? '',
+            symbolkind: chunk.symbolKind,
+            startline: chunk.startLine,
+            endline: chunk.endLine,
+            hash: chunk.hash,
+            vector,
+          };
+        });
+
+        if (!this.table) {
+          this.table = await db.createTable('chunks', rows, { schema: undefined });
         } else {
-          filesAdded++;
+          await this.table.add(rows);
         }
       }
-      
-      if (staleAdded > 0 || rows.length > 0 || filesAdded > 0) {
+
+      if (staleAdded > 0 || chunks.length > 0 || filesAdded > 0) {
         if (staleAdded > 0) {
           this.staleCount += staleAdded;
         }
         if (filesAdded > 0) {
           this.totalFiles += filesAdded;
-        }
-        if (rows.length > 0) {
-          await this.table.add(rows);
         }
         await this.updateMetadata();
       }

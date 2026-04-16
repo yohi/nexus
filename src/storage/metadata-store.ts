@@ -236,6 +236,25 @@ export class SqliteMetadataStore implements IMetadataStore {
     };
   }
 
+  async getChildren(path: string): Promise<MerkleNodeRow[]> {
+    await this.asyncBoundary();
+    const rows = this.db
+      .prepare(
+        `SELECT path, hash, parent_path AS parentPath, is_directory AS isDirectory
+         FROM merkle_nodes
+         WHERE parent_path = ?
+         ORDER BY path ASC`,
+      )
+      .all(path) as Array<{ path: string; hash: string; parentPath: string | null; isDirectory: number }>;
+
+    return rows.map((row) => ({
+      path: row.path,
+      hash: row.hash,
+      parentPath: row.parentPath,
+      isDirectory: row.isDirectory === 1,
+    }));
+  }
+
   async hasChildren(path: string): Promise<boolean> {
     await this.asyncBoundary();
     const row = this.db.prepare('SELECT 1 FROM merkle_nodes WHERE parent_path = ? LIMIT 1').get(path);
