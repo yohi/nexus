@@ -27,7 +27,7 @@ export class MerkleTree {
 
   private addToCache(path: string, node: MerkleNodeRow): void {
     if (this.cache.size >= this.MAX_CACHE_SIZE && !this.cache.has(path)) {
-      const firstKey = this.cache.keys().next().value as string | undefined;
+      const firstKey = this.cache.keys().next().value;
       if (firstKey !== undefined) {
         this.cache.delete(firstKey);
       }
@@ -87,12 +87,11 @@ export class MerkleTree {
     while (current !== null && current !== '.' && current !== path.sep) {
       const hasChildren = await this.metadataStore.hasChildren(current);
       if (!hasChildren) {
-        const parentOfCurrent = path.dirname(current) === '.' ? null : path.dirname(current);
+        const parentOfCurrent: string | null = path.dirname(current) === '.' ? null : path.dirname(current);
         await this.metadataStore.bulkDeleteMerkleNodes([current]);
         this.cache.delete(current);
         current = parentOfCurrent;
-      } else {
-        await this.bubbleUpHash(current);
+      } else {        await this.bubbleUpHash(current);
         break;
       }
     }
