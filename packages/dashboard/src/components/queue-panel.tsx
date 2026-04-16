@@ -2,6 +2,7 @@ import React from "react";
 import { Box, Text } from "ink";
 import type { MetricsJSON } from "../hooks/use-metrics.js";
 import { getValue } from "../utils/metrics.js";
+import { MetricPanel } from "./metric-panel.js";
 
 interface QueuePanelProps {
   data: MetricsJSON[] | null;
@@ -27,17 +28,13 @@ export const QueuePanel: React.FC<QueuePanelProps> = ({ data }) => {
   const bar = "█".repeat(filled) + "░".repeat(barWidth - filled);
 
   const stateLabel = isNormal ? "NORMAL" : isOverflow ? "OVERFLOW" : "IDLE";
+
+  // Fix "Generic Object Injection Sink" by avoiding dynamic key access
   const stateColor = isNormal ? "green" : isOverflow ? "red" : "yellow";
 
   return (
-    <Box
-      flexDirection="column"
-      borderStyle="round"
-      borderColor="blue"
-      padding={1}
-    >
-      <Text bold>📊 Event Queue</Text>
-      <Box marginTop={1}>
+    <MetricPanel title="Event Queue" icon="📊" borderColor="blue">
+      <Box>
         <Text>Size: </Text>
         <Text>{size}</Text>
         <Text> / {maxSize}</Text>
@@ -54,6 +51,6 @@ export const QueuePanel: React.FC<QueuePanelProps> = ({ data }) => {
         <Text>Dropped: </Text>
         <Text color={dropped > 0 ? "red" : "white"}>{dropped}</Text>
       </Box>
-    </Box>
+    </MetricPanel>
   );
 };
