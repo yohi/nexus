@@ -8,11 +8,35 @@ import * as net from "node:net";
 describe("MetricsHttpServer", () => {
   let registry: Registry;
   let httpServer: MetricsHttpServer;
-  let port: number;
+
+  /**
+   * Safe wrapper for net.Server startup
+   */
+  const startRawServer = (port: number): Promise<net.Server> => {
+    return new Promise((resolve, reject) => {
+      const s = net.createServer();
+      s.on("error", reject);
+      s.listen(port, "127.0.0.1", () => {
+        s.off("error", reject);
+        resolve(s);
+      });
+    });
+  };
+
+  /**
+   * Safe wrapper for net.Server shutdown
+   */
+  const stopRawServer = (s: net.Server): Promise<void> => {
+    return new Promise((resolve, reject) => {
+      s.close((err) => {
+        if (err) reject(err);
+        else resolve();
+      });
+    });
+  };
 
   beforeEach(async () => {
     registry = new Registry();
-    port = await findFreePort();
     httpServer = new MetricsHttpServer(registry);
   });
 
@@ -28,9 +52,10 @@ describe("MetricsHttpServer", () => {
     });
     counter.inc(5);
 
-    await httpServer.start(port);
+    await httpServer.start(0);
+    const boundPort = httpServer.getPort()!;
 
-    const res = await fetch(`http://127.0.0.1:${port}/metrics`);
+    const res = await fetch(`http://127.0.0.1:${boundPort}/metrics`);
     expect(res.status).toBe(200);
     expect(res.headers.get("content-type")).toContain("text/plain");
     const body = await res.text();
@@ -45,9 +70,10 @@ describe("MetricsHttpServer", () => {
     });
     counter.inc(10);
 
-    await httpServer.start(port);
+    await httpServer.start(0);
+    const boundPort = httpServer.getPort()!;
 
-    const res = await fetch(`http://127.0.0.1:${port}/metrics/json`);
+    const res = await fetch(`http://127.0.0.1:${boundPort}/metrics/json`);
     expect(res.status).toBe(200);
     expect(res.headers.get("content-type")).toContain("application/json");
     const json = await res.json();
@@ -60,9 +86,10 @@ describe("MetricsHttpServer", () => {
   });
 
   it('GET /health が { "status": "ok" } を返す（200）', async () => {
-    await httpServer.start(port);
+    await httpServer.start(0);
+    const boundPort = httpServer.getPort()!;
 
-    const res = await fetch(`http://127.0.0.1:${port}/health`);
+    const res = await fetch(`http://127.0.0.1:${boundPort}/health`);
     expect(res.status).toBe(200);
     expect(res.headers.get("content-type")).toContain("application/json");
     const json = await res.json();
@@ -70,32 +97,29 @@ describe("MetricsHttpServer", () => {
   });
 
   it("未定義パスに 404 を返す", async () => {
-    await httpServer.start(port);
+    await httpServer.start(0);
+    const boundPort = httpServer.getPort()!;
 
-    const res = await fetch(`http://127.0.0.1:${port}/invalid`);
+    const res = await fetch(`http://127.0.0.1:${boundPort}/invalid`);
     expect(res.status).toBe(404);
   });
 
   it("EADDRINUSE 時に MCP サーバーが継続稼働する（start() が reject せず resolve、isListening() が false）", async () => {
-    const otherServer = await new Promise<net.Server>((resolve) => {
-      const s = net.createServer();
-      s.listen(port, () => resolve(s));
-    });
+    const port = await findFreePort();
+    const otherServer = await startRawServer(port);
 
     try {
       const serverOnPort = new MetricsHttpServer(registry);
       await serverOnPort.start(port);
       expect(serverOnPort.isListening()).toBe(false);
     } finally {
-      otherServer.close();
+      await stopRawServer(otherServer);
     }
   });
 
   it("EADDRINUSE 発生後もメトリクスコレクターとの連携が正常に動作する", async () => {
-    const otherServer = await new Promise<net.Server>((resolve) => {
-      const s = net.createServer();
-      s.listen(port, () => resolve(s));
-    });
+    const port = await findFreePort();
+    const otherServer = await startRawServer(port);
 
     try {
       const collector = new MetricsCollector(registry);
@@ -106,7 +130,7 @@ describe("MetricsHttpServer", () => {
       const metrics = await registry.metrics();
       expect(metrics).toContain("nexus_indexing_chunks_total 5");
     } finally {
-      otherServer.close();
+      await stopRawServer(otherServer);
     }
   });
 
