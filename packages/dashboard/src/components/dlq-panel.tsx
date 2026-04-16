@@ -12,10 +12,14 @@ export const DlqPanel: React.FC<DlqPanelProps> = ({ data }) => {
   const size = getValue(data, "nexus_dlq_size");
   const retried = getValue(data, "nexus_dlq_recovery_total", "result", "retried");
   const purged = getValue(data, "nexus_dlq_recovery_total", "result", "purged");
-  
-  const health = size === 0 ? "healthy" : size < 100 ? "warning" : "critical";
-  const healthColor =
-    health === "healthy" ? "green" : health === "warning" ? "yellow" : "red";
+
+  const getStatus = (s: number) => {
+    if (s === 0) return { label: "Healthy", color: "green" };
+    if (s < 100) return { label: "Warning", color: "yellow" };
+    return { label: "Critical", color: "red" };
+  };
+
+  const status = getStatus(size);
 
   return (
     <MetricPanel title="DLQ Health" icon="🪦" borderColor="red">
@@ -27,8 +31,8 @@ export const DlqPanel: React.FC<DlqPanelProps> = ({ data }) => {
       <Box marginTop={1}>
         <Text>
           Status:{" "}
-          <Text bold color={healthColor}>
-            {health === "healthy" ? "● Healthy" : health === "warning" ? "● Warning" : "● Critical"}
+          <Text bold color={status.color}>
+            ● {status.label}
           </Text>
         </Text>
       </Box>

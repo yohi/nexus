@@ -12,8 +12,8 @@ const { values } = parseArgs({
   strict: false,
 });
 
-const port = parseInt((values.port as string) ?? "9464", 10);
-const interval = parseInt((values.interval as string) ?? "2000", 10);
+const port = parseInt(values.port as string, 10);
+const interval = parseInt(values.interval as string, 10);
 
 const { waitUntilExit } = render(React.createElement(App, { port, interval }));
 await waitUntilExit();
