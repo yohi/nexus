@@ -424,10 +424,10 @@ export interface DeadLetterQueueOptions {
 - `recoverySweep()` の `return { retried, purged, skipped };`（L169）の直前:
 
   ```typescript
-  this.options.metricsHooks?.onRecoverySweepComplete(retried, purged, skipped, this.options.name);
+  this.safeNotifyMetrics((h) => { h.onRecoverySweepComplete(retried, purged, skipped, this.options.name); });
   ```
 
-- `removeByFilePath()` / `removeByPathPrefix()` などの完了後、`safeNotifyMetrics` を経由して通知される（L246, L281 等を heritance して更新）。
+- `removeByFilePath()` / `removeByPathPrefix()` などの完了後、`safeNotifyMetrics` を経由して通知される（L246, L281 等のロジックを継承（inheritance）して更新）。
 
 
 **Step 3: 既存テスト通過確認**

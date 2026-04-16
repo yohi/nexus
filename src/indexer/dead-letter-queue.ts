@@ -270,11 +270,11 @@ export class DeadLetterQueue {
       const toRemove = sortedEntries.slice(0, this.entries.size - this.maxEntries);
       const removedIds = toRemove.map((e) => e.id);
 
+      await this.options.metadataStore.removeDeadLetterEntries(removedIds);
+
       for (const id of removedIds) {
         this.entries.delete(id);
       }
-
-      await this.options.metadataStore.removeDeadLetterEntries(removedIds);
     }
 
     this.safeNotifyMetrics((h) => { h.onDlqSnapshot(this.entries.size, this.options.name); });
