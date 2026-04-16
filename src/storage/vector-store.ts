@@ -391,71 +391,72 @@ export class LanceVectorStore implements IVectorStore {
         throw new Error('VectorStore not initialized');
       }
       const db = this.db;
-
-      // Prepare all rows for this update
-      const rows = chunks.map((chunk, j) => {
-        const vectorData = embeddings?.at(j);
-        const vector =
-          vectorData && vectorData.every(Number.isFinite)
-            ? new Float32Array(vectorData)
-            : new Float32Array(this.dimensions);
-
-        this.validateFilterValue(chunk.filePath, 'filePath');
-        if (chunk.language != null) this.validateFilterValue(chunk.language, 'language');
-        if (chunk.symbolKind != null) this.validateFilterValue(chunk.symbolKind, 'symbolKind');
-        if (chunk.symbolName != null) this.validateFilterValue(chunk.symbolName, 'symbolName');
-
-        return {
-          vector,
-          id: chunk.id,
-          filepath: chunk.filePath,
-          content: chunk.content,
-          language: chunk.language ?? '',
-          symbolname: chunk.symbolName ?? '',
-          symbolkind: chunk.symbolKind ?? '',
-          startline: chunk.startLine,
-          endline: chunk.endLine,
-          hash: chunk.hash,
-        };
-      });
+      const updateId = `upd_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
 
       const uniqueFilePaths = [...new Set(chunks.map((c) => c.filePath))];
       let staleAdded = 0;
       let filesAdded = 0;
 
-      if (!this.table) {
-        // Initial creation - atomic by nature
-        this.table = await db.createTable('chunks', rows);
-        filesAdded = uniqueFilePaths.length;
+      // 1. Calculate stats before adding
+      if (this.table) {
+        for (const fp of uniqueFilePaths) {
+          const filter = this.filePathFilter(fp);
+          const count = await this.table.countRows(filter);
+          if (count > 0) {
+            staleAdded += count;
+          } else {
+            filesAdded++;
+          }
+        }
       } else {
-        // Atomic update strategy:
-        // 1. Create a temporary table for the new data
-        // 2. If successful, delete old data from primary and move new data in
-        const tmpTableName = `chunks_tmp_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
-        await db.createTable(tmpTableName, rows);
-        
-        try {
-          // Calculate stats before swapping
-          for (const fp of uniqueFilePaths) {
-            const filter = this.filePathFilter(fp);
-            const count = await this.table.countRows(filter);
-            if (count > 0) {
-              staleAdded += count;
-            } else {
-              filesAdded++;
-            }
-          }
+        filesAdded = uniqueFilePaths.length;
+      }
 
-          // SWAP: Delete old rows and add all new rows from tmp table
-          // Note: LanceDB's 'add' from another table or data source is efficient
-          for (const fp of uniqueFilePaths) {
-            await this.table.delete(this.filePathFilter(fp));
-          }
-          
-          // Add all rows from the temporary successful insert
+      // 2. Batch process data into the store (Memory efficient)
+      const BATCH_SIZE = 500;
+      for (let i = 0; i < chunks.length; i += BATCH_SIZE) {
+        const chunkBatch = chunks.slice(i, i + BATCH_SIZE);
+        const rows = chunkBatch.map((chunk, j) => {
+          const globalIdx = i + j;
+          const vectorData = embeddings?.at(globalIdx);
+          const vector =
+            vectorData && vectorData.every(Number.isFinite)
+              ? new Float32Array(vectorData)
+              : new Float32Array(this.dimensions);
+
+          this.validateFilterValue(chunk.filePath, 'filePath');
+          if (chunk.language != null) this.validateFilterValue(chunk.language, 'language');
+          if (chunk.symbolKind != null) this.validateFilterValue(chunk.symbolKind, 'symbolKind');
+          if (chunk.symbolName != null) this.validateFilterValue(chunk.symbolName, 'symbolName');
+
+          return {
+            vector,
+            id: chunk.id,
+            filepath: chunk.filePath,
+            content: chunk.content,
+            language: chunk.language ?? '',
+            symbolname: chunk.symbolName ?? '',
+            symbolkind: chunk.symbolKind ?? '',
+            startline: chunk.startLine,
+            endline: chunk.endLine,
+            hash: chunk.hash,
+            _update_id: updateId, // Tag new rows
+          };
+        });
+
+        if (!this.table) {
+          this.table = await db.createTable('chunks', rows);
+        } else {
           await this.table.add(rows);
-        } finally {
-          await db.dropTable(tmpTableName);
+        }
+      }
+
+      // 3. Post-insert Cleanup: Remove old rows for these files
+      if (this.table) {
+        for (const fp of uniqueFilePaths) {
+          // Delete rows for this file that DON'T have the current updateId
+          const filter = `filepath = '${this.escapeFilterValue(fp)}' AND _update_id != '${updateId}'`;
+          await this.table.delete(filter);
         }
       }
 
