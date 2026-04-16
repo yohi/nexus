@@ -5,31 +5,19 @@ import { DeadLetterQueue } from "../../../src/indexer/dead-letter-queue.js";
 import { MetricsCollector } from "../../../src/observability/metrics-collector.js";
 import { MetricsHttpServer } from "../../../src/observability/metrics-server.js";
 import type { IMetadataStore } from "../../../src/types/index.js";
+import { findFreePort } from "../../shared/port-utils.js";
 import * as net from "node:net";
 
 describe("Metrics E2E Integration", () => {
   let registry: Registry;
   let collector: MetricsCollector;
   let httpServer: MetricsHttpServer;
-  let port: number;
-  let mockMetadataStore: any;
-
-  const findFreePort = (): Promise<number> => {
-    return new Promise((resolve) => {
-      const server = net.createServer();
-      server.listen(0, () => {
-        const address = server.address() as net.AddressInfo;
-        resolve(address.port);
-        server.close();
-      });
-    });
-  };
+  let mockMetadataStore: Partial<IMetadataStore>;
 
   beforeEach(async () => {
     registry = new Registry();
     collector = new MetricsCollector(registry);
     httpServer = new MetricsHttpServer(registry);
-    port = await findFreePort();
 
     mockMetadataStore = {
       initialize: vi.fn().mockResolvedValue(undefined),
@@ -46,7 +34,8 @@ describe("Metrics E2E Integration", () => {
   });
 
   it("EventQueue 操作が /metrics/json に反映される", async () => {
-    await httpServer.start(port);
+    await httpServer.start(0);
+    const port = httpServer.getPort()!;
 
     const eventQueue = new EventQueue({
       debounceMs: 10,
@@ -79,7 +68,8 @@ describe("Metrics E2E Integration", () => {
   });
 
   it("DLQ 操作が /metrics/json に反映される", async () => {
-    await httpServer.start(port);
+    await httpServer.start(0);
+    const port = httpServer.getPort()!;
 
     const dlq = new DeadLetterQueue({
       metadataStore: mockMetadataStore as unknown as IMetadataStore,
@@ -100,7 +90,8 @@ describe("Metrics E2E Integration", () => {
   });
 
   it("極端なメトリクス変動のエンドツーエンド追従", async () => {
-    await httpServer.start(port);
+    await httpServer.start(0);
+    const port = httpServer.getPort()!;
 
     collector.onChunksIndexed(1);
     collector.onChunksIndexed(5);
@@ -112,6 +103,7 @@ describe("Metrics E2E Integration", () => {
   });
 
   it("ポート競合時もコアモジュール→メトリクス収集は動作する", async () => {
+    const port = await findFreePort();
     const otherServer = await new Promise<net.Server>((resolve) => {
       const s = net.createServer();
       s.listen(port, () => resolve(s));
@@ -130,7 +122,7 @@ describe("Metrics E2E Integration", () => {
   });
 
   it("シャットダウンチェーンが正常に完了する", async () => {
-    await httpServer.start(port);
+    await httpServer.start(0);
     expect(httpServer.isListening()).toBe(true);
 
     await httpServer.stop();

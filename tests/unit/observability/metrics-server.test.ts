@@ -2,23 +2,13 @@ import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { Registry, Counter } from "prom-client";
 import { MetricsHttpServer } from "../../../src/observability/metrics-server.js";
 import { MetricsCollector } from "../../../src/observability/metrics-collector.js";
+import { findFreePort } from "../../shared/port-utils.js";
 import * as net from "node:net";
 
 describe("MetricsHttpServer", () => {
   let registry: Registry;
   let httpServer: MetricsHttpServer;
   let port: number;
-
-  const findFreePort = (): Promise<number> => {
-    return new Promise((resolve) => {
-      const server = net.createServer();
-      server.listen(0, () => {
-        const address = server.address() as net.AddressInfo;
-        resolve(address.port);
-        server.close();
-      });
-    });
-  };
 
   beforeEach(async () => {
     registry = new Registry();
