@@ -1113,29 +1113,3 @@ Task 14-18 → commit × 5 → PR4 (Draft)
 
 積み上げ方式のため、PR1 → PR2 → PR3 → PR4 の順にマージする。
 
-
-
-🤖 Generated with [Claude Code](https://claude.com/claude-code)
-EOF
-)"
-```
-
----
-
-## 実装順序のまとめ
-
-```text
-Task 1-3  → commit × 3 → PR1 (Draft)
-Task 5-7  → commit × 3 → PR2 (Draft)
-Task 9-12 → commit × 4 → PR3 (Draft)
-Task 14-18 → commit × 5 → PR4 (Draft)
-```
-
-各 PR はマージ前に以下を確認:
-
-1. `npx tsc --noEmit` — 型チェック
-2. `npm run lint` — ESLint
-3. `npx vitest run` — 全テスト
-4. PR レビュー承認
-
-積み上げ方式のため、PR1 → PR2 → PR3 → PR4 の順にマージする。
