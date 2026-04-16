@@ -120,4 +120,29 @@ describe("useMetrics", () => {
     );
     unmount();
   });
+
+  it("re-connects when port changes", async () => {
+    vi.mocked(fetch).mockResolvedValue({
+      ok: true,
+      headers: new Headers({ "content-type": "application/json" }),
+      json: async () => [],
+    } as Response);
+
+    const { rerender, unmount } = render(<TestComponent port={9464} interval={1000} />);
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    expect(fetch).toHaveBeenCalledWith(
+      "http://localhost:9464/metrics/json",
+      expect.any(Object),
+    );
+
+    // Change port
+    rerender(<TestComponent port={8888} interval={1000} />);
+    await new Promise((resolve) => setTimeout(resolve, 100));
+
+    expect(fetch).toHaveBeenCalledWith(
+      "http://localhost:8888/metrics/json",
+      expect.any(Object),
+    );
+    unmount();
+  });
 });

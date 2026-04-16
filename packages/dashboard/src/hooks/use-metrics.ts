@@ -37,11 +37,8 @@ export function useMetrics(options: UseMetricsOptions = {}): UseMetricsResult {
   const [data, setData] = useState<MetricsJSON[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const hadConnection = useRef(false);
-  const initialized = useRef(false);
 
   useEffect(() => {
-    if (initialized.current) return;
-    initialized.current = true;
     hadConnection.current = false;
     const abortController = new AbortController();
     const url = `http://localhost:${port}/metrics/json`;
