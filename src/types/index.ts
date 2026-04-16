@@ -154,8 +154,8 @@ export interface IMetadataStore {
   pruneEmptyParents(path: string, pathExists: (targetPath: string) => Promise<boolean>): Promise<void>;
   renamePath(oldPath: string, newPath: string, hash: string): Promise<void>;
   getMerkleNode(path: string): Promise<MerkleNodeRow | null>;
-  getChildren(path: string): Promise<MerkleNodeRow[]>;
-  hasChildren(path: string): Promise<boolean>;
+  getChildren(path: string | null): Promise<MerkleNodeRow[]>;
+  hasChildren(path: string | null): Promise<boolean>;
   getAllNodes(): Promise<MerkleNodeRow[]>;
   getAllFileNodes(): Promise<MerkleNodeRow[]>;
   getAllPaths(): Promise<string[]>;
