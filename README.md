@@ -72,6 +72,18 @@ Install and configure Nexus. First, read the local README.md and AGENTS.md in th
 
 ## 📖 使い方
 
+### ダッシュボード (TUI) の起動
+
+Nexus サーバーが起動している状態で、以下のコマンドを実行すると、ターミナル上でリアルタイムなインデックス状態やキューの監視が可能なダッシュボードが開きます。
+
+```bash
+# グローバルインストールされている場合
+nexus dashboard
+
+# リポジトリ内から実行する場合
+npx tsx src/bin/nexus.ts dashboard
+```
+
 ### ライブラリとして組み込む
 
 Nexus は Node.js プロセスに組み込んで、独自の MCP サーバーとして公開できます。
