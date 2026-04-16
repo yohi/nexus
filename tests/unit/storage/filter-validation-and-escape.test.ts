@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { LanceVectorStore } from '../../../src/storage/vector-store.js';
 
 class TestableLanceVectorStore extends LanceVectorStore {
@@ -28,6 +28,10 @@ describe('Filter Validation and Escape', () => {
 
   beforeEach(() => {
     store = new TestableLanceVectorStore({ dimensions: 64 });
+  });
+
+  afterEach(async () => {
+    await store?.close();
   });
 
   describe('validateFilterValue()', () => {

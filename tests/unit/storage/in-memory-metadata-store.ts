@@ -52,6 +52,18 @@ export class InMemoryMetadataStore implements IMetadataStore {
     return deleted;
   }
 
+  async getSubtreePaths(pathPrefix: string): Promise<string[]> {
+    const normalizedPrefix = `${pathPrefix}/`;
+    const paths: string[] = [];
+
+    for (const key of this.nodes.keys()) {
+      if (key === pathPrefix || key.startsWith(normalizedPrefix)) {
+        paths.push(key);
+      }
+    }
+
+    return paths;
+  }
 
   async pruneEmptyParents(
     path: string,
@@ -78,7 +90,7 @@ export class InMemoryMetadataStore implements IMetadataStore {
     const isDirectory = oldNode?.isDirectory ?? false;
 
     const parentPath = dirname(newPath);
-    const normalizedParentPath = (parentPath === '.' || parentPath === '/' || parentPath === '') ? null : parentPath;
+    const normalizedParentPath = parentPath === '.' || parentPath === '/' || parentPath === '' ? null : parentPath;
 
     this.nodes.delete(oldPath);
     this.nodes.set(newPath, {
@@ -94,7 +106,13 @@ export class InMemoryMetadataStore implements IMetadataStore {
     return this.nodes.get(path) ?? null;
   }
 
-  async hasChildren(path: string): Promise<boolean> {
+  async getChildren(path: string | null): Promise<MerkleNodeRow[]> {
+    return [...this.nodes.values()]
+      .filter((node) => node.parentPath === path)
+      .sort((a, b) => a.path.localeCompare(b.path));
+  }
+
+  async hasChildren(path: string | null): Promise<boolean> {
     for (const node of this.nodes.values()) {
       if (node.parentPath === path) {
         return true;
