@@ -105,8 +105,8 @@ describe("MetricsHttpServer", () => {
   });
 
   it("EADDRINUSE 時に MCP サーバーが継続稼働する（start() が reject せず resolve、isListening() が false）", async () => {
-    const port = await findFreePort();
-    const otherServer = await startRawServer(port);
+    const otherServer = await startRawServer(0);
+    const port = (otherServer.address() as net.AddressInfo).port;
 
     try {
       const serverOnPort = new MetricsHttpServer(registry);
@@ -118,8 +118,8 @@ describe("MetricsHttpServer", () => {
   });
 
   it("EADDRINUSE 発生後もメトリクスコレクターとの連携が正常に動作する", async () => {
-    const port = await findFreePort();
-    const otherServer = await startRawServer(port);
+    const otherServer = await startRawServer(0);
+    const port = (otherServer.address() as net.AddressInfo).port;
 
     try {
       const collector = new MetricsCollector(registry);
