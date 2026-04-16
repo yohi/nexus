@@ -1,5 +1,80 @@
 # Changelog
 
+## [1.5.0](https://github.com/yohi/nexus/compare/v1.4.1...v1.5.0) (2026-04-16)
+
+
+### Features
+
+* **dashboard:** CLIの引数バリデーション追加とDLQメトリクス集計ロジック改善 ([958bc4c](https://github.com/yohi/nexus/commit/958bc4c009430696e8c8251b5d8a49488e94dea4))
+* **dashboard:** TUI ダッシュボードパッケージを追加 ([cfe153b](https://github.com/yohi/nexus/commit/cfe153b5962e2976211d9418caf5ec208b5e7bf2))
+* **dashboard:** ダッシュボード機能の仕様更新、メトリクス収集とTUI連携を詳述 ([86edfb9](https://github.com/yohi/nexus/commit/86edfb9f74e887fbd602a21963dffd4e2f3508fc))
+* **dashboard:** メトリクスサーバーの堅牢性改善とクリーンアップ、exports設定追加 ([b9b634f](https://github.com/yohi/nexus/commit/b9b634f8afc08d8022da732c76e490e2d2a5ca46))
+* **indexer:** Merkle Tree のキャッシュとファイル操作の改善 ([d4d7025](https://github.com/yohi/nexus/commit/d4d7025e91541ff8d7e7cb618d1ce01456d4b921))
+* **indexer:** MerkleTreeのディレクトリ操作改善とVectorStore更新の最適化 ([e4f8712](https://github.com/yohi/nexus/commit/e4f8712be946827642eca6689d9bb30214158805))
+* **indexer:** キューのメトリクス通知に名前を追加し、安全性を向上 ([2aa6b8f](https://github.com/yohi/nexus/commit/2aa6b8f449f18cb935c884d11c5b2f7160b7b63b))
+* **observability:** DeadLetterQueue に metricsHooks コールバックを注入 ([262bc2b](https://github.com/yohi/nexus/commit/262bc2bf3f65bda5e2fa636029b1764cac266009))
+* **observability:** EventQueue に metricsHooks コールバックを注入 ([6832d9a](https://github.com/yohi/nexus/commit/6832d9a3a4f60e0d6f125340f3554c1eeb59274f))
+* **observability:** IndexPipeline に metricsHooks コールバックを注入 ([6ea00f3](https://github.com/yohi/nexus/commit/6ea00f328f76b96b34c6d97f52a6fc9b1643e45f))
+* **observability:** MetricsHooks 型 + MetricsCollector を prom-client ベースで実装 ([819b238](https://github.com/yohi/nexus/commit/819b238048d754daff644e1e015a95ecc8b4fa6e))
+* **observability:** MetricsHttpServer を node:http で実装 ([374fac4](https://github.com/yohi/nexus/commit/374fac4c3aaa53d5bb210b9d9c7650f63809f7ff))
+* **observability:** Observability Dashboard 実装計画のドキュメントを作成 ([8b3d4a9](https://github.com/yohi/nexus/commit/8b3d4a9dfd0aa9786f937257671ad535b6fa61a2))
+* **observability:** メトリクスサーバーのポート取得機能と動的ポート割り当てを実装 ([a14f35d](https://github.com/yohi/nexus/commit/a14f35df5e569622fb98f0dd9c4e0f6608902388))
+* **observability:** 監視フックの統合テストを追加し、ドキュメントを更新 ([f547d08](https://github.com/yohi/nexus/commit/f547d0847df0fa28cb5fb7375acd62d40f7242ec))
+* **observability:** 観測可能性メトリクスを追加・更新 ([70f4b31](https://github.com/yohi/nexus/commit/70f4b3125631dbed7d7535708711853f115294f3))
+* **server:** オブザーバビリティHTTPサーバーを導入 ([c291380](https://github.com/yohi/nexus/commit/c291380e4a2c00e609629797ce7fa800573f177c))
+
+
+### Bug Fixes
+
+* **bin:** dashboard CLI の起動処理を堅牢化 ([9f82d6d](https://github.com/yohi/nexus/commit/9f82d6dcaea8f200442475429c10f921c3b17154))
+* Codacyの指摘対応、ルートハッシュ計算の不備修正、およびテストコードの正常化 ([db92d9f](https://github.com/yohi/nexus/commit/db92d9f9b636215dd3b0fb75f48304db9c5ade93))
+* **dashboard:** allow getValue to search all metric values for matching labels ([d7ed4bc](https://github.com/yohi/nexus/commit/d7ed4bcf49b20fd1e5b961c4e3ed40904c445879))
+* **dashboard:** allow useMetrics to re-connect when props change ([6c31c14](https://github.com/yohi/nexus/commit/6c31c142f9fef7ebc69ded533bed3220442698cb))
+* **dashboard:** Codacy設定とUIリファクタリング ([ecfa1cc](https://github.com/yohi/nexus/commit/ecfa1cc2a864a4599c777653e87e3c238a3a5338))
+* **dashboard:** correct import paths and implement quit handler ([ad4c8a6](https://github.com/yohi/nexus/commit/ad4c8a6fad265d33d3af9baa9b1e2aa722b8f30d))
+* **dashboard:** fix CLI entrypoint and downgrade React to 18.3.1 for Ink compatibility ([14119c9](https://github.com/yohi/nexus/commit/14119c9e78b04d38cadf03e1f0be83029abd4c47))
+* **dashboard:** ダッシュボードCLIの堅牢化とメトリクス表示の精度向上 ([8e203cb](https://github.com/yohi/nexus/commit/8e203cbfea5644b58503d09aceeca6ec332ccfc5))
+* **dashboard:** メトリクス取得の脆弱性修正と信頼性向上 ([6ad16ae](https://github.com/yohi/nexus/commit/6ad16ae2a2081bea56f3ae29f9dd3434a36faf0d))
+* **dashboard:** 設計書に合わせてCLI引数解析とTUIレイアウトを修正 ([c30c7e1](https://github.com/yohi/nexus/commit/c30c7e1f60db5bdd895e00c150fc715a06692443))
+* IMetadataStoreインターフェースでgetChildrenとhasChildrenがnullを許容するように修正 ([dd622aa](https://github.com/yohi/nexus/commit/dd622aa81a356ff4740ce87474934df4beffc246))
+* **indexer:** async キーワードを削除 ([41679db](https://github.com/yohi/nexus/commit/41679db4ff8cfefbd97528d2ade5d7645b5b558c))
+* **indexer:** EventQueue で非同期メトリクスフックの rejection を処理 ([733a935](https://github.com/yohi/nexus/commit/733a935b85a645fec0ded3d4a74d3dc865ac1acc))
+* **indexer:** MetricsHook の戻り値チェックによるビルドエラーを修正 ([a248a33](https://github.com/yohi/nexus/commit/a248a332a6d34a9b6b13a170bf32302c2ffcf5a0))
+* **indexer:** removeDeadLetterEntriesをentries.deleteの前に移動 ([ef1d099](https://github.com/yohi/nexus/commit/ef1d09917ae026cf33b117a2a7113a795b04f1f7))
+* LanceDBのベクトル列認識を改善し、ハッシュ更新の不備を修正 ([afd7a83](https://github.com/yohi/nexus/commit/afd7a834adab32fc16f03602b321cc3645c5688f))
+* LanceDBの型推論エラーとスキーマ不整合を修正し、テストを軽量化 ([28eb199](https://github.com/yohi/nexus/commit/28eb1999326898a1905eae9a93c948a4f652bcae))
+* LanceDBの型推論エラーの修正とストレステストの期待値調整 ([53c6033](https://github.com/yohi/nexus/commit/53c60333574597e9e4588f82caa7784fdbcc9bad))
+* Lintエラーとシンタックスエラーを修正 ([233a4fa](https://github.com/yohi/nexus/commit/233a4fad9f6aa456349aca7bf6911e7146a405c0))
+* Math.random()を暗号学的に安全なrandomUUID()に置き換え ([3f0c78c](https://github.com/yohi/nexus/commit/3f0c78c94767168d2533618d676936a9f0d11797))
+* metadata-storeのLintエラーを修正 ([21d2801](https://github.com/yohi/nexus/commit/21d28015992c1b77cac3ed2e5f79a1004b301840))
+* **metrics:** プロトタイプ汚染攻撃から保護 ([d3a3f1f](https://github.com/yohi/nexus/commit/d3a3f1f4302d3f70518f3a6d5925aeaaa779881a))
+* **observability:** metrics-collector で droppedTotal リセット時の累積計測を修正 ([fccc41a](https://github.com/yohi/nexus/commit/fccc41ac32fbedb46d37718042e4977d53594439))
+* **observability:** メトリクスコレクタにおけるキューごとのドロップカウントとリセット検出の改善 ([43fd7ba](https://github.com/yohi/nexus/commit/43fd7bab916c8bff7c59f755e80e4d922fc8a9e6))
+* **observability:** メトリクスポートの環境変数解析の堅牢性を向上 ([3385fef](https://github.com/yohi/nexus/commit/3385fef57fdc0d662347e96a450e31158aad6754))
+* **storage:** ベクトルストアのデータ初期化とテストクリーンアップ ([2ac025b](https://github.com/yohi/nexus/commit/2ac025b72748fad31e93ec49bd7ad817fd5533ae))
+* upsertChunksをアトミック化し、更新途中の不整合を防止 ([a2b6846](https://github.com/yohi/nexus/commit/a2b6846c02f7d2213a33d2e10d00371456a03fff))
+* upsertChunksを一時テーブルを用いた真のアトミック更新に修正し、初期化時のスキーマチェックを追加 ([2a79fbc](https://github.com/yohi/nexus/commit/2a79fbc65bb88ce49d3d9bd7c07136c943ce6b2f))
+* VectorStoreの堅牢化とストレステストのインデックス修正 ([a84d6df](https://github.com/yohi/nexus/commit/a84d6df290bba0f3eb077112b5545dd69a20ea1f))
+* すべての指摘対応とテスト修正を確実に反映 ([5104841](https://github.com/yohi/nexus/commit/5104841015adefbae8b2a44d96aa6c90161b1975))
+* ハッシュ更新ロジックの修正、LanceDBのスキーマ推論改善、およびテストのawait漏れ修正 ([30ed0ee](https://github.com/yohi/nexus/commit/30ed0ee8972c6586e24f2484c8fc2e1e2c30cb8f))
+* 不要なESLintルールへの参照を削除 ([81facc2](https://github.com/yohi/nexus/commit/81facc27bd35f723dda2203c9ba8cd87d60d6323))
+* 不要な条件判断とフォールバックを削除し、型定義に合わせる ([505145a](https://github.com/yohi/nexus/commit/505145af8e8f8c372cf04c924cb635c5689de59c))
+* 型注釈の追加と不要なeslint-disableの削除 ([81b3f2d](https://github.com/yohi/nexus/commit/81b3f2d6f495620c1b12ba85a910113deca2dd8b))
+* 未使用変数 tmpTable を削除してLintエラーを修正 ([ee85bf7](https://github.com/yohi/nexus/commit/ee85bf7b4670db77ded926b68258821d425d99bf))
+* 欠落したフィールドの復元とテストファイルの構文エラー修正 ([a8bab16](https://github.com/yohi/nexus/commit/a8bab16f35e76f3243f7eab8063ecc368ade8c1a))
+* 誤検知による不要な条件判断の警告を抑制 ([252943a](https://github.com/yohi/nexus/commit/252943a8718f30ddeb25629a80511a2af953b045))
+
+
+### Performance Improvements
+
+* **indexer:** MerkleTree のオンデマンド・ロード化とベクトル書き込みのバッチ化によるメモリ最適化 ([c1650f6](https://github.com/yohi/nexus/commit/c1650f6e915c50b4caf87fef4931b972aadea6a5))
+* MerkleTreeの更新を一括化し、SQLiteのバッチ処理効率を大幅に向上 ([7a619cd](https://github.com/yohi/nexus/commit/7a619cd29580b682bcb3d6024581a22eb3869b62))
+* upsertChunksのオーバーヘッドを削減し、ストレステストを軽量化してタイムアウトを修正 ([78da607](https://github.com/yohi/nexus/commit/78da6073c3ac37fd2020ca4a3a6aad569cd9fb85))
+* upsertChunksの高速化・メモリ最適化とストレステストの調整 ([d907213](https://github.com/yohi/nexus/commit/d907213dffb4a2c6a48446ccf3cfbcc33546cef2))
+* VectorStoreの統計取得を1クエリに集約して高速化し、テスト負荷を再調整 ([f24119d](https://github.com/yohi/nexus/commit/f24119df6635a83b24c55a79d12bffd320e86092))
+* ベクトルストアの削除処理をバッチ化して高速化し、ハッシュ計算の無限ループを防止 ([1261ab8](https://github.com/yohi/nexus/commit/1261ab8b314f88de64c464ea9865b20a5834deae))
+* ベクトルストアの型推論を安定化し、ストレステストを極限まで軽量化 ([d769934](https://github.com/yohi/nexus/commit/d769934df555cedfdc6b5eea673a71404f144639))
+
 ## [1.4.1](https://github.com/yohi/nexus/compare/v1.4.0...v1.4.1) (2026-04-15)
 
 
