@@ -1,10 +1,10 @@
 import React from "react";
-import { Box, Text } from "ink";
-import { useMetrics } from "../hooks/use-metrics";
-import type { MetricsJSON } from "../hooks/use-metrics";
-import { QueuePanel } from "./queue-panel";
-import { ThroughputPanel } from "./throughput-panel";
-import { DlqPanel } from "./dlq-panel";
+import { Box, Text, useInput, useApp } from "ink";
+import { useMetrics } from "./hooks/use-metrics.js";
+import type { MetricsJSON } from "./hooks/use-metrics.js";
+import { QueuePanel } from "./components/queue-panel.js";
+import { ThroughputPanel } from "./components/throughput-panel.js";
+import { DlqPanel } from "./components/dlq-panel.js";
 
 interface AppProps {
   port?: number;
@@ -26,7 +26,14 @@ const STATUS_MESSAGES: Record<string, string> = {
 };
 
 export const App: React.FC<AppProps> = ({ port = 9464, interval = 2000 }) => {
+  const { exit } = useApp();
   const { status, data, error } = useMetrics({ port, interval });
+
+  useInput((input) => {
+    if (input === "q") {
+      exit();
+    }
+  });
 
   return (
     <Box flexDirection="column" padding={1}>
