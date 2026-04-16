@@ -1,4 +1,4 @@
-import type { MetricsJSON } from "../hooks/use-metrics.js";
+import type { MetricsJSON, MetricValue } from "../hooks/use-metrics.js";
 
 export function getValue(
   data: MetricsJSON[] | null,
@@ -25,4 +25,29 @@ export function getValue(
   // To avoid incorrect data from accidental labeled series, let's pick the first one
   // but ensure we're not just assuming values[0] exists.
   return metric.values.length > 0 ? metric.values[0]!.value : 0;
+}
+
+export function calculateAvgDuration(
+  samples: (MetricValue & { metricName?: string })[],
+  baseName?: string
+): string {
+  if (samples.length === 0 || !baseName) return "N/A";
+
+  let totalSum = 0;
+  let totalCount = 0;
+
+  const sumName = `${baseName}_sum`;
+  const countName = `${baseName}_count`;
+
+  for (const s of samples) {
+    if (s.metricName === sumName) {
+      totalSum += s.value;
+    } else if (s.metricName === countName) {
+      totalCount += s.value;
+    }
+  }
+
+  if (totalCount === 0) return "0s";
+  const avg = totalSum / totalCount;
+  return avg < 1 ? `${(avg * 1000).toFixed(0)}ms` : `${avg.toFixed(1)}s`;
 }
