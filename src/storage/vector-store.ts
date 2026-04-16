@@ -425,8 +425,8 @@ export class LanceVectorStore implements IVectorStore {
               : new Float32Array(this.dimensions);
 
           this.validateFilterValue(chunk.filePath, 'filePath');
-          if (chunk.language != null) this.validateFilterValue(chunk.language, 'language');
-          if (chunk.symbolKind != null) this.validateFilterValue(chunk.symbolKind, 'symbolKind');
+          this.validateFilterValue(chunk.language, 'language');
+          this.validateFilterValue(chunk.symbolKind, 'symbolKind');
           if (chunk.symbolName != null) this.validateFilterValue(chunk.symbolName, 'symbolName');
 
           return {
@@ -434,9 +434,9 @@ export class LanceVectorStore implements IVectorStore {
             id: chunk.id,
             filepath: chunk.filePath,
             content: chunk.content,
-            language: chunk.language ?? '',
+            language: chunk.language,
             symbolname: chunk.symbolName ?? '',
-            symbolkind: chunk.symbolKind ?? '',
+            symbolkind: chunk.symbolKind,
             startline: chunk.startLine,
             endline: chunk.endLine,
             hash: chunk.hash,
