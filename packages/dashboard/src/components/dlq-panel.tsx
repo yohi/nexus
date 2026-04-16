@@ -2,6 +2,7 @@ import React from "react";
 import { Box, Text } from "ink";
 import type { MetricsJSON } from "../hooks/use-metrics.js";
 import { getValue, getSumByLabel } from "../utils/metrics.js";
+import { MetricPanel } from "./metric-panel.js";
 
 interface DlqPanelProps {
   data: MetricsJSON[] | null;

@@ -37,6 +37,11 @@ export function getSumByLabel(
   labelVal: string,
 ): number {
   if (!data) return 0;
+
+  if (labelKey === "__proto__" || labelKey === "constructor" || labelKey === "prototype") {
+    return 0;
+  }
+
   const metric = data.find((m) => m.name === name);
   if (!metric || !metric.values) return 0;
 
