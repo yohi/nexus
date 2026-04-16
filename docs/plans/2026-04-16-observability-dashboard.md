@@ -181,10 +181,31 @@ export class MetricsCollector implements MetricsHooks {
       registers: [this.registry],
     });
 
+    this.queueSizeGauge = new Gauge({
+      name: 'nexus_queue_size',
+      help: 'Current number of events in the queue',
+      labelNames: ['queue_id'] as const,
+      registers: [this.registry],
+    });
+
+    this.queueStateGauge = new Gauge({
+      name: 'nexus_queue_state',
+      help: 'Current backpressure state (0=idle, 1=active)',
+      labelNames: ['queue_id', 'state'] as const,
+      registers: [this.registry],
+    });
+
+    this.dlqSizeGauge = new Gauge({
+      name: 'nexus_dlq_size',
+      help: 'Current number of events in the Dead Letter Queue',
+      labelNames: ['dlq_id'] as const,
+      registers: [this.registry],
+    });
+
     this.recoveryCounter = new Counter({
       name: 'nexus_dlq_recovery_total',
       help: 'DLQ recovery sweep results',
-      labelNames: ['result'] as const,
+      labelNames: ['dlq_id', 'result'] as const,
       registers: [this.registry],
     });
   }
@@ -329,7 +350,7 @@ this.options.metricsHooks?.onQueueSnapshot(
 
 ```typescript
 this.options.metricsHooks?.onQueueSnapshot(
-  this.size(), this.state, this.droppedEventCount
+  this.size(), this.state, this.droppedEventCount, this.options.name
 );
 ```
 
