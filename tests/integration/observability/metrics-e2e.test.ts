@@ -67,7 +67,7 @@ describe("Metrics E2E Integration", () => {
       detectedAt: new Date().toISOString(),
     });
     await new Promise((r) => setTimeout(r, 20));
-    eventQueue.drain();
+    await eventQueue.drain(async () => {});
 
     const res = await fetch(`http://127.0.0.1:${port}/metrics/json`);
     const json = (await res.json()) as Array<{

@@ -246,7 +246,9 @@ export const initializeNexusRuntime = async (
     });
     const server = createNexusServer(options);
 
-    const metricsPort = parseInt(process.env.NEXUS_METRICS_PORT ?? "9464", 10);
+    const envPort = process.env.NEXUS_METRICS_PORT;
+    const metricsPort =
+      envPort && !isNaN(parseInt(envPort, 10)) ? parseInt(envPort, 10) : 9464;
     const metricsServer = options.metricsCollectorRegistry
       ? new MetricsHttpServer(options.metricsCollectorRegistry)
       : null;

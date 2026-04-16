@@ -101,22 +101,7 @@ describe("MetricsHttpServer", () => {
     }
   });
 
-  it("EADDRINUSE 後もメトリクスコールバックが動作する", async () => {
-    const otherServer = await new Promise<net.Server>((resolve) => {
-      const s = net.createServer();
-      s.listen(port, () => resolve(s));
-    });
-
-    try {
-      const serverOnPort = new MetricsHttpServer(registry);
-      await serverOnPort.start(port);
-      expect(serverOnPort.isListening()).toBe(false);
-    } finally {
-      otherServer.close();
-    }
-  });
-
-  it("EADDRINUSE 後もメトリクスコールバックが動作する", async () => {
+  it("EADDRINUSE 発生後もメトリクスコレクターとの連携が正常に動作する", async () => {
     const otherServer = await new Promise<net.Server>((resolve) => {
       const s = net.createServer();
       s.listen(port, () => resolve(s));
