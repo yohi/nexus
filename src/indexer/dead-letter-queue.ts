@@ -116,15 +116,11 @@ export class DeadLetterQueue {
       .map((entry) => entry.id);
 
     if (expiredIds.length === 0) {
+      this.safeNotifyMetrics((h) => { h.onDlqSnapshot(this.entries.size, this.options.name); });
       return 0;
     }
 
-    await this.options.metadataStore.removeDeadLetterEntries(expiredIds);
-    for (const id of expiredIds) {
-      this.entries.delete(id);
-    }
-
-    this.safeNotifyMetrics((h) => { h.onDlqSnapshot(this.entries.size, this.options.name); });
+    await this.removeEntries(expiredIds);
 
     return expiredIds.length;
   }

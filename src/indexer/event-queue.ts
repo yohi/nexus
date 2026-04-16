@@ -47,9 +47,7 @@ export class EventQueue {
 
   enqueue(event: IndexEvent): boolean {
     if (this.state !== 'normal') {
-      this.droppedEventCount += 1;
-      this.safeNotifyMetrics();
-      return false;
+      return this.recordDroppedEvent();
     }
 
     const existingEvent = this.debouncedEvents.get(event.filePath);
@@ -87,9 +85,7 @@ export class EventQueue {
     const nextSize = this.size() + sizeDelta;
     if (nextSize > this.options.maxQueueSize) {
       this.enterOverflow();
-      this.droppedEventCount += 1;
-      this.safeNotifyMetrics();
-      return false;
+      return this.recordDroppedEvent();
     }
 
     const existingTimer = this.timers.get(event.filePath);
@@ -119,16 +115,12 @@ export class EventQueue {
 
   enqueueReindex(options: ReindexOptions): boolean {
     if (this.state !== 'normal') {
-      this.droppedEventCount += 1;
-      this.safeNotifyMetrics();
-      return false;
+      return this.recordDroppedEvent();
     }
 
     if (this.size() >= this.options.maxQueueSize) {
       this.enterOverflow();
-      this.droppedEventCount += 1;
-      this.safeNotifyMetrics();
-      return false;
+      return this.recordDroppedEvent();
     }
 
     this.reindexQueue.push({
@@ -148,116 +140,118 @@ export class EventQueue {
   }
 
   async drain<T>(handler: (event: QueueEvent) => Promise<T>): Promise<T[]> {
-    this.flushAllDebounced();
+    try {
+      this.flushAllDebounced();
 
-    const limit = pLimit(this.options.concurrency);
-    const results: T[] = [];
-    let firstError: unknown;
-    let hasError = false;
+      const limit = pLimit(this.options.concurrency);
+      const results: T[] = [];
+      let firstError: unknown;
+      let hasError = false;
 
-    // Phase 1: Reindex events
-    if (this.reindexQueue.length > 0) {
-      const events = [...this.reindexQueue];
-      this.reindexQueue.length = 0;
-      const settled = await Promise.allSettled(
-        events.map((event) =>
-          limit(async () => {
-            return handler(event);
-          })
-        )
-      );
+      // Phase 1: Reindex events
+      if (this.reindexQueue.length > 0) {
+        const events = [...this.reindexQueue];
+        this.reindexQueue.length = 0;
+        const settled = await Promise.allSettled(
+          events.map((event) =>
+            limit(async () => {
+              return handler(event);
+            })
+          )
+        );
 
-      for (let i = 0; i < settled.length; i += 1) {
-        const res = settled[i];
-        const event = events[i];
-        if (res === undefined || event === undefined) {
-          continue;
-        }
-        if (res.status === 'fulfilled') {
-          results.push(res.value);
-        } else {
-          if (this.size() >= this.options.maxQueueSize) {
-            this.enterOverflow();
-            this.droppedEventCount += 1;
+        for (let i = 0; i < settled.length; i += 1) {
+          const res = settled[i];
+          const event = events[i];
+          if (res === undefined || event === undefined) {
+            continue;
+          }
+          if (res.status === 'fulfilled') {
+            results.push(res.value);
           } else {
-            this.reindexQueue.push(event);
-            if (this.size() >= this.options.fullScanThreshold) {
+            if (this.size() >= this.options.maxQueueSize) {
               this.enterOverflow();
+              this.droppedEventCount += 1;
+            } else {
+              this.reindexQueue.push(event);
+              if (this.size() >= this.options.fullScanThreshold) {
+                this.enterOverflow();
+              }
+            }
+            if (!hasError) {
+              firstError = res.reason;
+              hasError = true;
             }
           }
-          if (!hasError) {
-            firstError = res.reason;
-            hasError = true;
-          }
         }
       }
-    }
 
-    // Phase 2: Watcher events
-    if (this.watcherQueue.length > 0) {
-      const events = [...this.watcherQueue];
-      this.watcherQueue.length = 0;
-      const settled = await Promise.allSettled(
-        events.map((event) =>
-          limit(async () => {
-            return handler(event);
-          })
-        )
-      );
+      // Phase 2: Watcher events
+      if (this.watcherQueue.length > 0) {
+        const events = [...this.watcherQueue];
+        this.watcherQueue.length = 0;
+        const settled = await Promise.allSettled(
+          events.map((event) =>
+            limit(async () => {
+              return handler(event);
+            })
+          )
+        );
 
-      for (let i = 0; i < settled.length; i += 1) {
-        const res = settled[i];
-        const event = events[i];
-        if (res === undefined || event === undefined) {
-          continue;
-        }
-        if (res.status === 'fulfilled') {
-          results.push(res.value);
-        } else {
-          if (this.size() >= this.options.maxQueueSize) {
-            this.enterOverflow();
-            this.droppedEventCount += 1;
+        for (let i = 0; i < settled.length; i += 1) {
+          const res = settled[i];
+          const event = events[i];
+          if (res === undefined || event === undefined) {
+            continue;
+          }
+          if (res.status === 'fulfilled') {
+            results.push(res.value);
           } else {
-            this.watcherQueue.push(event);
-            if (this.size() >= this.options.fullScanThreshold) {
+            if (this.size() >= this.options.maxQueueSize) {
               this.enterOverflow();
+              this.droppedEventCount += 1;
+            } else {
+              this.watcherQueue.push(event);
+              if (this.size() >= this.options.fullScanThreshold) {
+                this.enterOverflow();
+              }
+            }
+            if (!hasError) {
+              firstError = res.reason;
+              hasError = true;
             }
           }
-          if (!hasError) {
-            firstError = res.reason;
-            hasError = true;
+        }
+      }
+
+      if (this.state === 'overflow' && this.watcherQueue.length === 0 && this.reindexQueue.length === 0) {
+        this.flushTimers();
+        this.debouncedEvents.clear();
+        this.state = 'full_scan';
+        await this.options.onFullScanRequired?.();
+      }
+
+      if (hasError) {
+        if (firstError instanceof Error) {
+          throw firstError;
+        }
+        let message: string;
+        try {
+          const stringified = typeof firstError === 'string' ? firstError : JSON.stringify(firstError);
+          if (typeof stringified !== 'string') {
+            throw new Error();
           }
+          message = stringified;
+        } catch {
+          message = inspect(firstError, { depth: null });
         }
+        throw new Error(message);
       }
+
+      return results;
+    } finally {
+      this.safeNotifyMetrics();
     }
-
-    if (this.state === 'overflow' && this.watcherQueue.length === 0 && this.reindexQueue.length === 0) {
-      this.flushTimers();
-      this.debouncedEvents.clear();
-      this.state = 'full_scan';
-      await this.options.onFullScanRequired?.();
-    }
-
-    if (hasError) {
-      if (firstError instanceof Error) {
-        throw firstError;
-      }
-      let message: string;
-      try {
-        const stringified = typeof firstError === 'string' ? firstError : JSON.stringify(firstError);
-        if (typeof stringified !== 'string') {
-          throw new Error();
-        }
-        message = stringified;
-      } catch {
-        message = inspect(firstError, { depth: null });
-      }
-      throw new Error(message);
-    }
-
-    this.safeNotifyMetrics();
-
-    return results;
   }
 
   clear(): void {
@@ -292,6 +286,12 @@ export class EventQueue {
 
   isOverflowing(): boolean {
     return this.state !== 'normal';
+  }
+
+  private recordDroppedEvent(): false {
+    this.droppedEventCount += 1;
+    this.safeNotifyMetrics();
+    return false;
   }
 
   private safeNotifyMetrics(): void {
