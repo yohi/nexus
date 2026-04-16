@@ -391,7 +391,7 @@ export class LanceVectorStore implements IVectorStore {
         throw new Error('VectorStore not initialized');
       }
       const db = this.db;
-      const updateId = `upd_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+      const updateId = `upd_${Date.now()}_${randomUUID()}`;
 
       const uniqueFilePaths = [...new Set(chunks.map((c) => c.filePath))];
       let staleAdded = 0;
