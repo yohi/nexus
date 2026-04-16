@@ -66,10 +66,10 @@ describe('stress: large repository metadata', () => {
           isDirectory: false,
         }),
       );
-      expect(await tree.getNode('src/packages/pkg-99/file-199.ts')).toEqual(
+      expect(await tree.getNode('src/packages/pkg-49/file-199.ts')).toEqual(
         expect.objectContaining({
-          path: 'src/packages/pkg-99/file-199.ts',
-          hash: 'hash-99-199',
+          path: 'src/packages/pkg-49/file-199.ts',
+          hash: 'hash-49-199',
           isDirectory: false,
         }),
       );

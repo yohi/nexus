@@ -468,17 +468,22 @@ export class LanceVectorStore implements IVectorStore {
 
         // 3. Commit staged changes to the primary table
         if (stagedTable) {
+          const stagedRows = await stagedTable.query().toArray() as unknown as LanceRow[];
+          // Re-ensure Float32Array for vectors when moving between tables
+          const typedRows = stagedRows.map(row => ({
+            ...row,
+            vector: new Float32Array(row.vector as Iterable<number>)
+          }));
+
           if (!this.table) {
-            // If primary table doesn't exist, just rename the staged table
-            // In LanceDB, rename is effectively create-from-table or move
-            this.table = await db.createTable('chunks', await stagedTable.query().toArray());
+            this.table = await db.createTable('chunks', typedRows);
           } else {
             // Delete old records for these files in the primary table
             const escapedPaths = uniqueFilePaths.map(fp => `'${this.escapeFilterValue(fp)}'`).join(', ');
             await this.table.delete(`filepath IN (${escapedPaths})`);
             
             // Append new records from the staged table
-            await this.table.add(await stagedTable.query().toArray());
+            await this.table.add(typedRows);
           }
         }
       } finally {
