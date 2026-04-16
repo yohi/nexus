@@ -104,7 +104,7 @@ describe("MetricsHttpServer", () => {
     expect(res.status).toBe(404);
   });
 
-  it("EADDRINUSE 時に MCP サーバーが継続稼働する（start() が reject せず resolve、isListening() が false）", async () => {
+  it("ポート競合時に MetricsHttpServer が無効化される（start() は resolve し、isListening() は false となる）", async () => {
     const otherServer = await startRawServer(0);
     const port = (otherServer.address() as net.AddressInfo).port;
 
