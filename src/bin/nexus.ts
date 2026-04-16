@@ -28,7 +28,7 @@ async function main() {
   const transport = new StdioServerTransport();
   await runtime.server.connect(transport);
 
-  console.error(`Nexus MCP server running on stdio (root: ${root})`);
+  console.error(`🔗 Nexus MCP server running on stdio (root: ${root})`);
 
   setupSignalHandlers(runtime);
 }
@@ -55,7 +55,16 @@ function setupSignalHandlers(runtime: NexusRuntime): void {
   process.once("SIGTERM", handleShutdown);
 }
 
-main().catch((error) => {
-  console.error("Fatal error starting Nexus:", error);
-  process.exit(1);
-});
+if (process.argv[2] === 'dashboard') {
+  // TUI ダッシュボードを起動（MCP サーバーは起動しない）
+  // @ts-ignore: Dashboard package is a separate workspace and might not be built with declarations
+  import('@yohi/nexus-dashboard/cli').catch((error) => {
+    console.error("Failed to start dashboard:", error);
+    process.exit(1);
+  });
+} else {
+  main().catch((error) => {
+    console.error("Fatal error starting Nexus:", error);
+    process.exit(1);
+  });
+}
