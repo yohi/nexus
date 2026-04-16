@@ -17,7 +17,7 @@ export interface RenameCandidate {
  * and updates them incrementally from leaf to root.
  */
 export class MerkleTree {
-  // Simple LRU-like cache for nodes to reduce DB hits
+  // Simple FIFO cache for nodes to reduce DB hits
   private readonly cache = new Map<string, MerkleNodeRow>();
   private readonly MAX_CACHE_SIZE = 10000;
 

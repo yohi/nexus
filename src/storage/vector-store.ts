@@ -436,6 +436,9 @@ export class LanceVectorStore implements IVectorStore {
             language: chunk.language,
             symbolname: chunk.symbolName ?? '',
             symbolkind: chunk.symbolKind,
+            startline: chunk.startLine,
+            endline: chunk.endLine,
+            hash: chunk.hash,
             vector,
           };
         });
