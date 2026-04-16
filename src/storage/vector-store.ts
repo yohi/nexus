@@ -430,16 +430,16 @@ export class LanceVectorStore implements IVectorStore {
           if (chunk.symbolName != null) this.validateFilterValue(chunk.symbolName, 'symbolName');
 
           return {
+            vector,
             id: chunk.id,
             filepath: chunk.filePath,
             content: chunk.content,
-            language: chunk.language,
+            language: chunk.language ?? '',
             symbolname: chunk.symbolName ?? '',
-            symbolkind: chunk.symbolKind,
+            symbolkind: chunk.symbolKind ?? '',
             startline: chunk.startLine,
             endline: chunk.endLine,
             hash: chunk.hash,
-            vector,
           };
         });
 
@@ -548,8 +548,9 @@ export class LanceVectorStore implements IVectorStore {
       await this.writeMutex;
       if (!this.table) return [];
       
-      // 明示的にコサイン類似度を使用し、スコア計算 (1 - distance) との整合性を確保する
+      // 明示的にベクトル列とコサイン類似度を指定し、スコア計算 (1 - distance) との整合性を確保する
       let query = this.table.vectorSearch(queryVector)
+        .column('vector')
         .distanceType('cosine')
         .limit(topK);
       
