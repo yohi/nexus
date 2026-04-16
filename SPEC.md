@@ -114,3 +114,20 @@ AI エージェントに公開される MCP ツールは以下の通りです:
 - サーバー起動時に SQLite の Merkle ハッシュと実際のファイルシステムのハッシュを突き合わせます。
 - クラッシュ等によって生じた LanceDB と SQLite 間のデータ不整合 (Orphan, Missing, Stale) を検出し、自動的に修復・再インデックスを行います。
 - これにより、複雑な Write-Ahead Log (WAL) なしに結果整合性を保証します。
+
+## 8. Observability (可視化)
+
+Nexus の内部状態をリアルタイムに把握するため、メトリクス収集とTUIダッシュボードを提供します。
+
+### 8.1. Metrics Collector & HTTP Server
+- 各コアモジュール (EventQueue, IndexPipeline, DLQ) に optional なコールバック (`metricsHooks`) を注入し、非同期でメトリクスを収集します。
+- `prom-client` を使用してインメモリで状態を集計します。パフォーマンスを保護するため I/O 操作は行いません。
+- バックグラウンドで HTTP サーバー (デフォルトポート: `9464`) が起動し、以下のエンドポイントを提供します。
+  - `GET /metrics` : Prometheus 形式のメトリクス
+  - `GET /metrics/json` : JSON 配列形式のメトリクス
+  - `GET /health` : ヘルスチェック
+
+### 8.2. TUI Dashboard
+- 独立した npm workspace パッケージ (`@yohi/nexus-dashboard`) として実装されています。
+- `nexus dashboard` サブコマンドで起動し、React と ink を使用した 3 パネル構成 (Queue, Throughput, DLQ Health) の TUI を提供します。
+- HTTP エンドポイント (`/metrics/json`) を定期的にポーリングし、サーバーの再起動時にも自動的に再接続を試みます。
