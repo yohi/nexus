@@ -112,10 +112,10 @@ export class MerkleTree {
     let current: string | null = startDirPath;
 
     while (current !== null && current !== '.' && current !== path.sep) {
-      const children = await this.metadataStore.getChildren(current);
+      const children: MerkleNodeRow[] = await this.metadataStore.getChildren(current);
       const hash = await this.calculateDirectoryHash(children);
       
-      const parentPath = path.dirname(current) === '.' ? null : path.dirname(current);
+      const parentPath: string | null = path.dirname(current) === '.' ? null : path.dirname(current);
       const dirNode: MerkleNodeRow = {
         path: current,
         hash,

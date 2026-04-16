@@ -425,11 +425,8 @@ export class LanceVectorStore implements IVectorStore {
               : new Float32Array(this.dimensions);
 
           this.validateFilterValue(chunk.filePath, 'filePath');
-          // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
           if (chunk.language != null) this.validateFilterValue(chunk.language, 'language');
-          // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
           if (chunk.symbolKind != null) this.validateFilterValue(chunk.symbolKind, 'symbolKind');
-          // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
           if (chunk.symbolName != null) this.validateFilterValue(chunk.symbolName, 'symbolName');
 
           return {
