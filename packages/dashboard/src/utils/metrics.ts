@@ -30,6 +30,26 @@ export function getValue(
   return metric.values[0]?.value ?? 0;
 }
 
+export function getSumByLabel(
+  data: MetricsJSON[] | null,
+  name: string,
+  labelKey: string,
+  labelVal: string,
+): number {
+  if (!data) return 0;
+
+  if (labelKey === "__proto__" || labelKey === "constructor" || labelKey === "prototype") {
+    return 0;
+  }
+
+  const metric = data.find((m) => m.name === name);
+  if (!metric || !metric.values) return 0;
+
+  return metric.values
+    .filter((v) => v.labels?.[labelKey] === labelVal)
+    .reduce((sum, v) => sum + v.value, 0);
+}
+
 export function calculateAvgDuration(
   samples: (MetricValue & { metricName?: string })[],
   baseName?: string
