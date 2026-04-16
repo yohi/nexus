@@ -147,16 +147,7 @@ export class LanceVectorStore implements IVectorStore {
             return;
           }
 
-          // 3. Schema Migration: Check for update_id column
-          const schema = await localTable.schema();
-          const hasUpdateId = schema.fields.some(f => f.name === 'update_id');
-          if (!hasUpdateId) {
-            // Note: Schema will be evolved during the next upsertChunks call.
-            // We don't perform a manual update here as LanceDB's update() requires
-            // the column to already exist.
-          }
-
-          // 4. Fallback dimension check from schema/data if metadata is missing
+          // 3. Fallback dimension check from schema/data if metadata is missing
           if (metadata?.dimensions === undefined) {
             const schema = await localTable.schema();
             const vectorField = schema.fields.find(f => f.name === 'vector');
@@ -274,6 +265,7 @@ export class LanceVectorStore implements IVectorStore {
     this.metadataMutex = p.catch(() => {});
     await p;
   }
+
   async resetForTest(): Promise<void> {
     if (this.table && this.db) {
       await this.table.delete('true');
@@ -400,14 +392,14 @@ export class LanceVectorStore implements IVectorStore {
         throw new Error('VectorStore not initialized');
       }
       const db = this.db;
-      const updateId = `upd_${Date.now()}_${randomUUID()}`;
       const uniqueFilePaths = [...new Set(chunks.map((c) => c.filePath))];
       
       let staleAdded = 0;
       let filesAdded = 0;
 
-      // 1. Calculate stats before adding
+      // 1. Calculate stats and delete old records in a single batch
       if (this.table) {
+        // Calculate stats before deleting
         for (const fp of uniqueFilePaths) {
           const filter = this.filePathFilter(fp);
           const count = await this.table.countRows(filter);
@@ -417,11 +409,17 @@ export class LanceVectorStore implements IVectorStore {
             filesAdded++;
           }
         }
+
+        // Batch delete old records for these files
+        if (uniqueFilePaths.length > 0) {
+          const escapedPaths = uniqueFilePaths.map(fp => `'${this.escapeFilterValue(fp)}'`).join(', ');
+          await this.table.delete(`filepath IN (${escapedPaths})`);
+        }
       } else {
         filesAdded = uniqueFilePaths.length;
       }
 
-      // 2. Batch process data into the store (Memory efficient & Fast)
+      // 2. Batch process data into the store (Memory efficient)
       const BATCH_SIZE = 500;
       for (let i = 0; i < chunks.length; i += BATCH_SIZE) {
         const chunkBatch = chunks.slice(i, i + BATCH_SIZE);
@@ -449,7 +447,6 @@ export class LanceVectorStore implements IVectorStore {
             startline: chunk.startLine,
             endline: chunk.endLine,
             hash: chunk.hash,
-            update_id: updateId, // Tag new rows
           };
         });
 
@@ -457,26 +454,6 @@ export class LanceVectorStore implements IVectorStore {
           this.table = await db.createTable('chunks', rows);
         } else {
           await this.table.add(rows);
-        }
-      }
-
-      // 3. Post-insert Cleanup: Remove old rows for these files in a single batch
-      if (this.table && uniqueFilePaths.length > 0) {
-        const escapedPaths = uniqueFilePaths.map(fp => `'${this.escapeFilterValue(fp)}'`).join(', ');
-        
-        // We need to check if update_id exists in the schema before using it in a filter.
-        // If it's a brand new table, it exists because we just created it with rows containing it.
-        // If it's an existing table, it might not exist yet if this is the first update.
-        const schema = await this.table.schema();
-        const hasUpdateId = schema.fields.some(f => f.name === 'update_id');
-        
-        if (hasUpdateId) {
-          const filter = `filepath IN (${escapedPaths}) AND update_id != '${updateId}'`;
-          await this.table.delete(filter);
-        } else {
-          // This should theoretically not happen if the add() above succeeded,
-          // but as a fallback to prevent duplicate rows during the very first migration run:
-          // we don't delete here, but the next run will have update_id.
         }
       }
 
@@ -716,6 +693,7 @@ export class LanceVectorStore implements IVectorStore {
       };
     });
   }
+
   scheduleIdleCompaction(
     runCompaction: () => Promise<void>,
     delayMs = 0,

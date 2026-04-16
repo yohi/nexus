@@ -75,7 +75,7 @@ describe('stress: large repository metadata', () => {
       );
       expect(tree.getRootHash()).not.toBeNull();
 
-      const removed = await store.deleteSubtree('src/packages/pkg-10');
+      const removed = await store.deleteSubtree('src/packages/pkg-5');
       expect(removed).toBe(201);
     } finally {
       await store.close();
@@ -89,8 +89,8 @@ describe('stress: large repository metadata', () => {
       const reloadedTree = new MerkleTree(store);
       await reloadedTree.load();
 
-      expect(await reloadedTree.getNode('src/packages/pkg-10')).toBeUndefined();
-      expect(await reloadedTree.getNode('src/packages/pkg-10/file-0.ts')).toBeUndefined();
+      expect(await reloadedTree.getNode('src/packages/pkg-5')).toBeUndefined();
+      expect(await reloadedTree.getNode('src/packages/pkg-5/file-0.ts')).toBeUndefined();
       expect(await reloadedTree.getNode('src/packages/pkg-9/file-199.ts')).toEqual(
         expect.objectContaining({
           path: 'src/packages/pkg-9/file-199.ts',
