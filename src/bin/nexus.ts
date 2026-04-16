@@ -28,7 +28,7 @@ async function main() {
   const transport = new StdioServerTransport();
   await runtime.server.connect(transport);
 
-  console.error(`Nexus MCP server running on stdio (root: ${root})`);
+  console.error(`🔗 Nexus MCP server running on stdio (root: ${root})`);
 
   setupSignalHandlers(runtime);
 }
@@ -55,7 +55,19 @@ function setupSignalHandlers(runtime: NexusRuntime): void {
   process.once("SIGTERM", handleShutdown);
 }
 
-main().catch((error) => {
-  console.error("Fatal error starting Nexus:", error);
-  process.exit(1);
-});
+const isDashboard = process.argv.slice(2).includes("dashboard");
+
+if (isDashboard) {
+  // Start the TUI dashboard (the MCP server will not be started)
+  try {
+    await import("@yohi/nexus-dashboard/cli");
+  } catch (error) {
+    console.error("Failed to start dashboard:", error);
+    process.exit(1);
+  }
+} else {
+  main().catch((error) => {
+    console.error("Fatal error starting Nexus:", error);
+    process.exit(1);
+  });
+}
