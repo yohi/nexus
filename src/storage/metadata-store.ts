@@ -88,6 +88,7 @@ export class SqliteMetadataStore implements IMetadataStore {
       items: nodes,
       batchSize: this.batchSize,
       executeBatch: async (batch) => {
+        await this.asyncBoundary();
         const transaction = this.db.transaction((rows: MerkleNodeRow[]) => {
           for (const node of rows) {
             statement.run({
