@@ -55,13 +55,16 @@ function setupSignalHandlers(runtime: NexusRuntime): void {
   process.once("SIGTERM", handleShutdown);
 }
 
-if (process.argv[2] === 'dashboard') {
-  // TUI ダッシュボードを起動（MCP サーバーは起動しない）
-  // @ts-ignore: Dashboard package is a separate workspace and might not be built with declarations
-  import('@yohi/nexus-dashboard/cli').catch((error) => {
+const isDashboard = process.argv.slice(2).includes("dashboard");
+
+if (isDashboard) {
+  // Start the TUI dashboard (the MCP server will not be started)
+  try {
+    await import("@yohi/nexus-dashboard/cli");
+  } catch (error) {
     console.error("Failed to start dashboard:", error);
     process.exit(1);
-  });
+  }
 } else {
   main().catch((error) => {
     console.error("Fatal error starting Nexus:", error);
