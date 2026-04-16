@@ -1,10 +1,10 @@
 import React from "react";
-import { Box, Text } from "ink";
+import { Box, Text, type BoxProps } from "ink";
 
 interface MetricPanelProps {
   title: string;
   icon: string;
-  borderColor: string;
+  borderColor: BoxProps["borderColor"];
   children: React.ReactNode;
 }
 

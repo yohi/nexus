@@ -62,12 +62,27 @@ export const App: React.FC<AppProps> = ({ port = 9464, interval = 2000 }) => {
       <Box marginTop={1} flexDirection="column">
         <Box>
           <Text dimColor>Status: </Text>
-          <Text color={(status in STATUS_COLORS) ? STATUS_COLORS[status] : "white"}>
-            {(status in STATUS_MESSAGES) ? STATUS_MESSAGES[status] : status}
+          <Text color={statusColor}>
+            {statusMessage}
           </Text>
         </Box>
         {error && (
           <Box>
+            <Text dimColor>Error: </Text>
+            <Text color="red">{error}</Text>
+          </Box>
+        )}
+        <Box>
+          <Text dimColor>Endpoint: http://localhost:{port}/metrics/json</Text>
+        </Box>
+        <Box>
+          <Text dimColor>Refresh: {interval}ms | Press 'q' to quit</Text>
+        </Box>
+      </Box>
+    </Box>
+  );
+};
+
             <Text dimColor>Error: </Text>
             <Text color="red">{error}</Text>
           </Box>

@@ -62,6 +62,13 @@ describe("calculateAvgDuration", () => {
     expect(calculateAvgDuration(samples, baseName)).toBe("0s");
   });
 
+  it("returns N/A if count metric is missing", () => {
+    const samples: (MetricValue & { metricName?: string })[] = [
+      { value: 10, metricName: "test_duration_seconds_sum" },
+    ];
+    expect(calculateAvgDuration(samples, baseName)).toBe("N/A");
+  });
+
   it("calculates average and formats as ms for < 1s", () => {
     const samples: (MetricValue & { metricName?: string })[] = [
       { value: 0.5, metricName: "test_duration_seconds_sum" },

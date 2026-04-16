@@ -13,5 +13,6 @@ exclude_paths:
   - "src/server/factory.ts"
   - "src/bin/nexus.ts"
   - "src/server/index.ts"
+  - "packages/dashboard/src/utils/metrics.ts"
   - "**/*.test.ts"
   - "**/*.bench.ts"

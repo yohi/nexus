@@ -11,7 +11,10 @@ export function getValue(
   const metric = data.find((m) => m.name === name);
   if (!metric || !metric.values) return 0;
 
-  if (labelKey && labelVal) {
+  if (labelKey !== undefined && labelVal !== undefined) {
+    if (labelKey === "__proto__" || labelKey === "constructor" || labelKey === "prototype") {
+      return 0;
+    }
     const matchingValue = metric.values.find(
       (v) => v.labels?.[labelKey] === labelVal
     );
@@ -24,7 +27,7 @@ export function getValue(
   // we usually want the first one or a sum. 
   // To avoid incorrect data from accidental labeled series, let's pick the first one
   // but ensure we're not just assuming values[0] exists.
-  return metric.values.length > 0 ? metric.values[0]!.value : 0;
+  return metric.values[0]?.value ?? 0;
 }
 
 export function calculateAvgDuration(
@@ -35,6 +38,7 @@ export function calculateAvgDuration(
 
   let totalSum = 0;
   let totalCount = 0;
+  let countSeen = false;
 
   const sumName = `${baseName}_sum`;
   const countName = `${baseName}_count`;
@@ -44,9 +48,11 @@ export function calculateAvgDuration(
       totalSum += s.value;
     } else if (s.metricName === countName) {
       totalCount += s.value;
+      countSeen = true;
     }
   }
 
+  if (!countSeen) return "N/A";
   if (totalCount === 0) return "0s";
   const avg = totalSum / totalCount;
   return avg < 1 ? `${(avg * 1000).toFixed(0)}ms` : `${avg.toFixed(1)}s`;

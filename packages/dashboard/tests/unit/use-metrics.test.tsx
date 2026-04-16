@@ -1,8 +1,9 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach, afterAll } from "vitest";
 import React from "react";
 import { render, screen, cleanup } from "@testing-library/react";
 import { useMetrics } from "../../src/hooks/use-metrics.js";
 
+const originalFetch = global.fetch;
 global.fetch = vi.fn();
 
 const TestComponent: React.FC<{ port?: number; interval?: number }> = ({
@@ -20,6 +21,10 @@ describe("useMetrics", () => {
 
   afterEach(() => {
     cleanup();
+  });
+
+  afterAll(() => {
+    global.fetch = originalFetch;
   });
 
   it("returns connecting status when server is not running", async () => {

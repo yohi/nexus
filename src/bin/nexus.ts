@@ -34,7 +34,12 @@ async function main() {
 }
 
 function setupSignalHandlers(runtime: NexusRuntime): void {
+  let isShuttingDown = false;
+
   const handleShutdown = () => {
+    if (isShuttingDown) return;
+    isShuttingDown = true;
+
     runtime
       .close()
       .then(() => {
@@ -46,8 +51,8 @@ function setupSignalHandlers(runtime: NexusRuntime): void {
       });
   };
 
-  process.on("SIGINT", handleShutdown);
-  process.on("SIGTERM", handleShutdown);
+  process.once("SIGINT", handleShutdown);
+  process.once("SIGTERM", handleShutdown);
 }
 
 main().catch((error) => {
