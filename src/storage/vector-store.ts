@@ -371,7 +371,7 @@ export class LanceVectorStore implements IVectorStore {
     await this.closePromise;
   }
 
-  async upsertChunks(chunks: CodeChunk[], embeddings?: number[][]): Promise<void> {
+  async upsertChunks(chunks: CodeChunk[], embeddings?: number[][], affectedFilePaths?: string[]): Promise<void> {
     if (embeddings && embeddings.length !== chunks.length) {
       throw new Error(
         `VectorStore.upsertChunks: embeddings length mismatch (expected ${chunks.length}, got ${embeddings.length})`
@@ -392,8 +392,8 @@ export class LanceVectorStore implements IVectorStore {
         throw new Error('VectorStore not initialized');
       }
       const db = this.db;
-      const uniqueFilePaths = [...new Set(chunks.map((c) => c.filePath))];
-      
+      // affectedFilePaths が渡された場合はそれを使用し、そうでなければ chunks から抽出する
+      const uniqueFilePaths = affectedFilePaths ?? [...new Set(chunks.map((c) => c.filePath))];
       let staleAdded = 0;
       let filesAdded = 0;
 

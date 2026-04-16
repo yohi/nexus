@@ -79,7 +79,7 @@ export class MerkleTree {
 
   async remove(filePath: string): Promise<void> {
     const node = await this.getNode(filePath);
-    
+
     // 1. Remove the node or subtree
     if (node?.isDirectory) {
       const subtreePaths = await this.metadataStore.getSubtreePaths(filePath);
@@ -104,7 +104,7 @@ export class MerkleTree {
   async move(oldPath: string, newPath: string, contentHash: string): Promise<void> {
     // Atomic rename in metadata store
     await this.metadataStore.renamePath(oldPath, newPath, contentHash);
-    
+
     // Update local cache
     this.cache.delete(oldPath);
     const parentPath = path.dirname(newPath) === '.' ? null : path.dirname(newPath);
