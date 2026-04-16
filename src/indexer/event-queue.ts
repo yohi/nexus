@@ -255,11 +255,7 @@ export class EventQueue {
   }
 
   clear(): void {
-    this.flushTimers();
-    this.debouncedEvents.clear();
-    this.watcherQueue.length = 0;
-    this.reindexQueue.length = 0;
-    this.state = 'normal';
+    this.resetInternalState();
     this.safeNotifyMetrics();
   }
 
@@ -268,12 +264,16 @@ export class EventQueue {
       return;
     }
 
+    this.resetInternalState();
+    this.safeNotifyMetrics();
+  }
+
+  private resetInternalState(): void {
     this.flushTimers();
     this.debouncedEvents.clear();
     this.watcherQueue.length = 0;
     this.reindexQueue.length = 0;
     this.state = 'normal';
-    this.safeNotifyMetrics();
   }
 
   /**
