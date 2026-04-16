@@ -426,8 +426,8 @@ export class LanceVectorStore implements IVectorStore {
           const vectorData = embeddings?.at(globalIdx);
           const vector =
             vectorData && vectorData.every(Number.isFinite)
-              ? new Float32Array(vectorData)
-              : new Float32Array(this.dimensions);
+              ? Array.from(vectorData)
+              : Array(this.dimensions).fill(0);
 
           this.validateFilterValue(chunk.filePath, 'filePath');
           this.validateFilterValue(chunk.language, 'language');
