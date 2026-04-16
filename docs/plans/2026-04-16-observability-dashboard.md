@@ -135,7 +135,7 @@ export class MetricsCollector implements MetricsHooks {
   private readonly dlqSizeGauge: Gauge;
   private readonly recoveryCounter: Counter;
 
-  private prevDropped = 0;
+  private readonly prevDroppedBySource = new Map<string, number>();
 
   constructor(registry?: Registry) {
     this.registry = registry ?? new Registry();
@@ -187,16 +187,20 @@ export class MetricsCollector implements MetricsHooks {
     });
   }
 
-  onQueueSnapshot(size: number, state: BackpressureState, droppedTotal: number): void {
-    this.queueSizeGauge.set(size);
+  onQueueSnapshot(size: number, state: BackpressureState, droppedTotal: number, source = 'default'): void {
+    const labels = { queue_id: source };
+    this.queueSizeGauge.labels(labels).set(size);
     for (const s of BACKPRESSURE_STATES) {
-      this.queueStateGauge.labels(s).set(s === state ? 1 : 0);
+      this.queueStateGauge.labels({ ...labels, state: s }).set(s === state ? 1 : 0);
     }
-    const delta = droppedTotal - this.prevDropped;
-    if (delta > 0) {
-      this.droppedCounter.inc(delta);
-      this.prevDropped = droppedTotal;
+    const prevDropped = this.prevDroppedBySource.get(source) ?? 0;
+    if (droppedTotal < prevDropped) {
+      if (droppedTotal > 0) this.droppedCounter.labels(labels).inc(droppedTotal);
+    } else {
+      const delta = droppedTotal - prevDropped;
+      if (delta > 0) this.droppedCounter.labels(labels).inc(delta);
     }
+    this.prevDroppedBySource.set(source, droppedTotal);
   }
 
   onChunksIndexed(count: number): void {

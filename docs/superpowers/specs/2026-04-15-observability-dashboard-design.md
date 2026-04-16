@@ -137,16 +137,21 @@ export interface MetricsHooks {
   の累積絶対値のため、MetricsCollector 内部で前回値を保持してデルタを算出する:
 
   ```typescript
-  private prevDropped = 0;
+  private readonly prevDroppedBySource = new Map<string, number>();
 
-  onQueueSnapshot(size: number, state: BackpressureState, droppedTotal: number): void {
-    this.queueSizeGauge.set(size);
-    // ...state gauge 更新...
-    const delta = droppedTotal - this.prevDropped;
-    if (delta > 0) {
-      this.droppedCounter.inc(delta);
-      this.prevDropped = droppedTotal;
+  onQueueSnapshot(size: number, state: BackpressureState, droppedTotal: number, source = 'default'): void {
+    const labels = { queue_id: source };
+    this.queueSizeGauge.labels(labels).set(size);
+    // ...state gauge labels 更新...
+
+    const prevDropped = this.prevDroppedBySource.get(source) ?? 0;
+    if (droppedTotal < prevDropped) {
+      if (droppedTotal > 0) this.droppedCounter.labels(labels).inc(droppedTotal);
+    } else {
+      const delta = droppedTotal - prevDropped;
+      if (delta > 0) this.droppedCounter.labels(labels).inc(delta);
     }
+    this.prevDroppedBySource.set(source, droppedTotal);
   }
   ```
 

@@ -63,11 +63,11 @@ describe('MetricsCollector', () => {
     expect(metrics).toContain('nexus_event_queue_dropped_total{queue_id="queue-b"} 3');
 
     collector.onQueueSnapshot(10, 'overflow', 8, 'queue-a'); // delta 3
-    collector.onQueueSnapshot(20, 'overflow', 2, 'queue-b'); // reset (3 -> 2), no inc
+    collector.onQueueSnapshot(20, 'overflow', 2, 'queue-b'); // reset (3 -> 2), inc(2)
 
     const updatedMetrics = await registry.metrics();
     expect(updatedMetrics).toContain('nexus_event_queue_dropped_total{queue_id="queue-a"} 8');
-    expect(updatedMetrics).toContain('nexus_event_queue_dropped_total{queue_id="queue-b"} 3');
+    expect(updatedMetrics).toContain('nexus_event_queue_dropped_total{queue_id="queue-b"} 5');
   });
 
   it('急激な Queue サイズ変動に追従する', async () => {

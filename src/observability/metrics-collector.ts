@@ -80,10 +80,19 @@ export class MetricsCollector implements MetricsHooks {
     }
 
     const prevDropped = this.prevDroppedBySource.get(source) ?? 0;
-    const delta = droppedTotal - prevDropped;
-    if (delta > 0) {
-      this.droppedCounter.labels(labels).inc(delta);
+    
+    if (droppedTotal < prevDropped) {
+      // Counter reset detected (e.g. source restart)
+      if (droppedTotal > 0) {
+        this.droppedCounter.labels(labels).inc(droppedTotal);
+      }
+    } else {
+      const delta = droppedTotal - prevDropped;
+      if (delta > 0) {
+        this.droppedCounter.labels(labels).inc(delta);
+      }
     }
+    
     this.prevDroppedBySource.set(source, droppedTotal);
   }
 
