@@ -211,7 +211,7 @@ export class IndexPipeline implements IIndexPipeline {
     }
 
     this.progress.currentFile = undefined;
-    this.safeNotifyMetrics((h) => h.onChunksIndexed(chunksIndexed));
+    this.safeNotifyMetrics((h) => { h.onChunksIndexed(chunksIndexed); });
     return { chunksIndexed };
   }
 
@@ -259,7 +259,7 @@ export class IndexPipeline implements IIndexPipeline {
             console.error('Post-reindex compaction failed (non-fatal):', compactionError);
           }
 
-          this.safeNotifyMetrics((h) => h.onReindexComplete(durationMs, !!fullRebuild));
+          this.safeNotifyMetrics((h) => { h.onReindexComplete(durationMs, !!fullRebuild); });
 
           this.progress.status = 'idle';
           return {

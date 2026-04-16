@@ -91,7 +91,7 @@ export class DeadLetterQueue {
     this.entries.set(entry.id, entry);
     await this.trimToCapacity();
 
-    this.safeNotifyMetrics((h) => h.onDlqSnapshot(this.entries.size, this.options.name));
+    this.safeNotifyMetrics((h) => { h.onDlqSnapshot(this.entries.size, this.options.name); });
 
     return entry;
   }
@@ -126,7 +126,7 @@ export class DeadLetterQueue {
       this.entries.delete(id);
     }
 
-    this.safeNotifyMetrics((h) => h.onDlqSnapshot(this.entries.size, this.options.name));
+    this.safeNotifyMetrics((h) => { h.onDlqSnapshot(this.entries.size, this.options.name); });
 
     return expiredIds.length;
   }
@@ -176,7 +176,7 @@ export class DeadLetterQueue {
 
         return { retried, purged, skipped };
       } finally {
-        this.safeNotifyMetrics((h) => h.onRecoverySweepComplete(retried, purged, skipped, this.options.name));
+        this.safeNotifyMetrics((h) => { h.onRecoverySweepComplete(retried, purged, skipped, this.options.name); });
         this.recoveryRunning = false;
         this.currentSweep = undefined;
       }
@@ -245,7 +245,7 @@ export class DeadLetterQueue {
       this.entries.delete(id);
     }
 
-    this.safeNotifyMetrics((h) => h.onDlqSnapshot(this.entries.size, this.options.name));
+    this.safeNotifyMetrics((h) => { h.onDlqSnapshot(this.entries.size, this.options.name); });
   }
 
   private safeNotifyMetrics(fn: (hooks: NonNullable<DeadLetterQueueOptions['metricsHooks']>) => void): void {
@@ -254,7 +254,7 @@ export class DeadLetterQueue {
     try {
       fn(metricsHooks);
     } catch (err) {
-      console.warn('[Nexus DLQ] Metrics hook failed:', err);
+      this.logger.warn('[Nexus DLQ] Metrics hook failed:', err);
     }
   }
 
@@ -280,6 +280,6 @@ export class DeadLetterQueue {
     }
 
     await this.options.metadataStore.removeDeadLetterEntries(removedIds);
-    this.safeNotifyMetrics((h) => h.onDlqSnapshot(this.entries.size, this.options.name));
+    this.safeNotifyMetrics((h) => { h.onDlqSnapshot(this.entries.size, this.options.name); });
   }
 }
