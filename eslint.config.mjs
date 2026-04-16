@@ -35,8 +35,6 @@ export default tseslint.config(
       'src/storage/vector-store.ts',
     ],
     rules: {
-      'security/detect-non-literal-fs-filename': 'off',
-      'security/detect-object-injection': 'off',
       '@typescript-eslint/restrict-template-expressions': 'off',
     },
   }

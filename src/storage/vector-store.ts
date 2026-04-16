@@ -418,7 +418,6 @@ export class LanceVectorStore implements IVectorStore {
         const chunkBatch = chunks.slice(i, i + BATCH_SIZE);
         const rows = chunkBatch.map((chunk, j) => {
           const globalIdx = i + j;
-          // eslint-disable-next-line security/detect-object-injection
           const vectorData = embeddings?.at(globalIdx);
           const vector =
             vectorData && vectorData.every(Number.isFinite)
