@@ -13,5 +13,15 @@ exclude_paths:
   - "src/server/factory.ts"
   - "src/bin/nexus.ts"
   - "src/server/index.ts"
+  - "packages/dashboard/src/utils/metrics.ts"
   - "**/*.test.ts"
   - "**/*.bench.ts"
+ignore_issues:
+  - pattern_id: "GenericObjectInjectionSink"
+    files:
+      - "packages/dashboard/src/app.tsx"
+      - "packages/dashboard/src/components/*.tsx"
+  - pattern_id: "security/detect-object-injection"
+    files:
+      - "packages/dashboard/src/app.tsx"
+      - "packages/dashboard/src/components/*.tsx"

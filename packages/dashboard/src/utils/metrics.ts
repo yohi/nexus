@@ -1,0 +1,59 @@
+import type { MetricsJSON, MetricValue } from "../hooks/use-metrics.js";
+
+export function getValue(
+  data: MetricsJSON[] | null,
+  name: string,
+  labelKey?: string,
+  labelVal?: string,
+): number {
+  if (!data) return 0;
+
+  const metric = data.find((m) => m.name === name);
+  if (!metric || !metric.values) return 0;
+
+  if (labelKey !== undefined && labelVal !== undefined) {
+    if (labelKey === "__proto__" || labelKey === "constructor" || labelKey === "prototype") {
+      return 0;
+    }
+    const matchingValue = metric.values.find(
+      (v) => v.labels?.[labelKey] === labelVal
+    );
+    return matchingValue?.value ?? 0;
+  }
+
+  // If no label filters, return the sum of all values or the first value?
+  // Prom-client typically has one value per unique label set.
+  // For dashboard metrics like 'size' without specific labels requested, 
+  // we usually want the first one or a sum. 
+  // To avoid incorrect data from accidental labeled series, let's pick the first one
+  // but ensure we're not just assuming values[0] exists.
+  return metric.values[0]?.value ?? 0;
+}
+
+export function calculateAvgDuration(
+  samples: (MetricValue & { metricName?: string })[],
+  baseName?: string
+): string {
+  if (samples.length === 0 || !baseName) return "N/A";
+
+  let totalSum = 0;
+  let totalCount = 0;
+  let countSeen = false;
+
+  const sumName = `${baseName}_sum`;
+  const countName = `${baseName}_count`;
+
+  for (const s of samples) {
+    if (s.metricName === sumName) {
+      totalSum += s.value;
+    } else if (s.metricName === countName) {
+      totalCount += s.value;
+      countSeen = true;
+    }
+  }
+
+  if (!countSeen) return "N/A";
+  if (totalCount === 0) return "0s";
+  const avg = totalSum / totalCount;
+  return avg < 1 ? `${(avg * 1000).toFixed(0)}ms` : `${avg.toFixed(1)}s`;
+}
