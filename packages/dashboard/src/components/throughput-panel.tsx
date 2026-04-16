@@ -17,20 +17,11 @@ export const ThroughputPanel: React.FC<ThroughputPanelProps> = ({ data }) => {
   return (
     <MetricPanel title="Indexing Throughput" icon="⚡" borderColor="green">
       <Box>
-        <Text>Chunks Indexed: </Text>
-        <Text bold color="cyan">
-          {chunks}
-        </Text>
+        <Text>Chunks indexed: {chunks} (total)</Text>
       </Box>
-      <Box>
-        <Text>Avg Reindex Time: </Text>
-        <Text color="yellow">{avgDuration}</Text>
+      <Box marginTop={1}>
+        <Text>Avg reindex: {avgDuration} (series: {samples.length})</Text>
       </Box>
-      {samples.length > 0 && (
-        <Box marginTop={1}>
-          <Text dimColor>Series: {samples.length}</Text>
-        </Box>
-      )}
     </MetricPanel>
   );
 };
