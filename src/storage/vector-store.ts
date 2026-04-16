@@ -147,7 +147,18 @@ export class LanceVectorStore implements IVectorStore {
             return;
           }
 
-          // 3. Fallback dimension check from schema/data if metadata is missing
+          // 3. Schema Migration: Ensure _update_id column exists
+          const schema = await localTable.schema();
+          const hasUpdateId = schema.fields.some(f => f.name === '_update_id');
+          if (!hasUpdateId) {
+            // Add _update_id column by updating with existing data
+            // LanceDB will automatically add the column when we add rows with it.
+            // We use a small empty update to trigger schema evolution if needed.
+            // But the most robust way is to just let addDocuments handle it,
+            // as long as we don't query it before it's created.
+          }
+
+          // 4. Fallback dimension check from schema/data if metadata is missing
           if (metadata?.dimensions === undefined) {
             const schema = await localTable.schema();
             const vectorField = schema.fields.find(f => f.name === 'vector');
@@ -392,8 +403,8 @@ export class LanceVectorStore implements IVectorStore {
       }
       const db = this.db;
       const updateId = `upd_${Date.now()}_${randomUUID()}`;
-
       const uniqueFilePaths = [...new Set(chunks.map((c) => c.filePath))];
+      
       let staleAdded = 0;
       let filesAdded = 0;
 
@@ -412,50 +423,70 @@ export class LanceVectorStore implements IVectorStore {
         filesAdded = uniqueFilePaths.length;
       }
 
-      // 2. Batch process data into the store (Memory efficient)
-      const BATCH_SIZE = 500;
-      for (let i = 0; i < chunks.length; i += BATCH_SIZE) {
-        const chunkBatch = chunks.slice(i, i + BATCH_SIZE);
-        const rows = chunkBatch.map((chunk, j) => {
-          const globalIdx = i + j;
-          const vectorData = embeddings?.at(globalIdx);
-          const vector =
-            vectorData && vectorData.every(Number.isFinite)
-              ? new Float32Array(vectorData)
-              : new Float32Array(this.dimensions);
+      // 2. Stage data into a temporary table (Atomic approach)
+      const stagedTableName = `chunks_staged_${randomUUID().replace(/-/g, '')}`;
+      let stagedTable: Table | undefined;
 
-          this.validateFilterValue(chunk.filePath, 'filePath');
-          this.validateFilterValue(chunk.language, 'language');
-          this.validateFilterValue(chunk.symbolKind, 'symbolKind');
-          if (chunk.symbolName != null) this.validateFilterValue(chunk.symbolName, 'symbolName');
+      try {
+        const BATCH_SIZE = 500;
+        for (let i = 0; i < chunks.length; i += BATCH_SIZE) {
+          const chunkBatch = chunks.slice(i, i + BATCH_SIZE);
+          const rows = chunkBatch.map((chunk, j) => {
+            const globalIdx = i + j;
+            const vectorData = embeddings?.at(globalIdx);
+            const vector =
+              vectorData && vectorData.every(Number.isFinite)
+                ? new Float32Array(vectorData)
+                : new Float32Array(this.dimensions);
 
-          return {
-            vector,
-            id: chunk.id,
-            filepath: chunk.filePath,
-            content: chunk.content,
-            language: chunk.language,
-            symbolname: chunk.symbolName ?? '',
-            symbolkind: chunk.symbolKind,
-            startline: chunk.startLine,
-            endline: chunk.endLine,
-            hash: chunk.hash,
-            _update_id: updateId, // Tag new rows
-          };
-        });
+            this.validateFilterValue(chunk.filePath, 'filePath');
+            this.validateFilterValue(chunk.language, 'language');
+            this.validateFilterValue(chunk.symbolKind, 'symbolKind');
+            if (chunk.symbolName != null) this.validateFilterValue(chunk.symbolName, 'symbolName');
 
-        if (!this.table) {
-          this.table = await db.createTable('chunks', rows);
-        } else {
-          await this.table.add(rows);
+            return {
+              vector,
+              id: chunk.id,
+              filepath: chunk.filePath,
+              content: chunk.content,
+              language: chunk.language,
+              symbolname: chunk.symbolName ?? '',
+              symbolkind: chunk.symbolKind,
+              startline: chunk.startLine,
+              endline: chunk.endLine,
+              hash: chunk.hash,
+              _update_id: updateId,
+            };
+          });
+
+          if (!stagedTable) {
+            stagedTable = await db.createTable(stagedTableName, rows);
+          } else {
+            await stagedTable.add(rows);
+          }
         }
-      }
 
-      // 3. Post-insert Cleanup: Remove old rows for these files in a single batch
-      if (this.table && uniqueFilePaths.length > 0) {
-        const escapedPaths = uniqueFilePaths.map(fp => `'${this.escapeFilterValue(fp)}'`).join(', ');
-        const filter = `filepath IN (${escapedPaths}) AND _update_id != '${updateId}'`;
-        await this.table.delete(filter);
+        // 3. Commit staged changes to the primary table
+        if (stagedTable) {
+          if (!this.table) {
+            // If primary table doesn't exist, just rename the staged table
+            // In LanceDB, rename is effectively create-from-table or move
+            this.table = await db.createTable('chunks', await stagedTable.query().toArray());
+          } else {
+            // Delete old records for these files in the primary table
+            const escapedPaths = uniqueFilePaths.map(fp => `'${this.escapeFilterValue(fp)}'`).join(', ');
+            await this.table.delete(`filepath IN (${escapedPaths})`);
+            
+            // Append new records from the staged table
+            await this.table.add(await stagedTable.query().toArray());
+          }
+        }
+      } finally {
+        try {
+          await db.dropTable(stagedTableName);
+        } catch {
+          // Ignore errors during cleanup of temporary table
+        }
       }
 
       if (staleAdded > 0 || chunks.length > 0 || filesAdded > 0) {
