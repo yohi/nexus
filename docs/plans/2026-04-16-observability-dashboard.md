@@ -39,7 +39,7 @@ import type { BackpressureState } from '../indexer/event-queue.js';
 
 export interface MetricsHooks {
   /** EventQueue の enqueue/drain 完了時に呼ばれる */
-  onQueueSnapshot(size: number, state: BackpressureState, droppedTotal: number): void;
+  onQueueSnapshot(size: number, state: BackpressureState, droppedTotal: number, source?: string): void;
 
   /** Pipeline.processEvents() 完了時に呼ばれる */
   onChunksIndexed(count: number): void;
@@ -48,10 +48,10 @@ export interface MetricsHooks {
   onReindexComplete(durationMs: number, fullRebuild: boolean): void;
 
   /** DLQ のエントリ数変動時に呼ばれる */
-  onDlqSnapshot(size: number): void;
+  onDlqSnapshot(size: number, source?: string): void;
 
   /** DLQ.recoverySweep() 完了時に呼ばれる */
-  onRecoverySweepComplete(retried: number, purged: number, skipped: number): void;
+  onRecoverySweepComplete(retried: number, purged: number, skipped: number, source?: string): void;
 }
 ```
 
@@ -156,6 +156,7 @@ export class MetricsCollector implements MetricsHooks {
     this.droppedCounter = new Counter({
       name: 'nexus_event_queue_dropped_total',
       help: 'Total dropped events',
+      labelNames: ['queue_id'] as const,
       registers: [this.registry],
     });
 
@@ -176,6 +177,7 @@ export class MetricsCollector implements MetricsHooks {
     this.dlqSizeGauge = new Gauge({
       name: 'nexus_dlq_size',
       help: 'Current DLQ entry count',
+      labelNames: ['dlq_id'] as const,
       registers: [this.registry],
     });
 
@@ -213,14 +215,15 @@ export class MetricsCollector implements MetricsHooks {
     this.reindexHistogram.labels(String(fullRebuild)).observe(durationMs / 1000);
   }
 
-  onDlqSnapshot(size: number): void {
-    this.dlqSizeGauge.set(size);
+  onDlqSnapshot(size: number, source = 'default'): void {
+    this.dlqSizeGauge.labels({ dlq_id: source }).set(size);
   }
 
-  onRecoverySweepComplete(retried: number, purged: number, skipped: number): void {
-    if (retried > 0) this.recoveryCounter.labels('retried').inc(retried);
-    if (purged > 0) this.recoveryCounter.labels('purged').inc(purged);
-    if (skipped > 0) this.recoveryCounter.labels('skipped').inc(skipped);
+  onRecoverySweepComplete(retried: number, purged: number, skipped: number, source = 'default'): void {
+    const labels = { dlq_id: source };
+    if (retried > 0) this.recoveryCounter.labels({ ...labels, result: 'retried' }).inc(retried);
+    if (purged > 0) this.recoveryCounter.labels({ ...labels, result: 'purged' }).inc(purged);
+    if (skipped > 0) this.recoveryCounter.labels({ ...labels, result: 'skipped' }).inc(skipped);
   }
 }
 ```
@@ -314,7 +317,7 @@ export interface EventQueueOptions {
 
 ```typescript
 this.options.metricsHooks?.onQueueSnapshot(
-  this.size(), this.state, this.droppedEventCount
+  this.size(), this.state, this.droppedEventCount, this.options.name
 );
 ```
 
@@ -416,29 +419,16 @@ export interface DeadLetterQueueOptions {
 
 **Step 2: 各発火ポイントにコールバックを追加**
 
-- `enqueue()` の `return entry;`（L91 付近）の直前:
-
-  ```typescript
-  this.options.metricsHooks?.onDlqSnapshot(this.entries.size);
-  ```
+- `enqueue()` は内部で `trimToCapacity()` を呼び出すため、通知は `trimToCapacity()` 内で一括して行われる。
 
 - `recoverySweep()` の `return { retried, purged, skipped };`（L169）の直前:
 
   ```typescript
-  this.options.metricsHooks?.onRecoverySweepComplete(retried, purged, skipped);
+  this.options.metricsHooks?.onRecoverySweepComplete(retried, purged, skipped, this.options.name);
   ```
 
-- `removeByFilePath()` の末尾（L214 の `}` の直前）:
+- `removeByFilePath()` / `removeByPathPrefix()` などの完了後、`safeNotifyMetrics` を経由して通知される（L246, L281 等を heritance して更新）。
 
-  ```typescript
-  this.options.metricsHooks?.onDlqSnapshot(this.entries.size);
-  ```
-
-- `removeByPathPrefix()` の末尾（L227 の `}` の直前）:
-
-  ```typescript
-  this.options.metricsHooks?.onDlqSnapshot(this.entries.size);
-  ```
 
 **Step 3: 既存テスト通過確認**
 

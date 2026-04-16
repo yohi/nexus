@@ -91,8 +91,6 @@ export class DeadLetterQueue {
     this.entries.set(entry.id, entry);
     await this.trimToCapacity();
 
-    this.safeNotifyMetrics((h) => { h.onDlqSnapshot(this.entries.size, this.options.name); });
-
     return entry;
   }
 
@@ -265,21 +263,20 @@ export class DeadLetterQueue {
   }
 
   private async trimToCapacity(): Promise<void> {
-    if (this.entries.size <= this.maxEntries) {
-      return;
+    if (this.entries.size > this.maxEntries) {
+      const sortedEntries = [...this.entries.values()]
+        .sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+
+      const toRemove = sortedEntries.slice(0, this.entries.size - this.maxEntries);
+      const removedIds = toRemove.map((e) => e.id);
+
+      for (const id of removedIds) {
+        this.entries.delete(id);
+      }
+
+      await this.options.metadataStore.removeDeadLetterEntries(removedIds);
     }
 
-    const sortedEntries = [...this.entries.values()]
-      .sort((a, b) => a.createdAt.localeCompare(b.createdAt));
-
-    const toRemove = sortedEntries.slice(0, this.entries.size - this.maxEntries);
-    const removedIds = toRemove.map((e) => e.id);
-
-    for (const id of removedIds) {
-      this.entries.delete(id);
-    }
-
-    await this.options.metadataStore.removeDeadLetterEntries(removedIds);
     this.safeNotifyMetrics((h) => { h.onDlqSnapshot(this.entries.size, this.options.name); });
   }
 }
