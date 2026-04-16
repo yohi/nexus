@@ -7,14 +7,17 @@ export function getValue(
   labelVal?: string,
 ): number {
   if (!data) return 0;
-  for (const m of data) {
-    if (m.name !== name) continue;
-    if (!m.values || !m.values[0]) continue;
+
+  const metric = data.find((m) => {
+    if (m.name !== name) return false;
+    const firstValue = m.values?.[0];
+    if (!firstValue) return false;
+
     if (labelKey && labelVal) {
-      const labels = m.values[0].labels;
-      if (!labels || labels[labelKey] !== labelVal) continue;
+      return firstValue.labels?.[labelKey] === labelVal;
     }
-    return m.values[0].value;
-  }
-  return 0;
+    return true;
+  });
+
+  return metric?.values?.[0]?.value ?? 0;
 }
