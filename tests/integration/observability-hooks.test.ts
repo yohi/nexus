@@ -13,9 +13,11 @@ describe('Observability Hooks Integration', () => {
       bulkDeleteMerkleNodes: vi.fn().mockResolvedValue(undefined),
       bulkDeleteSubtrees: vi.fn().mockResolvedValue(0),
       deleteSubtree: vi.fn().mockResolvedValue(0),
+      getSubtreePaths: vi.fn().mockResolvedValue([]),
       pruneEmptyParents: vi.fn().mockResolvedValue(undefined),
       renamePath: vi.fn().mockResolvedValue(undefined),
       getMerkleNode: vi.fn().mockResolvedValue(null),
+      getChildren: vi.fn().mockResolvedValue([]),
       hasChildren: vi.fn().mockResolvedValue(false),
       getAllNodes: vi.fn().mockResolvedValue([]),
       getAllFileNodes: vi.fn().mockResolvedValue([]),
@@ -25,8 +27,6 @@ describe('Observability Hooks Integration', () => {
       upsertDeadLetterEntries: vi.fn().mockResolvedValue(undefined),
       removeDeadLetterEntries: vi.fn().mockResolvedValue(undefined),
       getDeadLetterEntries: vi.fn().mockResolvedValue([]),
-      getMetadata: vi.fn().mockResolvedValue(null),
-      setMetadata: vi.fn().mockResolvedValue(undefined),
     };
   });
 

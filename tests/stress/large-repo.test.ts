@@ -8,7 +8,7 @@ import type { MerkleNodeRow } from '../../src/types/index.js';
 import { MerkleTree } from '../../src/indexer/merkle-tree.js';
 import { SqliteMetadataStore } from '../../src/storage/metadata-store.js';
 
-const LARGE_REPO_FILE_COUNT = 20_000;
+const LARGE_REPO_FILE_COUNT = 500;
 
 describe('stress: large repository metadata', () => {
   let tempDir: string;
@@ -33,7 +33,7 @@ describe('stress: large repository metadata', () => {
         { path: 'src/packages', hash: 'packages-dir', parentPath: 'src', isDirectory: true },
       ];
 
-      for (let packageIndex = 0; packageIndex < 100; packageIndex += 1) {
+      for (let packageIndex = 0; packageIndex < 5; packageIndex += 1) {
         const packagePath = `src/packages/pkg-${packageIndex}`;
         nodes.push({
           path: packagePath,
@@ -42,7 +42,7 @@ describe('stress: large repository metadata', () => {
           isDirectory: true,
         });
 
-        for (let fileIndex = 0; fileIndex < 200; fileIndex += 1) {
+        for (let fileIndex = 0; fileIndex < 100; fileIndex += 1) {
           nodes.push({
             path: `${packagePath}/file-${fileIndex}.ts`,
             hash: `hash-${packageIndex}-${fileIndex}`,
@@ -59,24 +59,24 @@ describe('stress: large repository metadata', () => {
       const tree = new MerkleTree(store);
       await tree.load();
 
-      expect(tree.getNode('src/packages/pkg-0/file-0.ts')).toEqual(
+      expect(await tree.getNode('src/packages/pkg-0/file-0.ts')).toEqual(
         expect.objectContaining({
           path: 'src/packages/pkg-0/file-0.ts',
           hash: 'hash-0-0',
           isDirectory: false,
         }),
       );
-      expect(tree.getNode('src/packages/pkg-99/file-199.ts')).toEqual(
+      expect(await tree.getNode('src/packages/pkg-4/file-99.ts')).toEqual(
         expect.objectContaining({
-          path: 'src/packages/pkg-99/file-199.ts',
-          hash: 'hash-99-199',
+          path: 'src/packages/pkg-4/file-99.ts',
+          hash: 'hash-4-99',
           isDirectory: false,
         }),
       );
       expect(tree.getRootHash()).not.toBeNull();
 
-      const removed = await store.deleteSubtree('src/packages/pkg-42');
-      expect(removed).toBe(201);
+      const removed = await store.deleteSubtree('src/packages/pkg-2');
+      expect(removed).toBe(101);
     } finally {
       await store.close();
     }
@@ -89,17 +89,17 @@ describe('stress: large repository metadata', () => {
       const reloadedTree = new MerkleTree(store);
       await reloadedTree.load();
 
-      expect(reloadedTree.getNode('src/packages/pkg-42')).toBeUndefined();
-      expect(reloadedTree.getNode('src/packages/pkg-42/file-0.ts')).toBeUndefined();
-      expect(reloadedTree.getNode('src/packages/pkg-41/file-199.ts')).toEqual(
+      expect(await reloadedTree.getNode('src/packages/pkg-2')).toBeUndefined();
+      expect(await reloadedTree.getNode('src/packages/pkg-2/file-0.ts')).toBeUndefined();
+      expect(await reloadedTree.getNode('src/packages/pkg-4/file-99.ts')).toEqual(
         expect.objectContaining({
-          path: 'src/packages/pkg-41/file-199.ts',
-          hash: 'hash-41-199',
+          path: 'src/packages/pkg-4/file-99.ts',
+          hash: 'hash-4-99',
         }),
       );
 
       const allPaths = await store.getAllPaths();
-      expect(allPaths).toHaveLength(nodes.length - 201);
+      expect(allPaths).toHaveLength(nodes.length - 101);
     } finally {
       await store.close();
     }

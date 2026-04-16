@@ -25,6 +25,7 @@ describe('IndexPipeline integration', () => {
 
   afterEach(async () => {
     await metadataStore?.close();
+    await vectorStore?.close();
     await rm(tempDir, { recursive: true, force: true });
   });
 

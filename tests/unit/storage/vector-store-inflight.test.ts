@@ -37,6 +37,7 @@ describe('LanceVectorStore close() and trackOp() behavior', () => {
     // 指摘事項: 常にリアルタイマーに戻し、モックをリストアすることでテストの独立性を保つ
     vi.useRealTimers();
     vi.restoreAllMocks();
+    await store?.close();
     if (tmpDir) {
       await rm(tmpDir, { recursive: true, force: true });
     }

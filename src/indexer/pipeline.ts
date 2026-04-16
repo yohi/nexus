@@ -212,7 +212,9 @@ export class IndexPipeline implements IIndexPipeline {
       const prefix = filePath.endsWith('/') ? filePath : filePath + '/';
       await this.options.vectorStore.deleteByPathPrefix(prefix);
       await this.options.metadataStore.deleteSubtree(filePath);
-      await this.merkleTree.load();
+
+      // Incremental update of the tree (avoids full reload)
+      await this.merkleTree.remove(filePath);
 
       this.skippedFiles.delete(filePath);
       await this.deadLetterQueue.removeByPathPrefix(filePath);

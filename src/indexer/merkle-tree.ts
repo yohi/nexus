@@ -11,169 +11,227 @@ export interface RenameCandidate {
   newEvent: IndexEvent;
 }
 
+/**
+ * Memory-efficient MerkleTree implementation.
+ * Instead of loading all nodes into memory, it persists directory hashes
+ * and updates them incrementally from leaf to root.
+ */
 export class MerkleTree {
-  private readonly nodes = new Map<string, MerkleNodeRow>();
+  // Simple FIFO cache for nodes to reduce DB hits
+  private readonly cache = new Map<string, MerkleNodeRow>();
+  private readonly maxCacheSize: number;
 
   private rootHash: string | null = null;
 
-  constructor(private readonly metadataStore: IMetadataStore) {}
+  // Cache metrics
+  public cacheHits = 0;
+  public cacheMisses = 0;
+  public cacheEvictions = 0;
 
-  async load(): Promise<void> {
-    this.nodes.clear();
-
-    for (const node of await this.metadataStore.getAllNodes()) {
-      this.nodes.set(node.path, node);
-    }
-
-    this.rootHash = await this.computeRootHash();
+  constructor(
+    private readonly metadataStore: IMetadataStore,
+    options?: { maxCacheSize?: number },
+  ) {
+    this.maxCacheSize = options?.maxCacheSize ?? 10000;
   }
 
-  async update(filePath: string, contentHash: string, skipPersist = false): Promise<void> {
-    const directories = this.collectDirectories(filePath);
+  private addToCache(path: string, node: MerkleNodeRow): void {
+    if (this.cache.size >= this.maxCacheSize && !this.cache.has(path)) {
+      const firstKey = this.cache.keys().next().value;
+      if (firstKey !== undefined) {
+        this.cache.delete(firstKey);
+        this.cacheEvictions += 1;
+      }
+    }
+    this.cache.set(path, node);
+  }
+
+  /**
+   * Initializes the tree by loading the root hash if it exists.
+   */
+  async load(): Promise<void> {
+    this.cache.clear();
+    // We don't have a single "root" entry, but we can compute the root hash
+    // by looking at top-level nodes (parentPath is null).
+    this.rootHash = await this.computeRootHashFromStore();
+  }
+
+  async update(filePath: string, contentHash: string): Promise<void> {
+    const parentPath = path.dirname(filePath) === '.' ? null : path.dirname(filePath);
     const fileNode: MerkleNodeRow = {
       path: filePath,
       hash: contentHash,
-      parentPath: path.dirname(filePath) === '.' ? null : path.dirname(filePath),
+      parentPath,
       isDirectory: false,
     };
 
-    this.nodes.set(filePath, fileNode);
-    for (const directory of directories) {
-      this.nodes.set(directory.path, directory);
-    }
+    // 1. Update the file node itself
+    await this.metadataStore.bulkUpsertMerkleNodes([fileNode]);
+    this.addToCache(filePath, fileNode);
 
-    this.rootHash = await this.computeRootHash();
-    if (!skipPersist) {
-      await this.persistCurrentState();
+    // 2. Recalculate hashes up to the root
+    if (parentPath) {
+      await this.bubbleUpHash(parentPath);
+    } else {
+      this.rootHash = await this.computeRootHashFromStore();
     }
   }
 
-  async remove(filePath: string, skipPersist = false): Promise<void> {
-    const node = this.nodes.get(filePath);
+  async remove(filePath: string): Promise<void> {
+    const node = await this.getNode(filePath);
+
+    // 1. Remove the node or subtree
     if (node?.isDirectory) {
-      const prefix = filePath.endsWith(path.sep) ? filePath : filePath + path.sep;
-      for (const nodePath of this.nodes.keys()) {
-        if (nodePath.startsWith(prefix)) {
-          this.nodes.delete(nodePath);
-        }
+      const subtreePaths = await this.metadataStore.getSubtreePaths(filePath);
+      await this.metadataStore.deleteSubtree(filePath);
+      for (const p of subtreePaths) {
+        this.cache.delete(p);
       }
+    } else {
+      await this.metadataStore.bulkDeleteMerkleNodes([filePath]);
+      this.cache.delete(filePath);
     }
 
-    this.nodes.delete(filePath);
-    this.pruneEmptyDirectories(path.dirname(filePath));
-
-    this.rootHash = await this.computeRootHash();
-    if (!skipPersist) {
-      if (node?.isDirectory) {
-        await this.metadataStore.bulkDeleteSubtrees([filePath]);
-      }
-      await this.persistCurrentState();
+    // 2. Prune empty directories and update hashes
+    const parentPath = path.dirname(filePath) === '.' ? null : path.dirname(filePath);
+    if (parentPath) {
+      await this.pruneAndBubble(parentPath);
+    } else {
+      this.rootHash = await this.computeRootHashFromStore();
     }
   }
 
   async move(oldPath: string, newPath: string, contentHash: string): Promise<void> {
-    const node = this.nodes.get(oldPath);
-    const isDirectory = node?.isDirectory ?? false;
-
-    // 1. Update in-memory state
-    this.nodes.delete(oldPath);
-    this.pruneEmptyDirectories(path.dirname(oldPath));
-
-    const directories = this.collectDirectories(newPath);
-    const newNode: MerkleNodeRow = {
-      path: newPath,
-      hash: contentHash,
-      parentPath: path.dirname(newPath) === '.' ? null : path.dirname(newPath),
-      isDirectory,
-    };
-
-    this.nodes.set(newPath, newNode);
-    for (const directory of directories) {
-      if (!this.nodes.has(directory.path)) {
-        this.nodes.set(directory.path, directory);
-      }
-    }
-
-    // 2. Perform atomic rename in metadata store
+    // Atomic rename in metadata store
     await this.metadataStore.renamePath(oldPath, newPath, contentHash);
 
-    // 3. Recompute and sync remaining state (e.g. newly created parent directories)
-    this.rootHash = await this.computeRootHash();
-    await this.persistCurrentState();
+    // Update local cache
+    this.cache.delete(oldPath);
+    const parentPath = path.dirname(newPath) === '.' ? null : path.dirname(newPath);
+    this.addToCache(newPath, {
+      path: newPath,
+      hash: contentHash,
+      parentPath,
+      isDirectory: false,
+    });
+
+    // Bubble up hashes for both old and new paths
+    const oldParentPath = path.dirname(oldPath) === '.' ? null : path.dirname(oldPath);
+    if (oldParentPath) {
+      await this.pruneAndBubble(oldParentPath);
+    }
+    if (parentPath) {
+      await this.bubbleUpHash(parentPath);
+    } else {
+      this.rootHash = await this.computeRootHashFromStore();
+    }
   }
 
-  private pruneEmptyDirectories(dirPath: string): void {
-    let current = dirPath;
-    while (current !== '.' && current !== path.sep) {
-      const parentNode = this.nodes.get(current);
-      if (parentNode !== undefined && parentNode.isDirectory) {
-        let hasChildren = false;
-        for (const node of this.nodes.values()) {
-          if (node.parentPath === current) {
-            hasChildren = true;
-            break;
-          }
-        }
-        if (!hasChildren) {
-          this.nodes.delete(current);
-        } else {
-          break;
-        }
+  private async pruneAndBubble(dirPath: string): Promise<void> {
+    let current: string | null = dirPath;
+    while (current !== null && current !== '.' && current !== path.sep) {
+      const hasChildren = await this.metadataStore.hasChildren(current);
+      if (!hasChildren) {
+        const parentOfCurrent: string | null = path.dirname(current) === '.' ? null : path.dirname(current);
+        await this.metadataStore.bulkDeleteMerkleNodes([current]);
+        this.cache.delete(current);
+        current = parentOfCurrent;
       } else {
-        break;
+        await this.bubbleUpHash(current);
+        return;
       }
-      current = path.dirname(current);
     }
+    
+    // Always refresh root hash if we pruned up to the top
+    this.rootHash = await this.computeRootHashFromStore();
+  }
+
+  /**
+   * Updates directory hashes from the given path up to the root.
+   */
+  private async bubbleUpHash(startDirPath: string): Promise<void> {
+    let current: string | null = startDirPath;
+    const visited = new Set<string>();
+    const nodesToUpsert: MerkleNodeRow[] = [];
+
+    while (current !== null && current !== '.' && current !== path.sep) {
+      if (visited.has(current)) {
+        break; // Prevent infinite loops
+      }
+      visited.add(current);
+
+      const children: MerkleNodeRow[] = await this.metadataStore.getChildren(current);
+      const hash = await this.calculateDirectoryHash(children);
+      
+      const parentPath: string | null = path.dirname(current) === '.' ? null : path.dirname(current);
+      const dirNode: MerkleNodeRow = {
+        path: current,
+        hash,
+        parentPath,
+        isDirectory: true,
+      };
+
+      nodesToUpsert.push(dirNode);
+      this.addToCache(current, dirNode);
+
+      // Important: prevent getting stuck if dirname doesn't change anything
+      if (parentPath === current) break;
+      current = parentPath;
+    }
+
+    if (nodesToUpsert.length > 0) {
+      await this.metadataStore.bulkUpsertMerkleNodes(nodesToUpsert);
+    }
+
+    this.rootHash = await this.computeRootHashFromStore();
+  }
+
+  private async calculateDirectoryHash(children: MerkleNodeRow[]): Promise<string> {
+    const childHashes = children.map((child) => {
+      return `${child.path.length}:${child.path}:${child.hash}`;
+    });
+    return computeStringHash(childHashes.join(''));
+  }
+
+  private async computeRootHashFromStore(): Promise<string | null> {
+    // Top-level nodes are those where parentPath is null
+    const roots = await this.metadataStore.getChildren(null);
+    if (roots.length === 0) {
+      return null;
+    }
+
+    const rootHashes = roots.map((node) => {
+      return `${node.path.length}:${node.path}:${node.hash}`;
+    });
+    
+    return computeStringHash(rootHashes.join(''));
   }
 
   getRootHash(): string | null {
     return this.rootHash;
   }
 
-  getNode(nodePath: string): MerkleNodeRow | undefined {
-    return this.nodes.get(nodePath);
+  async getNode(nodePath: string): Promise<MerkleNodeRow | undefined> {
+    if (this.cache.has(nodePath)) {
+      this.cacheHits += 1;
+      return this.cache.get(nodePath);
+    }
+    this.cacheMisses += 1;
+    const node = await this.metadataStore.getMerkleNode(nodePath);
+    if (node) {
+      this.addToCache(nodePath, node);
+    }
+    return node ?? undefined;
   }
 
-  // eslint-disable-next-line @typescript-eslint/require-await
-  static async diff(oldTree: MerkleTree, newTree: MerkleTree): Promise<IndexEvent[]> {
-    const events: IndexEvent[] = [];
-    const seen = new Set<string>();
-    const now = new Date().toISOString();
-
-    for (const [nodePath, newNode] of [...newTree.nodes.entries()].sort(([left], [right]) => left.localeCompare(right))) {
-      if (newNode.isDirectory) {
-        continue;
-      }
-
-      seen.add(nodePath);
-      const oldNode = oldTree.nodes.get(nodePath);
-
-      if (oldNode === undefined) {
-        events.push({ type: 'added', filePath: nodePath, contentHash: newNode.hash, detectedAt: now });
-      } else if (oldNode.hash !== newNode.hash) {
-        events.push({ type: 'modified', filePath: nodePath, contentHash: newNode.hash, detectedAt: now });
-      }
-    }
-
-    for (const [nodePath, oldNode] of [...oldTree.nodes.entries()].sort(([left], [right]) => left.localeCompare(right))) {
-      if (oldNode.isDirectory || seen.has(nodePath)) {
-        continue;
-      }
-
-      events.push({ type: 'deleted', filePath: nodePath, contentHash: oldNode.hash, detectedAt: now });
-    }
-
-    return events;
-  }
-
+  /**
+   * Detects rename candidates through matching deleted and added hashes.
+   */
   static detectRenameCandidates(events: IndexEvent[]): RenameCandidate[] {
     const added = events.filter((event) => event.type === 'added' && event.contentHash !== undefined);
     const deleted = events.filter((event) => event.type === 'deleted' && event.contentHash !== undefined);
     const matches: RenameCandidate[] = [];
 
-    // Note: In cases where multiple files share the exact same content hash,
-    // this mapping makes a best-effort 1:1 match. While this is sufficient for v1,
-    // it may produce semantically arbitrary mappings among identical files.
     const addedMap = new Map<string, IndexEvent[]>();
     for (const event of added) {
       if (event.contentHash !== undefined) {
@@ -202,78 +260,11 @@ export class MerkleTree {
     return matches;
   }
 
-  private async persistCurrentState(): Promise<void> {
-    const persistedPaths = new Set(await this.metadataStore.getAllPaths());
-    const currentPaths = new Set(this.nodes.keys());
-
-    const deletedPaths = [...persistedPaths].filter((nodePath) => !currentPaths.has(nodePath));
-    if (deletedPaths.length > 0) {
-      await this.metadataStore.bulkDeleteMerkleNodes(deletedPaths);
-    }
-
-    await this.metadataStore.bulkUpsertMerkleNodes([...this.nodes.values()]);
-  }
-
-  private collectDirectories(filePath: string): MerkleNodeRow[] {
-    const directories: MerkleNodeRow[] = [];
-    let current = path.dirname(filePath);
-
-    while (current !== '.' && current !== path.sep) {
-      directories.push({
-        path: current,
-        hash: '',
-        parentPath: path.dirname(current) === '.' ? null : path.dirname(current),
-        isDirectory: true,
-      });
-      current = path.dirname(current);
-    }
-
-    return directories;
-  }
-
-  private async computeRootHash(): Promise<string | null> {
-    const childMap = new Map<string | null, MerkleNodeRow[]>();
-
-    for (const node of this.nodes.values()) {
-      const key = node.parentPath;
-      const entries = childMap.get(key) ?? [];
-      entries.push(node);
-      childMap.set(key, entries);
-    }
-
-    const computeNodeHash = async (nodePath: string): Promise<string> => {
-      const node = this.nodes.get(nodePath);
-      if (node === undefined) {
-        return '';
-      }
-
-      if (!node.isDirectory) {
-        return node.hash;
-      }
-
-      const children = (childMap.get(nodePath) ?? []).sort((left, right) => left.path.localeCompare(right.path));
-      const childHashes = await Promise.all(
-        children.map(async (child) => {
-          const hash = await computeNodeHash(child.path);
-          return `${child.path.length}:${child.path}:${hash}`;
-        })
-      );
-      const serialized = childHashes.join('');
-      return computeStringHash(serialized);
-    };
-
-    const roots = (childMap.get(null) ?? []).sort((left, right) => left.path.localeCompare(right.path));
-    if (roots.length === 0) {
-      return null;
-    }
-
-    const rootHashes = await Promise.all(
-      roots.map(async (node) => {
-        const hash = await computeNodeHash(node.path);
-        return `${node.path.length}:${node.path}:${hash}`;
-      })
-    );
-    const rootSerialized = rootHashes.join('');
-    return computeStringHash(rootSerialized);
+  /**
+   * Note: The static diff method is now deprecated for large trees.
+   * Real diffing should be done using database-backed comparison.
+   */
+  static diff(): Promise<IndexEvent[]> {
+    return Promise.reject(new Error('MerkleTree.diff() is deprecated. Use direct DB comparison.'));
   }
 }

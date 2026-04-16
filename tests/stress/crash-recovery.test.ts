@@ -80,14 +80,14 @@ describe('stress: crash recovery', () => {
       const recoveredTree = new MerkleTree(recoveredStore);
       await recoveredTree.load();
 
-      expect(recoveredTree.getNode(fixturePath)).toEqual(
+      expect(await recoveredTree.getNode(fixturePath)).toEqual(
         expect.objectContaining({
           path: fixturePath,
           hash: 'fixture-hash',
           isDirectory: false,
         }),
       );
-      expect(recoveredTree.getNode('src/generated')).toEqual(
+      expect(await recoveredTree.getNode('src/generated')).toEqual(
         expect.objectContaining({
           path: 'src/generated',
           isDirectory: true,

@@ -265,6 +265,7 @@ export class LanceVectorStore implements IVectorStore {
     this.metadataMutex = p.catch(() => {});
     await p;
   }
+
   async resetForTest(): Promise<void> {
     if (this.table && this.db) {
       await this.table.delete('true');
@@ -386,77 +387,84 @@ export class LanceVectorStore implements IVectorStore {
       }
     }
 
-    const rows = chunks.map((chunk, i) => {
-      this.validateFilterValue(chunk.filePath, 'filePath');
-      if (chunk.symbolName) {
-        this.validateFilterValue(chunk.symbolName, 'symbolName');
-      }
-      if (chunk.language) {
-        this.validateFilterValue(chunk.language, 'language');
-      }
-      if (chunk.symbolKind) {
-        this.validateFilterValue(chunk.symbolKind, 'symbolKind');
-      }
-
-      const vector = embeddings && embeddings[i] ? embeddings[i] : Array(this.dimensions).fill(0);
-      if (!vector.every(Number.isFinite)) {
-        throw new Error(
-          `VectorStore.upsertChunks: vector contains non-finite values for chunk ${chunk.id}`
-        );
-      }
-      return {
-        id: chunk.id,
-        filepath: chunk.filePath,
-        content: chunk.content,
-        language: chunk.language,
-        symbolname: chunk.symbolName ?? '',
-        symbolkind: chunk.symbolKind,
-        startline: chunk.startLine,
-        endline: chunk.endLine,
-        hash: chunk.hash,
-        vector,
-      };
-    });
-
     await this.runInWriteLock(async () => {
       if (!this.db) {
         throw new Error('VectorStore not initialized');
       }
       const db = this.db;
-      if (!this.table) {
-        if (rows.length === 0) return;
-        this.table = await db.createTable('chunks', rows, { schema: undefined });
-        const filePaths = [...new Set(chunks.map((c) => c.filePath))];
-        this.totalFiles = filePaths.length;
-        await this.updateMetadata();
-        return;
-      }
-
-      // 対象ファイルのチャンクを削除し、新データを追加する
       // affectedFilePaths が渡された場合はそれを使用し、そうでなければ chunks から抽出する
       const uniqueFilePaths = affectedFilePaths ?? [...new Set(chunks.map((c) => c.filePath))];
       let staleAdded = 0;
       let filesAdded = 0;
-      for (const fp of uniqueFilePaths) {
-        const filter = this.filePathFilter(fp);
-        const count = await this.table.countRows(filter);
-        if (count > 0) {
-          await this.table.delete(filter);
-          staleAdded += count;
-        } else {
-          filesAdded++;
+
+      // 1. Calculate stats and delete old records in a single batch
+      if (this.table && uniqueFilePaths.length > 0) {
+        const escapedPaths = uniqueFilePaths.map(fp => `'${this.escapeFilterValue(fp)}'`).join(', ');
+        
+        // Count existing rows for these files in a single query to avoid loop overhead
+        const existingRows = await this.table.query()
+          .where(`filepath IN (${escapedPaths})`)
+          .select(['filepath'])
+          .toArray() as unknown as { filepath: string }[];
+        
+        staleAdded = existingRows.length;
+        const foundPaths = new Set(existingRows.map(r => r.filepath));
+        filesAdded = uniqueFilePaths.length - foundPaths.size;
+
+        // Batch delete old records for these files
+        await this.table.delete(`filepath IN (${escapedPaths})`);
+      } else if (!this.table && uniqueFilePaths.length > 0) {
+        filesAdded = uniqueFilePaths.length;
+      }
+
+      // 2. Batch process data into the store (Memory efficient)
+      if (chunks.length > 0) {
+        const BATCH_SIZE = 500;
+        for (let i = 0; i < chunks.length; i += BATCH_SIZE) {
+          const chunkBatch = chunks.slice(i, i + BATCH_SIZE);
+          const rows: LanceRow[] = chunkBatch.map((chunk, j) => {
+            const globalIdx = i + j;
+            const vectorData = embeddings?.at(globalIdx);
+            const vector =
+              vectorData && vectorData.every(Number.isFinite)
+                ? Array.from(vectorData)
+                : Array(this.dimensions).fill(0);
+
+            this.validateFilterValue(chunk.filePath, 'filePath');
+            this.validateFilterValue(chunk.language, 'language');
+            this.validateFilterValue(chunk.symbolKind, 'symbolKind');
+            if (chunk.symbolName != null) this.validateFilterValue(chunk.symbolName, 'symbolName');
+
+            return {
+              vector,
+              id: chunk.id,
+              filepath: chunk.filePath,
+              content: chunk.content,
+              language: chunk.language,
+              symbolname: chunk.symbolName ?? '',
+              symbolkind: chunk.symbolKind,
+              startline: chunk.startLine,
+              endline: chunk.endLine,
+              hash: chunk.hash,
+            };
+          });
+
+          if (!this.table) {
+            // First ever batch: initialize table with these rows
+            this.table = await db.createTable('chunks', rows);
+          } else {
+            // Subsequent batches: just add to existing table
+            await this.table.add(rows);
+          }
         }
       }
-      
-      if (staleAdded > 0 || rows.length > 0 || filesAdded > 0) {
+
+      if (staleAdded > 0 || chunks.length > 0 || filesAdded > 0) {
         if (staleAdded > 0) {
           this.staleCount += staleAdded;
         }
         if (filesAdded > 0) {
           this.totalFiles += filesAdded;
-        }
-        if (rows.length > 0) {
-          await this.table.add(rows);
         }
         await this.updateMetadata();
       }
@@ -547,8 +555,9 @@ export class LanceVectorStore implements IVectorStore {
       await this.writeMutex;
       if (!this.table) return [];
       
-      // 明示的にコサイン類似度を使用し、スコア計算 (1 - distance) との整合性を確保する
+      // 明示的にベクトル列とコサイン類似度を指定し、スコア計算 (1 - distance) との整合性を確保する
       let query = this.table.vectorSearch(queryVector)
+        .column('vector')
         .distanceType('cosine')
         .limit(topK);
       
@@ -686,6 +695,7 @@ export class LanceVectorStore implements IVectorStore {
       };
     });
   }
+
   scheduleIdleCompaction(
     runCompaction: () => Promise<void>,
     delayMs = 0,
