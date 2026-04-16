@@ -418,10 +418,18 @@ export class LanceVectorStore implements IVectorStore {
         const chunkBatch = chunks.slice(i, i + BATCH_SIZE);
         const rows = chunkBatch.map((chunk, j) => {
           const globalIdx = i + j;
-          const vector = embeddings && embeddings[globalIdx] 
-            ? new Float32Array(embeddings[globalIdx]) 
-            : new Float32Array(this.dimensions);
-          
+          // eslint-disable-next-line security/detect-object-injection
+          const vectorData = embeddings?.at(globalIdx);
+          const vector =
+            vectorData && vectorData.every(Number.isFinite)
+              ? new Float32Array(vectorData)
+              : new Float32Array(this.dimensions);
+
+          this.validateFilterValue(chunk.filePath, 'filePath');
+          if (chunk.language) this.validateFilterValue(chunk.language, 'language');
+          if (chunk.symbolKind) this.validateFilterValue(chunk.symbolKind, 'symbolKind');
+          if (chunk.symbolName) this.validateFilterValue(chunk.symbolName, 'symbolName');
+
           return {
             id: chunk.id,
             filepath: chunk.filePath,
@@ -429,10 +437,9 @@ export class LanceVectorStore implements IVectorStore {
             language: chunk.language,
             symbolname: chunk.symbolName ?? '',
             symbolkind: chunk.symbolKind,
-            startline: chunk.startLine,
-            endline: chunk.endLine,
-            hash: chunk.hash,
             vector,
+          };
+        });
           };
         });
 

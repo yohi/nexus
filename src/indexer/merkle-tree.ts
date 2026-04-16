@@ -19,10 +19,21 @@ export interface RenameCandidate {
 export class MerkleTree {
   // Simple LRU-like cache for nodes to reduce DB hits
   private readonly cache = new Map<string, MerkleNodeRow>();
+  private readonly MAX_CACHE_SIZE = 10000;
 
   private rootHash: string | null = null;
 
   constructor(private readonly metadataStore: IMetadataStore) {}
+
+  private addToCache(path: string, node: MerkleNodeRow): void {
+    if (this.cache.size >= this.MAX_CACHE_SIZE && !this.cache.has(path)) {
+      const firstKey = this.cache.keys().next().value as string | undefined;
+      if (firstKey !== undefined) {
+        this.cache.delete(firstKey);
+      }
+    }
+    this.cache.set(path, node);
+  }
 
   /**
    * Initializes the tree by loading the root hash if it exists.
@@ -45,7 +56,7 @@ export class MerkleTree {
 
     // 1. Update the file node itself
     await this.metadataStore.bulkUpsertMerkleNodes([fileNode]);
-    this.cache.set(filePath, fileNode);
+    this.addToCache(filePath, fileNode);
 
     // 2. Recalculate hashes up to the root
     await this.bubbleUpHash(filePath);
@@ -115,7 +126,7 @@ export class MerkleTree {
       };
 
       await this.metadataStore.bulkUpsertMerkleNodes([dirNode]);
-      this.cache.set(current, dirNode);
+      this.addToCache(current, dirNode);
 
       current = parentPath ?? '.';
     }
@@ -124,8 +135,7 @@ export class MerkleTree {
   }
 
   private async calculateDirectoryHash(children: MerkleNodeRow[]): Promise<string> {
-    const sortedChildren = [...children].sort((a, b) => a.path.localeCompare(b.path));
-    const childHashes = sortedChildren.map((child) => {
+    const childHashes = children.map((child) => {
       return `${child.path.length}:${child.path}:${child.hash}`;
     });
     return computeStringHash(childHashes.join(''));
@@ -133,16 +143,14 @@ export class MerkleTree {
 
   private async computeRootHashFromStore(): Promise<string | null> {
     // Top-level nodes are those where parentPath is null
-    const roots = await this.metadataStore.getChildren(''); // SqliteMetadataStore implementation uses null check
+    const roots = await this.metadataStore.getChildren(null);
     if (roots.length === 0) {
       return null;
     }
 
-    const rootHashes = roots
-      .sort((a, b) => a.path.localeCompare(b.path))
-      .map((node) => {
-        return `${node.path.length}:${node.path}:${node.hash}`;
-      });
+    const rootHashes = roots.map((node) => {
+      return `${node.path.length}:${node.path}:${node.hash}`;
+    });
     
     return computeStringHash(rootHashes.join(''));
   }
@@ -157,7 +165,7 @@ export class MerkleTree {
     }
     const node = await this.metadataStore.getMerkleNode(nodePath);
     if (node) {
-      this.cache.set(nodePath, node);
+      this.addToCache(nodePath, node);
     }
     return node ?? undefined;
   }
@@ -202,7 +210,7 @@ export class MerkleTree {
    * Note: The static diff method is now deprecated for large trees.
    * Real diffing should be done using database-backed comparison.
    */
-  static async diff(): Promise<IndexEvent[]> {
-    throw new Error('MerkleTree.diff() is deprecated. Use direct DB comparison.');
+  static diff(): Promise<IndexEvent[]> {
+    return Promise.reject(new Error('MerkleTree.diff() is deprecated. Use direct DB comparison.'));
   }
 }

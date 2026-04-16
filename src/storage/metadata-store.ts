@@ -236,16 +236,16 @@ export class SqliteMetadataStore implements IMetadataStore {
     };
   }
 
-  async getChildren(path: string): Promise<MerkleNodeRow[]> {
+  async getChildren(path: string | null): Promise<MerkleNodeRow[]> {
     await this.asyncBoundary();
     const rows = this.db
       .prepare(
         `SELECT path, hash, parent_path AS parentPath, is_directory AS isDirectory
          FROM merkle_nodes
-         WHERE parent_path = ?
+         WHERE parent_path ${path === null ? 'IS NULL' : '= ?'}
          ORDER BY path ASC`,
       )
-      .all(path) as Array<{ path: string; hash: string; parentPath: string | null; isDirectory: number }>;
+      .all(path === null ? [] : [path]) as Array<{ path: string; hash: string; parentPath: string | null; isDirectory: number }>;
 
     return rows.map((row) => ({
       path: row.path,
@@ -255,9 +255,11 @@ export class SqliteMetadataStore implements IMetadataStore {
     }));
   }
 
-  async hasChildren(path: string): Promise<boolean> {
+  async hasChildren(path: string | null): Promise<boolean> {
     await this.asyncBoundary();
-    const row = this.db.prepare('SELECT 1 FROM merkle_nodes WHERE parent_path = ? LIMIT 1').get(path);
+    const row = this.db
+      .prepare(`SELECT 1 FROM merkle_nodes WHERE parent_path ${path === null ? 'IS NULL' : '= ?'} LIMIT 1`)
+      .get(path === null ? [] : [path]);
     return row !== undefined;
   }
 
