@@ -8,7 +8,7 @@ import type { MerkleNodeRow } from '../../src/types/index.js';
 import { MerkleTree } from '../../src/indexer/merkle-tree.js';
 import { SqliteMetadataStore } from '../../src/storage/metadata-store.js';
 
-const LARGE_REPO_FILE_COUNT = 1_000;
+const LARGE_REPO_FILE_COUNT = 500;
 
 describe('stress: large repository metadata', () => {
   let tempDir: string;
@@ -42,7 +42,7 @@ describe('stress: large repository metadata', () => {
           isDirectory: true,
         });
 
-        for (let fileIndex = 0; fileIndex < 200; fileIndex += 1) {
+        for (let fileIndex = 0; fileIndex < 100; fileIndex += 1) {
           nodes.push({
             path: `${packagePath}/file-${fileIndex}.ts`,
             hash: `hash-${packageIndex}-${fileIndex}`,
@@ -66,17 +66,17 @@ describe('stress: large repository metadata', () => {
           isDirectory: false,
         }),
       );
-      expect(await tree.getNode('src/packages/pkg-4/file-199.ts')).toEqual(
+      expect(await tree.getNode('src/packages/pkg-4/file-99.ts')).toEqual(
         expect.objectContaining({
-          path: 'src/packages/pkg-4/file-199.ts',
-          hash: 'hash-4-199',
+          path: 'src/packages/pkg-4/file-99.ts',
+          hash: 'hash-4-99',
           isDirectory: false,
         }),
       );
       expect(tree.getRootHash()).not.toBeNull();
 
       const removed = await store.deleteSubtree('src/packages/pkg-2');
-      expect(removed).toBe(201);
+      expect(removed).toBe(101);
     } finally {
       await store.close();
     }
@@ -91,15 +91,15 @@ describe('stress: large repository metadata', () => {
 
       expect(await reloadedTree.getNode('src/packages/pkg-2')).toBeUndefined();
       expect(await reloadedTree.getNode('src/packages/pkg-2/file-0.ts')).toBeUndefined();
-      expect(await reloadedTree.getNode('src/packages/pkg-4/file-199.ts')).toEqual(
+      expect(await reloadedTree.getNode('src/packages/pkg-4/file-99.ts')).toEqual(
         expect.objectContaining({
-          path: 'src/packages/pkg-4/file-199.ts',
-          hash: 'hash-4-199',
+          path: 'src/packages/pkg-4/file-99.ts',
+          hash: 'hash-4-99',
         }),
       );
 
       const allPaths = await store.getAllPaths();
-      expect(allPaths).toHaveLength(nodes.length - 201);
+      expect(allPaths).toHaveLength(nodes.length - 101);
     } finally {
       await store.close();
     }

@@ -398,23 +398,21 @@ export class LanceVectorStore implements IVectorStore {
       let filesAdded = 0;
 
       // 1. Calculate stats and delete old records in a single batch
-      if (this.table) {
-        // Calculate stats before deleting
-        for (const fp of uniqueFilePaths) {
-          const filter = this.filePathFilter(fp);
-          const count = await this.table.countRows(filter);
-          if (count > 0) {
-            staleAdded += count;
-          } else {
-            filesAdded++;
-          }
-        }
+      if (this.table && uniqueFilePaths.length > 0) {
+        const escapedPaths = uniqueFilePaths.map(fp => `'${this.escapeFilterValue(fp)}'`).join(', ');
+        
+        // Count existing rows for these files in a single query to avoid loop overhead
+        const existingRows = await this.table.query()
+          .where(`filepath IN (${escapedPaths})`)
+          .select(['filepath'])
+          .toArray() as unknown as { filepath: string }[];
+        
+        staleAdded = existingRows.length;
+        const foundPaths = new Set(existingRows.map(r => r.filepath));
+        filesAdded = uniqueFilePaths.length - foundPaths.size;
 
         // Batch delete old records for these files
-        if (uniqueFilePaths.length > 0) {
-          const escapedPaths = uniqueFilePaths.map(fp => `'${this.escapeFilterValue(fp)}'`).join(', ');
-          await this.table.delete(`filepath IN (${escapedPaths})`);
-        }
+        await this.table.delete(`filepath IN (${escapedPaths})`);
       } else {
         filesAdded = uniqueFilePaths.length;
       }
