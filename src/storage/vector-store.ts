@@ -413,47 +413,49 @@ export class LanceVectorStore implements IVectorStore {
 
         // Batch delete old records for these files
         await this.table.delete(`filepath IN (${escapedPaths})`);
-      } else {
+      } else if (!this.table && uniqueFilePaths.length > 0) {
         filesAdded = uniqueFilePaths.length;
       }
 
       // 2. Batch process data into the store (Memory efficient)
-      const BATCH_SIZE = 500;
-      for (let i = 0; i < chunks.length; i += BATCH_SIZE) {
-        const chunkBatch = chunks.slice(i, i + BATCH_SIZE);
-        const rows: LanceRow[] = chunkBatch.map((chunk, j) => {
-          const globalIdx = i + j;
-          const vectorData = embeddings?.at(globalIdx);
-          const vector =
-            vectorData && vectorData.every(Number.isFinite)
-              ? Array.from(vectorData)
-              : Array(this.dimensions).fill(0);
+      if (chunks.length > 0) {
+        const BATCH_SIZE = 500;
+        for (let i = 0; i < chunks.length; i += BATCH_SIZE) {
+          const chunkBatch = chunks.slice(i, i + BATCH_SIZE);
+          const rows: LanceRow[] = chunkBatch.map((chunk, j) => {
+            const globalIdx = i + j;
+            const vectorData = embeddings?.at(globalIdx);
+            const vector =
+              vectorData && vectorData.every(Number.isFinite)
+                ? Array.from(vectorData)
+                : Array(this.dimensions).fill(0);
 
-          this.validateFilterValue(chunk.filePath, 'filePath');
-          this.validateFilterValue(chunk.language, 'language');
-          this.validateFilterValue(chunk.symbolKind, 'symbolKind');
-          if (chunk.symbolName != null) this.validateFilterValue(chunk.symbolName, 'symbolName');
+            this.validateFilterValue(chunk.filePath, 'filePath');
+            this.validateFilterValue(chunk.language, 'language');
+            this.validateFilterValue(chunk.symbolKind, 'symbolKind');
+            if (chunk.symbolName != null) this.validateFilterValue(chunk.symbolName, 'symbolName');
 
-          return {
-            vector,
-            id: chunk.id,
-            filepath: chunk.filePath,
-            content: chunk.content,
-            language: chunk.language,
-            symbolname: chunk.symbolName ?? '',
-            symbolkind: chunk.symbolKind,
-            startline: chunk.startLine,
-            endline: chunk.endLine,
-            hash: chunk.hash,
-          };
-        });
+            return {
+              vector,
+              id: chunk.id,
+              filepath: chunk.filePath,
+              content: chunk.content,
+              language: chunk.language,
+              symbolname: chunk.symbolName ?? '',
+              symbolkind: chunk.symbolKind,
+              startline: chunk.startLine,
+              endline: chunk.endLine,
+              hash: chunk.hash,
+            };
+          });
 
-        if (!this.table) {
-          // First ever batch: initialize table with these rows
-          this.table = await db.createTable('chunks', rows);
-        } else {
-          // Subsequent batches: just add to existing table
-          await this.table.add(rows);
+          if (!this.table) {
+            // First ever batch: initialize table with these rows
+            this.table = await db.createTable('chunks', rows);
+          } else {
+            // Subsequent batches: just add to existing table
+            await this.table.add(rows);
+          }
         }
       }
 

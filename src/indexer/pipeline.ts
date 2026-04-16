@@ -317,7 +317,6 @@ export class IndexPipeline implements IIndexPipeline {
     ]);
 
     const embeddings = await this.embedWithRetry(chunks.map((chunk) => chunk.content));
-    await this.options.vectorStore.deleteByFilePath(filePath);
     await this.options.vectorStore.upsertChunks(chunks, embeddings);
     await this.merkleTree.update(filePath, contentHash);
     this.skippedFiles.delete(filePath);

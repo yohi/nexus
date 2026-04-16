@@ -19,17 +19,28 @@ export interface RenameCandidate {
 export class MerkleTree {
   // Simple FIFO cache for nodes to reduce DB hits
   private readonly cache = new Map<string, MerkleNodeRow>();
-  private readonly MAX_CACHE_SIZE = 10000;
+  private readonly maxCacheSize: number;
 
   private rootHash: string | null = null;
 
-  constructor(private readonly metadataStore: IMetadataStore) {}
+  // Cache metrics
+  public cacheHits = 0;
+  public cacheMisses = 0;
+  public cacheEvictions = 0;
+
+  constructor(
+    private readonly metadataStore: IMetadataStore,
+    options?: { maxCacheSize?: number },
+  ) {
+    this.maxCacheSize = options?.maxCacheSize ?? 10000;
+  }
 
   private addToCache(path: string, node: MerkleNodeRow): void {
-    if (this.cache.size >= this.MAX_CACHE_SIZE && !this.cache.has(path)) {
+    if (this.cache.size >= this.maxCacheSize && !this.cache.has(path)) {
       const firstKey = this.cache.keys().next().value;
       if (firstKey !== undefined) {
         this.cache.delete(firstKey);
+        this.cacheEvictions += 1;
       }
     }
     this.cache.set(path, node);
@@ -67,9 +78,19 @@ export class MerkleTree {
   }
 
   async remove(filePath: string): Promise<void> {
-    // 1. Remove the node
-    await this.metadataStore.bulkDeleteMerkleNodes([filePath]);
-    this.cache.delete(filePath);
+    const node = await this.getNode(filePath);
+    
+    // 1. Remove the node or subtree
+    if (node?.isDirectory) {
+      const subtreePaths = await this.metadataStore.getSubtreePaths(filePath);
+      await this.metadataStore.deleteSubtree(filePath);
+      for (const p of subtreePaths) {
+        this.cache.delete(p);
+      }
+    } else {
+      await this.metadataStore.bulkDeleteMerkleNodes([filePath]);
+      this.cache.delete(filePath);
+    }
 
     // 2. Prune empty directories and update hashes
     const parentPath = path.dirname(filePath) === '.' ? null : path.dirname(filePath);
@@ -81,9 +102,29 @@ export class MerkleTree {
   }
 
   async move(oldPath: string, newPath: string, contentHash: string): Promise<void> {
-    // This is essentially a remove + update
-    await this.remove(oldPath);
-    await this.update(newPath, contentHash);
+    // Atomic rename in metadata store
+    await this.metadataStore.renamePath(oldPath, newPath, contentHash);
+    
+    // Update local cache
+    this.cache.delete(oldPath);
+    const parentPath = path.dirname(newPath) === '.' ? null : path.dirname(newPath);
+    this.addToCache(newPath, {
+      path: newPath,
+      hash: contentHash,
+      parentPath,
+      isDirectory: false,
+    });
+
+    // Bubble up hashes for both old and new paths
+    const oldParentPath = path.dirname(oldPath) === '.' ? null : path.dirname(oldPath);
+    if (oldParentPath) {
+      await this.pruneAndBubble(oldParentPath);
+    }
+    if (parentPath) {
+      await this.bubbleUpHash(parentPath);
+    } else {
+      this.rootHash = await this.computeRootHashFromStore();
+    }
   }
 
   private async pruneAndBubble(dirPath: string): Promise<void> {
@@ -172,8 +213,10 @@ export class MerkleTree {
 
   async getNode(nodePath: string): Promise<MerkleNodeRow | undefined> {
     if (this.cache.has(nodePath)) {
+      this.cacheHits += 1;
       return this.cache.get(nodePath);
     }
+    this.cacheMisses += 1;
     const node = await this.metadataStore.getMerkleNode(nodePath);
     if (node) {
       this.addToCache(nodePath, node);

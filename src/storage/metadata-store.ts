@@ -155,6 +155,52 @@ export class SqliteMetadataStore implements IMetadataStore {
     return result.changes;
   }
 
+  /**
+   * Returns all paths within a subtree, including the root of the subtree.
+   */
+  async getSubtreePaths(pathPrefix: string): Promise<string[]> {
+    await this.asyncBoundary();
+    const escapedPrefix = pathPrefix.replace(/%/g, '\\%').replace(/_/g, '\\_');
+    const prefix = `${escapedPrefix}/%`;
+    const rows = this.db
+      .prepare("SELECT path FROM merkle_nodes WHERE path = ? OR path LIKE ? ESCAPE '\\'")
+      .all(pathPrefix, prefix) as Array<{ path: string }>;
+    return rows.map((r) => r.path);
+  }
+
+  async renamePath(oldPath: string, newPath: string, hash: string): Promise<void> {
+    await this.asyncBoundary();
+    const parentPath = dirname(newPath);
+    const normalizedParentPath = parentPath === '.' || parentPath === '/' || parentPath === '' ? null : parentPath;
+
+    this.db.transaction(() => {
+      // Get the existing node to preserve its is_directory type
+      const oldNode = this.db
+        .prepare('SELECT is_directory FROM merkle_nodes WHERE path = ?')
+        .get(oldPath) as { is_directory: number } | undefined;
+
+      const isDirectory = oldNode?.is_directory ?? 0;
+
+      this.db.prepare('DELETE FROM merkle_nodes WHERE path = ?').run(oldPath);
+      this.db
+        .prepare(
+          `
+        INSERT INTO merkle_nodes (path, hash, parent_path, is_directory)
+        VALUES (@path, @hash, @parentPath, @isDirectory)
+        ON CONFLICT(path) DO UPDATE SET
+          hash = excluded.hash,
+          parent_path = excluded.parent_path,
+          is_directory = excluded.is_directory
+      `,
+        )
+        .run({
+          path: newPath,
+          hash,
+          parentPath: normalizedParentPath,
+          isDirectory,
+        });
+    })();
+  }
 
   async pruneEmptyParents(
     path: string,
@@ -178,41 +224,6 @@ export class SqliteMetadataStore implements IMetadataStore {
       }
     }
   }
-
-  async renamePath(oldPath: string, newPath: string, hash: string): Promise<void> {
-    await this.asyncBoundary();
-    const parentPath = dirname(newPath);
-    const normalizedParentPath = (parentPath === '.' || parentPath === '/' || parentPath === '') ? null : parentPath;
-
-    const transaction = this.db.transaction(() => {
-      // Get the existing node to preserve its is_directory type
-      const oldNode = this.db
-        .prepare('SELECT is_directory FROM merkle_nodes WHERE path = ?')
-        .get(oldPath) as { is_directory: number } | undefined;
-
-      const isDirectory = oldNode?.is_directory ?? 0;
-
-      this.db
-        .prepare(
-          `INSERT INTO merkle_nodes (path, hash, parent_path, is_directory)
-           VALUES (@path, @hash, @parentPath, @isDirectory)
-           ON CONFLICT(path) DO UPDATE SET
-             hash = excluded.hash,
-             parent_path = excluded.parent_path,
-             is_directory = excluded.is_directory`,
-        )
-        .run({
-          path: newPath,
-          hash,
-          parentPath: normalizedParentPath,
-          isDirectory,
-        });
-      this.db.prepare('DELETE FROM merkle_nodes WHERE path = ?').run(oldPath);
-    });
-
-    transaction();
-  }
-
 
   async getMerkleNode(path: string): Promise<MerkleNodeRow | null> {
     await this.asyncBoundary();
