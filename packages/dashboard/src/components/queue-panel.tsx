@@ -8,10 +8,17 @@ interface QueuePanelProps {
 }
 
 export const QueuePanel: React.FC<QueuePanelProps> = ({ data }) => {
-  const size = getValue(data, "nexus_queue_size");
-  const dropped = getValue(data, "nexus_event_queue_dropped_total");
-  const isNormal = getValue(data, "nexus_queue_state", "state", "normal") === 1;
-  const isOverflow = getValue(data, "nexus_queue_state", "state", "overflow") === 1;
+  const size = getValue(data, "nexus_event_queue_size", "queue_id", "default");
+  const dropped = getValue(
+    data,
+    "nexus_event_queue_dropped_total",
+    "queue_id",
+    "default"
+  );
+  const isNormal =
+    getValue(data, "nexus_event_queue_state", "state", "normal") === 1;
+  const isOverflow =
+    getValue(data, "nexus_event_queue_state", "state", "overflow") === 1;
 
   const maxSize = 10000;
   const percent = Math.min((size / maxSize) * 100, 100);

@@ -1,10 +1,10 @@
 import React from "react";
 import { Box, Text, useInput, useApp } from "ink";
-import { useMetrics } from "./hooks/use-metrics.js";
-import type { MetricsJSON } from "./hooks/use-metrics.js";
-import { QueuePanel } from "./components/queue-panel.js";
-import { ThroughputPanel } from "./components/throughput-panel.js";
-import { DlqPanel } from "./components/dlq-panel.js";
+import { useMetrics } from "src/hooks/use-metrics.js";
+import type { MetricsJSON } from "src/hooks/use-metrics.js";
+import { QueuePanel } from "src/components/queue-panel.js";
+import { ThroughputPanel } from "src/components/throughput-panel.js";
+import { DlqPanel } from "src/components/dlq-panel.js";
 
 interface AppProps {
   port?: number;

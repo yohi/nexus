@@ -12,7 +12,7 @@
     "./cli": "./dist/cli.js"
   },
   "scripts": {
-    "build": "node ../../node_modules/esbuild src/cli.ts --bundle --platform=node --outfile=dist/cli.js --format=esm --external:react --external:ink --outdir=dist",
+    "build": "node ../../node_modules/esbuild src/cli.ts --bundle --platform=node --outfile=dist/cli.js --format=esm --external:react --external:ink",
     "test": "vitest run --passWithNoTests"
   },
   "dependencies": {

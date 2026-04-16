@@ -46,14 +46,25 @@ export function useMetrics(options: UseMetricsOptions = {}): UseMetricsResult {
     const poll = async () => {
       try {
         const res = await fetch(url, { signal: abortController.signal });
+        if (!res.ok) {
+          setError(`HTTP ${res.status}`);
+          setStatus(hadConnection.current ? "reconnecting" : "connecting");
+          return;
+        }
         const contentType = res.headers.get("content-type") ?? "";
         if (!contentType.includes("application/json")) {
           setStatus("waiting");
           setError("Invalid JSON");
           return;
         }
-        const json = (await res.json()) as MetricsJSON[];
-        setData(json);
+        const json = await res.json();
+        if (!Array.isArray(json)) {
+          setStatus("waiting");
+          setError("Invalid response shape: expected array");
+          return;
+        }
+
+        setData(json as MetricsJSON[]);
         setError(null);
         setStatus("connected");
         hadConnection.current = true;
@@ -61,17 +72,14 @@ export function useMetrics(options: UseMetricsOptions = {}): UseMetricsResult {
         if (abortController.signal.aborted) return;
         const msg = err instanceof Error ? err.message : String(err);
         setError(msg);
-        if (hadConnection.current) {
-          setStatus("reconnecting");
-        } else {
-          setStatus("connecting");
-        }
+        setStatus(hadConnection.current ? "reconnecting" : "connecting");
       }
     };
 
     void poll();
     const id = setInterval(() => void poll(), interval);
     return () => {
+      hadConnection.current = false;
       abortController.abort();
       clearInterval(id);
     };

@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import path from "node:path";
 import { parseArgs } from "node:util";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 
@@ -14,9 +15,12 @@ async function main() {
     strict: false,
   });
 
-  const projectRoot =
-    values["project-root"] ?? process.env.NEXUS_PROJECT_ROOT ?? process.cwd();
-  const root = typeof projectRoot === "string" ? projectRoot : process.cwd();
+  const rawProjectRoot = (
+    (values["project-root"] as string) ??
+    process.env.NEXUS_PROJECT_ROOT ??
+    ""
+  ).trim();
+  const root = rawProjectRoot ? path.resolve(rawProjectRoot) : process.cwd();
 
   const config = await loadConfig({ projectRoot: root });
   const runtime = await NexusServerFactory.createRuntime(config);
