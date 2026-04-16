@@ -1,9 +1,9 @@
-import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
-import { z } from 'zod';
+import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { z } from "zod";
 
-import type { SearchOrchestrator } from '../search/orchestrator.js';
-import type { ISemanticSearch } from '../search/semantic.js';
-import type { PluginRegistry } from '../plugins/registry.js';
+import type { SearchOrchestrator } from "../search/orchestrator.js";
+import type { ISemanticSearch } from "../search/semantic.js";
+import type { PluginRegistry } from "../plugins/registry.js";
 import type {
   IMetadataStore,
   IVectorStore,
@@ -12,14 +12,16 @@ import type {
   IFileWatcher,
   ReindexOptions,
   IIndexPipeline,
-} from '../types/index.js';
-import { PathTraversalError, type PathSanitizer } from './path-sanitizer.js';
-import { executeGetContext } from './tools/get-context.js';
-import { executeGrepSearch } from './tools/grep-search.js';
-import { executeHybridSearch } from './tools/hybrid-search.js';
-import { executeIndexStatus } from './tools/index-status.js';
-import { executeReindex } from './tools/reindex.js';
-import { executeSemanticSearch } from './tools/semantic-search.js';
+} from "../types/index.js";
+import { PathTraversalError, type PathSanitizer } from "./path-sanitizer.js";
+import { executeGetContext } from "./tools/get-context.js";
+import { executeGrepSearch } from "./tools/grep-search.js";
+import { executeHybridSearch } from "./tools/hybrid-search.js";
+import { executeIndexStatus } from "./tools/index-status.js";
+import { executeReindex } from "./tools/reindex.js";
+import { executeSemanticSearch } from "./tools/semantic-search.js";
+import { MetricsHttpServer } from "../observability/metrics-server.js";
+import type { Registry } from "prom-client";
 
 export interface NexusServerOptions {
   projectRoot: string;
@@ -38,6 +40,7 @@ export interface NexusServerOptions {
 export interface NexusRuntimeOptions extends NexusServerOptions {
   watcher: IFileWatcher;
   onClose?: () => Promise<void>;
+  metricsCollectorRegistry?: Registry;
 }
 
 export interface NexusRuntime {
@@ -48,21 +51,21 @@ export interface NexusRuntime {
 export const createNexusServer = (options: NexusServerOptions): McpServer => {
   const server = new McpServer(
     {
-      name: 'nexus',
-      version: '0.1.0',
+      name: "nexus",
+      version: "0.1.0",
     },
     {
       capabilities: {
         tools: { listChanged: true },
       },
-      instructions: 'Nexus MCP server for local code search and indexing.',
+      instructions: "Nexus MCP server for local code search and indexing.",
     },
   );
 
   server.registerTool(
-    'semantic_search',
+    "semantic_search",
     {
-      description: 'Search the codebase using natural language (embeddings)',
+      description: "Search the codebase using natural language (embeddings)",
       inputSchema: {
         query: z.string(),
         topK: z.number().int().positive().optional(),
@@ -73,7 +76,12 @@ export const createNexusServer = (options: NexusServerOptions): McpServer => {
     async (args, extra) => {
       try {
         return toolResult(
-          await executeSemanticSearch(options.semanticSearch, options.sanitizer, args, extra?.signal),
+          await executeSemanticSearch(
+            options.semanticSearch,
+            options.sanitizer,
+            args,
+            extra?.signal,
+          ),
         );
       } catch (error) {
         return errorResult(error);
@@ -82,9 +90,9 @@ export const createNexusServer = (options: NexusServerOptions): McpServer => {
   );
 
   server.registerTool(
-    'grep_search',
+    "grep_search",
     {
-      description: 'ripgrep-based text search',
+      description: "ripgrep-based text search",
       inputSchema: {
         pattern: z.string(),
         filePattern: z.string().optional(),
@@ -110,9 +118,9 @@ export const createNexusServer = (options: NexusServerOptions): McpServer => {
   );
 
   server.registerTool(
-    'hybrid_search',
+    "hybrid_search",
     {
-      description: 'Combined semantic and grep search',
+      description: "Combined semantic and grep search",
       inputSchema: {
         query: z.string(),
         topK: z.number().int().positive().optional(),
@@ -124,7 +132,12 @@ export const createNexusServer = (options: NexusServerOptions): McpServer => {
     async (args, extra) => {
       try {
         return toolResult(
-          await executeHybridSearch(options.orchestrator, options.sanitizer, args, extra?.signal),
+          await executeHybridSearch(
+            options.orchestrator,
+            options.sanitizer,
+            args,
+            extra?.signal,
+          ),
         );
       } catch (error) {
         return errorResult(error);
@@ -133,9 +146,9 @@ export const createNexusServer = (options: NexusServerOptions): McpServer => {
   );
 
   server.registerTool(
-    'get_context',
+    "get_context",
     {
-      description: 'Retrieve file context',
+      description: "Retrieve file context",
       inputSchema: {
         filePath: z.string(),
         symbolName: z.string().optional(),
@@ -145,7 +158,13 @@ export const createNexusServer = (options: NexusServerOptions): McpServer => {
     },
     async (args) => {
       try {
-        return toolResult(await executeGetContext(options.loadFileContent, options.sanitizer, args));
+        return toolResult(
+          await executeGetContext(
+            options.loadFileContent,
+            options.sanitizer,
+            args,
+          ),
+        );
       } catch (error) {
         return errorResult(error);
       }
@@ -153,9 +172,9 @@ export const createNexusServer = (options: NexusServerOptions): McpServer => {
   );
 
   server.registerTool(
-    'index_status',
+    "index_status",
     {
-      description: 'Return index state and statistics',
+      description: "Return index state and statistics",
       inputSchema: {},
     },
     async () => {
@@ -175,9 +194,9 @@ export const createNexusServer = (options: NexusServerOptions): McpServer => {
   );
 
   server.registerTool(
-    'reindex',
+    "reindex",
     {
-      description: 'Manually trigger reindexing',
+      description: "Manually trigger reindexing",
       inputSchema: {
         fullRebuild: z.boolean().optional(),
       },
@@ -185,7 +204,12 @@ export const createNexusServer = (options: NexusServerOptions): McpServer => {
     async (args) => {
       try {
         return toolResult(
-          await executeReindex(options.pipeline, options.runReindex, options.loadFileContent, args),
+          await executeReindex(
+            options.pipeline,
+            options.runReindex,
+            options.loadFileContent,
+            args,
+          ),
         );
       } catch (error) {
         return errorResult(error);
@@ -196,7 +220,9 @@ export const createNexusServer = (options: NexusServerOptions): McpServer => {
   return server;
 };
 
-export const initializeNexusRuntime = async (options: NexusRuntimeOptions): Promise<NexusRuntime> => {
+export const initializeNexusRuntime = async (
+  options: NexusRuntimeOptions,
+): Promise<NexusRuntime> => {
   await options.metadataStore.initialize();
   await options.vectorStore.initialize();
   await options.pipeline.reconcileOnStartup();
@@ -206,21 +232,45 @@ export const initializeNexusRuntime = async (options: NexusRuntimeOptions): Prom
     await options.watcher.start().catch((error) => {
       const isEmfile =
         error !== null &&
-        typeof error === 'object' &&
-        'code' in error &&
-        (error as Record<string, unknown>).code === 'EMFILE';
+        typeof error === "object" &&
+        "code" in error &&
+        (error as Record<string, unknown>).code === "EMFILE";
       if (isEmfile) {
-        console.error('[Nexus Server Warning] Failed to start FileWatcher (EMFILE):', error);
+        console.error(
+          "[Nexus Server Warning] Failed to start FileWatcher (EMFILE):",
+          error,
+        );
       } else {
         throw error;
       }
     });
     const server = createNexusServer(options);
 
+    const envPort = process.env.NEXUS_METRICS_PORT;
+    const port = envPort ? Number(envPort) : 9464;
+    const metricsPort =
+      Number.isInteger(port) && port > 0 && port <= 65535 ? port : 9464;
+    const metricsServer = options.metricsCollectorRegistry
+      ? new MetricsHttpServer(options.metricsCollectorRegistry)
+      : null;
+    if (metricsServer) {
+      await metricsServer.start(metricsPort).catch((err) => {
+        console.warn("[Nexus] Failed to start metrics HTTP server:", err);
+      });
+    }
+
     return {
       server,
       close: async () => {
         const shutdownErrors: unknown[] = [];
+
+        if (metricsServer) {
+          try {
+            await metricsServer.stop();
+          } catch (error) {
+            shutdownErrors.push(error);
+          }
+        }
 
         if (options.onClose) {
           try {
@@ -253,17 +303,23 @@ export const initializeNexusRuntime = async (options: NexusRuntimeOptions): Prom
         } else if (shutdownErrors.length > 1) {
           throw new AggregateError(
             shutdownErrors,
-            'Multiple errors occurred during Nexus runtime shutdown',
+            "Multiple errors occurred during Nexus runtime shutdown",
           );
         }
       },
     };
   } catch (error) {
     await options.pipeline.stop().catch((stopError: unknown) => {
-      console.error('Failed to stop pipeline during initialization rollback:', stopError);
+      console.error(
+        "Failed to stop pipeline during initialization rollback:",
+        stopError,
+      );
     });
     await options.watcher.stop().catch((stopError: unknown) => {
-      console.error('Failed to stop watcher during initialization rollback:', stopError);
+      console.error(
+        "Failed to stop watcher during initialization rollback:",
+        stopError,
+      );
     });
     throw error;
   }
@@ -275,19 +331,25 @@ export const initializeNexusRuntime = async (options: NexusRuntimeOptions): Prom
  */
 const sanitizeErrorMessage = (error: unknown): string => {
   if (error instanceof PathTraversalError) {
-    return 'Access denied: path is outside project root';
+    return "Access denied: path is outside project root";
   }
   const message = error instanceof Error ? error.message : String(error);
 
   // Check for absolute or relative path-like strings that might be sensitive.
   // We block things like /home/user, C:\Users, /tmp/secret, or ../../secret
-  const hasSensitivePath = /(\/(home|Users|tmp|var|etc|opt)\/|[a-zA-Z]:\\|\/[^/]+\/|\.\.\/)/i.test(message);
+  const hasSensitivePath =
+    /(\/(home|Users|tmp|var|etc|opt)\/|[a-zA-Z]:\\|\/[^/]+\/|\.\.\/)/i.test(
+      message,
+    );
   if (hasSensitivePath) {
-    return 'Internal server error (potential path leak prevented)';
+    return "Internal server error (potential path leak prevented)";
   }
 
   // Allow common network-related error messages even if they contain slashes (URLs)
-  const isNetworkError = /fetch failed|ECONNREFUSED|ECONNRESET|ETIMEDOUT|http:\/\/|https:\/\//i.test(message);
+  const isNetworkError =
+    /fetch failed|ECONNREFUSED|ECONNRESET|ETIMEDOUT|http:\/\/|https:\/\//i.test(
+      message,
+    );
   if (isNetworkError) {
     return message;
   }
@@ -298,12 +360,12 @@ const sanitizeErrorMessage = (error: unknown): string => {
 export const errorResult = (error: unknown) => {
   const errorMessage = sanitizeErrorMessage(error);
   // Log the original error for server-side debugging
-  console.error('[Nexus Server Error]', error);
+  console.error("[Nexus Server Error]", error);
 
   return {
     content: [
       {
-        type: 'text' as const,
+        type: "text" as const,
         text: `Error: ${errorMessage}`,
       },
     ],
@@ -317,7 +379,7 @@ export const toolResult = <T extends object>(structuredContent: T) => {
     return {
       content: [
         {
-          type: 'text' as const,
+          type: "text" as const,
           text: JSON.stringify(structuredContent, null, 2),
         },
       ],
@@ -326,17 +388,21 @@ export const toolResult = <T extends object>(structuredContent: T) => {
   } catch (error) {
     const errorMessage = sanitizeErrorMessage(error);
     // Log the original error for server-side debugging
-    console.error('[Nexus Serialization Error]', error);
+    console.error("[Nexus Serialization Error]", error);
 
     return {
       content: [
         {
-          type: 'text' as const,
+          type: "text" as const,
           text: `Failed to serialize structuredContent: ${errorMessage}`,
         },
       ],
       isError: true,
-      structuredContent: { error: true, message: errorMessage, originalType: typeof structuredContent },
+      structuredContent: {
+        error: true,
+        message: errorMessage,
+        originalType: typeof structuredContent,
+      },
     };
   }
 };

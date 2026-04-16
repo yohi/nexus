@@ -24,6 +24,7 @@ import { LanceVectorStore } from "../storage/vector-store.js";
 import { RipgrepEngine } from "../search/grep.js";
 import { FileWatcher } from "../indexer/watcher.js";
 import { EventQueue } from "../indexer/event-queue.js";
+import { MetricsCollector } from "../observability/metrics-collector.js";
 import type { Config, GrepMatch, IndexEvent } from "../types/index.js";
 
 /**
@@ -152,6 +153,7 @@ class EventProcessingManager {
     private pipeline: IndexPipeline,
     private loadFileContent: (path: string) => Promise<string>,
     private onLog?: (msg: string) => void,
+    private metricsCollector?: MetricsCollector,
   ) {}
 
   setup() {
@@ -160,6 +162,7 @@ class EventProcessingManager {
       maxQueueSize: this.config.watcher.maxQueueSize,
       fullScanThreshold: this.config.watcher.fullScanThreshold,
       concurrency: 4,
+      metricsHooks: this.metricsCollector,
       onFullScanRequired: () => {
         const p = this.triggerFullScan().finally(() => {
           if (this.fullScanPromise === p) {
@@ -410,6 +413,9 @@ export class NexusServerFactory {
       grepEngine,
       projectRoot,
     });
+
+    const metricsCollector = new MetricsCollector();
+
     const pipeline = new IndexPipeline({
       metadataStore,
       vectorStore,
@@ -417,6 +423,7 @@ export class NexusServerFactory {
       embeddingProvider,
       pluginRegistry,
       onProgress: (msg) => onLog(msg),
+      metricsHooks: metricsCollector,
     });
 
     const loadFileContent = (path: string) =>
@@ -429,6 +436,7 @@ export class NexusServerFactory {
       pipeline,
       loadFileContent,
       onLog,
+      metricsCollector,
     );
     const { watcher, onClose } = eventManager.setup();
 
@@ -445,6 +453,7 @@ export class NexusServerFactory {
         pluginRegistry,
         watcher,
         loadFileContent,
+        metricsCollectorRegistry: metricsCollector.registry,
         onClose: async () => {
           await onClose();
           if (drainListener) {

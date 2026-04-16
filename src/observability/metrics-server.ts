@@ -83,4 +83,15 @@ export class MetricsHttpServer {
   isListening(): boolean {
     return this.listening;
   }
+
+  getPort(): number | undefined {
+    if (!this.server || !this.listening) {
+      return undefined;
+    }
+    const address = this.server.address();
+    if (!address || typeof address === "string") {
+      return undefined;
+    }
+    return address.port;
+  }
 }

@@ -10,6 +10,22 @@
 
 **設計書:** `docs/superpowers/specs/2026-04-15-observability-dashboard-design.md`
 
+## 実装状況と乖離分析 (Gap Analysis - Updated 2026-04-16)
+
+現状のコードベースと設計・計画との間に以下の乖離（未実装範囲）が存在します。
+
+- **PR1 (Tasks 1-4: Types & Collector)**: 完了 ✅
+- **PR2 (Tasks 5-8: Core Hooks)**: 完了 ✅
+- **PR3 (Tasks 9-13: HTTP Server & Integration)**: **部分的に実装済、未完 ⚠️**
+  - **済**: `MetricsHttpServer` の基本機能実装 (`src/observability/metrics-server.ts`)
+  - **未完**: `metrics-server.test.ts` のテスト大半（HTTPエンドポイント等の検証）が不足
+  - **未完**: `metrics-e2e.test.ts` の統合テストが未作成
+  - **未完**: `src/server/factory.ts`, `src/server/index.ts` に対するライフサイクル統合が未実施
+- **PR4 (Tasks 14-19: TUI Dashboard)**: **未着手 ❌** (`packages/dashboard` が存在しない)
+
+**【更新後アクションプラン】**
+今後の作業は、不足しているPR3のタスク（Task 9のテスト補完、Task 11、Task 12）から再開し、完了後にPR4へ進みます。
+
 ---
 
 ## PR/ブランチ構成（積み上げ方式）
