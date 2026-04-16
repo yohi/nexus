@@ -245,7 +245,7 @@ export class DeadLetterQueue {
     }
   }
 
-  private async safeNotifyMetrics(fn: (hooks: NonNullable<DeadLetterQueueOptions['metricsHooks']>) => void): void {
+  private safeNotifyMetrics(fn: (hooks: NonNullable<DeadLetterQueueOptions['metricsHooks']>) => void): void {
     const { metricsHooks } = this.options;
     if (!metricsHooks) return;
     try {
