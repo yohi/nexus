@@ -147,15 +147,13 @@ export class LanceVectorStore implements IVectorStore {
             return;
           }
 
-          // 3. Schema Migration: Ensure _update_id column exists
+          // 3. Schema Migration: Check for update_id column
           const schema = await localTable.schema();
-          const hasUpdateId = schema.fields.some(f => f.name === '_update_id');
+          const hasUpdateId = schema.fields.some(f => f.name === 'update_id');
           if (!hasUpdateId) {
-            // Add _update_id column by updating with existing data
-            // LanceDB will automatically add the column when we add rows with it.
-            // We use a small empty update to trigger schema evolution if needed.
-            // But the most robust way is to just let addDocuments handle it,
-            // as long as we don't query it before it's created.
+            // Note: Schema will be evolved during the next upsertChunks call.
+            // We don't perform a manual update here as LanceDB's update() requires
+            // the column to already exist.
           }
 
           // 4. Fallback dimension check from schema/data if metadata is missing
@@ -451,7 +449,7 @@ export class LanceVectorStore implements IVectorStore {
             startline: chunk.startLine,
             endline: chunk.endLine,
             hash: chunk.hash,
-            _update_id: updateId, // Tag new rows
+            update_id: updateId, // Tag new rows
           };
         });
 
@@ -463,11 +461,23 @@ export class LanceVectorStore implements IVectorStore {
       }
 
       // 3. Post-insert Cleanup: Remove old rows for these files in a single batch
-      // Since we just added rows with _update_id, the column is guaranteed to exist.
       if (this.table && uniqueFilePaths.length > 0) {
         const escapedPaths = uniqueFilePaths.map(fp => `'${this.escapeFilterValue(fp)}'`).join(', ');
-        const filter = `filepath IN (${escapedPaths}) AND _update_id != '${updateId}'`;
-        await this.table.delete(filter);
+        
+        // We need to check if update_id exists in the schema before using it in a filter.
+        // If it's a brand new table, it exists because we just created it with rows containing it.
+        // If it's an existing table, it might not exist yet if this is the first update.
+        const schema = await this.table.schema();
+        const hasUpdateId = schema.fields.some(f => f.name === 'update_id');
+        
+        if (hasUpdateId) {
+          const filter = `filepath IN (${escapedPaths}) AND update_id != '${updateId}'`;
+          await this.table.delete(filter);
+        } else {
+          // This should theoretically not happen if the add() above succeeded,
+          // but as a fallback to prevent duplicate rows during the very first migration run:
+          // we don't delete here, but the next run will have update_id.
+        }
       }
 
       if (staleAdded > 0 || chunks.length > 0 || filesAdded > 0) {
@@ -566,9 +576,8 @@ export class LanceVectorStore implements IVectorStore {
       await this.writeMutex;
       if (!this.table) return [];
       
-      // 明示的にベクトル列とコサイン類似度を指定し、スコア計算 (1 - distance) との整合性を確保する
+      // 明示的にコサイン類似度を指定し、スコア計算 (1 - distance) との整合性を確保する
       let query = this.table.vectorSearch(queryVector)
-        .column('vector')
         .distanceType('cosine')
         .limit(topK);
       
