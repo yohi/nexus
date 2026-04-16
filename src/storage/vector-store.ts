@@ -423,7 +423,7 @@ export class LanceVectorStore implements IVectorStore {
       const BATCH_SIZE = 500;
       for (let i = 0; i < chunks.length; i += BATCH_SIZE) {
         const chunkBatch = chunks.slice(i, i + BATCH_SIZE);
-        const rows = chunkBatch.map((chunk, j) => {
+        const rows: LanceRow[] = chunkBatch.map((chunk, j) => {
           const globalIdx = i + j;
           const vectorData = embeddings?.at(globalIdx);
           const vector =
@@ -451,8 +451,10 @@ export class LanceVectorStore implements IVectorStore {
         });
 
         if (!this.table) {
+          // First ever batch: initialize table with these rows
           this.table = await db.createTable('chunks', rows);
         } else {
+          // Subsequent batches: just add to existing table
           await this.table.add(rows);
         }
       }
