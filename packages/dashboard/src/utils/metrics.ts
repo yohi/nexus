@@ -8,16 +8,15 @@ export function getValue(
 ): number {
   if (!data) return 0;
 
-  const metric = data.find((m) => {
-    if (m.name !== name) return false;
-    const firstValue = m.values?.[0];
-    if (!firstValue) return false;
+  const metric = data.find((m) => m.name === name);
+  if (!metric || !metric.values) return 0;
 
-    if (labelKey && labelVal) {
-      return firstValue.labels?.[labelKey] === labelVal;
-    }
-    return true;
-  });
+  if (labelKey && labelVal) {
+    const matchingValue = metric.values.find(
+      (v) => v.labels?.[labelKey] === labelVal
+    );
+    return matchingValue?.value ?? 0;
+  }
 
-  return metric?.values?.[0]?.value ?? 0;
+  return metric.values[0]?.value ?? 0;
 }
