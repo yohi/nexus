@@ -298,19 +298,12 @@ export class EventQueue {
     const { metricsHooks } = this.options;
     if (!metricsHooks) return;
     try {
-      const result = metricsHooks.onQueueSnapshot(
+      metricsHooks.onQueueSnapshot(
         this.size(),
         this.state,
         this.droppedEventCount,
         this.options.name,
       );
-
-      // Handle potential asynchronous rejections if the hook returns a Promise
-      if (result instanceof Promise) {
-        result.catch((err) => {
-          console.warn('[Nexus EventQueue] Metrics hook async failure:', err);
-        });
-      }
     } catch (err) {
       console.warn('[Nexus EventQueue] Metrics hook failed:', err);
     }
