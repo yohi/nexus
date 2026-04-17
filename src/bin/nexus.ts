@@ -55,9 +55,12 @@ function setupSignalHandlers(runtime: NexusRuntime): void {
   process.once("SIGTERM", handleShutdown);
 }
 
-const isDashboard = process.argv.slice(2).includes("dashboard");
+const dashboardIndex = process.argv.indexOf("dashboard");
 
-if (isDashboard) {
+if (dashboardIndex !== -1) {
+  // Remove "dashboard" from argv so the sub-command's parseArgs doesn't complain
+  process.argv.splice(dashboardIndex, 1);
+
   // Start the TUI dashboard (the MCP server will not be started)
   try {
     await import("@yohi/nexus-dashboard/cli");

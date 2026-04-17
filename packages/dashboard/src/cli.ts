@@ -9,7 +9,7 @@ const { values } = parseArgs({
     port: { type: "string", default: "9464" },
     interval: { type: "string", default: "2000" },
   },
-  strict: true,
+  strict: false,
 });
 
 const port = (() => {
