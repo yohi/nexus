@@ -55,11 +55,13 @@ function setupSignalHandlers(runtime: NexusRuntime): void {
   process.once("SIGTERM", handleShutdown);
 }
 
-const dashboardIndex = process.argv.indexOf("dashboard");
+const dashboardArgs = process.argv.slice(2);
+const dashboardIndex = dashboardArgs.indexOf("dashboard");
 
 if (dashboardIndex !== -1) {
-  // Remove "dashboard" from argv so the sub-command's parseArgs doesn't complain
-  process.argv.splice(dashboardIndex, 1);
+  // Remove "dashboard" from argv so the sub-command's parseArgs doesn't complain.
+  // We add 2 to account for the slice(2) offset.
+  process.argv.splice(dashboardIndex + 2, 1);
 
   // Start the TUI dashboard (the MCP server will not be started)
   try {

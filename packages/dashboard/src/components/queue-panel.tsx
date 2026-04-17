@@ -35,11 +35,9 @@ export const QueuePanel: React.FC<QueuePanelProps> = ({ data }) => {
   return (
     <MetricPanel title="Event Queue" icon="📊" borderColor="blue">
       <Box flexDirection="column" marginTop={1}>
-        <Box>
-          <Text>
-            State: <Text color={stateColor}>{stateLabel.toLowerCase()}</Text>
-            {"  "}Size: {size}
-          </Text>
+        <Box gap={2}>
+          <Text>State: <Text color={stateColor}>{stateLabel.toLowerCase()}</Text></Text>
+          <Text>Size: {size}</Text>
         </Box>
         <Box>
           <Text>Dropped: <Text color={dropped > 0 ? "red" : "white"}>{dropped}</Text></Text>

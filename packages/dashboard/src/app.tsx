@@ -38,7 +38,7 @@ export const App: React.FC<AppProps> = ({ port = 9464, interval = 2000 }) => {
   });
 
   return (
-    <Box flexDirection="column" paddingX={1} paddingTop={1} width="100%">
+    <Box flexDirection="column" padding={1} width="100%">
       <Box width="100%" justifyContent="center" marginBottom={1}>
         <Box borderStyle="double" borderColor="cyan" paddingX={2}>
           <Text bold color="cyan">
@@ -47,7 +47,7 @@ export const App: React.FC<AppProps> = ({ port = 9464, interval = 2000 }) => {
         </Box>
       </Box>
 
-      <Box flexDirection="row" gap={1} width="100%">
+      <Box flexDirection="row" gap={1} width="100%" flexWrap="wrap">
         <QueuePanel data={data} />
         <ThroughputPanel data={data} />
         <DlqPanel data={data} />
