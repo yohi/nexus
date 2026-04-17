@@ -18,10 +18,10 @@ const STATUS_COLORS = new Map<MetricsStatus, string>([
 ]);
 
 const STATUS_MESSAGES = new Map<MetricsStatus, string>([
-  ["connecting", "🔌 Connecting to metrics server..."],
-  ["connected", "✅ Connected"],
-  ["waiting", "⚠️ Waiting for valid JSON response..."],
-  ["reconnecting", "🔄 Reconnecting..."],
+  ["connecting", "● [connecting]  Connecting to metrics server..."],
+  ["connected", "● [connected]   Successfully connected"],
+  ["waiting", "● [waiting]     Waiting for valid JSON response..."],
+  ["reconnecting", "● [reconnecting] Reconnecting..."],
 ]);
 
 export const App: React.FC<AppProps> = ({ port = 9464, interval = 2000 }) => {

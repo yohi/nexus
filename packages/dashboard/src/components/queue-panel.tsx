@@ -40,7 +40,7 @@ export const QueuePanel: React.FC<QueuePanelProps> = ({ data }) => {
           <Text>Size: {size}</Text>
         </Box>
         <Box>
-          <Text>Dropped: <Text color={dropped > 0 ? "red" : "white"}>{dropped}</Text></Text>
+          <Text>Dropped: <Text color={dropped > 0 ? "red" : undefined}>{dropped}</Text></Text>
         </Box>
         <Box marginTop={1}>
           <Text>{bar}  {size}/{maxSize}</Text>
