@@ -18,10 +18,10 @@ const STATUS_COLORS = new Map<MetricsStatus, string>([
 ]);
 
 const STATUS_MESSAGES = new Map<MetricsStatus, string>([
-  ["connecting", "🔌 Connecting to metrics server..."],
-  ["connected", "✅ Connected"],
-  ["waiting", "⚠️ Waiting for valid JSON response..."],
-  ["reconnecting", "🔄 Reconnecting..."],
+  ["connecting", "● [connecting]  Connecting to metrics server..."],
+  ["connected", "● [connected]   Successfully connected"],
+  ["waiting", "● [waiting]     Waiting for valid JSON response..."],
+  ["reconnecting", "● [reconnecting] Reconnecting..."],
 ]);
 
 export const App: React.FC<AppProps> = ({ port = 9464, interval = 2000 }) => {
@@ -38,24 +38,16 @@ export const App: React.FC<AppProps> = ({ port = 9464, interval = 2000 }) => {
   });
 
   return (
-    <Box flexDirection="column" padding={1}>
-      <Box marginBottom={1}>
-        <Text bold color="cyan">
-          ╔══════════════════════════════════════════╗
-        </Text>
-      </Box>
-      <Box>
-        <Text bold color="cyan">
-          ║ Nexus Observability Dashboard ║
-        </Text>
-      </Box>
-      <Box marginBottom={1}>
-        <Text bold color="cyan">
-          ╚══════════════════════════════════════════╝
-        </Text>
+    <Box flexDirection="column" padding={1} width="100%">
+      <Box width="100%" justifyContent="center" marginBottom={1}>
+        <Box borderStyle="double" borderColor="cyan" paddingX={2}>
+          <Text bold color="cyan">
+            Nexus Observability Dashboard
+          </Text>
+        </Box>
       </Box>
 
-      <Box flexDirection="row" gap={1}>
+      <Box flexDirection="row" gap={1} width="100%" flexWrap="wrap">
         <QueuePanel data={data} />
         <ThroughputPanel data={data} />
         <DlqPanel data={data} />

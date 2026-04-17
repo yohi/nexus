@@ -15,14 +15,18 @@ export const ThroughputPanel: React.FC<ThroughputPanelProps> = ({ data }) => {
   const avgDuration = calculateAvgDuration(samples, metric?.name);
 
   return (
-    <MetricPanel title="Indexing Throughput" icon="⚡" borderColor="green">
-      <Box>
-        <Text>Chunks indexed: {chunks} (total)</Text>
-      </Box>
-      <Box marginTop={1}>
-        <Text>Avg reindex: {avgDuration} (series: {samples.length})</Text>
+    <MetricPanel title="Indexing Throughput" icon="🚀" borderColor="green">
+      <Box flexDirection="column" marginTop={1}>
+        <Box>
+          <Text>Chunks indexed: {chunks} (total)</Text>
+        </Box>
+        <Box>
+          <Text>Avg duration: {avgDuration}</Text>
+        </Box>
+        <Box marginTop={1}>
+          <Text dimColor>History series: {samples.length}</Text>
+        </Box>
       </Box>
     </MetricPanel>
   );
 };
-
