@@ -1,11 +1,5 @@
 {
   "watcher": {
-    "ignorePaths": [
-      ".worktrees",
-      "node_modules",
-      ".nexus",
-      "dist",
-      "coverage"
-    ]
+    "ignorePaths": [".worktrees", "node_modules", ".nexus", "dist", "coverage"]
   }
 }
