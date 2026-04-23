@@ -9,9 +9,8 @@ import type { EventQueue } from "./event-queue.js";
 
 type WatcherFactory = (projectRoot: string, ignored: string[]) => FSWatcher;
 
-const defaultWatcherFactory: WatcherFactory = (projectRoot, ignored) => {
+const expandIgnoredPatterns = (ignored: string[]): string[] => {
   const patterns: string[] = [];
-
   for (const entry of ignored) {
     const isNegated = entry.startsWith("!");
     const rawPattern = isNegated ? entry.slice(1) : entry;
@@ -19,10 +18,13 @@ const defaultWatcherFactory: WatcherFactory = (projectRoot, ignored) => {
       patterns.push(isNegated ? `!${normalizedPath}` : normalizedPath);
     }
   }
+  return patterns;
+};
 
+const defaultWatcherFactory: WatcherFactory = (projectRoot, ignored) => {
   return chokidar.watch(".", {
     cwd: projectRoot,
-    ignored: patterns,
+    ignored: expandIgnoredPatterns(ignored),
     ignoreInitial: true,
   });
 };
@@ -32,6 +34,7 @@ export class FileWatcher {
   private startPromise: Promise<void> | undefined;
   private settleStartPromise: (() => void) | undefined;
   private isStopped = false;
+  private isStarting = false;
   private isIgnored: (path: string) => boolean = () => false;
 
   /**
@@ -50,17 +53,9 @@ export class FileWatcher {
     private readonly createWatcher: WatcherFactory = defaultWatcherFactory,
   ) {
     const ignored = this.options.ignorePaths ?? [];
-    const patterns: string[] = [];
-
-    for (const entry of ignored) {
-      const isNegated = entry.startsWith("!");
-      const rawPattern = isNegated ? entry.slice(1) : entry;
-      for (const normalizedPath of normalizeIgnorePaths([rawPattern])) {
-        patterns.push(isNegated ? `!${normalizedPath}` : normalizedPath);
-      }
-    }
-
-    this.isIgnored = picomatch(patterns, { windows: true });
+    this.isIgnored = picomatch(expandIgnoredPatterns(ignored), {
+      windows: true,
+    });
   }
 
   async start(): Promise<void> {
@@ -73,6 +68,7 @@ export class FileWatcher {
     }
 
     this.isStopped = false;
+    this.isStarting = true;
     this.startPromise = (async () => {
       await this.asyncBoundary();
 
@@ -82,6 +78,7 @@ export class FileWatcher {
         this.settleStartPromise = () => {
           this.settleStartPromise = undefined;
           this.startPromise = undefined;
+          this.isStarting = false;
           resolve();
         };
 
@@ -92,7 +89,9 @@ export class FileWatcher {
         watcher.on("ready", () => {
           if (this.isStopped) {
             void watcher.close().finally(() => {
-              this.watcher = undefined;
+              if (this.watcher === watcher) {
+                this.watcher = undefined;
+              }
               this.settleStartPromise?.();
             });
             return;
@@ -111,8 +110,6 @@ export class FileWatcher {
 
           if (!isReady) {
             // Initialization failure: cleanup resources
-            this.watcher = undefined;
-
             if (isEnospc) {
               const msg = [
                 "❌ Nexus Watcher failed to start: System limit for file watchers reached (ENOSPC).",
@@ -125,8 +122,12 @@ export class FileWatcher {
             const wrappedError =
               error instanceof Error ? error : new Error(String(error));
             void watcher.close().finally(() => {
+              if (this.watcher === watcher) {
+                this.watcher = undefined;
+              }
               this.settleStartPromise = undefined;
               this.startPromise = undefined;
+              this.isStarting = false;
               reject(wrappedError);
             });
             return;
@@ -179,6 +180,18 @@ export class FileWatcher {
 
   async stop(): Promise<void> {
     this.isStopped = true;
+
+    if (this.isStarting) {
+      // If we are still in the process of starting, let the start handle its own cleanup
+      if (this.startPromise) {
+        try {
+          await this.startPromise;
+        } catch {
+          // Ignore error from start as we are stopping
+        }
+      }
+      return;
+    }
 
     if (this.watcher === undefined) {
       this.settleStartPromise?.();
