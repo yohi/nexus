@@ -121,8 +121,11 @@ export class FileWatcher {
 
             const wrappedError =
               error instanceof Error ? error : new Error(String(error));
+            
+            // Capture the current watcher to ensure we close the right one and clear the reference only after
+            const failedWatcher = this.watcher;
             void watcher.close().finally(() => {
-              if (this.watcher === watcher) {
+              if (this.watcher === failedWatcher) {
                 this.watcher = undefined;
               }
               this.settleStartPromise = undefined;
