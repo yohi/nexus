@@ -10,19 +10,18 @@ import type { EventQueue } from './event-queue.js';
 type WatcherFactory = (projectRoot: string, ignored: string[]) => FSWatcher;
 
 const defaultWatcherFactory: WatcherFactory = (projectRoot, ignored) => {
-  const normalizedRoot = projectRoot.split(path.sep).join('/');
   const patterns: string[] = [];
 
   for (const entry of ignored) {
     const isNegated = entry.startsWith('!');
     const rawPattern = isNegated ? entry.slice(1) : entry;
     for (const normalizedPath of normalizeIgnorePaths([rawPattern])) {
-      const absolutePath = path.resolve(projectRoot, normalizedPath).split(path.sep).join('/');
-      patterns.push(isNegated ? `!${absolutePath}` : absolutePath);
+      patterns.push(isNegated ? `!${normalizedPath}` : normalizedPath);
     }
   }
 
-  return chokidar.watch(normalizedRoot, {
+  return chokidar.watch('.', {
+    cwd: projectRoot,
     ignored: patterns,
     ignoreInitial: true,
   });
@@ -104,9 +103,25 @@ export class FileWatcher {
         });
 
         watcher.on('error', (error: unknown) => {
+          const isEnospc =
+            error !== null &&
+            typeof error === 'object' &&
+            'code' in error &&
+            error.code === 'ENOSPC';
+
           if (!isReady) {
             // Initialization failure: cleanup resources
             this.watcher = undefined;
+            
+            if (isEnospc) {
+              const msg = [
+                '❌ Nexus Watcher failed to start: System limit for file watchers reached (ENOSPC).',
+                '👉 Solution: Increase inotify limits or add more paths to "watcher.ignorePaths" in your config.',
+                '   To increase limits, run: echo fs.inotify.max_user_watches=524288 | sudo tee -a /etc/sysctl.conf && sudo sysctl -p',
+              ].join('\n');
+              console.error(msg);
+            }
+
             const wrappedError = error instanceof Error ? error : new Error(String(error));
             void watcher.close().finally(() => {
               this.settleStartPromise = undefined;
@@ -122,7 +137,12 @@ export class FileWatcher {
             'code' in error &&
             error.code === 'EMFILE';
 
-          if (hasEmfileCode) {
+          if (isEnospc) {
+            console.error(
+              '[Nexus Watcher Error] System limit hit (ENOSPC). File watching may be incomplete.',
+              error,
+            );
+          } else if (hasEmfileCode) {
             console.error(
               '[Nexus Watcher Error] System limit hit (EMFILE). File watching is suspended.',
               error,

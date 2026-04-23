@@ -37,6 +37,7 @@ const DEFAULT_CONFIG = (projectRoot: string): Config => ({
     ignorePaths: [
       'node_modules',
       '.git',
+      '.worktrees',
       '.nexus',
       'dist',
       'build',
