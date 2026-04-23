@@ -23,18 +23,22 @@ export const DlqPanel: React.FC<DlqPanelProps> = ({ data }) => {
 
   return (
     <MetricPanel title="DLQ Health" icon="🪦" borderColor="red">
-      <Box gap={3}>
-        <Text>Pending: {size}</Text>
-        <Text>Retried: {retried}</Text>
-        <Text>Purged: {purged}</Text>
-      </Box>
-      <Box marginTop={1}>
-        <Text>
-          Status:{" "}
-          <Text bold color={status.color}>
-            ● {status.label}
+      <Box flexDirection="column" marginTop={1}>
+        <Box gap={2}>
+          <Text>Pending: {size}</Text>
+          <Text>Retried: {retried}</Text>
+        </Box>
+        <Box>
+          <Text>Purged: {purged}</Text>
+        </Box>
+        <Box marginTop={1}>
+          <Text>
+            Status:{" "}
+            <Text bold color={status.color}>
+              ● {status.label}
+            </Text>
           </Text>
-        </Text>
+        </Box>
       </Box>
     </MetricPanel>
   );

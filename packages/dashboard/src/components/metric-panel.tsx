@@ -19,11 +19,13 @@ export const MetricPanel: React.FC<MetricPanelProps> = ({
       flexDirection="column"
       borderStyle="round"
       borderColor={borderColor}
-      padding={1}
+      paddingX={1}
       flexGrow={1}
+      flexBasis="33%"
+      minWidth={30}
     >
       <Text bold>{icon} {title}</Text>
-      <Box flexDirection="column" marginTop={1}>
+      <Box flexDirection="column">
         {children}
       </Box>
     </Box>
