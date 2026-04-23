@@ -1,5 +1,20 @@
 # Changelog
 
+## [1.6.0](https://github.com/yohi/nexus/compare/v1.5.0...v1.6.0) (2026-04-23)
+
+
+### Features
+
+* **doctor:** 推奨無視パスを拡充しinotifyチェックを改善 ([8c3a329](https://github.com/yohi/nexus/commit/8c3a329e968f2ccfff97d74d635143b1f635b067))
+* **watcher:** ENOSPC 関連の lint 設定を調整 ([8a0308e](https://github.com/yohi/nexus/commit/8a0308e0edfc6f9c4cb07e587c51c2ca29325820))
+* watcherのENOSPCエラー対策と診断ツール(doctor)の追加 ([a0a798a](https://github.com/yohi/nexus/commit/a0a798a33b321d77fea4e06b4811135b38447e3b))
+
+
+### Bug Fixes
+
+* **indexer/watcher:** ウォッチャーのクローズエラーハンドリングを改善 ([68bbbde](https://github.com/yohi/nexus/commit/68bbbde58cb6b58f83c1698d7d3cd8ababece0d8))
+* **watcher:** ignoreパターン展開とENOSPCエラー処理を改善 ([3858842](https://github.com/yohi/nexus/commit/385884249fbdd9fe10e94658fac0f4c9689d80c7))
+
 ## [1.5.0](https://github.com/yohi/nexus/compare/v1.4.1...v1.5.0) (2026-04-23)
 
 
