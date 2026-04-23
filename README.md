@@ -110,6 +110,7 @@ server.listen(3000, '127.0.0.1');
 除外対象を追加または変更するには、以下の方法があります。
 
 1.  **`.nexus.json`**: プロジェクトルートに作成し、`watcher.ignorePaths` を指定します。
+    > **注意**: `ignorePaths` を指定すると、デフォルトのリストは完全に置き換えられます。既存のデフォルトを維持したい場合は、デフォルトのパス（`node_modules`, `.git` など）も一緒に列挙してください。
     ```json
     {
       "watcher": {
@@ -118,6 +119,7 @@ server.listen(3000, '127.0.0.1');
     }
     ```
 2.  **環境変数**: `NEXUS_WATCHER_IGNORE_PATHS` にカンマ区切りで指定します。
+    > **注意**: 環境変数を指定した場合も、デフォルトのリストは上書きされます（マージされません）。
     ```bash
     export NEXUS_WATCHER_IGNORE_PATHS="node_modules,.git,tmp"
     ```
@@ -127,7 +129,7 @@ server.listen(3000, '127.0.0.1');
 | 環境変数 / キー | デフォルト値 | 説明 |
 | :--- | :--- | :--- |
 | `NEXUS_STORAGE_ROOT_DIR` | `<projectRoot>/.nexus` | インデックスデータの保存先 |
-| `NEXUS_WATCHER_IGNORE_PATHS` | (上記デフォルトリスト) | 除外するパスのリスト (カンマ区切り) |
+| `NEXUS_WATCHER_IGNORE_PATHS` | (上記デフォルトリスト) | 除外するパスのリスト。**この設定はデフォルトを上書きします。** |
 | `embedding.provider` | `ollama` | 使用する Embedding プロバイダー (`ollama`, `openai-compat`) |
 | `embedding.model` | `nomic-embed-text` | Embedding モデル名 |
 

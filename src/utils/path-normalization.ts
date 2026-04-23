@@ -12,5 +12,5 @@ export const normalizeIgnorePaths = (ignorePaths: string[]): string[] =>
     if (normalized === "" || normalized.trim() === "") {
       return [];
     }
-    return [normalized, `${normalized}/**`, `**/${normalized}`, `**/${normalized}/**` ];
+    return [normalized, `${normalized}/**`, `**/${normalized}`, `**/${normalized}/**`];
   });

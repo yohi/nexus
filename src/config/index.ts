@@ -46,7 +46,6 @@ const DEFAULT_CONFIG = (projectRoot: string): Config => ({
       '.parcel-cache',
       'venv',
       '.venv',
-      'env',
       '.idea',
       '.vscode',
       '.DS_Store',
