@@ -39,6 +39,7 @@
     "lint": "eslint src/**/*.ts vitest.config.ts",
     "test": "vitest run --passWithNoTests",
     "test:bench": "vitest bench tests/benchmarks/**/*.bench.ts",
+    "doctor": "node scripts/doctor.mjs",
     "license:check": "node scripts/license-check.mjs",
     "license:report": "license-checker --production --json --out reports/licenses.json",
     "license:notice": "generate-license-file --input package-lock.json --output NOTICE"

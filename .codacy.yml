@@ -25,3 +25,9 @@ ignore_issues:
     files:
       - "packages/dashboard/src/app.tsx"
       - "packages/dashboard/src/components/*.tsx"
+  - pattern_id: "useQwikValidLexicalScope"
+    files:
+      - "src/indexer/watcher.ts"
+  - pattern_id: "lint/correctness/useQwikValidLexicalScope"
+    files:
+      - "src/indexer/watcher.ts"
