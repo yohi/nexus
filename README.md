@@ -95,9 +95,39 @@ server.listen(3000, '127.0.0.1');
 
 プロジェクトルートの `.nexus.json` で挙動をカスタマイズできます。詳細は [docs/configuration.md](docs/configuration.md) を参照してください。
 
+### デフォルトの除外設定 (Watcher Ignore)
+
+以下のディレクトリおよびファイルは、パフォーマンスとインデックスの正確性を維持するため、デフォルトで監視・インデックス対象から除外されます。
+
+- **依存・ビルド**: `node_modules`, `dist`, `build`, `out`
+- **内部データ**: `.git`, `.nexus`
+- **テスト・キャッシュ**: `coverage`, `.cache`, `.parcel-cache`
+- **仮想環境**: `venv`, `.venv`, `env`
+- **エディタ・OS設定**: `.idea`, `.vscode`, `.DS_Store`
+
+### 設定のカスタマイズ
+
+除外対象を追加または変更するには、以下の方法があります。
+
+1.  **`.nexus.json`**: プロジェクトルートに作成し、`watcher.ignorePaths` を指定します。
+    ```json
+    {
+      "watcher": {
+        "ignorePaths": ["node_modules", ".git", "custom_tmp"]
+      }
+    }
+    ```
+2.  **環境変数**: `NEXUS_WATCHER_IGNORE_PATHS` にカンマ区切りで指定します。
+    ```bash
+    export NEXUS_WATCHER_IGNORE_PATHS="node_modules,.git,tmp"
+    ```
+
+### 主要な設定項目
+
 | 環境変数 / キー | デフォルト値 | 説明 |
 | :--- | :--- | :--- |
 | `NEXUS_STORAGE_ROOT_DIR` | `<projectRoot>/.nexus` | インデックスデータの保存先 |
+| `NEXUS_WATCHER_IGNORE_PATHS` | (上記デフォルトリスト) | 除外するパスのリスト (カンマ区切り) |
 | `embedding.provider` | `ollama` | 使用する Embedding プロバイダー (`ollama`, `openai-compat`) |
 | `embedding.model` | `nomic-embed-text` | Embedding モデル名 |
 
