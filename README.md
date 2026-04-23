@@ -72,6 +72,24 @@ Install and configure Nexus. First, read the local README.md and AGENTS.md in th
 
 ## 📖 使い方
 
+### ダッシュボード (TUI) の起動
+
+Nexus サーバーが起動している状態で、以下のコマンドを実行すると、ターミナル上でリアルタイムなインデックス状態やキューの監視が可能なダッシュボードが開きます。
+
+```bash
+# グローバルインストールされている場合
+nexus dashboard
+
+# ポート番号(デフォルト: 9464)や更新間隔(デフォルト: 2000ms, 最小: 1000ms)を指定する場合
+nexus dashboard --port 9470 --interval 3000
+
+# リポジトリ内から実行する場合
+npx tsx src/bin/nexus.ts dashboard --port 9470
+```
+
+> [!TIP]
+> サーバー側で `NEXUS_METRICS_PORT` を指定して起動している場合は、ダッシュボード起動時にも `--port` で同じポート番号を指定してください。
+
 ### ライブラリとして組み込む
 
 Nexus は Node.js プロセスに組み込んで、独自の MCP サーバーとして公開できます。
