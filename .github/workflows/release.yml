@@ -46,6 +46,7 @@ jobs:
         run: npm publish --ignore-scripts
         env:
           NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          NEXUS_GH_PACKAGE_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         if: ${{ steps.release.outputs.release_created }}
       - name: Pack and Upload Release Asset
         run: |
