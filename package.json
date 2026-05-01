@@ -3,6 +3,10 @@
   "version": "1.6.0",
   "private": false,
   "type": "module",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/yohi/nexus.git"
+  },
   "workspaces": [
     "packages/*"
   ],

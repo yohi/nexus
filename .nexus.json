@@ -1,5 +1,21 @@
 {
   "watcher": {
-    "ignorePaths": [".worktrees", "node_modules", ".nexus", "dist", "coverage"]
+    "ignorePaths": [
+      ".worktrees",
+      "node_modules",
+      ".nexus",
+      "dist",
+      "coverage",
+      ".git",
+      "build",
+      "out",
+      ".cache",
+      ".parcel-cache",
+      "venv",
+      ".venv",
+      ".idea",
+      ".vscode",
+      ".DS_Store"
+    ]
   }
 }
