@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.6.2](https://github.com/yohi/nexus/compare/v1.6.1...v1.6.2) (2026-05-01)
+
+
+### Bug Fixes
+
+* publish時にローカルの.npmrcによる認証エラ—を回避 ([af7f256](https://github.com/yohi/nexus/commit/af7f256e0b2b1e2006fc52e35ee61a7c169c214b))
+
 ## [1.6.1](https://github.com/yohi/nexus/compare/v1.6.0...v1.6.1) (2026-05-01)
 
 
