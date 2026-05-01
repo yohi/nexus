@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.6.1](https://github.com/yohi/nexus/compare/v1.6.0...v1.6.1) (2026-05-01)
+
+
+### Bug Fixes
+
+* GitHub Packages公開用のrepositoryフィールドを追加 ([d6fb029](https://github.com/yohi/nexus/commit/d6fb029c4eadf9b513a846935a0f03dba9a40aff))
+
 ## [1.6.0](https://github.com/yohi/nexus/compare/v1.5.0...v1.6.0) (2026-04-23)
 
 
