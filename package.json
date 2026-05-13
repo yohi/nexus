@@ -36,7 +36,7 @@
     "registry": "https://npm.pkg.github.com"
   },
   "engines": {
-    "node": ">=22.0.0"
+    "node": ">=26.0.0"
   },
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
@@ -52,7 +52,7 @@
     "@lancedb/lancedb": "^0.18.2",
     "@modelcontextprotocol/sdk": "^1.18.0",
     "async-mutex": "^0.5.0",
-    "better-sqlite3": "^11.10.0",
+    "better-sqlite3": "^12.10.0",
     "chokidar": "^4.0.3",
     "p-limit": "^7.1.1",
     "picomatch": "^4.0.4",
@@ -64,7 +64,7 @@
   "devDependencies": {
     "@eslint/js": "^9.24.0",
     "@types/better-sqlite3": "^7.6.13",
-    "@types/node": "^22.14.1",
+    "@types/node": "^25.7.0",
     "@types/picomatch": "^4.0.3",
     "@vitest/coverage-v8": "^3.2.4",
     "eslint": "^9.24.0",
