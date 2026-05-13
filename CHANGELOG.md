@@ -1,5 +1,18 @@
 # Changelog
 
+## [1.7.0](https://github.com/yohi/nexus/compare/v1.6.2...v1.7.0) (2026-05-13)
+
+
+### Features
+
+* Node.js v26の互換性対応 (better-sqlite3の更新) ([526d1ed](https://github.com/yohi/nexus/commit/526d1ed407bcf5bac631c6646ff1c1bf68248a14))
+* Node.js v26の互換性対応 (better-sqlite3の更新) ([010a1ed](https://github.com/yohi/nexus/commit/010a1ede7cdb0e35901e957e3368a4e3b06e13c9))
+
+
+### Bug Fixes
+
+* セキュリティ脆弱性の修正 (npm audit fix) ([18e0924](https://github.com/yohi/nexus/commit/18e0924c9d993ff0f76ced38339f5cc7cc4952ee))
+
 ## [1.6.2](https://github.com/yohi/nexus/compare/v1.6.1...v1.6.2) (2026-05-01)
 
 
