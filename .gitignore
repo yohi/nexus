@@ -22,10 +22,14 @@ yarn-error.log*
 # Test coverage
 coverage/
 
+# Reports
+reports/
+
 # OS specific files
 .DS_Store
 Thumbs.db
 
 # Project specific
 .nexus/
+.omo/
 .worktrees/
