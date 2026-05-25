@@ -241,7 +241,7 @@ export const buildNexusRuntime = (
     if (initPromise) {
       return initPromise;
     }
-    initPromise = (async () => {
+  initPromise = (async () => {
       await options.metadataStore.initialize();
       await options.vectorStore.initialize();
       await options.pipeline.reconcileOnStartup();
@@ -291,12 +291,27 @@ export const buildNexusRuntime = (
         });
         throw error;
       }
-    })();
+    })().catch(() => {
+      // Reset initPromise on failure so initialize() can be retried later
+      initPromise = null;
+    });
     return initPromise;
   };
-
   const close = async () => {
     const shutdownErrors: unknown[] = [];
+
+    // Wait for any ongoing initialization to complete or fail before
+    // proceeding with shutdown. If initialization is in progress, calling
+    // stop() while start() is running can leave watcher/pipeline in an
+    // undefined state.
+    if (initPromise) {
+      try {
+        await initPromise;
+      } catch {
+        // Initialization failed; rollback inside initialize() already
+        // attempted cleanup. Proceed with the rest of shutdown.
+      }
+    }
 
     if (metricsServer) {
       try {
