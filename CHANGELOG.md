@@ -1,5 +1,14 @@
 # Changelog
 
+## [1.7.4](https://github.com/yohi/nexus/compare/v1.7.3...v1.7.4) (2026-05-25)
+
+
+### Bug Fixes
+
+* **server:** resolve lint errors by replacing any with unknown cast ([0419571](https://github.com/yohi/nexus/commit/04195716986df7e7d9e85030f6a75747b85dad7d))
+* **transport:** セッション管理の初期化と破棄の修正およびストレステストのタイムアウト緩和 ([854815f](https://github.com/yohi/nexus/commit/854815f47efd1e058bd9af36271ddbb09bd4ea48))
+* **transport:** セッション管理の初期化と破棄の修正およびストレステストのタイムアウト緩和 ([35223e0](https://github.com/yohi/nexus/commit/35223e07cbed970ea54cf694fb8c7ec9419e339e))
+
 ## [1.7.3](https://github.com/yohi/nexus/compare/v1.7.2...v1.7.3) (2026-05-25)
 
 
