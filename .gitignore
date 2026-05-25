@@ -31,4 +31,5 @@ Thumbs.db
 
 # Project specific
 .nexus/
+.omo/
 .worktrees/
