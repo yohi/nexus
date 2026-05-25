@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.7.1](https://github.com/yohi/nexus/compare/v1.7.0...v1.7.1) (2026-05-25)
+
+
+### Bug Fixes
+
+* add execution permissions to binary and expand bin field ([68f697f](https://github.com/yohi/nexus/commit/68f697f612da2959a7f85d935c7ac47cacecebec))
+* binary execution and bin field resolution ([30b8a9d](https://github.com/yohi/nexus/commit/30b8a9df2dbc6fbfa7f5d571d7a0fc5e096fe12e))
+
 ## [1.7.0](https://github.com/yohi/nexus/compare/v1.6.2...v1.7.0) (2026-05-13)
 
 
