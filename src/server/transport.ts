@@ -84,7 +84,8 @@ export const createStreamableHttpHandler = ({
 
     try {
       let entry = sessionId ? sessions.get(sessionId) : undefined;
-      let createdEntry: SessionEntry | undefined;
+      let isNewSession = false;
+      let sessionEntry: SessionEntry | undefined;
 
       if (entry) {
         if (entry.closed) {
@@ -104,24 +105,35 @@ export const createStreamableHttpHandler = ({
         }
 
         const server = createServer();
-        const transport = new StreamableHTTPServerTransport({
-          sessionIdGenerator: () => randomUUID(),
-          onsessioninitialized: (createdSessionId) => {
-            if (createdEntry) {
-              sessions.set(createdSessionId, createdEntry);
-            }
-          },
-        });
+        isNewSession = true;
 
-        createdEntry = {
+        sessionEntry = {
           server,
-          transport,
+          transport: null as any,
           lastActivity: Date.now(),
           inFlightRequests: 0,
           closed: false,
         };
 
-        const finalEntry = createdEntry;
+        const transport = new StreamableHTTPServerTransport({
+          sessionIdGenerator: () => {
+            const id = randomUUID();
+            if (sessionEntry) {
+              sessions.set(id, sessionEntry);
+            }
+            return id;
+          },
+          onsessioninitialized: (createdSessionId) => {
+            if (sessionEntry) {
+              sessions.set(createdSessionId, sessionEntry);
+            }
+          },
+        });
+
+        sessionEntry.transport = transport;
+        entry = sessionEntry;
+
+        const finalEntry = sessionEntry;
 
         transport.onclose = () => {
           if (!finalEntry.closed) {
@@ -133,8 +145,6 @@ export const createStreamableHttpHandler = ({
             void safeClose(finalEntry.server, activeId);
           }
         };
-
-        entry = createdEntry;
       }
 
       if (!entry) {
@@ -143,18 +153,18 @@ export const createStreamableHttpHandler = ({
 
       entry.inFlightRequests += 1;
       try {
-        if (createdEntry) {
+        if (isNewSession) {
           await entry.server.connect(entry.transport);
         }
         await entry.transport.handleRequest(req, res, body);
       } catch (error) {
-        if (createdEntry && !createdEntry.closed) {
-          createdEntry.closed = true;
-          const activeId = createdEntry.transport.sessionId;
+        if (isNewSession && !entry.closed) {
+          entry.closed = true;
+          const activeId = entry.transport.sessionId;
           if (activeId) {
             sessions.delete(activeId);
           }
-          await safeClose(createdEntry.server, activeId);
+          await safeClose(entry.server, activeId);
         }
         throw error;
       } finally {

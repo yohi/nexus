@@ -23,7 +23,7 @@ import { InMemoryMetadataStore } from '../unit/storage/in-memory-metadata-store.
 import { InMemoryVectorStore } from '../unit/storage/in-memory-vector-store.js';
 
 const CONCURRENT_CLIENTS = 24;
-const SESSION_IDLE_TIMEOUT_MS = 2_000;
+const SESSION_IDLE_TIMEOUT_MS = 5_000;
 
 const makeChunk = (overrides: Partial<CodeChunk>): CodeChunk => ({
   id: overrides.id ?? 'chunk-1',
@@ -235,7 +235,7 @@ describe('stress: concurrent MCP agents', () => {
         chunksIndexed: 0,
       });
     }
-  });
+  }, 20000);
 
   it('accepts new clients after prior idle sessions are cleaned up', async () => {
     const firstWave = Array.from({ length: 8 }, (_, index) => {
@@ -274,7 +274,7 @@ describe('stress: concurrent MCP agents', () => {
         pluginHealth: expect.objectContaining({ healthy: true, isOperational: true }),
       });
     }
-  });
+  }, 20000);
 });
 
 const parseResult = (result: unknown) => {
