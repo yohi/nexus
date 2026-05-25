@@ -1,4 +1,4 @@
-FROM mcr.microsoft.com/devcontainers/javascript-node:1-22-bookworm
+FROM mcr.microsoft.com/devcontainers/javascript-node:1-24-bookworm
 
 RUN apt-get update \
   && apt-get install -y --no-install-recommends ripgrep \
