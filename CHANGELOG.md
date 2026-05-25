@@ -1,5 +1,15 @@
 # Changelog
 
+## [1.7.2](https://github.com/yohi/nexus/compare/v1.7.1...v1.7.2) (2026-05-25)
+
+
+### Bug Fixes
+
+* MCP connection closed error と CI タイムアウトの対策 ([855d932](https://github.com/yohi/nexus/commit/855d932bc4f1b7ae4468d12a25d77d8a5d19668c))
+* MCP connection closed error と CI タイムアウトの対策 ([d36b793](https://github.com/yohi/nexus/commit/d36b793760645106b9b8d4b8cfe578fd946b5706))
+* **server:** MCPサーバーの初期化失敗時にエラーを伝播させるよう修正 ([9a830c4](https://github.com/yohi/nexus/commit/9a830c42cdbc429488dc0cf7aa02b482976d4a93))
+* コードレビュー指摘対応（初期化競合・再試行） ([dc3faf5](https://github.com/yohi/nexus/commit/dc3faf59d90018ce3d53d7ef47c758fd6f48e1e9))
+
 ## [1.7.1](https://github.com/yohi/nexus/compare/v1.7.0...v1.7.1) (2026-05-25)
 
 
