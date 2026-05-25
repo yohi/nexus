@@ -1,6 +1,6 @@
 {
   "name": "@yohi/nexus",
-  "version": "1.7.0",
+  "version": "1.7.1",
   "private": false,
   "type": "module",
   "repository": {
@@ -14,7 +14,8 @@
   "module": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "bin": {
-    "nexus": "./dist/bin/nexus.js"
+    "nexus": "./dist/bin/nexus.js",
+    "@yohi/nexus": "./dist/bin/nexus.js"
   },
   "exports": {
     ".": {
@@ -39,7 +40,7 @@
     "node": ">=26.0.0"
   },
   "scripts": {
-    "build": "tsc -p tsconfig.build.json",
+    "build": "tsc -p tsconfig.build.json && chmod +x dist/bin/nexus.js",
     "lint": "eslint src/**/*.ts vitest.config.ts",
     "test": "vitest run --passWithNoTests",
     "test:bench": "vitest bench tests/benchmarks/**/*.bench.ts",
