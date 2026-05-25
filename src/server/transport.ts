@@ -109,7 +109,7 @@ export const createStreamableHttpHandler = ({
 
         sessionEntry = {
           server,
-          transport: null as any,
+          transport: null as unknown as StreamableHTTPServerTransport,
           lastActivity: Date.now(),
           inFlightRequests: 0,
           closed: false,
