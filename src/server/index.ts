@@ -291,9 +291,10 @@ export const buildNexusRuntime = (
         });
         throw error;
       }
-    })().catch(() => {
+    })().catch((err) => {
       // Reset initPromise on failure so initialize() can be retried later
       initPromise = null;
+      throw err;
     });
     return initPromise;
   };
