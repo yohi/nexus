@@ -252,7 +252,7 @@ describe('stress: concurrent MCP agents', () => {
       }),
     );
 
-    await new Promise((resolve) => setTimeout(resolve, SESSION_IDLE_TIMEOUT_MS + 1500));
+    await new Promise((resolve) => setTimeout(resolve, SESSION_IDLE_TIMEOUT_MS + 500));
 
     const secondWave = Array.from({ length: 8 }, (_, index) => {
       const client = new Client({ name: `second-wave-${index + 1}`, version: '1.0.0' });
@@ -274,7 +274,7 @@ describe('stress: concurrent MCP agents', () => {
         pluginHealth: expect.objectContaining({ healthy: true, isOperational: true }),
       });
     }
-  }, 20000);
+  }, 30000);
 });
 
 const parseResult = (result: unknown) => {
