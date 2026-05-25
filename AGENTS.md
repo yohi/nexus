@@ -23,7 +23,7 @@ Use your interaction tool (e.g., `ask_user` with `type: choice` or similar) to d
 ## IF CHOICE A: SOURCE BUILD (Local Development)
 
 ### Phase 1: Environment Readiness
-1. **System Check**: Confirm Node.js >= 22.0.0.
+1. **System Check**: Confirm Node.js >= 24.0.0.
 2. **Repository Context**: You are already in the `nexus` repository.
 
 ### Phase 2: Dependency Resolution (NO TOKEN REQUIRED)

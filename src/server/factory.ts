@@ -7,7 +7,7 @@ import { finished } from "node:stream/promises";
 import picomatch from "picomatch";
 
 import { normalizeIgnorePaths } from "../utils/path-normalization.js";
-import { initializeNexusRuntime, type NexusRuntime } from "./index.js";
+import { buildNexusRuntime, type NexusRuntime } from "./index.js";
 import { PathSanitizer } from "./path-sanitizer.js";
 import { SemanticSearch } from "../search/semantic.js";
 import { SearchOrchestrator } from "../search/orchestrator.js";
@@ -441,7 +441,7 @@ export class NexusServerFactory {
     const { watcher, onClose } = eventManager.setup();
 
     try {
-      return await initializeNexusRuntime({
+      return buildNexusRuntime({
         projectRoot,
         sanitizer: await PathSanitizer.create(projectRoot),
         semanticSearch,

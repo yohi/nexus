@@ -31,6 +31,14 @@ async function main() {
   console.error(`🔗 Nexus MCP server running on stdio (root: ${root})`);
 
   setupSignalHandlers(runtime);
+
+  // Heavy initialization (SQLite/LanceDB open, file watcher full scan,
+  // metrics server bind) runs after the MCP transport is connected to avoid
+  // exceeding the client's initialize timeout (`MCP error -32000`).
+  runtime.initialize().catch((error) => {
+    console.error("Nexus background initialization failed:", error);
+    process.exit(1);
+  });
 }
 
 function setupSignalHandlers(runtime: NexusRuntime): void {

@@ -45,10 +45,14 @@ export interface NexusRuntimeOptions extends NexusServerOptions {
 
 export interface NexusRuntime {
   server: McpServer;
+  initialize(): Promise<void>;
   close(): Promise<void>;
 }
 
-export const createNexusServer = (options: NexusServerOptions): McpServer => {
+export const createNexusServer = (
+  options: NexusServerOptions,
+  awaitInitialize?: () => Promise<void>,
+): McpServer => {
   const server = new McpServer(
     {
       name: "nexus",
@@ -74,6 +78,7 @@ export const createNexusServer = (options: NexusServerOptions): McpServer => {
       },
     },
     async (args, extra) => {
+      if (awaitInitialize) await awaitInitialize();
       try {
         return toolResult(
           await executeSemanticSearch(
@@ -101,6 +106,7 @@ export const createNexusServer = (options: NexusServerOptions): McpServer => {
       },
     },
     async (args, extra) => {
+      if (awaitInitialize) await awaitInitialize();
       try {
         return toolResult(
           await executeGrepSearch(
@@ -130,6 +136,7 @@ export const createNexusServer = (options: NexusServerOptions): McpServer => {
       },
     },
     async (args, extra) => {
+      if (awaitInitialize) await awaitInitialize();
       try {
         return toolResult(
           await executeHybridSearch(
@@ -157,6 +164,7 @@ export const createNexusServer = (options: NexusServerOptions): McpServer => {
       },
     },
     async (args) => {
+      if (awaitInitialize) await awaitInitialize();
       try {
         return toolResult(
           await executeGetContext(
@@ -178,6 +186,7 @@ export const createNexusServer = (options: NexusServerOptions): McpServer => {
       inputSchema: {},
     },
     async () => {
+      if (awaitInitialize) await awaitInitialize();
       try {
         return toolResult(
           await executeIndexStatus(
@@ -202,6 +211,7 @@ export const createNexusServer = (options: NexusServerOptions): McpServer => {
       },
     },
     async (args) => {
+      if (awaitInitialize) await awaitInitialize();
       try {
         return toolResult(
           await executeReindex(
@@ -220,109 +230,127 @@ export const createNexusServer = (options: NexusServerOptions): McpServer => {
   return server;
 };
 
+export const buildNexusRuntime = (
+  options: NexusRuntimeOptions,
+): NexusRuntime => {
+  const server = createNexusServer(options, () => initialize());
+  let metricsServer: MetricsHttpServer | null = null;
+  let initPromise: Promise<void> | null = null;
+
+  const initialize = (): Promise<void> => {
+    if (initPromise) {
+      return initPromise;
+    }
+    initPromise = (async () => {
+      await options.metadataStore.initialize();
+      await options.vectorStore.initialize();
+      await options.pipeline.reconcileOnStartup();
+
+      try {
+        options.pipeline.start();
+        await options.watcher.start().catch((error) => {
+          const isEmfile =
+            error !== null &&
+            typeof error === "object" &&
+            "code" in error &&
+            (error as Record<string, unknown>).code === "EMFILE";
+          if (isEmfile) {
+            console.error(
+              "[Nexus Server Warning] Failed to start FileWatcher (EMFILE):",
+              error,
+            );
+          } else {
+            throw error;
+          }
+        });
+
+        const envPort = process.env.NEXUS_METRICS_PORT;
+        const port = envPort ? Number(envPort) : 9464;
+        const metricsPort =
+          Number.isInteger(port) && port > 0 && port <= 65535 ? port : 9464;
+        metricsServer = options.metricsCollectorRegistry
+          ? new MetricsHttpServer(options.metricsCollectorRegistry)
+          : null;
+        if (metricsServer) {
+          await metricsServer.start(metricsPort).catch((err) => {
+            console.warn("[Nexus] Failed to start metrics HTTP server:", err);
+          });
+        }
+      } catch (error) {
+        await options.pipeline.stop().catch((stopError: unknown) => {
+          console.error(
+            "Failed to stop pipeline during initialization rollback:",
+            stopError,
+          );
+        });
+        await options.watcher.stop().catch((stopError: unknown) => {
+          console.error(
+            "Failed to stop watcher during initialization rollback:",
+            stopError,
+          );
+        });
+        throw error;
+      }
+    })();
+    return initPromise;
+  };
+
+  const close = async () => {
+    const shutdownErrors: unknown[] = [];
+
+    if (metricsServer) {
+      try {
+        await metricsServer.stop();
+      } catch (error) {
+        shutdownErrors.push(error);
+      }
+    }
+
+    if (options.onClose) {
+      try {
+        await options.onClose();
+      } catch (error) {
+        shutdownErrors.push(error);
+      }
+    }
+
+    try {
+      await options.watcher.stop();
+    } catch (error) {
+      shutdownErrors.push(error);
+    }
+
+    try {
+      await options.pipeline.stop();
+    } catch (error) {
+      shutdownErrors.push(error);
+    }
+
+    try {
+      await server.close();
+    } catch (error) {
+      shutdownErrors.push(error);
+    }
+
+    if (shutdownErrors.length === 1) {
+      throw shutdownErrors[0];
+    } else if (shutdownErrors.length > 1) {
+      throw new AggregateError(
+        shutdownErrors,
+        "Multiple errors occurred during Nexus runtime shutdown",
+      );
+    }
+  };
+
+  return { server, initialize, close };
+};
+
 export const initializeNexusRuntime = async (
   options: NexusRuntimeOptions,
 ): Promise<NexusRuntime> => {
-  await options.metadataStore.initialize();
-  await options.vectorStore.initialize();
-  await options.pipeline.reconcileOnStartup();
-
-  try {
-    options.pipeline.start();
-    await options.watcher.start().catch((error) => {
-      const isEmfile =
-        error !== null &&
-        typeof error === "object" &&
-        "code" in error &&
-        (error as Record<string, unknown>).code === "EMFILE";
-      if (isEmfile) {
-        console.error(
-          "[Nexus Server Warning] Failed to start FileWatcher (EMFILE):",
-          error,
-        );
-      } else {
-        throw error;
-      }
-    });
-    const server = createNexusServer(options);
-
-    const envPort = process.env.NEXUS_METRICS_PORT;
-    const port = envPort ? Number(envPort) : 9464;
-    const metricsPort =
-      Number.isInteger(port) && port > 0 && port <= 65535 ? port : 9464;
-    const metricsServer = options.metricsCollectorRegistry
-      ? new MetricsHttpServer(options.metricsCollectorRegistry)
-      : null;
-    if (metricsServer) {
-      await metricsServer.start(metricsPort).catch((err) => {
-        console.warn("[Nexus] Failed to start metrics HTTP server:", err);
-      });
-    }
-
-    return {
-      server,
-      close: async () => {
-        const shutdownErrors: unknown[] = [];
-
-        if (metricsServer) {
-          try {
-            await metricsServer.stop();
-          } catch (error) {
-            shutdownErrors.push(error);
-          }
-        }
-
-        if (options.onClose) {
-          try {
-            await options.onClose();
-          } catch (error) {
-            shutdownErrors.push(error);
-          }
-        }
-
-        try {
-          await options.watcher.stop();
-        } catch (error) {
-          shutdownErrors.push(error);
-        }
-
-        try {
-          await options.pipeline.stop();
-        } catch (error) {
-          shutdownErrors.push(error);
-        }
-
-        try {
-          await server.close();
-        } catch (error) {
-          shutdownErrors.push(error);
-        }
-
-        if (shutdownErrors.length === 1) {
-          throw shutdownErrors[0];
-        } else if (shutdownErrors.length > 1) {
-          throw new AggregateError(
-            shutdownErrors,
-            "Multiple errors occurred during Nexus runtime shutdown",
-          );
-        }
-      },
-    };
-  } catch (error) {
-    await options.pipeline.stop().catch((stopError: unknown) => {
-      console.error(
-        "Failed to stop pipeline during initialization rollback:",
-        stopError,
-      );
-    });
-    await options.watcher.stop().catch((stopError: unknown) => {
-      console.error(
-        "Failed to stop watcher during initialization rollback:",
-        stopError,
-      );
-    });
-    throw error;
-  }
+  const runtime = buildNexusRuntime(options);
+  await runtime.initialize();
+  return runtime;
 };
 
 /**
