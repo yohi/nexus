@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.7.3](https://github.com/yohi/nexus/compare/v1.7.2...v1.7.3) (2026-05-25)
+
+
+### Bug Fixes
+
+* TypeScriptをdependenciesに移動し、ランタイムエラーを修正 ([71c26a2](https://github.com/yohi/nexus/commit/71c26a29f56950e1001aea276505497a01944bef))
+* TypeScriptをdependenciesに移動し、ランタイムエラーを修正 ([9a604af](https://github.com/yohi/nexus/commit/9a604afc71a2d0e241612c7f6263f320c8e5b535))
+
 ## [1.7.2](https://github.com/yohi/nexus/compare/v1.7.1...v1.7.2) (2026-05-25)
 
 
