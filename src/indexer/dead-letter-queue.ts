@@ -83,6 +83,7 @@ export class DeadLetterQueue {
       contentHash: input.contentHash,
       errorMessage: input.errorMessage,
       attempts: input.attempts,
+      recoveryAttempts: existingEntry?.recoveryAttempts ?? 0,
       createdAt: existingEntry?.createdAt ?? timestamp,
       updatedAt: timestamp,
       lastRetryAt: existingEntry?.lastRetryAt ?? null,

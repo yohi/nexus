@@ -65,6 +65,7 @@ export class SqliteMetadataStore implements IMetadataStore {
         content_hash TEXT NOT NULL,
         error_message TEXT NOT NULL,
         attempts INTEGER NOT NULL,
+        recovery_attempts INTEGER NOT NULL DEFAULT 0,
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL,
         last_retry_at TEXT
@@ -72,6 +73,13 @@ export class SqliteMetadataStore implements IMetadataStore {
 
       CREATE INDEX IF NOT EXISTS idx_dlq_created ON dead_letter_queue (created_at);
     `);
+
+    // Idempotent migration: add recovery_attempts column if missing (existing DBs)
+    const columns = this.db.pragma('table_info(dead_letter_queue)') as Array<{ name: string }>;
+    const hasRecoveryAttempts = columns.some((col) => col.name === 'recovery_attempts');
+    if (!hasRecoveryAttempts) {
+      this.db.exec('ALTER TABLE dead_letter_queue ADD COLUMN recovery_attempts INTEGER NOT NULL DEFAULT 0');
+    }
   }
 
   async bulkUpsertMerkleNodes(nodes: MerkleNodeRow[]): Promise<void> {
@@ -354,15 +362,16 @@ export class SqliteMetadataStore implements IMetadataStore {
   async upsertDeadLetterEntries(entries: DeadLetterEntry[]): Promise<void> {
     const statement = this.db.prepare(`
       INSERT INTO dead_letter_queue (
-        id, file_path, content_hash, error_message, attempts, created_at, updated_at, last_retry_at
+        id, file_path, content_hash, error_message, attempts, recovery_attempts, created_at, updated_at, last_retry_at
       ) VALUES (
-        @id, @filePath, @contentHash, @errorMessage, @attempts, @createdAt, @updatedAt, @lastRetryAt
+        @id, @filePath, @contentHash, @errorMessage, @attempts, @recoveryAttempts, @createdAt, @updatedAt, @lastRetryAt
       )
       ON CONFLICT(id) DO UPDATE SET
         file_path = excluded.file_path,
         content_hash = excluded.content_hash,
         error_message = excluded.error_message,
         attempts = excluded.attempts,
+        recovery_attempts = excluded.recovery_attempts,
         updated_at = excluded.updated_at,
         last_retry_at = excluded.last_retry_at
     `);
@@ -404,6 +413,7 @@ export class SqliteMetadataStore implements IMetadataStore {
                 content_hash AS contentHash,
                 error_message AS errorMessage,
                 attempts,
+                recovery_attempts AS recoveryAttempts,
                 created_at AS createdAt,
                 updated_at AS updatedAt,
                 last_retry_at AS lastRetryAt

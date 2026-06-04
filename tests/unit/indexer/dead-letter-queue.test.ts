@@ -10,6 +10,7 @@ const makeEntry = (overrides: Partial<DeadLetterEntry> = {}): DeadLetterEntry =>
   contentHash: overrides.contentHash ?? 'hash-1',
   errorMessage: overrides.errorMessage ?? 'embed failed',
   attempts: overrides.attempts ?? 3,
+  recoveryAttempts: overrides.recoveryAttempts ?? 0,
   createdAt: overrides.createdAt ?? '2026-04-07T00:00:00.000Z',
   updatedAt: overrides.updatedAt ?? '2026-04-07T00:00:00.000Z',
   lastRetryAt: overrides.lastRetryAt ?? null,

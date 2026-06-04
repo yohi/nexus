@@ -258,6 +258,7 @@ export interface DeadLetterEntry {
   contentHash: string;
   errorMessage: string;
   attempts: number;
+  recoveryAttempts: number;
   createdAt: string;
   updatedAt: string;
   lastRetryAt: string | null;
