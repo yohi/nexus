@@ -340,7 +340,7 @@ export class IndexPipeline implements IIndexPipeline {
       },
     ]);
 
-    const embeddings = await this.embedWithRetry(chunks.map((chunk) => chunk.content));
+    const embeddings = await this.options.embeddingProvider.embed(chunks.map((chunk) => chunk.content));
     await this.options.vectorStore.upsertChunks(chunks, embeddings, [filePath]);
     await this.merkleTree.update(filePath, contentHash);
     this.skippedFiles.delete(filePath);
@@ -363,27 +363,6 @@ export class IndexPipeline implements IIndexPipeline {
     await this.indexFile(entry.filePath, content, entry.contentHash);
   }
 
-  private async embedWithRetry(texts: string[]): Promise<number[][]> {
-    const maxAttempts = 3;
-    const baseDelay = 1000;
-
-    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-      try {
-        return await this.options.embeddingProvider.embed(texts);
-      } catch (error) {
-        if (attempt === maxAttempts) {
-          throw new RetryExhaustedError(
-            error instanceof Error ? error.message : String(error),
-            maxAttempts,
-          );
-        }
-        const delay = baseDelay * Math.pow(2, attempt - 1);
-        await new Promise((resolve) => setTimeout(resolve, delay));
-      }
-    }
-
-    throw new Error('Unreachable');
-  }
 
   private detectLanguage(filePath: string): string {
     const plugin = this.options.pluginRegistry.getLanguagePlugin(filePath);
