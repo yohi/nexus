@@ -47,6 +47,7 @@ export interface NexusRuntime {
   server: McpServer;
   initialize(): Promise<void>;
   close(): Promise<void>;
+  reindex(fullRebuild?: boolean): Promise<void>;
 }
 
 export const createNexusServer = (
@@ -358,7 +359,13 @@ export const buildNexusRuntime = (
     }
   };
 
-  return { server, initialize, close };
+  const reindex = async (fullRebuild?: boolean) => {
+    await options.metadataStore.initialize();
+    await options.vectorStore.initialize();
+    await options.runReindex({ fullScan: fullRebuild });
+  };
+
+  return { server, initialize, close, reindex };
 };
 
 export const initializeNexusRuntime = async (

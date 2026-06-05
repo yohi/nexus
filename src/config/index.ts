@@ -14,10 +14,11 @@ const DEFAULT_EMBEDDING: EmbeddingConfig = {
   model: 'nomic-embed-text',
   dimensions: 768,
   baseUrl: 'http://127.0.0.1:11434',
-  maxConcurrency: 2,
-  batchSize: 32,
+  maxConcurrency: 1,
+  batchSize: 4,
   retryCount: 3,
   retryBaseDelayMs: 250,
+  timeoutMs: 120_000,
 };
 
 export const DEFAULT_BATCH_SIZE = 1000;
@@ -103,7 +104,10 @@ export const loadConfig = async (options: LoadConfigOptions): Promise<Config> =>
         asPositiveInt(env.NEXUS_EMBEDDING_RETRY_BASE_DELAY_MS) ??
         validatePositiveInt(fileConfig.embedding?.retryBaseDelayMs) ??
         defaults.embedding.retryBaseDelayMs,
-      timeoutMs: asPositiveInt(env.NEXUS_EMBEDDING_TIMEOUT_MS) ?? validatePositiveInt(fileConfig.embedding?.timeoutMs),
+      timeoutMs:
+        asPositiveInt(env.NEXUS_EMBEDDING_TIMEOUT_MS) ??
+        validatePositiveInt(fileConfig.embedding?.timeoutMs) ??
+        defaults.embedding.timeoutMs,
     },
   };
 
