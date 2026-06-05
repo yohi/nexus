@@ -110,10 +110,11 @@ export class MetricsCollector implements MetricsHooks {
     this.dlqSizeGauge.labels({ dlq_id: source }).set(size);
   }
 
-  onRecoverySweepComplete(retried: number, purged: number, skipped: number, source = 'default'): void {
+  onRecoverySweepComplete(retried: number, purged: number, skipped: number, abandoned: number, source = 'default'): void {
     const labels = { dlq_id: source };
     if (retried > 0) this.recoveryCounter.labels({ ...labels, result: 'retried' }).inc(retried);
     if (purged > 0) this.recoveryCounter.labels({ ...labels, result: 'purged' }).inc(purged);
     if (skipped > 0) this.recoveryCounter.labels({ ...labels, result: 'skipped' }).inc(skipped);
+    if (abandoned > 0) this.recoveryCounter.labels({ ...labels, result: 'abandoned' }).inc(abandoned);
   }
 }

@@ -32,6 +32,7 @@ describe('executeIndexStatus', () => {
         contentHash: 'hash-1',
         errorMessage: 'embed failed',
         attempts: 3,
+        recoveryAttempts: 0,
         createdAt: '2026-04-07T00:00:00.000Z',
         updatedAt: '2026-04-07T00:00:00.000Z',
         lastRetryAt: null,

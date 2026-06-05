@@ -9,5 +9,5 @@ export interface MetricsHooks {
 
   onDlqSnapshot(size: number, source?: string): void;
 
-  onRecoverySweepComplete(retried: number, purged: number, skipped: number, source?: string): void;
+  onRecoverySweepComplete(retried: number, purged: number, skipped: number, abandoned: number, source?: string): void;
 }

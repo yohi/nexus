@@ -75,3 +75,59 @@ Nexus は `<projectRoot>/.nexus.json` から設定を読み込みます。
 - 数値の環境変数は 10 進整数である必要があります。
 - `retryCount` は `0` を許容しますが、その他の数値項目は `0` より大きい必要があります。
 - 未対応の `embedding.provider` は無視され、設定ファイルまたはデフォルト値へフォールバックします。
+
+## パフォーマンスチューニング: CPU-only Ollama 環境
+
+Ollama が **GPU アクセラレーションなし**（CPU のみ）で動作している場合、デフォルトの `maxConcurrency: 2` ではスレッド競合により頻繁にタイムアウトが発生し、DLQ (Dead Letter Queue) にエントリが溜まりやすくなります。
+
+### 推奨設定
+
+CPU-only 環境では以下を推奨します:
+
+```bash
+export NEXUS_EMBEDDING_MAX_CONCURRENCY=1
+```
+
+あるいは `.nexus.json`:
+
+```json
+{
+  "embedding": {
+    "maxConcurrency": 1
+  }
+}
+```
+
+### CPU 競合の症状
+
+- ログに `RetryExhaustedError` が頻発する
+- `index_status` ツールの `skippedFiles` カウントが急増する
+- Ollama が全てのリクエストに対して応答が遅い
+- DLQ recovery sweep の `abandoned` カウンタが増加する
+
+### 目安
+
+| 環境 | 推奨 `maxConcurrency` |
+| --- | --- |
+| CPU-only Ollama | `1` |
+| GPU (8GB VRAM) | `2`〜`3` |
+| GPU (16GB+ VRAM) | `4`〜`8` |
+
+VRAM および モデルサイズに応じて段階的に上げ、`abandoned` メトリクスが増えない範囲で最大化してください。
+
+## プロセスロック
+
+Nexus は同じ `storage.rootDir` に対して複数プロセスが同時起動するのを防ぐため、起動時に `${storage.rootDir}/nexus.pid` ファイルでロックを取得します。
+
+- 起動時にロックが既に存在し、対応する PID のプロセスが生存していれば、警告を出して終了します（exit code 1）。
+- 既存ロックの PID プロセスが既に終了している場合（クラッシュ後等）は、ロックを再取得します。
+- 通常終了 (`SIGINT` / `SIGTERM`) では自動的にロックを解放します。
+- 異常終了で残ったロックファイルは、次回起動時に自動回復されます。
+
+ロック取得に失敗した場合に強制起動するには、当該ファイルを手動削除してください:
+
+```bash
+rm "${NEXUS_STORAGE_ROOT_DIR:-$PWD/.nexus}/nexus.pid"
+```
+
+**注意**: `dashboard` サブコマンドはインデックスを行わないため、このロックを取得しません。

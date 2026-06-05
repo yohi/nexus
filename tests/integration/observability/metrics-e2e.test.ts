@@ -75,8 +75,8 @@ describe("Metrics E2E Integration", () => {
       metadataStore: mockMetadataStore as unknown as IMetadataStore,
       metricsHooks: {
         onDlqSnapshot: (size, source) => collector.onDlqSnapshot(size, source),
-        onRecoverySweepComplete: (retried, purged, skipped, source) =>
-          collector.onRecoverySweepComplete(retried, purged, skipped, source),
+        onRecoverySweepComplete: (retried, purged, skipped, abandoned, source) =>
+          collector.onRecoverySweepComplete(retried, purged, skipped, abandoned, source),
       },
       name: "test-dlq",
     });

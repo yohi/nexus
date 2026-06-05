@@ -50,7 +50,7 @@ describe('Observability Hooks Integration', () => {
 
       // recoverySweep() triggers onRecoverySweepComplete
       await dlq.recoverySweep();
-      expect(onRecoverySweepComplete).toHaveBeenCalledWith(0, 0, 0, 'test-dlq');
+      expect(onRecoverySweepComplete).toHaveBeenCalledWith(0, 0, 0, 0, 'test-dlq');
     });
   });
 
