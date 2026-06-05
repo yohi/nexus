@@ -207,6 +207,16 @@ export interface EmbeddingConfig {
 
 export interface EmbeddingProvider {
   readonly dimensions: number;
+  /**
+   * Embed a batch of texts into vectors.
+   *
+   * Implementations MUST throw {@link RetryExhaustedError} when all retry
+   * attempts are exhausted so that the caller (IndexPipeline) can route the
+   * failed file to the Dead Letter Queue for later recovery.
+   *
+   * Other fatal errors (e.g. {@link DimensionMismatchError}) may be thrown
+   * directly and will propagate as unrecoverable failures.
+   */
   embed(texts: string[]): Promise<number[][]>;
   healthCheck(): Promise<boolean>;
 }
