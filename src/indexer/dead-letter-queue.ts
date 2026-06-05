@@ -8,6 +8,7 @@ export interface RecoverySweepResult {
   retried: number;
   purged: number;
   skipped: number;
+  abandoned: number;
 }
 
 export interface DeadLetterQueueOptions {
@@ -15,6 +16,7 @@ export interface DeadLetterQueueOptions {
   metadataStore: IMetadataStore;
   maxEntries?: number;
   ttlMs?: number;
+  maxRecoveryAttempts?: number;
   now?: () => Date;
   embeddingHealthy?: () => Promise<boolean>;
   computeFileHash?: (filePath: string) => Promise<string>;
@@ -27,6 +29,8 @@ export class DeadLetterQueue {
   private readonly maxEntries: number;
 
   private readonly ttlMs: number;
+
+  private readonly maxRecoveryAttempts: number;
 
   private readonly now: () => Date;
 
@@ -53,6 +57,7 @@ export class DeadLetterQueue {
   constructor(private readonly options: DeadLetterQueueOptions) {
     this.maxEntries = options.maxEntries ?? 1000;
     this.ttlMs = options.ttlMs ?? 24 * 60 * 60 * 1000;
+    this.maxRecoveryAttempts = options.maxRecoveryAttempts ?? 5;
     this.now = options.now ?? (() => new Date());
     this.embeddingHealthy = options.embeddingHealthy ?? (() => Promise.resolve(true));
     this.computeFileHash = options.computeFileHash ?? computeFileHashStreaming;
@@ -128,7 +133,7 @@ export class DeadLetterQueue {
 
   async recoverySweep(): Promise<RecoverySweepResult> {
     if (this.recoveryRunning) {
-      return this.currentSweep ?? { retried: 0, purged: 0, skipped: 0 };
+      return this.currentSweep ?? { retried: 0, purged: 0, skipped: 0, abandoned: 0 };
     }
 
     this.recoveryRunning = true;
@@ -136,11 +141,13 @@ export class DeadLetterQueue {
       let retried = 0;
       let purged = 0;
       let skipped = 0;
+      let abandoned = 0;
       try {
         await this.ensureLoaded();
+        purged += await this.purgeExpired();
         if (!(await this.embeddingHealthy())) {
           skipped = this.entries.size;
-          return { retried: 0, purged: 0, skipped };
+          return { retried: 0, purged, skipped, abandoned: 0 };
         }
 
         for (const entry of [...this.entries.values()]) {
@@ -164,16 +171,34 @@ export class DeadLetterQueue {
               continue;
             }
 
-            skipped += 1;
-            this.logger.error(`Failed to recover DLQ entry for ${entry.filePath}`, error);
+            // Increment recovery attempts and check cap
+            entry.recoveryAttempts += 1;
+            entry.lastRetryAt = this.now().toISOString();
+            entry.updatedAt = entry.lastRetryAt;
+
+            if (entry.recoveryAttempts >= this.maxRecoveryAttempts) {
+              this.logger.warn(
+                `Abandoning DLQ entry for ${entry.filePath} after ${entry.recoveryAttempts} recovery attempts. Requires manual reindex.`,
+              );
+              await this.removeEntries([entry.id]);
+              abandoned += 1;
+            } else {
+              await this.options.metadataStore.upsertDeadLetterEntries([entry]);
+              this.entries.set(entry.id, entry);
+              skipped += 1;
+              this.logger.error(
+                `Failed to recover DLQ entry for ${entry.filePath} (attempt ${entry.recoveryAttempts}/${this.maxRecoveryAttempts})`,
+                error,
+              );
+            }
           }
         }
 
-        return { retried, purged, skipped };
+        return { retried, purged, skipped, abandoned };
       } finally {
         this.safeNotifyMetrics((h) => {
           h.onDlqSnapshot(this.entries.size, this.options.name);
-          h.onRecoverySweepComplete(retried, purged, skipped, this.options.name);
+          h.onRecoverySweepComplete(retried, purged, skipped, abandoned, this.options.name);
         });
         this.recoveryRunning = false;
         this.currentSweep = undefined;

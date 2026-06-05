@@ -86,11 +86,12 @@ describe('DeadLetterQueue', () => {
       metadataStore,
       embeddingHealthy: async () => false,
       reprocess,
+      now: () => new Date('2026-04-07T01:00:00.000Z'),
     });
 
     const result = await queue.recoverySweep();
 
-    expect(result).toEqual({ retried: 0, purged: 0, skipped: 1 });
+    expect(result).toEqual({ retried: 0, purged: 0, skipped: 1, abandoned: 0 });
     expect(reprocess).not.toHaveBeenCalled();
   });
 
@@ -106,11 +107,12 @@ describe('DeadLetterQueue', () => {
       computeFileHash: async () => 'different-hash',
       reprocess: vi.fn(async () => undefined),
       logger,
+      now: () => new Date('2026-04-07T01:00:00.000Z'),
     });
 
     const result = await queue.recoverySweep();
 
-    expect(result).toEqual({ retried: 0, purged: 1, skipped: 0 });
+    expect(result).toEqual({ retried: 0, purged: 1, skipped: 0, abandoned: 0 });
     await expect(metadataStore.getDeadLetterEntries()).resolves.toEqual([]);
     expect(logger.warn).toHaveBeenCalled();
   });
@@ -126,11 +128,12 @@ describe('DeadLetterQueue', () => {
       embeddingHealthy: async () => true,
       computeFileHash: async () => 'hash-1',
       reprocess,
+      now: () => new Date('2026-04-07T01:00:00.000Z'),
     });
 
     const result = await queue.recoverySweep();
 
-    expect(result).toEqual({ retried: 1, purged: 0, skipped: 0 });
+    expect(result).toEqual({ retried: 1, purged: 0, skipped: 0, abandoned: 0 });
     expect(reprocess).toHaveBeenCalledWith(
       expect.objectContaining({ filePath: '/repo/src/auth.ts', contentHash: 'hash-1' }),
     );
@@ -228,4 +231,88 @@ describe('DeadLetterQueue', () => {
     expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining('already running'));
     await stop1();
   });
+
+  it('abandons entries that exceed maxRecoveryAttempts', async () => {
+    const metadataStore = new InMemoryMetadataStore();
+    await metadataStore.initialize();
+    await metadataStore.upsertDeadLetterEntries([
+      makeEntry({ recoveryAttempts: 4 }),
+    ]);
+
+    const reprocess = vi.fn(async () => {
+      throw new Error('still failing');
+    });
+    const logger = { warn: vi.fn(), error: vi.fn() };
+    const queue = new DeadLetterQueue({
+      metadataStore,
+      embeddingHealthy: async () => true,
+      computeFileHash: async () => 'hash-1',
+      reprocess,
+      maxRecoveryAttempts: 5,
+      logger,
+      now: () => new Date('2026-04-07T01:00:00.000Z'),
+    });
+
+    const result = await queue.recoverySweep();
+
+    expect(result).toEqual({ retried: 0, purged: 0, skipped: 0, abandoned: 1 });
+    await expect(metadataStore.getDeadLetterEntries()).resolves.toEqual([]);
+    expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining('Abandoning'));
+  });
+
+  it('increments recoveryAttempts on failed recovery and persists below cap', async () => {
+    const metadataStore = new InMemoryMetadataStore();
+    await metadataStore.initialize();
+    await metadataStore.upsertDeadLetterEntries([
+      makeEntry({ recoveryAttempts: 2 }),
+    ]);
+
+    const reprocess = vi.fn(async () => {
+      throw new Error('transient failure');
+    });
+    const logger = { warn: vi.fn(), error: vi.fn() };
+    const queue = new DeadLetterQueue({
+      metadataStore,
+      embeddingHealthy: async () => true,
+      computeFileHash: async () => 'hash-1',
+      reprocess,
+      maxRecoveryAttempts: 5,
+      logger,
+      now: () => new Date('2026-04-07T01:00:00.000Z'),
+    });
+
+    const result = await queue.recoverySweep();
+
+    expect(result).toEqual({ retried: 0, purged: 0, skipped: 1, abandoned: 0 });
+    const entries = await metadataStore.getDeadLetterEntries();
+    expect(entries[0]?.recoveryAttempts).toBe(3);
+    expect(entries[0]?.lastRetryAt).not.toBeNull();
+  });
+
+  it('purges expired entries at the start of recoverySweep', async () => {
+    const metadataStore = new InMemoryMetadataStore();
+    await metadataStore.initialize();
+    await metadataStore.upsertDeadLetterEntries([
+      makeEntry({ id: 'expired', createdAt: '2026-04-05T00:00:00.000Z', updatedAt: '2026-04-05T00:00:00.000Z' }),
+      makeEntry({ id: 'fresh', filePath: '/repo/src/fresh.ts', createdAt: '2026-04-07T00:00:00.000Z', updatedAt: '2026-04-07T00:00:00.000Z' }),
+    ]);
+
+    const reprocess = vi.fn(async () => undefined);
+    const queue = new DeadLetterQueue({
+      metadataStore,
+      embeddingHealthy: async () => true,
+      computeFileHash: async () => 'hash-1',
+      reprocess,
+      now: () => new Date('2026-04-07T12:00:00.000Z'),
+      ttlMs: 24 * 60 * 60 * 1000,
+    });
+
+    const result = await queue.recoverySweep();
+
+    // expired entry is purged, fresh entry is retried
+    expect(result.purged).toBe(1);
+    expect(result.retried).toBe(1);
+    expect(result.abandoned).toBe(0);
+  });
 });
+

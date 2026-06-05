@@ -150,12 +150,13 @@ describe('MetricsCollector', () => {
   it('onRecoverySweepComplete で Counter が加算される', async () => {
     const collector = new MetricsCollector(registry);
 
-    collector.onRecoverySweepComplete(5, 2, 1);
+    collector.onRecoverySweepComplete(5, 2, 1, 3);
 
     const metrics = await registry.metrics();
     expect(metrics).toContain('nexus_dlq_recovery_total{dlq_id="default",result="retried"} 5');
     expect(metrics).toContain('nexus_dlq_recovery_total{dlq_id="default",result="purged"} 2');
     expect(metrics).toContain('nexus_dlq_recovery_total{dlq_id="default",result="skipped"} 1');
+    expect(metrics).toContain('nexus_dlq_recovery_total{dlq_id="default",result="abandoned"} 3');
   });
 
   it('カスタム Registry を注入できる', async () => {
