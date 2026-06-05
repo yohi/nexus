@@ -7,7 +7,7 @@ import { unlinkSync } from "node:fs";
 import { loadConfig } from "../config/index.js";
 import { NexusServerFactory } from "../server/factory.js";
 import type { NexusRuntime } from "../server/index.js";
-import { acquireProcessLock, releaseProcessLock } from "../server/process-lock.js";
+import { acquireProcessLock, releaseProcessLock, LOCK_FILENAME } from "../server/process-lock.js";
 
 async function main() {
   const { values } = parseArgs({
@@ -35,10 +35,23 @@ async function main() {
     console.error(
       `\u26a0\ufe0f  Another Nexus process (PID ${pidStr}) is already running for this project.\n` +
         `   Storage: ${config.storage.rootDir}\n` +
-        `   To force start, remove: ${path.join(config.storage.rootDir, "nexus.pid")}`,
+        `   To force start, remove: ${path.join(config.storage.rootDir, LOCK_FILENAME)}`,
     );
     process.exit(1);
   }
+
+  // Register best-effort exit cleanup immediately after acquiring the lock so
+  // it runs even if createRuntime/connect throws before setupSignalHandlers.
+  // setupSignalHandlers will replace this with a named handler that removes
+  // itself after a clean shutdown to prevent double-unlink.
+  const exitCleanup = () => {
+    try {
+      unlinkSync(path.join(config.storage.rootDir, LOCK_FILENAME));
+    } catch {
+      // Ignore - stale lock will be detected by next startup.
+    }
+  };
+  process.on("exit", exitCleanup);
 
   const runtime = await NexusServerFactory.createRuntime(config);
 
@@ -47,7 +60,7 @@ async function main() {
 
   console.error(`\ud83d\udd17 Nexus MCP server running on stdio (root: ${root})`);
 
-  setupSignalHandlers(runtime, config.storage.rootDir);
+  setupSignalHandlers(runtime, config.storage.rootDir, exitCleanup);
 
   // Heavy initialization (SQLite/LanceDB open, file watcher full scan,
   // metrics server bind) runs after the MCP transport is connected to avoid
@@ -58,18 +71,8 @@ async function main() {
   });
 }
 
-function setupSignalHandlers(runtime: NexusRuntime, storageDir: string): void {
+function setupSignalHandlers(runtime: NexusRuntime, storageDir: string, exitCleanup: () => void): void {
   let isShuttingDown = false;
-
-  // Best-effort sync cleanup on unexpected exit (e.g., uncaught throw).
-  // process.on('exit') only allows synchronous work.
-  process.on("exit", () => {
-    try {
-      unlinkSync(path.join(storageDir, "nexus.pid"));
-    } catch {
-      // Ignore - stale lock will be detected by next startup.
-    }
-  });
 
   const handleShutdown = () => {
     if (isShuttingDown) return;
@@ -79,6 +82,10 @@ function setupSignalHandlers(runtime: NexusRuntime, storageDir: string): void {
       .close()
       .then(() => releaseProcessLock(storageDir))
       .then(() => {
+        // Deregister the exit handler before process.exit(0) so the PID file
+        // already removed by releaseProcessLock is not touched again (and a
+        // concurrently started process's file is not mistakenly deleted).
+        process.removeListener("exit", exitCleanup);
         process.exit(0);
       })
       .catch((error) => {

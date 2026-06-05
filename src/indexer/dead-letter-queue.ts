@@ -57,7 +57,10 @@ export class DeadLetterQueue {
   constructor(private readonly options: DeadLetterQueueOptions) {
     this.maxEntries = options.maxEntries ?? 1000;
     this.ttlMs = options.ttlMs ?? 24 * 60 * 60 * 1000;
-    this.maxRecoveryAttempts = options.maxRecoveryAttempts ?? 5;
+    const rawMaxRecoveryAttempts = options.maxRecoveryAttempts ?? 5;
+    this.maxRecoveryAttempts = Number.isInteger(rawMaxRecoveryAttempts) && rawMaxRecoveryAttempts > 0
+      ? rawMaxRecoveryAttempts
+      : 5;
     this.now = options.now ?? (() => new Date());
     this.embeddingHealthy = options.embeddingHealthy ?? (() => Promise.resolve(true));
     this.computeFileHash = options.computeFileHash ?? computeFileHashStreaming;
@@ -117,6 +120,10 @@ export class DeadLetterQueue {
   }
 
   async purgeExpired(): Promise<number> {
+    return this.purgeExpiredInternal(true);
+  }
+
+  private async purgeExpiredInternal(notifyMetrics: boolean): Promise<number> {
     await this.ensureLoaded();
     const cutoff = this.now().getTime() - this.ttlMs;
     const expiredIds = [...this.entries.values()]
@@ -127,7 +134,9 @@ export class DeadLetterQueue {
       await this.removeEntries(expiredIds);
     }
 
-    this.safeNotifyMetrics((h) => { h.onDlqSnapshot(this.entries.size, this.options.name); });
+    if (notifyMetrics) {
+      this.safeNotifyMetrics((h) => { h.onDlqSnapshot(this.entries.size, this.options.name); });
+    }
     return expiredIds.length;
   }
 
@@ -144,7 +153,7 @@ export class DeadLetterQueue {
       let abandoned = 0;
       try {
         await this.ensureLoaded();
-        purged += await this.purgeExpired();
+        purged += await this.purgeExpiredInternal(false);
         if (!(await this.embeddingHealthy())) {
           skipped = this.entries.size;
           return { retried: 0, purged, skipped, abandoned: 0 };

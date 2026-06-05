@@ -6,7 +6,7 @@ export interface LockResult {
   existingPid?: number;
 }
 
-const LOCK_FILENAME = 'nexus.pid';
+export const LOCK_FILENAME = 'nexus.pid';
 
 /**
  * Attempts to acquire a single-instance lock for the given storage directory.

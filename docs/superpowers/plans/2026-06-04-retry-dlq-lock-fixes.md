@@ -1055,7 +1055,7 @@ No commit needed. Proceed to Task 11.
 
 Add a note after the `embedding.maxConcurrency` row in the configuration table or in a new "Performance Tuning" section:
 
-```markdown
+````markdown
 ### Performance Tuning: CPU-Only Environments
 
 If Ollama is running **without GPU acceleration** (CPU-only), the default `maxConcurrency: 2` may cause thread contention and frequent timeouts. In this case:
@@ -1080,7 +1080,7 @@ Or in `.nexus.json`:
 - Ollama responding slowly to all requests
 
 **Rule of thumb:** Use `maxConcurrency: 1` for CPU-only Ollama, `2-4` for GPU-accelerated environments depending on VRAM.
-```
+````
 
 - [ ] **Step 2: Commit**
 

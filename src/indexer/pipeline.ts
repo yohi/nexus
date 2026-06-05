@@ -18,7 +18,7 @@ import {
   type DeadLetterEntry,
   type IIndexPipeline,
   type PipelineProgress,
-  RetryExhaustedError,
+  type RetryExhaustedError,
 } from '../types/index.js';
 
 interface IndexPipelineOptions {
