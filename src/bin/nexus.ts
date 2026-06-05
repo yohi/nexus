@@ -35,6 +35,10 @@ async function main() {
     return;
   }
 
+  if (values["full"] && !values["reindex"]) {
+    console.warn(`\u26a0\ufe0f  Warning: --full has no effect without --reindex.`);
+  }
+
   const rawProjectRoot = (
     (values["project-root"] as string) ??
     process.env.NEXUS_PROJECT_ROOT ??
@@ -73,19 +77,20 @@ async function main() {
 
   if (values["reindex"]) {
     const runtime = await NexusServerFactory.createRuntime(config);
+    let exitCode = 0;
     try {
       console.log(`Starting indexing...`);
       await runtime.reindex(!!values["full"]);
       console.log(`Indexing completed successfully.`);
     } catch (error) {
       console.error(`Indexing failed:`, error);
-      process.exit(1);
+      exitCode = 1;
     } finally {
       await runtime.close();
       await releaseProcessLock(config.storage.rootDir);
       process.removeListener("exit", exitCleanup);
     }
-    process.exit(0);
+    process.exit(exitCode);
   }
 
   const runtime = await NexusServerFactory.createRuntime(config);
