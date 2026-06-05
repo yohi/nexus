@@ -360,8 +360,7 @@ export const buildNexusRuntime = (
   };
 
   const reindex = async (fullRebuild?: boolean) => {
-    await options.metadataStore.initialize();
-    await options.vectorStore.initialize();
+    await initialize();
     await options.runReindex({ fullScan: fullRebuild });
   };
 
