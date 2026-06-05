@@ -1,5 +1,22 @@
 # Changelog
 
+## [1.8.0](https://github.com/yohi/nexus/compare/v1.7.4...v1.8.0) (2026-06-05)
+
+
+### Features
+
+* **dlq:** add recovery attempt cap with abandoned counter ([5d72831](https://github.com/yohi/nexus/commit/5d72831500fc5a1c43a495b41c4b90b7e39b9c47))
+* **dlq:** add recoveryAttempts field with idempotent schema migration ([6b6632b](https://github.com/yohi/nexus/commit/6b6632ba43f701deded4716fb52e4076847e1ec8))
+* **server:** add PID-file process lock for single-instance guarantee ([7f3b283](https://github.com/yohi/nexus/commit/7f3b283a91eb32202fb157039b8896b6c6779045))
+* **server:** wire process lock into nexus startup/shutdown + docs ([3b86695](https://github.com/yohi/nexus/commit/3b86695f598c9361d30ccdcf69de31d104733a65))
+
+
+### Bug Fixes
+
+* **pipeline:** remove redundant outer retry loop ([4658ff2](https://github.com/yohi/nexus/commit/4658ff21a4c33de0dc0daf08d8baa2bcb4e29f26))
+* retry/DLQ/lock resilience improvements ([7c85276](https://github.com/yohi/nexus/commit/7c85276a8ad3b2e85c9ccf18f4b7ac76151101d1))
+* コードレビュー指摘事項への対応 ([3602fcd](https://github.com/yohi/nexus/commit/3602fcd9523b5665237c006b8cadc05400c961b9))
+
 ## [1.7.4](https://github.com/yohi/nexus/compare/v1.7.3...v1.7.4) (2026-05-25)
 
 
