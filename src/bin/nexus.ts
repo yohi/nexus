@@ -13,9 +13,31 @@ async function main() {
   const { values } = parseArgs({
     options: {
       "project-root": { type: "string" },
+      "reindex": { type: "boolean" },
+      "full": { type: "boolean" },
+      "help": { type: "boolean", short: "h" },
     },
     strict: false,
   });
+
+  if (values["help"]) {
+    console.log(
+      `Nexus - AI-native codebase indexing and search MCP server\n\n` +
+      `Usage:\n` +
+      `  nexus [options]\n` +
+      `  nexus dashboard\n\n` +
+      `Options:\n` +
+      `  --project-root <path>  Path to the project root directory\n` +
+      `  --reindex              Run indexing and exit\n` +
+      `  --full                 Run a full clean reindexing (can be used with --reindex)\n` +
+      `  -h, --help             Show help`
+    );
+    return;
+  }
+
+  if (values["full"] && !values["reindex"]) {
+    console.warn(`\u26a0\ufe0f  Warning: --full has no effect without --reindex.`);
+  }
 
   const rawProjectRoot = (
     (values["project-root"] as string) ??
@@ -52,6 +74,24 @@ async function main() {
     }
   };
   process.on("exit", exitCleanup);
+
+  if (values["reindex"]) {
+    const runtime = await NexusServerFactory.createRuntime(config);
+    let exitCode = 0;
+    try {
+      console.log(`Starting indexing...`);
+      await runtime.reindex(!!values["full"]);
+      console.log(`Indexing completed successfully.`);
+    } catch (error) {
+      console.error(`Indexing failed:`, error);
+      exitCode = 1;
+    } finally {
+      await runtime.close();
+      await releaseProcessLock(config.storage.rootDir);
+      process.removeListener("exit", exitCleanup);
+    }
+    process.exit(exitCode);
+  }
 
   const runtime = await NexusServerFactory.createRuntime(config);
 
