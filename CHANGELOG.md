@@ -1,5 +1,18 @@
 # Changelog
 
+## [1.9.0](https://github.com/yohi/nexus/compare/v1.8.0...v1.9.0) (2026-06-06)
+
+
+### Features
+
+* **cli:** CLIに--reindexオプションを追加しデフォルトのEmbedding設定を調整 ([a39f81f](https://github.com/yohi/nexus/commit/a39f81fcf6edbdbb4d2fa54f6aaa0f07a00cff45))
+* **cli:** CLIに--reindexオプションを追加しデフォルトのEmbedding設定を調整 ([8d88429](https://github.com/yohi/nexus/commit/8d88429ede0c390753422b1d965a8858acca91f2))
+
+
+### Bug Fixes
+
+* **cli:** reindex時のクリーンアップ処理のスキップバグ修正と--full警告の追加 ([8a00858](https://github.com/yohi/nexus/commit/8a00858702b3359558c74f99c60286b874d52205))
+
 ## [1.8.0](https://github.com/yohi/nexus/compare/v1.7.4...v1.8.0) (2026-06-05)
 
 
