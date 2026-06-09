@@ -1,5 +1,9 @@
 {
+  "embedding": {
+    "batchSize": 1
+  },
   "watcher": {
+    "debounceMs": 300,
     "ignorePaths": [
       ".worktrees",
       "node_modules",
