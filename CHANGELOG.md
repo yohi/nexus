@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.9.1](https://github.com/yohi/nexus/compare/v1.9.0...v1.9.1) (2026-06-09)
+
+
+### Bug Fixes
+
+* trigger release v2 ([6f23d44](https://github.com/yohi/nexus/commit/6f23d44178a5bba616b5b51dd9b756052900b6e9))
+* trigger release workflow with content change ([a9fb607](https://github.com/yohi/nexus/commit/a9fb607678e88fc3a29a791df1bac3ec923426f2))
+
 ## [1.9.0](https://github.com/yohi/nexus/compare/v1.8.0...v1.9.0) (2026-06-06)
 
 
