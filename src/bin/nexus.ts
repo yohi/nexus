@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { createServer } from "node:http";
 import path from "node:path";
 import { parseArgs } from "node:util";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
@@ -7,12 +8,15 @@ import { unlinkSync } from "node:fs";
 import { loadConfig } from "../config/index.js";
 import { NexusServerFactory } from "../server/factory.js";
 import type { NexusRuntime } from "../server/index.js";
+import { createStreamableHttpHandler } from "../server/transport.js";
+import { createRestApiHandler } from "../server/rest-api.js";
 import { acquireProcessLock, releaseProcessLock, LOCK_FILENAME } from "../server/process-lock.js";
 
 async function main() {
   const { values } = parseArgs({
     options: {
       "project-root": { type: "string" },
+      "port": { type: "string" },
       "reindex": { type: "boolean" },
       "full": { type: "boolean" },
       "help": { type: "boolean", short: "h" },
@@ -28,6 +32,7 @@ async function main() {
       `  nexus dashboard\n\n` +
       `Options:\n` +
       `  --project-root <path>  Path to the project root directory\n` +
+      `  --port <number>        Start HTTP server (with MCP + REST API) on the given port\n` +
       `  --reindex              Run indexing and exit\n` +
       `  --full                 Run a full clean reindexing (can be used with --reindex)\n` +
       `  -h, --help             Show help`
@@ -95,6 +100,66 @@ async function main() {
 
   const runtime = await NexusServerFactory.createRuntime(config);
 
+  if (values["port"]) {
+    const port = Number(values["port"]);
+    if (Number.isNaN(port) || port <= 0 || port > 65535) {
+      console.error(`\u274c Invalid port: ${values["port"]}`);
+      process.exit(1);
+    }
+
+    const mcpHandler = createStreamableHttpHandler({
+      createServer: () => runtime.server,
+    });
+
+    const restHandler = createRestApiHandler({
+      orchestrator: runtime.orchestrator,
+      sanitizer: runtime.sanitizer,
+    });
+
+    const server = createServer((req, res) => {
+      // REST API endpoints
+      if (req.method === "POST" && req.url === "/api/search") {
+        restHandler(req, res).catch((error: unknown) => {
+          console.error("[REST API Unhandled Error]", error);
+          if (!res.headersSent) {
+            res.statusCode = 500;
+            res.setHeader("Content-Type", "application/json");
+            res.end(JSON.stringify({ error: "Internal server error" }));
+          }
+        });
+        return;
+      }
+
+      // Everything else goes to MCP over HTTP
+      mcpHandler(req, res).catch((error: unknown) => {
+        console.error("[MCP Handler Unhandled Error]", error);
+        if (!res.headersSent) {
+          res.statusCode = 500;
+          res.setHeader("Content-Type", "application/json");
+          res.end(JSON.stringify({ error: "Internal server error" }));
+        }
+      });
+    });
+
+    server.listen(port, () => {
+      console.error(
+        `\ud83d\ude80 Nexus HTTP server running on http://localhost:${port} (root: ${root})`
+      );
+      console.error(`   MCP:    POST / (Streamable HTTP)`);
+      console.error(`   Search: POST /api/search`);
+    });
+
+    setupSignalHandlers(runtime, config.storage.rootDir, exitCleanup);
+
+    runtime.initialize().catch((error) => {
+      console.error("Nexus background initialization failed:", error);
+      process.exit(1);
+    });
+
+    return;
+  }
+
+  // Default: stdio MCP transport
   const transport = new StdioServerTransport();
   await runtime.server.connect(transport);
 

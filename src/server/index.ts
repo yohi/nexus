@@ -45,6 +45,8 @@ export interface NexusRuntimeOptions extends NexusServerOptions {
 
 export interface NexusRuntime {
   server: McpServer;
+  orchestrator: SearchOrchestrator;
+  sanitizer: PathSanitizer;
   initialize(): Promise<void>;
   close(): Promise<void>;
   reindex(fullRebuild?: boolean): Promise<void>;
@@ -364,7 +366,7 @@ export const buildNexusRuntime = (
     await options.runReindex({ fullScan: fullRebuild });
   };
 
-  return { server, initialize, close, reindex };
+  return { server, orchestrator: options.orchestrator, sanitizer: options.sanitizer, initialize, close, reindex };
 };
 
 export const initializeNexusRuntime = async (
