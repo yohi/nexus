@@ -1,6 +1,7 @@
 {
   "embedding": {
-    "batchSize": 1
+    "batchSize": 32,
+    "maxConcurrency": 1
   },
   "watcher": {
     "debounceMs": 300,
@@ -19,7 +20,10 @@
       ".venv",
       ".idea",
       ".vscode",
-      ".DS_Store"
+      ".DS_Store",
+      "package-lock.json",
+      ".env",
+      ".omo"
     ]
   }
 }
