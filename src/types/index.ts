@@ -255,11 +255,16 @@ export interface StorageConfig {
   batchSize?: number;
 }
 
+export interface IndexingConfig {
+  maxFileBytes: number;
+}
+
 export interface Config {
   projectRoot: string;
   storage: StorageConfig;
   watcher: WatcherConfig;
   embedding: EmbeddingConfig;
+  indexing: IndexingConfig;
 }
 
 export interface DeadLetterEntry {

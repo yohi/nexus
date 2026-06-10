@@ -28,6 +28,7 @@ interface IndexPipelineOptions {
   embeddingProvider: EmbeddingProvider;
   pluginRegistry: PluginRegistry;
   eventQueue?: EventQueue;
+  maxFileBytes?: number;
   onProgress?: (msg: string) => void;
   metricsHooks?: Pick<
     MetricsHooks,
@@ -331,6 +332,17 @@ export class IndexPipeline implements IIndexPipeline {
   }
 
   private async indexFile(filePath: string, content: string, contentHash: string): Promise<number> {
+    const bytes = Buffer.byteLength(content, 'utf8');
+    if (this.options.maxFileBytes !== undefined && bytes > this.options.maxFileBytes) {
+      this.safeLogProgress(
+        `Skipping (file too large: ${bytes} bytes > ${this.options.maxFileBytes} limit): ${filePath}`,
+        filePath,
+      );
+      this.skippedFiles.set(filePath, `file too large: ${bytes} bytes`);
+      await this.merkleTree.update(filePath, contentHash);
+      return 0;
+    }
+
     this.safeLogProgress(`Indexing: ${filePath}`, filePath);
     const chunks = await this.options.chunker.chunkFiles([
       {
