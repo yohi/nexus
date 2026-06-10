@@ -401,11 +401,11 @@ export const errorResult = (error: unknown) => {
 export const toolResult = <T extends object>(structuredContent: T) => {
   try {
     // Produce a JSON-safe copy by converting BigInt values to strings
-    const normalized = JSON.parse(
-      JSON.stringify(structuredContent, (_, value: unknown) =>
+    const normalized: unknown = JSON.parse(
+      JSON.stringify(structuredContent, (_key: string, value: unknown): unknown =>
         typeof value === "bigint" ? value.toString() : value,
       ),
-    ) as Record<string, unknown>;
+    );
 
     return {
       content: [
@@ -414,7 +414,7 @@ export const toolResult = <T extends object>(structuredContent: T) => {
           text: JSON.stringify(normalized, null, 2),
         },
       ],
-      structuredContent: normalized,
+      structuredContent: normalized as Record<string, unknown>,
     };
   } catch (error) {
     const errorMessage = sanitizeErrorMessage(error);
