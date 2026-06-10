@@ -7,12 +7,16 @@ export interface HybridSearchToolArgs extends HybridSearchParams {}
 export const executeHybridSearch = async (
   orchestrator: SearchOrchestrator,
   sanitizer: PathSanitizer,
-  args: HybridSearchToolArgs,
+  args: HybridSearchToolArgs & { filePattern?: string },
   abortSignal?: AbortSignal,
 ): Promise<SearchResponse> => {
-  const validatedArgs = { ...args };
-  if (args.filePattern) {
-    validatedArgs.filePattern = sanitizer.validateGlob(args.filePattern);
+  const { filePattern, ...rest } = args;
+  const validatedArgs: HybridSearchParams = { ...rest };
+
+  if (filePattern) {
+    validatedArgs.filePatterns = [sanitizer.validateGlob(filePattern)];
+  } else if (args.filePatterns) {
+    validatedArgs.filePatterns = args.filePatterns.map((p) => sanitizer.validateGlob(p));
   }
 
   return orchestrator.search({ ...validatedArgs, abortSignal });

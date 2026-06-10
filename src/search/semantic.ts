@@ -8,7 +8,7 @@ import type {
 export interface SemanticSearchParams {
   query: string;
   topK?: number;
-  filePattern?: string;
+  filePatterns?: string[];
   language?: string;
   abortSignal?: AbortSignal;
 }
@@ -47,7 +47,8 @@ export class SemanticSearch implements ISemanticSearch {
       filter.language = params.language;
     }
 
-    const candidateLimit = params.filePattern ? topK * 5 : topK;
+    const hasFilePatterns = params.filePatterns && params.filePatterns.length > 0;
+    const candidateLimit = hasFilePatterns ? topK * 5 : topK;
     const results = await this.options.vectorStore.search(queryVector, candidateLimit, filter);
 
     if (params.abortSignal?.aborted) {
@@ -55,7 +56,7 @@ export class SemanticSearch implements ISemanticSearch {
     }
 
     return results
-      .filter((result) => matchesFilePattern(result.chunk.filePath, params.filePattern))
+      .filter((result) => matchesFilePatterns(result.chunk.filePath, params.filePatterns))
       .slice(0, topK)
       .map((result) => ({
         chunk: result.chunk,
@@ -77,10 +78,12 @@ const globToRegExp = (pattern: string): RegExp => {
   return new RegExp(`^${escaped}$`);
 };
 
-const matchesFilePattern = (filePath: string, filePattern?: string): boolean => {
-  if (filePattern === undefined || filePattern.trim() === '') {
+const matchesFilePatterns = (filePath: string, filePatterns?: string[]): boolean => {
+  if (filePatterns === undefined || filePatterns.length === 0) {
     return true;
   }
 
-  return globToRegExp(filePattern).test(filePath);
+  return filePatterns
+    .filter((p) => p.trim() !== "")
+    .some((pattern) => globToRegExp(pattern).test(filePath));
 };

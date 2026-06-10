@@ -87,7 +87,7 @@ describe('Phase 2 search flow integration', () => {
     const response = await orchestrator.search({
       query: 'authenticate token issuer',
       grepPattern: 'authenticate',
-      filePattern: '**/auth.ts',
+      filePatterns: ['**/auth.ts'],
       topK: 5,
     });
 

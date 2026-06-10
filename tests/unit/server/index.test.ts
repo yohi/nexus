@@ -77,16 +77,24 @@ describe('NexusServer helpers', () => {
       });
     });
 
-    it('returns isError: true and sanitized message when JSON.stringify fails', () => {
-      // BigInt cannot be serialized to JSON and will throw
-      const input = { value: 100n };
+    it('handles BigInt by converting them to strings', () => {
+      const input = { value: 100n, nested: { id: 200n } };
       const result = toolResult(input as any);
+      
+      expect(result.isError).toBeUndefined();
+      expect(result.content[0]!.text).toContain('"value": "100"');
+      expect(result.content[0]!.text).toContain('"id": "200"');
+      expect((result.structuredContent as any).value).toBe("100");
+    });
+
+    it('returns isError: true and sanitized message when JSON.stringify fails (e.g., circular reference)', () => {
+      const input: any = { a: 1 };
+      input.self = input; // Circular reference
+      const result = toolResult(input);
       
       expect(result.isError).toBe(true);
       expect(result.content[0]!.text).toContain('Failed to serialize structuredContent');
-      expect(result.content[0]!.text).toContain('BigInt');
       expect(result.structuredContent.error).toBe(true);
-      expect(result.structuredContent.originalType).toBe('object');
     });
   });
 

@@ -28,6 +28,10 @@ ignore_issues:
   - pattern_id: "useQwikValidLexicalScope"
     files:
       - "src/indexer/watcher.ts"
+      - "src/server/rest-api.ts"
+      - "src/utils/error-utils.ts"
   - pattern_id: "lint/correctness/useQwikValidLexicalScope"
     files:
       - "src/indexer/watcher.ts"
+      - "src/server/rest-api.ts"
+      - "src/utils/error-utils.ts"

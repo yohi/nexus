@@ -40,7 +40,7 @@ export class SearchOrchestrator {
       this.options.grepEngine.search({
         query: grepQuery,
         cwd: this.options.projectRoot,
-        glob: params.filePattern ? [params.filePattern] : undefined,
+        glob: params.filePatterns,
         maxResults: topK,
         abortSignal: params.abortSignal,
       }),

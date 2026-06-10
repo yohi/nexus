@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { createServer, type Server } from "node:http";
 import path from "node:path";
 import { parseArgs } from "node:util";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
@@ -7,12 +8,15 @@ import { unlinkSync } from "node:fs";
 import { loadConfig } from "../config/index.js";
 import { NexusServerFactory } from "../server/factory.js";
 import type { NexusRuntime } from "../server/index.js";
+import { createStreamableHttpHandler } from "../server/transport.js";
+import { createRestApiHandler } from "../server/rest-api.js";
 import { acquireProcessLock, releaseProcessLock, LOCK_FILENAME } from "../server/process-lock.js";
 
 async function main() {
   const { values } = parseArgs({
     options: {
       "project-root": { type: "string" },
+      "port": { type: "string" },
       "reindex": { type: "boolean" },
       "full": { type: "boolean" },
       "help": { type: "boolean", short: "h" },
@@ -28,6 +32,7 @@ async function main() {
       `  nexus dashboard\n\n` +
       `Options:\n` +
       `  --project-root <path>  Path to the project root directory\n` +
+      `  --port <number>        Start HTTP server (with MCP + REST API) on the given port\n` +
       `  --reindex              Run indexing and exit\n` +
       `  --full                 Run a full clean reindexing (can be used with --reindex)\n` +
       `  -h, --help             Show help`
@@ -95,6 +100,70 @@ async function main() {
 
   const runtime = await NexusServerFactory.createRuntime(config);
 
+  if (values["port"]) {
+    const port = Number(values["port"]);
+    if (Number.isNaN(port) || port <= 0 || port > 65535) {
+      console.error(`\u274c Invalid port: ${values["port"]}`);
+      process.exit(1);
+    }
+
+    const mcpHandler = createStreamableHttpHandler({
+      createServer: () => runtime.server,
+    });
+
+    const restHandler = createRestApiHandler({
+      orchestrator: runtime.orchestrator,
+      sanitizer: runtime.sanitizer,
+      projectRoot: config.projectRoot,
+    });
+
+    const server = createServer((req, res) => {
+      const url = new URL(req.url ?? "/", `http://${req.headers.host ?? "localhost"}`);
+      const pathname = url.pathname;
+
+      // REST API endpoints
+      if (req.method === "POST" && pathname === "/api/search") {
+        restHandler(req, res).catch((error: unknown) => {
+          console.error("[REST API Unhandled Error]", error);
+          if (!res.headersSent) {
+            res.statusCode = 500;
+            res.setHeader("Content-Type", "application/json");
+            res.end(JSON.stringify({ error: "Internal server error" }));
+          }
+        });
+        return;
+      }
+
+      // Everything else goes to MCP over HTTP
+      mcpHandler(req, res).catch((error: unknown) => {
+        console.error("[MCP Handler Unhandled Error]", error);
+        if (!res.headersSent) {
+          res.statusCode = 500;
+          res.setHeader("Content-Type", "application/json");
+          res.end(JSON.stringify({ error: "Internal server error" }));
+        }
+      });
+    });
+
+    server.listen(port, "127.0.0.1", () => {
+      console.error(
+        `\ud83d\ude80 Nexus HTTP server running on http://127.0.0.1:${port} (root: ${root})`
+      );
+      console.error(`   MCP:    POST / (Streamable HTTP)`);
+      console.error(`   Search: POST /api/search`);
+    });
+
+    setupSignalHandlers(runtime, config.storage.rootDir, exitCleanup, server);
+
+    runtime.initialize().catch((error) => {
+      console.error("Nexus background initialization failed:", error);
+      process.exit(1);
+    });
+
+    return;
+  }
+
+  // Default: stdio MCP transport
   const transport = new StdioServerTransport();
   await runtime.server.connect(transport);
 
@@ -111,16 +180,29 @@ async function main() {
   });
 }
 
-function setupSignalHandlers(runtime: NexusRuntime, storageDir: string, exitCleanup: () => void): void {
+function setupSignalHandlers(
+  runtime: NexusRuntime,
+  storageDir: string,
+  exitCleanup: () => void,
+  httpServer?: Server
+): void {
   let isShuttingDown = false;
 
   const handleShutdown = () => {
     if (isShuttingDown) return;
     isShuttingDown = true;
 
-    runtime
-      .close()
-      .then(() => releaseProcessLock(storageDir))
+    const cleanup = async () => {
+      if (httpServer) {
+        await new Promise<void>((resolve) => {
+          httpServer.close(() => resolve());
+        });
+      }
+      await runtime.close();
+      await releaseProcessLock(storageDir);
+    };
+
+    cleanup()
       .then(() => {
         // Deregister the exit handler before process.exit(0) so the PID file
         // already removed by releaseProcessLock is not touched again (and a
