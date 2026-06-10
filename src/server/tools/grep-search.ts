@@ -4,6 +4,7 @@ import type { PathSanitizer } from '../path-sanitizer.js';
 export interface GrepSearchToolArgs {
   pattern: string;
   filePattern?: string;
+  filePatterns?: string[];
   caseSensitive?: boolean;
   maxResults?: number;
 }
@@ -15,7 +16,12 @@ export const executeGrepSearch = async (
   args: GrepSearchToolArgs,
   abortSignal?: AbortSignal,
 ): Promise<{ matches: GrepMatch[] }> => {
-  const glob = args.filePattern ? [sanitizer.validateGlob(args.filePattern)] : undefined;
+  let glob: string[] | undefined;
+  if (args.filePattern) {
+    glob = [sanitizer.validateGlob(args.filePattern)];
+  } else if (args.filePatterns) {
+    glob = args.filePatterns.map((p) => sanitizer.validateGlob(p));
+  }
 
   return {
     matches: await grepEngine.search({

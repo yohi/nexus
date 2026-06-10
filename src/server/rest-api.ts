@@ -1,11 +1,13 @@
+import path from "node:path";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import type { SearchOrchestrator } from "../search/orchestrator.js";
 import type { PathSanitizer } from "./path-sanitizer.js";
-import { PathTraversalError } from "./path-sanitizer.js";
+import { sanitizeErrorMessage } from "../utils/error-utils.js";
 
 export interface RestApiOptions {
   orchestrator: SearchOrchestrator;
   sanitizer: PathSanitizer;
+  projectRoot: string;
 }
 
 const MAX_BODY_SIZE = 1 * 1024 * 1024; // 1 MB
@@ -53,31 +55,6 @@ const readBody = async (req: IncomingMessage): Promise<unknown> => {
   }
 };
 
-const sanitizeErrorMessage = (error: unknown): string => {
-  if (error instanceof PathTraversalError) {
-    return "Access denied: path is outside project root";
-  }
-  const message = error instanceof Error ? error.message : String(error);
-
-  const hasSensitivePath =
-    /(\/(home|Users|tmp|var|etc|opt)\/|[a-zA-Z]:\\|\/[^/]+\/|\.\.\/)/i.test(
-      message,
-    );
-  if (hasSensitivePath) {
-    return "Internal server error (potential path leak prevented)";
-  }
-
-  const isNetworkError =
-    /fetch failed|ECONNREFUSED|ECONNRESET|ETIMEDOUT|http:\/\/|https:\/\//i.test(
-      message,
-    );
-  if (isNetworkError) {
-    return message;
-  }
-
-  return message;
-};
-
 export const createRestApiHandler = (options: RestApiOptions) => {
   return async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
     try {
@@ -117,15 +94,20 @@ export const createRestApiHandler = (options: RestApiOptions) => {
 
       // Validate file paths if provided
       let validatedFiles: string[] | undefined;
-      const invalidPaths: string[] = [];
+      const invalidPaths: { path: string; error: string }[] = [];
       if (Array.isArray(files)) {
         const filePromises = files
           .filter((f): f is string => typeof f === "string")
           .map(async (f) => {
             try {
-              return await options.sanitizer.sanitize(f);
+              const absolutePath = await options.sanitizer.sanitize(f);
+              // Convert absolute path to project-root relative path for the orchestrator/grep engine
+              return path.relative(options.projectRoot, absolutePath);
             } catch (error) {
-              invalidPaths.push(f);
+              invalidPaths.push({
+                path: f,
+                error: error instanceof Error ? error.message : String(error),
+              });
               return undefined;
             }
           });
@@ -135,7 +117,9 @@ export const createRestApiHandler = (options: RestApiOptions) => {
 
         if (invalidPaths.length > 0) {
           console.warn(
-            `[Nexus REST API] Invalid paths ignored: ${invalidPaths.join(", ")}`,
+            `[Nexus REST API] Invalid paths ignored: ${invalidPaths
+              .map((p) => `${p.path} (${p.error})`)
+              .join(", ")}`,
           );
         }
       }
@@ -143,8 +127,8 @@ export const createRestApiHandler = (options: RestApiOptions) => {
       const searchResponse = await options.orchestrator.search({
         query: trimmedQuery,
         topK: 20,
-        filePattern: validatedFiles && validatedFiles.length > 0
-          ? validatedFiles.join(",")
+        filePatterns: validatedFiles && validatedFiles.length > 0
+          ? validatedFiles
           : undefined,
       });
 

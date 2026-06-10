@@ -13,13 +13,14 @@ import type {
   ReindexOptions,
   IIndexPipeline,
 } from "../types/index.js";
-import { PathTraversalError, type PathSanitizer } from "./path-sanitizer.js";
+import { type PathSanitizer } from "./path-sanitizer.js";
+import { sanitizeErrorMessage } from "../utils/error-utils.js";
 import { executeGetContext } from "./tools/get-context.js";
-import { executeGrepSearch } from "./tools/grep-search.js";
-import { executeHybridSearch } from "./tools/hybrid-search.js";
+import { executeGrepSearch, type GrepSearchToolArgs } from "./tools/grep-search.js";
+import { executeHybridSearch, type HybridSearchToolArgs } from "./tools/hybrid-search.js";
 import { executeIndexStatus } from "./tools/index-status.js";
 import { executeReindex } from "./tools/reindex.js";
-import { executeSemanticSearch } from "./tools/semantic-search.js";
+import { executeSemanticSearch, type SemanticSearchToolArgs } from "./tools/semantic-search.js";
 import { MetricsHttpServer } from "../observability/metrics-server.js";
 import type { Registry } from "prom-client";
 
@@ -77,6 +78,7 @@ export const createNexusServer = (
         query: z.string(),
         topK: z.number().int().positive().optional(),
         filePattern: z.string().optional(),
+        filePatterns: z.array(z.string()).optional(),
         language: z.string().optional(),
       },
     },
@@ -87,7 +89,7 @@ export const createNexusServer = (
           await executeSemanticSearch(
             options.semanticSearch,
             options.sanitizer,
-            args,
+            args as SemanticSearchToolArgs & { filePattern?: string },
             extra?.signal,
           ),
         );
@@ -104,6 +106,7 @@ export const createNexusServer = (
       inputSchema: {
         pattern: z.string(),
         filePattern: z.string().optional(),
+        filePatterns: z.array(z.string()).optional(),
         caseSensitive: z.boolean().optional(),
         maxResults: z.number().int().positive().optional(),
       },
@@ -116,7 +119,7 @@ export const createNexusServer = (
             options.grepEngine,
             options.projectRoot,
             options.sanitizer,
-            args,
+            args as GrepSearchToolArgs,
             extra?.signal,
           ),
         );
@@ -134,6 +137,7 @@ export const createNexusServer = (
         query: z.string(),
         topK: z.number().int().positive().optional(),
         filePattern: z.string().optional(),
+        filePatterns: z.array(z.string()).optional(),
         language: z.string().optional(),
         grepPattern: z.string().optional(),
       },
@@ -145,7 +149,7 @@ export const createNexusServer = (
           await executeHybridSearch(
             options.orchestrator,
             options.sanitizer,
-            args,
+            args as HybridSearchToolArgs & { filePattern?: string },
             extra?.signal,
           ),
         );
@@ -375,38 +379,6 @@ export const initializeNexusRuntime = async (
   const runtime = buildNexusRuntime(options);
   await runtime.initialize();
   return runtime;
-};
-
-/**
- * Sanitizes error messages to prevent leaking internal file paths while
- * preserving useful information like connection errors or validation failures.
- */
-const sanitizeErrorMessage = (error: unknown): string => {
-  if (error instanceof PathTraversalError) {
-    return "Access denied: path is outside project root";
-  }
-  const message = error instanceof Error ? error.message : String(error);
-
-  // Check for absolute or relative path-like strings that might be sensitive.
-  // We block things like /home/user, C:\Users, /tmp/secret, or ../../secret
-  const hasSensitivePath =
-    /(\/(home|Users|tmp|var|etc|opt)\/|[a-zA-Z]:\\|\/[^/]+\/|\.\.\/)/i.test(
-      message,
-    );
-  if (hasSensitivePath) {
-    return "Internal server error (potential path leak prevented)";
-  }
-
-  // Allow common network-related error messages even if they contain slashes (URLs)
-  const isNetworkError =
-    /fetch failed|ECONNREFUSED|ECONNRESET|ETIMEDOUT|http:\/\/|https:\/\//i.test(
-      message,
-    );
-  if (isNetworkError) {
-    return message;
-  }
-
-  return message;
 };
 
 export const errorResult = (error: unknown) => {

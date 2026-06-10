@@ -7,12 +7,16 @@ export interface SemanticSearchToolArgs extends SemanticSearchParams {}
 export const executeSemanticSearch = async (
   semanticSearch: ISemanticSearch,
   sanitizer: PathSanitizer,
-  args: SemanticSearchToolArgs,
+  args: SemanticSearchToolArgs & { filePattern?: string },
   abortSignal?: AbortSignal,
 ): Promise<{ results: SearchResult[] }> => {
-  const validatedArgs = { ...args };
-  if (args.filePattern) {
-    validatedArgs.filePattern = sanitizer.validateGlob(args.filePattern);
+  const { filePattern, ...rest } = args;
+  const validatedArgs: SemanticSearchParams = { ...rest };
+
+  if (filePattern) {
+    validatedArgs.filePatterns = [sanitizer.validateGlob(filePattern)];
+  } else if (args.filePatterns) {
+    validatedArgs.filePatterns = args.filePatterns.map((p) => sanitizer.validateGlob(p));
   }
 
   return {

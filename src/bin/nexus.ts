@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { createServer } from "node:http";
+import { createServer, type Server } from "node:http";
 import path from "node:path";
 import { parseArgs } from "node:util";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
@@ -114,11 +114,15 @@ async function main() {
     const restHandler = createRestApiHandler({
       orchestrator: runtime.orchestrator,
       sanitizer: runtime.sanitizer,
+      projectRoot: config.projectRoot,
     });
 
     const server = createServer((req, res) => {
+      const url = new URL(req.url ?? "/", `http://${req.headers.host ?? "localhost"}`);
+      const pathname = url.pathname;
+
       // REST API endpoints
-      if (req.method === "POST" && req.url === "/api/search") {
+      if (req.method === "POST" && pathname === "/api/search") {
         restHandler(req, res).catch((error: unknown) => {
           console.error("[REST API Unhandled Error]", error);
           if (!res.headersSent) {
@@ -141,15 +145,15 @@ async function main() {
       });
     });
 
-    server.listen(port, () => {
+    server.listen(port, "127.0.0.1", () => {
       console.error(
-        `\ud83d\ude80 Nexus HTTP server running on http://localhost:${port} (root: ${root})`
+        `\ud83d\ude80 Nexus HTTP server running on http://127.0.0.1:${port} (root: ${root})`
       );
       console.error(`   MCP:    POST / (Streamable HTTP)`);
       console.error(`   Search: POST /api/search`);
     });
 
-    setupSignalHandlers(runtime, config.storage.rootDir, exitCleanup);
+    setupSignalHandlers(runtime, config.storage.rootDir, exitCleanup, server);
 
     runtime.initialize().catch((error) => {
       console.error("Nexus background initialization failed:", error);
@@ -176,16 +180,29 @@ async function main() {
   });
 }
 
-function setupSignalHandlers(runtime: NexusRuntime, storageDir: string, exitCleanup: () => void): void {
+function setupSignalHandlers(
+  runtime: NexusRuntime,
+  storageDir: string,
+  exitCleanup: () => void,
+  httpServer?: Server
+): void {
   let isShuttingDown = false;
 
   const handleShutdown = () => {
     if (isShuttingDown) return;
     isShuttingDown = true;
 
-    runtime
-      .close()
-      .then(() => releaseProcessLock(storageDir))
+    const cleanup = async () => {
+      if (httpServer) {
+        await new Promise<void>((resolve) => {
+          httpServer.close(() => resolve());
+        });
+      }
+      await runtime.close();
+      await releaseProcessLock(storageDir);
+    };
+
+    cleanup()
       .then(() => {
         // Deregister the exit handler before process.exit(0) so the PID file
         // already removed by releaseProcessLock is not touched again (and a

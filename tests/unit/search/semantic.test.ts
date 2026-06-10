@@ -77,7 +77,7 @@ describe('SemanticSearch', () => {
     const results = await search.search({
       query: authChunk.content,
       topK: 10,
-      filePattern: 'src/*.ts',
+      filePatterns: ['src/*.ts'],
       language: 'typescript',
     });
 
