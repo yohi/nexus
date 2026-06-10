@@ -54,7 +54,7 @@ Nexus は `<projectRoot>/.nexus.json` から設定を読み込みます。
 | `watcher.debounceMs` | positive integer | `100` | `NEXUS_WATCHER_DEBOUNCE_MS` | 連続した filesystem event を束ねる待ち時間 |
 | `watcher.maxQueueSize` | positive integer | `10000` | `NEXUS_WATCHER_MAX_QUEUE_SIZE` | overflow handling に入る前の最大キュー長 |
 | `watcher.fullScanThreshold` | positive integer | `5000` | `NEXUS_WATCHER_FULL_SCAN_THRESHOLD` | incremental 処理から広い scan recovery へ切り替える閾値 |
-| `watcher.ignorePaths` | string list | `['node_modules', '.git', '.nexus', 'dist', 'build', 'out', 'coverage', '.cache', '.parcel-cache', 'venv', '.venv', 'env', '.idea', '.vscode', '.DS_Store', 'package-lock.json', 'pnpm-lock.yaml', 'yarn.lock', 'bun.lockb', '*.lock']` | `NEXUS_WATCHER_IGNORE_PATHS` | 監視・インデックス対象外とするパスのリスト |
+| `watcher.ignorePaths` | string list | `['node_modules', '.git', '.worktrees', '.nexus', 'dist', 'build', 'out', 'coverage', '.cache', '.parcel-cache', 'venv', '.venv', 'env', '.idea', '.vscode', '.DS_Store', 'package-lock.json', 'pnpm-lock.yaml', 'yarn.lock', 'bun.lockb', '*.lock']` | `NEXUS_WATCHER_IGNORE_PATHS` | 監視・インデックス対象外とするパスのリスト |
 
 > **シークレットファイルの常時除外**: `.env` および `.env.*` は、`watcher.ignorePaths` を `.nexus.json` や `NEXUS_WATCHER_IGNORE_PATHS` で上書きした場合でも、**常に**除外対象としてマージされます。シークレットが誤ってインデックス（ベクトル DB）へ取り込まれるのを防ぐためで、上書きによって再度有効化することはできません。
 
