@@ -83,8 +83,7 @@ const matchesFilePatterns = (filePath: string, filePatterns?: string[]): boolean
     return true;
   }
 
-  return filePatterns.some((pattern) => {
-    if (pattern.trim() === '') return true;
-    return globToRegExp(pattern).test(filePath);
-  });
+  return filePatterns
+    .filter((p) => p.trim() !== "")
+    .some((pattern) => globToRegExp(pattern).test(filePath));
 };

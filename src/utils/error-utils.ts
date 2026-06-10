@@ -10,6 +10,15 @@ export const sanitizeErrorMessage = (error: unknown): string => {
   }
   const message = error instanceof Error ? error.message : String(error);
 
+  // Allow common network-related error messages even if they contain slashes (URLs)
+  const isNetworkError =
+    /fetch failed|ECONNREFUSED|ECONNRESET|ETIMEDOUT|http:\/\/|https:\/\//i.test(
+      message,
+    );
+  if (isNetworkError) {
+    return message;
+  }
+
   // Check for absolute or relative path-like strings that might be sensitive.
   // We block things like /home/user, C:\Users, /tmp/secret, or ../../secret
   // Improved regex to avoid over-matching common URL paths like /api/ or /v1/
@@ -19,15 +28,6 @@ export const sanitizeErrorMessage = (error: unknown): string => {
     );
   if (hasSensitivePath) {
     return "Internal server error (potential path leak prevented)";
-  }
-
-  // Allow common network-related error messages even if they contain slashes (URLs)
-  const isNetworkError =
-    /fetch failed|ECONNREFUSED|ECONNRESET|ETIMEDOUT|http:\/\/|https:\/\//i.test(
-      message,
-    );
-  if (isNetworkError) {
-    return message;
   }
 
   return message;

@@ -84,4 +84,39 @@ describe('SemanticSearch', () => {
     expect(results).toHaveLength(1);
     expect(results[0]?.chunk.filePath).toBe('src/auth.ts');
   });
+
+  it('ignores empty patterns in filePatterns', async () => {
+    const embeddingProvider = new TestEmbeddingProvider();
+    const vectorStore = new InMemoryVectorStore({ dimensions: embeddingProvider.dimensions });
+    await vectorStore.initialize();
+
+    const authChunk = makeChunk({
+      id: 'auth',
+      filePath: 'src/auth.ts',
+      content: 'authenticate current user',
+    });
+    const otherChunk = makeChunk({
+      id: 'other',
+      filePath: 'other/file.ts',
+      content: 'unrelated content',
+    });
+
+    await vectorStore.upsertChunks(
+      [authChunk, otherChunk],
+      await embeddingProvider.embed([authChunk.content, otherChunk.content]),
+    );
+
+    const search = new SemanticSearch({ vectorStore, embeddingProvider });
+    
+    // Pattern ['src/*.ts', ''] should only match auth.ts, not other.ts
+    // Before fix, '' would cause it to match everything.
+    const results = await search.search({
+      query: authChunk.content,
+      topK: 10,
+      filePatterns: ['src/*.ts', ' '],
+    });
+
+    expect(results).toHaveLength(1);
+    expect(results[0]?.chunk.filePath).toBe('src/auth.ts');
+  });
 });
