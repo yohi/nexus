@@ -1,5 +1,20 @@
 # Changelog
 
+## [1.10.0](https://github.com/yohi/nexus/compare/v1.9.1...v1.10.0) (2026-06-10)
+
+
+### Features
+
+* nexus-commit連携のためREST API /api/search エンドポイントを追加 ([b684a24](https://github.com/yohi/nexus/commit/b684a24daf903ba273bc86cde38ae03ed87d29de))
+* **nexus:** nexus-commit連携のためREST API /api/search エンドポイントを追加 ([1de667c](https://github.com/yohi/nexus/commit/1de667c5da7a826481c64bfcb0bfe4e3b73975d6))
+
+
+### Bug Fixes
+
+* **server:** Codacyの指摘対応およびリンターエラーの解消 ([7fc37af](https://github.com/yohi/nexus/commit/7fc37af55603c271b0ae90fee368e558850b2cb8))
+* **server:** lintエラー（unsafe-assignment/unsafe-return）の修正 ([f3e341b](https://github.com/yohi/nexus/commit/f3e341b2a6c338dd84430df17b46191430dafa65))
+* 空のファイルパターンの無視、BigIntのシリアライズ対応、およびエラーサニタイズ順序の修正 ([a6a6742](https://github.com/yohi/nexus/commit/a6a674272fbcf59c5cc66964b8684b5ca2bb66cc))
+
 ## [1.9.1](https://github.com/yohi/nexus/compare/v1.9.0...v1.9.1) (2026-06-09)
 
 
