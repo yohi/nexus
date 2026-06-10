@@ -43,7 +43,7 @@ describe('executeHybridSearch', () => {
 
     expect(orchestrator.lastSearchArgs).toMatchObject({
       query: 'authenticate',
-      filePattern: 'src/*.ts',
+      filePatterns: ['src/*.ts'],
     });
   });
 
