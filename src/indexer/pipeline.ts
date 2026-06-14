@@ -1,4 +1,4 @@
-import { readFile, stat } from 'node:fs/promises';
+import { readFile, stat as fsStat } from 'node:fs/promises';
 import { Mutex, E_ALREADY_LOCKED, tryAcquire } from 'async-mutex';
 
 import { DeadLetterQueue } from './dead-letter-queue.js';
@@ -183,8 +183,7 @@ export class IndexPipeline implements IIndexPipeline {
         let skipDueToSize = false;
         let fileSize: number | undefined;
         try {
-          // eslint-disable-next-line security/detect-non-literal-fs-filename
-          const fileStat = await stat(event.filePath);
+          const fileStat = await fsStat(event.filePath);
           fileSize = fileStat.size;
         } catch {
           // File might not exist on disk, or we are in a test environment with a custom loadContent.
@@ -396,8 +395,7 @@ export class IndexPipeline implements IIndexPipeline {
   private async reprocess(entry: DeadLetterEntry): Promise<void> {
     if (this.options.maxFileBytes !== undefined) {
       try {
-        // eslint-disable-next-line security/detect-non-literal-fs-filename
-        const fileStat = await stat(entry.filePath);
+        const fileStat = await fsStat(entry.filePath);
         if (fileStat.size > this.options.maxFileBytes) {
           this.safeLogProgress(
             `Skipping reprocess (file too large: ${fileStat.size} bytes > ${this.options.maxFileBytes} limit): ${entry.filePath}`,
