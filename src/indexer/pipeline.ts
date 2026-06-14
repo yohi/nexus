@@ -183,6 +183,7 @@ export class IndexPipeline implements IIndexPipeline {
         let skipDueToSize = false;
         let fileSize: number | undefined;
         try {
+          // eslint-disable-next-line security/detect-non-literal-fs-filename
           const fileStat = await stat(event.filePath);
           fileSize = fileStat.size;
         } catch {
@@ -395,6 +396,7 @@ export class IndexPipeline implements IIndexPipeline {
   private async reprocess(entry: DeadLetterEntry): Promise<void> {
     if (this.options.maxFileBytes !== undefined) {
       try {
+        // eslint-disable-next-line security/detect-non-literal-fs-filename
         const fileStat = await stat(entry.filePath);
         if (fileStat.size > this.options.maxFileBytes) {
           this.safeLogProgress(
