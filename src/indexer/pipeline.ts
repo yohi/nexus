@@ -393,15 +393,17 @@ export class IndexPipeline implements IIndexPipeline {
   }
 
   private async reprocess(entry: DeadLetterEntry): Promise<void> {
+    let fileSize: number | undefined;
     if (this.options.maxFileBytes !== undefined) {
       try {
         const fileStat = await fsStat(entry.filePath);
-        if (fileStat.size > this.options.maxFileBytes) {
+        fileSize = fileStat.size;
+        if (fileSize > this.options.maxFileBytes) {
           this.safeLogProgress(
-            `Skipping reprocess (file too large: ${fileStat.size} bytes > ${this.options.maxFileBytes} limit): ${entry.filePath}`,
+            `Skipping reprocess (file too large: ${fileSize} bytes > ${this.options.maxFileBytes} limit): ${entry.filePath}`,
             entry.filePath,
           );
-          this.skippedFiles.set(entry.filePath, `file too large: ${fileStat.size} bytes`);
+          this.skippedFiles.set(entry.filePath, `file too large: ${fileSize} bytes`);
           await this.options.vectorStore.deleteByFilePath(entry.filePath);
           await this.merkleTree.update(entry.filePath, entry.contentHash);
           return;
@@ -411,7 +413,7 @@ export class IndexPipeline implements IIndexPipeline {
       }
     }
     const content = await readFile(entry.filePath, 'utf8');
-    const bytes = Buffer.byteLength(content, 'utf8');
+    const bytes = fileSize ?? Buffer.byteLength(content, 'utf8');
     if (this.options.maxFileBytes !== undefined && bytes > this.options.maxFileBytes) {
       this.safeLogProgress(
         `Skipping reprocess (file too large: ${bytes} bytes > ${this.options.maxFileBytes} limit): ${entry.filePath}`,
