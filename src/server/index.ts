@@ -257,10 +257,9 @@ export const buildNexusRuntime = (
         options.pipeline.start();
         await options.watcher.start().catch((error) => {
           const code =
-            error !== null &&
-            typeof error === "object" &&
-            "code" in error &&
-            (error as Record<string, unknown>).code;
+            error !== null && typeof error === "object" && "code" in error
+              ? (error as Record<string, unknown>).code
+              : undefined;
           const isNonFatal = code === "EMFILE" || code === "ENOSPC";
 
           if (isNonFatal) {
