@@ -1,5 +1,18 @@
 # Changelog
 
+## [1.12.0](https://github.com/yohi/nexus/compare/v1.11.0...v1.12.0) (2026-06-15)
+
+
+### Features
+
+* Bitbucket同期のワークフローをrelease.ymlに統合し、独立したファイルを削除 ([abebf5c](https://github.com/yohi/nexus/commit/abebf5c3ec5204edb84fd7d822b6b402dd15fda2))
+* Bitbucket同期のワークフローをrelease.ymlに統合し、独立したファイルを削除 ([ddb764f](https://github.com/yohi/nexus/commit/ddb764fbd5e6cd02e1860be56990fdfcfd1cbc77))
+
+
+### Bug Fixes
+
+* Bitbucket同期に必要なrsyncとjqのインストールステップを追加 ([c6e06ca](https://github.com/yohi/nexus/commit/c6e06ca7aadde42512574db7edb81ab253d03a5c))
+
 ## [1.11.0](https://github.com/yohi/nexus/compare/v1.10.0...v1.11.0) (2026-06-15)
 
 
