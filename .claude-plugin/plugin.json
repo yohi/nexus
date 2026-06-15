@@ -1,0 +1,81 @@
+{
+  "name": "yohi-nexus",
+  "version": "1.12.0",
+  "description": "Nexus local code indexing and hybrid search MCP plugin",
+  "mcpServers": {
+    "nexus": {
+      "command": "node",
+      "args": [
+        "${CLAUDE_PLUGIN_ROOT}/dist/bin/nexus.js"
+      ],
+      "env": {
+        "NEXUS_EMBEDDING_PROVIDER": "${user_config.embedding_provider}",
+        "NEXUS_EMBEDDING_MODEL": "${user_config.embedding_model}",
+        "NEXUS_EMBEDDING_DIMENSIONS": "${user_config.embedding_dimensions}",
+        "NEXUS_EMBEDDING_BASE_URL": "${user_config.embedding_base_url}",
+        "NEXUS_EMBEDDING_API_KEY": "${user_config.embedding_api_key}"
+      }
+    }
+  },
+  "hooks": {
+    "Setup": [
+      {
+        "matcher": "init",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}\"/scripts/setup-plugin.sh"
+      }
+        ]
+      }
+    ],
+    "SessionStart": [
+      {
+        "matcher": "startup",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}\"/scripts/setup-plugin.sh"
+          }
+        ]
+      }
+    ]
+  },
+  "userConfig": {
+    "embedding_provider": {
+      "type": "string",
+      "title": "Embedding Provider",
+      "description": "The embedding provider to use (e.g. ollama, openai)",
+      "default": "ollama",
+      "required": true
+    },
+    "embedding_model": {
+      "type": "string",
+      "title": "Embedding Model",
+      "description": "The embedding model name",
+      "default": "nomic-embed-text",
+      "required": true
+    },
+    "embedding_dimensions": {
+      "type": "number",
+      "title": "Embedding Dimensions",
+      "description": "Dimensions of the embedding vectors (e.g. 768 for ollama/nomic-embed-text, 1536 for openai/text-embedding-3-small)",
+      "default": 768,
+      "required": true
+    },
+    "embedding_base_url": {
+      "type": "string",
+      "title": "Embedding Base URL",
+      "description": "The API base URL for the embedding provider (required for ollama)",
+      "default": "http://127.0.0.1:11434",
+      "required": false
+    },
+    "embedding_api_key": {
+      "type": "string",
+      "title": "Embedding API Key",
+      "description": "API key for the embedding provider (required for openai)",
+      "sensitive": true,
+      "required": false
+    }
+  }
+}
