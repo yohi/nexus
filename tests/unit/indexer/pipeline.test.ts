@@ -496,4 +496,84 @@ describe('IndexPipeline', () => {
     await expect(pipeline.stop()).resolves.toBeUndefined();
     await expect(pipeline.stop()).resolves.toBeUndefined();
   });
+
+  it('skips a file whose UTF-8 byte length exceeds maxFileBytes', async () => {
+    const { metadataStore, vectorStore, chunker, registry } = await createPipeline();
+    const embeddingProvider = new CountingEmbeddingProvider();
+    const pipeline = new IndexPipeline({
+      metadataStore,
+      vectorStore,
+      chunker,
+      embeddingProvider,
+      pluginRegistry: registry,
+      maxFileBytes: 16,
+    });
+    const filePath = 'src/huge.ts';
+    const content = 'export const value = 1;\n'.repeat(50);
+    const contentHash = 'hash-huge';
+
+    expect(Buffer.byteLength(content, 'utf8')).toBeGreaterThan(16);
+
+    const result = await pipeline.processEvents(
+      [
+        {
+          type: 'added',
+          filePath,
+          contentHash,
+          detectedAt: new Date().toISOString(),
+        },
+      ],
+      async () => content,
+    );
+
+    expect(embeddingProvider.calls).toBe(0);
+    expect(result.chunksIndexed).toBe(0);
+    expect(pipeline.getSkippedFiles().has(filePath)).toBe(true);
+    expect(pipeline.getSkippedFiles().get(filePath)).toContain('file too large');
+
+    const stats = await vectorStore.getStats();
+    expect(stats.totalChunks).toBe(0);
+
+    // Merkle tree is updated so the oversized file is treated as handled.
+    await expect(metadataStore.getMerkleNode(filePath)).resolves.toEqual(
+      expect.objectContaining({ hash: contentHash, isDirectory: false }),
+    );
+
+    // Size-skips must NOT be routed to the Dead Letter Queue.
+    await expect(metadataStore.getDeadLetterEntries()).resolves.toEqual([]);
+  });
+
+  it('embeds a file whose UTF-8 byte length is within maxFileBytes', async () => {
+    const { metadataStore, vectorStore, chunker, registry } = await createPipeline();
+    const embeddingProvider = new CountingEmbeddingProvider();
+    const pipeline = new IndexPipeline({
+      metadataStore,
+      vectorStore,
+      chunker,
+      embeddingProvider,
+      pluginRegistry: registry,
+      maxFileBytes: 1_048_576,
+    });
+    const content = await readFile(fixturePath, 'utf8');
+
+    expect(Buffer.byteLength(content, 'utf8')).toBeLessThanOrEqual(1_048_576);
+
+    const result = await pipeline.processEvents(
+      [
+        {
+          type: 'added',
+          filePath: fixturePath,
+          contentHash: 'hash-within-limit',
+          detectedAt: new Date().toISOString(),
+        },
+      ],
+      async () => content,
+    );
+
+    expect(embeddingProvider.calls).toBe(1);
+    expect(result.chunksIndexed).toBeGreaterThan(0);
+    expect(pipeline.getSkippedFiles().has(fixturePath)).toBe(false);
+    const stats = await vectorStore.getStats();
+    expect(stats.totalChunks).toBeGreaterThan(0);
+  });
 });

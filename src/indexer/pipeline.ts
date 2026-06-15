@@ -1,4 +1,4 @@
-import { readFile } from 'node:fs/promises';
+import { readFile, stat as fsStat } from 'node:fs/promises';
 import { Mutex, E_ALREADY_LOCKED, tryAcquire } from 'async-mutex';
 
 import { DeadLetterQueue } from './dead-letter-queue.js';
@@ -28,6 +28,7 @@ interface IndexPipelineOptions {
   embeddingProvider: EmbeddingProvider;
   pluginRegistry: PluginRegistry;
   eventQueue?: EventQueue;
+  maxFileBytes?: number;
   onProgress?: (msg: string) => void;
   metricsHooks?: Pick<
     MetricsHooks,
@@ -179,9 +180,42 @@ export class IndexPipeline implements IIndexPipeline {
       }
 
       try {
-        const content = await loadContent(event.filePath);
-        const count = await this.indexFile(event.filePath, content, event.contentHash ?? '');
-        chunksIndexed += count;
+        let skipDueToSize = false;
+        let fileSize: number | undefined;
+        try {
+          const fileStat = await fsStat(event.filePath);
+          fileSize = fileStat.size;
+        } catch {
+          // File might not exist on disk, or we are in a test environment with a custom loadContent.
+        }
+
+        if (fileSize !== undefined && this.options.maxFileBytes !== undefined && fileSize > this.options.maxFileBytes) {
+          skipDueToSize = true;
+          this.safeLogProgress(
+            `Skipping (file too large: ${fileSize} bytes > ${this.options.maxFileBytes} limit): ${event.filePath}`,
+            event.filePath,
+          );
+          this.skippedFiles.set(event.filePath, `file too large: ${fileSize} bytes`);
+          await this.options.vectorStore.deleteByFilePath(event.filePath);
+          await this.merkleTree.update(event.filePath, event.contentHash ?? '');
+        }
+
+        if (!skipDueToSize) {
+          const content = await loadContent(event.filePath);
+          const bytes = fileSize ?? Buffer.byteLength(content, 'utf8');
+          if (fileSize === undefined && this.options.maxFileBytes !== undefined && bytes > this.options.maxFileBytes) {
+            this.safeLogProgress(
+              `Skipping (file too large: ${bytes} bytes > ${this.options.maxFileBytes} limit): ${event.filePath}`,
+              event.filePath,
+            );
+            this.skippedFiles.set(event.filePath, `file too large: ${bytes} bytes`);
+            await this.options.vectorStore.deleteByFilePath(event.filePath);
+            await this.merkleTree.update(event.filePath, event.contentHash ?? '');
+          } else {
+            const count = await this.indexFile(event.filePath, content, event.contentHash ?? '');
+            chunksIndexed += count;
+          }
+        }
       } catch (error) {
         if (error instanceof Error && error.name === 'RetryExhaustedError') {
           this.skippedFiles.set(event.filePath, error.message);
@@ -359,7 +393,37 @@ export class IndexPipeline implements IIndexPipeline {
   }
 
   private async reprocess(entry: DeadLetterEntry): Promise<void> {
+    let fileSize: number | undefined;
+    if (this.options.maxFileBytes !== undefined) {
+      try {
+        const fileStat = await fsStat(entry.filePath);
+        fileSize = fileStat.size;
+        if (fileSize > this.options.maxFileBytes) {
+          this.safeLogProgress(
+            `Skipping reprocess (file too large: ${fileSize} bytes > ${this.options.maxFileBytes} limit): ${entry.filePath}`,
+            entry.filePath,
+          );
+          this.skippedFiles.set(entry.filePath, `file too large: ${fileSize} bytes`);
+          await this.options.vectorStore.deleteByFilePath(entry.filePath);
+          await this.merkleTree.update(entry.filePath, entry.contentHash);
+          return;
+        }
+      } catch {
+        // Fallback to checking size after reading.
+      }
+    }
     const content = await readFile(entry.filePath, 'utf8');
+    const bytes = fileSize ?? Buffer.byteLength(content, 'utf8');
+    if (this.options.maxFileBytes !== undefined && bytes > this.options.maxFileBytes) {
+      this.safeLogProgress(
+        `Skipping reprocess (file too large: ${bytes} bytes > ${this.options.maxFileBytes} limit): ${entry.filePath}`,
+        entry.filePath,
+      );
+      this.skippedFiles.set(entry.filePath, `file too large: ${bytes} bytes`);
+      await this.options.vectorStore.deleteByFilePath(entry.filePath);
+      await this.merkleTree.update(entry.filePath, entry.contentHash);
+      return;
+    }
     await this.indexFile(entry.filePath, content, entry.contentHash);
   }
 

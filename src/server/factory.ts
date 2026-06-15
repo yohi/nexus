@@ -422,6 +422,7 @@ export class NexusServerFactory {
       chunker: new Chunker(pluginRegistry),
       embeddingProvider,
       pluginRegistry,
+      maxFileBytes: config.indexing.maxFileBytes,
       onProgress: (msg) => onLog(msg),
       metricsHooks: metricsCollector,
     });

@@ -4,7 +4,7 @@ import path from 'node:path';
 
 import { afterEach, describe, expect, it } from 'vitest';
 
-import { loadConfig } from '../../../src/config/index.js';
+import { loadConfig, SECRET_IGNORE_PATHS } from '../../../src/config/index.js';
 
 describe('loadConfig', () => {
   let tempDir: string | undefined;
@@ -168,5 +168,97 @@ describe('loadConfig', () => {
     expect(config.embedding.provider).toBe('test');
     expect(config.embedding.model).toBe('nomic-embed-text');
     expect(config.embedding.apiKey).toBe('secret-key');
+  });
+
+  it('includes lockfile entries and the secret denylist in the default ignorePaths', async () => {
+    tempDir = await mkdtemp(path.join(os.tmpdir(), 'nexus-config-'));
+
+    const config = await loadConfig({ projectRoot: tempDir, env: {} });
+    const ignorePaths = config.watcher.ignorePaths ?? [];
+
+    for (const lockfile of ['package-lock.json', 'pnpm-lock.yaml', 'yarn.lock', 'bun.lockb', '*.lock']) {
+      expect(ignorePaths).toContain(lockfile);
+    }
+    for (const secret of SECRET_IGNORE_PATHS) {
+      expect(ignorePaths).toContain(secret);
+    }
+    expect(SECRET_IGNORE_PATHS).toEqual(['.env', '.env.*']);
+  });
+
+  it('always merges the secret denylist when .nexus.json overrides ignorePaths without secrets', async () => {
+    tempDir = await mkdtemp(path.join(os.tmpdir(), 'nexus-config-'));
+    await writeFile(
+      path.join(tempDir, '.nexus.json'),
+      JSON.stringify({
+        watcher: { ignorePaths: ['node_modules', 'custom_dir'] },
+      }),
+      'utf8',
+    );
+
+    const config = await loadConfig({ projectRoot: tempDir, env: {} });
+    const ignorePaths = config.watcher.ignorePaths ?? [];
+
+    expect(ignorePaths).toContain('node_modules');
+    expect(ignorePaths).toContain('custom_dir');
+    expect(ignorePaths).toContain('.env');
+    expect(ignorePaths).toContain('.env.*');
+  });
+
+  it('always merges the secret denylist when NEXUS_WATCHER_IGNORE_PATHS overrides ignorePaths', async () => {
+    tempDir = await mkdtemp(path.join(os.tmpdir(), 'nexus-config-'));
+
+    const config = await loadConfig({
+      projectRoot: tempDir,
+      env: {
+        NEXUS_WATCHER_IGNORE_PATHS: 'node_modules,tmp',
+      },
+    });
+    const ignorePaths = config.watcher.ignorePaths ?? [];
+
+    expect(ignorePaths).toContain('node_modules');
+    expect(ignorePaths).toContain('tmp');
+    expect(ignorePaths).toContain('.env');
+    expect(ignorePaths).toContain('.env.*');
+  });
+
+  it('does not duplicate secret entries already present in ignorePaths', async () => {
+    tempDir = await mkdtemp(path.join(os.tmpdir(), 'nexus-config-'));
+    await writeFile(
+      path.join(tempDir, '.nexus.json'),
+      JSON.stringify({
+        watcher: { ignorePaths: ['.env', 'node_modules'] },
+      }),
+      'utf8',
+    );
+
+    const config = await loadConfig({ projectRoot: tempDir, env: {} });
+    const ignorePaths = config.watcher.ignorePaths ?? [];
+
+    // '.env' was already present → the merge must not duplicate it.
+    expect(ignorePaths.filter((entry) => entry === '.env')).toHaveLength(1);
+    // '.env.*' was missing → the merge must append it exactly once.
+    expect(ignorePaths.filter((entry) => entry === '.env.*')).toHaveLength(1);
+    expect(ignorePaths).toContain('node_modules');
+  });
+
+  it('defaults indexing.maxFileBytes to 1048576 and allows overrides', async () => {
+    tempDir = await mkdtemp(path.join(os.tmpdir(), 'nexus-config-'));
+
+    const defaults = await loadConfig({ projectRoot: tempDir, env: {} });
+    expect(defaults.indexing.maxFileBytes).toBe(1_048_576);
+
+    await writeFile(
+      path.join(tempDir, '.nexus.json'),
+      JSON.stringify({ indexing: { maxFileBytes: 2048 } }),
+      'utf8',
+    );
+    const fileOverride = await loadConfig({ projectRoot: tempDir, env: {} });
+    expect(fileOverride.indexing.maxFileBytes).toBe(2048);
+
+    const envOverride = await loadConfig({
+      projectRoot: tempDir,
+      env: { NEXUS_INDEXING_MAX_FILE_BYTES: '4096' },
+    });
+    expect(envOverride.indexing.maxFileBytes).toBe(4096);
   });
 });

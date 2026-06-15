@@ -1,7 +1,7 @@
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 
-import type { Config, EmbeddingConfig } from '../types/index.js';
+import type { Config, EmbeddingConfig, IndexingConfig } from '../types/index.js';
 
 export interface LoadConfigOptions {
   projectRoot: string;
@@ -20,6 +20,10 @@ const DEFAULT_EMBEDDING: EmbeddingConfig = {
   retryBaseDelayMs: 250,
   timeoutMs: 120_000,
 };
+
+const DEFAULT_INDEXING: IndexingConfig = { maxFileBytes: 1_048_576 };
+
+export const SECRET_IGNORE_PATHS = ['.env', '.env.*'];
 
 export const DEFAULT_BATCH_SIZE = 1000;
 
@@ -48,12 +52,19 @@ const DEFAULT_CONFIG = (projectRoot: string): Config => ({
       '.parcel-cache',
       'venv',
       '.venv',
+      'env',
       '.idea',
       '.vscode',
       '.DS_Store',
+      'package-lock.json',
+      'pnpm-lock.yaml',
+      'yarn.lock',
+      'bun.lockb',
+      '*.lock',
     ],
   },
   embedding: { ...DEFAULT_EMBEDDING },
+  indexing: { ...DEFAULT_INDEXING },
 });
 
 export const loadConfig = async (options: LoadConfigOptions): Promise<Config> => {
@@ -82,8 +93,9 @@ export const loadConfig = async (options: LoadConfigOptions): Promise<Config> =>
         asPositiveInt(env.NEXUS_WATCHER_FULL_SCAN_THRESHOLD) ??
         validatePositiveInt(fileConfig.watcher?.fullScanThreshold) ??
         defaults.watcher.fullScanThreshold,
-      ignorePaths:
+      ignorePaths: withSecretIgnorePaths(
         asStringList(env.NEXUS_WATCHER_IGNORE_PATHS) ?? validateStringList(fileConfig.watcher?.ignorePaths) ?? defaults.watcher.ignorePaths,
+      ),
     },
     embedding: {
       provider: asProvider(env.NEXUS_EMBEDDING_PROVIDER) ?? validateProvider(fileConfig.embedding?.provider) ?? defaults.embedding.provider,
@@ -108,6 +120,12 @@ export const loadConfig = async (options: LoadConfigOptions): Promise<Config> =>
         asPositiveInt(env.NEXUS_EMBEDDING_TIMEOUT_MS) ??
         validatePositiveInt(fileConfig.embedding?.timeoutMs) ??
         defaults.embedding.timeoutMs,
+    },
+    indexing: {
+      maxFileBytes:
+        asPositiveInt(env.NEXUS_INDEXING_MAX_FILE_BYTES) ??
+        validatePositiveInt(fileConfig.indexing?.maxFileBytes) ??
+        defaults.indexing.maxFileBytes,
     },
   };
 
@@ -175,6 +193,16 @@ const validateStringList = (value: unknown): string[] | undefined => {
       .filter((s) => s !== '');
   }
   return undefined;
+};
+
+const withSecretIgnorePaths = (paths: string[] | undefined): string[] => {
+  const result = [...(paths ?? [])];
+  for (const secret of SECRET_IGNORE_PATHS) {
+    if (!result.includes(secret)) {
+      result.push(secret);
+    }
+  }
+  return result;
 };
 
 const readJsonFile = async (configPath: string): Promise<Partial<Config>> => {
