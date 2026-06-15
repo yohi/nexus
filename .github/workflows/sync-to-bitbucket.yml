@@ -1,0 +1,85 @@
+name: Sync Plugin to Bitbucket Marketplace
+
+on:
+  push:
+    tags:
+      - 'v*' # v1.0.0 などリリース用のタグが作られたときに実行
+
+jobs:
+  sync:
+    runs-on: ubuntu-slim # GitHub公式の軽量ランナーを指定
+    steps:
+      # 1. 必要なツール (rsync, jq) のインストール
+      - name: Install required tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y rsync jq
+
+      # 2. GitHub側のプラグインソースコードを取得
+      - name: Checkout GitHub repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # 3. HTTPS認証情報を埋め込んでBitbucketのリポジトリをクローン
+      - name: Clone Bitbucket Marketplace Repo
+        run: |
+          git clone https://x-token-auth:${{ secrets.BITBUCKET_TOKEN }}@bitbucket.org/dh_ohi/claude-plugins.git bitbucket-repo
+          cd bitbucket-repo
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      # 4. プラグインコードの同期と marketplace.json の更新
+      - name: Sync Plugin and Update Catalog
+        run: |
+          cd bitbucket-repo
+          
+          # GitHubリポジトリ名を自動的にプラグイン名としてセット
+          PLUGIN_NAME="${{ github.event.repository.name }}"
+          mkdir -p "plugins/$PLUGIN_NAME"
+          
+          # コードの同期（不要なファイルを除外してコピー）
+          rsync -av --delete \
+            --exclude='.git' \
+            --exclude='.github' \
+            --exclude='bitbucket-repo' \
+            ../ "plugins/$PLUGIN_NAME/"
+          
+          COMMIT_SHA="${{ github.sha }}"
+          TAG_NAME="${{ github.ref_name }}"
+          
+          # カタログファイル marketplace.json がなければ新規作成
+          if [ ! -f .claude-plugin/marketplace.json ]; then
+            mkdir -p .claude-plugin
+            echo '{"name": "dh-ohi-plugins", "owner": {"name": "dh_ohi"}, "plugins": []}' > .claude-plugin/marketplace.json
+          fi
+          
+          # プラグイン情報（SHAとバージョン）を更新する (jq)
+          jq --arg name "$PLUGIN_NAME" --arg sha "$COMMIT_SHA" --arg ver "$TAG_NAME" '
+            if (.plugins | map(.name) | contains([$name]) | not) then
+              .plugins += [{
+                "name": $name,
+                "source": ("./plugins/" + $name),
+                "description": "Auto-synced plugin"
+              }]
+            else
+              .
+            end |
+            .plugins |= map(if .name == $name then .sha = $sha | .version = $ver else . end)
+          ' .claude-plugin/marketplace.json > tmp.json && mv tmp.json .claude-plugin/marketplace.json
+
+      # 5. 変更をBitbucketにプッシュ
+      - name: Push changes to Bitbucket
+        run: |
+          cd bitbucket-repo
+          PLUGIN_NAME="${{ github.event.repository.name }}"
+          TAG_NAME="${{ github.ref_name }}"
+          
+          git add -A
+          if git diff-index --quiet HEAD; then
+            echo "No changes to commit"
+          else
+            git commit -m "chore: release $TAG_NAME for $PLUGIN_NAME [skip ci]"
+            # HTTPS認証情報を使ってプッシュ
+            git push https://x-token-auth:${{ secrets.BITBUCKET_TOKEN }}@bitbucket.org/dh_ohi/claude-plugins.git HEAD
+          fi
