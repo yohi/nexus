@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.13.1](https://github.com/yohi/nexus/compare/v1.13.0...v1.13.1) (2026-06-15)
+
+
+### Bug Fixes
+
+* handle ENOSPC as non-fatal and improve startup error diagnosis ([936a1ca](https://github.com/yohi/nexus/commit/936a1ca85979edc941a1bbc2aab7993e36ecc2c7))
+* handle ENOSPC as non-fatal and improve startup error diagnosis ([852e0ed](https://github.com/yohi/nexus/commit/852e0ed951fba5e16fb542368b89926bc87b96c1))
+
 ## [1.13.0](https://github.com/yohi/nexus/compare/v1.12.0...v1.13.0) (2026-06-15)
 
 
