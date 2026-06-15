@@ -41,7 +41,7 @@ When using **Nexus MCP** tools for codebase exploration and semantic search, adh
 - **Purpose**: Nexus is a local-first code indexing and search platform for AI agents, providing hybrid semantic search, ripgrep, and AST-based context parsing.
 
 ### 2. Tool Usage Rules (Playbook)
-- **Index Status**: Run `index_status` before searching. If `isIndexing` is `true`, search results may be incomplete.
+- **Index Status**: Run `index_status` before searching. If `pipelineProgress.status === 'running'`, search results may be incomplete.
 - **Search Strategy**:
   - Use `hybrid_search` for semantic queries, vague feature exploration, or architectural questions (combines vector & ripgrep via RRF).
   - Use `grep_search` to pinpoint exact symbols, class/function names, or error strings.
