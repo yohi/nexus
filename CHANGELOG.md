@@ -1,5 +1,26 @@
 # Changelog
 
+## [1.11.0](https://github.com/yohi/nexus/compare/v1.10.0...v1.11.0) (2026-06-15)
+
+
+### Features
+
+* Bitbucketのプライベートマーケットプレイス同期用のGitHub Actionsを追加 ([0734b25](https://github.com/yohi/nexus/commit/0734b250b97b4e4262d1bb5f2e29116feccd7dc7))
+* Bitbucketのプライベートマーケットプレイス同期用のGitHub Actionsを追加 ([027b826](https://github.com/yohi/nexus/commit/027b826da311b0c1c9bd4601afd172b460fa094b))
+* **indexer:** 秘匿/lock/巨大ファイルの誤索引を防ぐ既定ガードを追加 ([761303b](https://github.com/yohi/nexus/commit/761303b2289f84668c6925f4b13199bdc6091864))
+
+
+### Bug Fixes
+
+* **indexer:** codacyによる非リテラルfs警告の抑制コメントを追加 ([1d40cde](https://github.com/yohi/nexus/commit/1d40cdedec285fc7884e1f7824988d12a02dd7f3))
+* **indexer:** statの別名インポートによるセキュリティ警告の回避とLintエラーの解消 ([50f6aef](https://github.com/yohi/nexus/commit/50f6aefff31909dbfca45e30fa455582ba984a7e))
+* コミットSHA取得処理とプッシュ先ブランチ指定のバグを修正 ([947d77c](https://github.com/yohi/nexus/commit/947d77c3c85605e3d1ae649cb42aeed37b9d81e7))
+
+
+### Performance Improvements
+
+* **indexer:** 再処理時に取得済みのfileStat.sizeを再利用するように最適化 ([a2c03e1](https://github.com/yohi/nexus/commit/a2c03e1a31ab3c66bb11f41c4710db062a9b4bd3))
+
 ## [1.10.0](https://github.com/yohi/nexus/compare/v1.9.1...v1.10.0) (2026-06-10)
 
 
