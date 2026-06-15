@@ -182,20 +182,23 @@ function handleFatalError(message: string, error: unknown): never {
   console.error(`\n\u274c ${message}:`);
   console.error(error);
 
-  const err = error as NodeJS.ErrnoException;
   console.error("\n\ud83d\udd0d Troubleshooting Info:");
   console.error(`   Node.js:  ${process.version}`);
   console.error(`   Platform: ${process.platform} (${process.arch})`);
 
-  if (err.code === "ENOENT") {
-    console.error(`   Diagnosis: A required file or directory was not found: ${err.path}`);
-    console.error("   Action:    Ensure the path is correct and accessible.");
-  } else if (err.code === "EACCES" || err.code === "EPERM") {
-    console.error(`   Diagnosis: Permission denied at ${err.path}`);
-    console.error("   Action:    Check filesystem permissions for the storage and project directories.");
-  } else if (err.message?.includes("rg") || err.message?.includes("ripgrep")) {
-    console.error("   Diagnosis: ripgrep (rg) might be missing or not in PATH.");
-    console.error("   Action:    Install ripgrep: https://github.com/BurntSushi/ripgrep#installation");
+  if (typeof error === "object" && error !== null) {
+    const err = error as Record<string, unknown> & { code?: string; path?: string; message?: string };
+
+    if (err.code === "ENOENT") {
+      console.error(`   Diagnosis: A required file or directory was not found: ${err.path ?? "unknown path"}`);
+      console.error("   Action:    Ensure the path is correct and accessible.");
+    } else if (err.code === "EACCES" || err.code === "EPERM") {
+      console.error(`   Diagnosis: Permission denied at ${err.path ?? "unknown path"}`);
+      console.error("   Action:    Check filesystem permissions for the storage and project directories.");
+    } else if (err.message?.includes("rg") || err.message?.includes("ripgrep")) {
+      console.error("   Diagnosis: ripgrep (rg) might be missing or not in PATH.");
+      console.error("   Action:    Install ripgrep: https://github.com/BurntSushi/ripgrep#installation");
+    }
   }
 
   console.error("\n   For more details, check the indexer log in your storage directory (default: .nexus/indexer.log).\n");

@@ -69,7 +69,7 @@ When using **Nexus MCP** tools for codebase exploration and semantic search, adh
 
 #### 💡 運用ガイドライン (Playbook)
 
-- **インデックス状態の確認**: 作業開始前に必ず `index_status` を呼び出し、インデックス構築が完了しているか（`isIndexing: false`）を確認してください。
+- **インデックス状態の確認**: 作業開始前に必ず `index_status` を呼び出し、インデックス構築が完了しているか（`pipelineProgress.status === 'idle'`）を確認してください。
 - **検索の使い分け**:
   - **曖昧な探索・関連箇所の特定**: `hybrid_search` を最優先で使用してください。セマンティック検索と ripgrep が融合され、最適な結果が得られます。
   - **特定のシンボルやコード断片の検索**: `grep_search` を使用してください。特定のクラス名、関数定義、エラーメッセージなどをピンポイントで検出できます。

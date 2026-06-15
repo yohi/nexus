@@ -10,7 +10,7 @@ if [ ! -d "node_modules" ]; then
   if [ -f "scripts/bootstrap.mjs" ] && [ ! -f "dist/bin/nexus.js" ]; then
     node scripts/bootstrap.mjs
   else
-    npm install --omit=dev --no-audit --no-fund
+    npm install --no-audit --no-fund
   fi
 fi
 
