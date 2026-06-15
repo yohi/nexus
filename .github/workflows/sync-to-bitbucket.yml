@@ -45,7 +45,7 @@ jobs:
             --exclude='bitbucket-repo' \
             ../ "plugins/$PLUGIN_NAME/"
           
-          COMMIT_SHA=$(git rev-parse HEAD)
+          COMMIT_SHA="${{ github.sha }}"
           TAG_NAME="${{ github.ref_name }}"
           
           # カタログファイル marketplace.json がなければ新規作成
@@ -81,5 +81,5 @@ jobs:
           else
             git commit -m "chore: release $TAG_NAME for $PLUGIN_NAME [skip ci]"
             # HTTPS認証情報を使ってプッシュ
-            git push https://x-token-auth:${{ secrets.BITBUCKET_TOKEN }}@bitbucket.org/dh_ohi/claude-plugins.git main
+            git push https://x-token-auth:${{ secrets.BITBUCKET_TOKEN }}@bitbucket.org/dh_ohi/claude-plugins.git HEAD
           fi
