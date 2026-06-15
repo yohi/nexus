@@ -17,11 +17,25 @@ jobs:
 
       # 2. GitHub側のプラグインソースコードを取得
       - name: Checkout GitHub repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
           fetch-depth: 0
 
-      # 3. HTTPS認証情報を埋め込んでBitbucketのリポジトリをクローン
+      # 3. Node.jsのセットアップ
+      - name: Use Node.js 24
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 24
+          cache: 'npm'
+
+      # 4. 依存関係のインストールとビルドの実行
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build
+        run: npm run build
+
+      # 5. HTTPS認証情報を埋め込んでBitbucketのリポジトリをクローン
       - name: Clone Bitbucket Marketplace Repo
         run: |
           git clone https://x-token-auth:${{ secrets.BITBUCKET_TOKEN }}@bitbucket.org/dh_ohi/claude-plugins.git bitbucket-repo
@@ -29,7 +43,7 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
-      # 4. プラグインコードの同期と marketplace.json の更新
+      # 6. プラグインコードの同期と marketplace.json の更新
       - name: Sync Plugin and Update Catalog
         run: |
           cd bitbucket-repo
@@ -38,10 +52,13 @@ jobs:
           PLUGIN_NAME="${{ github.event.repository.name }}"
           mkdir -p "plugins/$PLUGIN_NAME"
           
-          # コードの同期（不要なファイルを除外してコピー）
+          # ビルド済みの成果物を含めて同期（node_modulesやテストコードなどは除外）
           rsync -av --delete \
             --exclude='.git' \
             --exclude='.github' \
+            --exclude='node_modules' \
+            --exclude='tests' \
+            --exclude='coverage' \
             --exclude='bitbucket-repo' \
             ../ "plugins/$PLUGIN_NAME/"
           
@@ -68,7 +85,7 @@ jobs:
             .plugins |= map(if .name == $name then .sha = $sha | .version = $ver else . end)
           ' .claude-plugin/marketplace.json > tmp.json && mv tmp.json .claude-plugin/marketplace.json
 
-      # 5. 変更をBitbucketにプッシュ
+      # 7. 変更をBitbucketにプッシュ
       - name: Push changes to Bitbucket
         run: |
           cd bitbucket-repo
