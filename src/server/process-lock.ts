@@ -1,4 +1,4 @@
-import { open, readFile, unlink } from 'node:fs/promises';
+import { mkdir, open, readFile, unlink } from 'node:fs/promises';
 import path from 'node:path';
 
 export interface LockResult {
@@ -22,6 +22,9 @@ export const LOCK_FILENAME = 'nexus.pid';
  */
 export async function acquireProcessLock(storageDir: string): Promise<LockResult> {
   const lockPath = path.join(storageDir, LOCK_FILENAME);
+
+  // Ensure the storage directory exists before trying to read or write the lock file.
+  await mkdir(path.resolve(storageDir), { recursive: true });
 
   // Step 1: Inspect any existing lock and decide whether to reclaim it.
   try {

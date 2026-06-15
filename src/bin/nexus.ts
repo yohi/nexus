@@ -156,8 +156,7 @@ async function main() {
     setupSignalHandlers(runtime, config.storage.rootDir, exitCleanup, server);
 
     runtime.initialize().catch((error) => {
-      console.error("Nexus background initialization failed:", error);
-      process.exit(1);
+      handleFatalError("Nexus background initialization failed", error);
     });
 
     return;
@@ -175,9 +174,35 @@ async function main() {
   // metrics server bind) runs after the MCP transport is connected to avoid
   // exceeding the client's initialize timeout (`MCP error -32000`).
   runtime.initialize().catch((error) => {
-    console.error("Nexus background initialization failed:", error);
-    process.exit(1);
+    handleFatalError("Nexus background initialization failed", error);
   });
+}
+
+function handleFatalError(message: string, error: unknown): never {
+  console.error(`\n\u274c ${message}:`);
+  console.error(error);
+
+  console.error("\n\ud83d\udd0d Troubleshooting Info:");
+  console.error(`   Node.js:  ${process.version}`);
+  console.error(`   Platform: ${process.platform} (${process.arch})`);
+
+  if (typeof error === "object" && error !== null) {
+    const err = error as Record<string, unknown> & { code?: string; path?: string; message?: string };
+
+    if (err.code === "ENOENT") {
+      console.error(`   Diagnosis: A required file or directory was not found: ${err.path ?? "unknown path"}`);
+      console.error("   Action:    Ensure the path is correct and accessible.");
+    } else if (err.code === "EACCES" || err.code === "EPERM") {
+      console.error(`   Diagnosis: Permission denied at ${err.path ?? "unknown path"}`);
+      console.error("   Action:    Check filesystem permissions for the storage and project directories.");
+    } else if (err.message?.includes("rg") || err.message?.includes("ripgrep")) {
+      console.error("   Diagnosis: ripgrep (rg) might be missing or not in PATH.");
+      console.error("   Action:    Install ripgrep: https://github.com/BurntSushi/ripgrep#installation");
+    }
+  }
+
+  console.error("\n   For more details, check the indexer log in your storage directory (default: .nexus/indexer.log).\n");
+  process.exit(1);
 }
 
 function setupSignalHandlers(
@@ -211,8 +236,7 @@ function setupSignalHandlers(
         process.exit(0);
       })
       .catch((error) => {
-        console.error("Error during shutdown:", error);
-        process.exit(1);
+        handleFatalError("Error during shutdown", error);
       });
   };
 
@@ -228,12 +252,10 @@ if (process.argv[2] === "dashboard") {
   try {
     await import("@yohi/nexus-dashboard/cli");
   } catch (error) {
-    console.error("Failed to start dashboard:", error);
-    process.exit(1);
+    handleFatalError("Failed to start dashboard", error);
   }
 } else {
   main().catch((error) => {
-    console.error("Fatal error starting Nexus:", error);
-    process.exit(1);
+    handleFatalError("Fatal error starting Nexus", error);
   });
 }
