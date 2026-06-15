@@ -66,4 +66,18 @@ describe('ProcessLock', () => {
   it('releaseProcessLock is idempotent (no error if no lock)', async () => {
     await expect(releaseProcessLock(testDir)).resolves.toBeUndefined();
   });
+
+  it('creates the storage directory if it does not exist', async () => {
+    const nestedDir = path.join(testDir, 'subdir-' + Math.random().toString(36).slice(2));
+
+    const result = await acquireProcessLock(nestedDir);
+
+    expect(result.acquired).toBe(true);
+    const pidContent = await readFile(path.join(nestedDir, 'nexus.pid'), 'utf8');
+    expect(Number.parseInt(pidContent.trim(), 10)).toBe(process.pid);
+
+    // Verify directory exists
+    const dirStat = await stat(nestedDir);
+    expect(dirStat.isDirectory()).toBe(true);
+  });
 });
