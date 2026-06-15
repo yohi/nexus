@@ -56,6 +56,12 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         if: ${{ steps.release.outputs.release_created }}
 
+      - name: Install required tools for Bitbucket sync
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y rsync jq
+        if: ${{ steps.release.outputs.release_created }}
+
       - name: Clone Bitbucket Marketplace Repo
         run: |
           git clone https://x-token-auth:${{ secrets.BITBUCKET_TOKEN }}@bitbucket.org/dh_ohi/claude-plugins.git bitbucket-repo
