@@ -1,5 +1,19 @@
 # Changelog
 
+## [1.13.0](https://github.com/yohi/nexus/compare/v1.12.0...v1.13.0) (2026-06-15)
+
+
+### Features
+
+* add detailed error diagnosis on startup failure ([4c71b3a](https://github.com/yohi/nexus/commit/4c71b3a96f05a3a5a810a24f3aefc74cbf771c4f))
+* Claudeプラグイン用のマニフェストとセットアップスクリプトを追加 ([16f023c](https://github.com/yohi/nexus/commit/16f023c50e95b51c65891463c044e8eb24c90f91))
+
+
+### Bug Fixes
+
+* ensure storage directory exists before acquiring process lock ([b080267](https://github.com/yohi/nexus/commit/b08026726d5fcc73cfb28cd96ecce4ff2939d231))
+* resolve documentation inconsistencies, build dependencies, and error handling safety ([e9f4344](https://github.com/yohi/nexus/commit/e9f4344e68f0666674cc9b90192933fbf7b50c38))
+
 ## [1.12.0](https://github.com/yohi/nexus/compare/v1.11.0...v1.12.0) (2026-06-15)
 
 
