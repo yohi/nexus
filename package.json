@@ -40,7 +40,7 @@
     "node": ">=24.0.0"
   },
   "scripts": {
-    "build": "tsc -p tsconfig.build.json && shx chmod +x dist/bin/nexus.js",
+    "build": "tsc -p tsconfig.build.json && npm run build -w packages/dashboard && shx chmod +x dist/bin/nexus.js",
     "lint": "eslint src/**/*.ts vitest.config.ts",
     "test": "vitest run --passWithNoTests",
     "test:bench": "vitest bench tests/benchmarks/**/*.bench.ts",
