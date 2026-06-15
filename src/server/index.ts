@@ -256,14 +256,15 @@ export const buildNexusRuntime = (
       try {
         options.pipeline.start();
         await options.watcher.start().catch((error) => {
-          const isEmfile =
-            error !== null &&
-            typeof error === "object" &&
-            "code" in error &&
-            (error as Record<string, unknown>).code === "EMFILE";
-          if (isEmfile) {
+          const code =
+            error !== null && typeof error === "object" && "code" in error
+              ? (error as Record<string, unknown>).code
+              : undefined;
+          const isNonFatal = code === "EMFILE" || code === "ENOSPC";
+
+          if (isNonFatal) {
             console.error(
-              "[Nexus Server Warning] Failed to start FileWatcher (EMFILE):",
+              `[Nexus Server Warning] Failed to start FileWatcher (${code}):`,
               error,
             );
           } else {
