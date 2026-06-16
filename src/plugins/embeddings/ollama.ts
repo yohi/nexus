@@ -1,7 +1,7 @@
 import pLimit from 'p-limit';
 
 import type { EmbeddingConfig } from '../../types/index.js';
-import { RetryExhaustedError, DimensionMismatchError } from '../../types/index.js';
+import { RetryExhaustedError, DimensionMismatchError, NonRetryableEmbeddingError } from '../../types/index.js';
 import { BaseEmbeddingProvider } from './base.js';
 
 interface OllamaDependencies {
@@ -74,6 +74,12 @@ export class OllamaEmbeddingProvider extends BaseEmbeddingProvider {
           throw error;
         }
 
+        // Non-retryable errors (e.g. HTTP 400 context length) must not be retried,
+        // but the pipeline expects RetryExhaustedError to route to DLQ.
+        if (error instanceof NonRetryableEmbeddingError) {
+          throw new RetryExhaustedError(error.message, 1, { cause: error });
+        }
+
         if (attempt >= this.config.retryCount) {
           break;
         }
@@ -108,12 +114,20 @@ export class OllamaEmbeddingProvider extends BaseEmbeddingProvider {
         body: JSON.stringify({
           model: this.config.model,
           input: batch,
+          truncate: true,
         }),
         signal: controller.signal,
       });
 
       if (!response.ok) {
         const body = await response.text();
+        // 400 means the input is irrecoverably bad (e.g. context length exceeded).
+        // Retrying the same content will never succeed, so surface immediately.
+        if (response.status === 400) {
+          throw new NonRetryableEmbeddingError(
+            `Ollama embed request failed (${response.status}): ${body}`,
+          );
+        }
         throw new Error(`Ollama embed request failed (${response.status}): ${body}`);
       }
 
