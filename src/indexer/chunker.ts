@@ -205,10 +205,10 @@ export class Chunker {
           const partIndex = result.length + 1;
           result.push({
             ...meta,
-            id: this.createChunkId(filePath, chunkStart + lineOffset, chunkStart + lineOffset, `${baseName}-part${partIndex}`),
+            id: this.createChunkId(filePath, startLine + lineOffset, startLine + lineOffset, `${baseName}-part${partIndex}`),
             content: piece,
-            startLine: chunkStart + lineOffset,
-            endLine: chunkStart + lineOffset,
+            startLine: startLine + lineOffset,
+            endLine: startLine + lineOffset,
             hash: this.hashContent(piece),
           });
         }
