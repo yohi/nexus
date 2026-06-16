@@ -196,6 +196,55 @@ describe('OllamaEmbeddingProvider', () => {
     await catchPromise;
     expect(fetchMock).toHaveBeenCalledOnce();
   });
+  it('does NOT retry HTTP 400 "context length" errors and throws RetryExhaustedError immediately', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: false,
+      status: 400,
+      text: async () => 'the input length exceeds the context length',
+    });
+
+    const provider = new OllamaEmbeddingProvider(
+      {
+        baseUrl: 'http://localhost:11434',
+        model: 'nomic-embed-text',
+        dimensions: 4,
+        maxConcurrency: 1,
+        batchSize: 1,
+        retryCount: 3,
+        retryBaseDelayMs: 1,
+      },
+      { fetch: fetchMock, sleep: async () => {} },
+    );
+
+    await expect(provider.embed(['alpha'])).rejects.toBeInstanceOf(RetryExhaustedError);
+    // 400 context-length errors must NOT be retried – exactly 1 attempt
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('sends truncate:true in the embed request body', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ embeddings: [[1, 2, 3, 4]] }),
+    });
+
+    const provider = new OllamaEmbeddingProvider(
+      {
+        baseUrl: 'http://localhost:11434',
+        model: 'nomic-embed-text',
+        dimensions: 4,
+        maxConcurrency: 1,
+        batchSize: 1,
+        retryCount: 0,
+        retryBaseDelayMs: 1,
+      },
+      { fetch: fetchMock, sleep: async () => {} },
+    );
+
+    await provider.embed(['hello']);
+
+    const body = JSON.parse((fetchMock.mock.calls[0] as [string, RequestInit])[1].body as string) as Record<string, unknown>;
+    expect(body['truncate']).toBe(true);
+  });
 });
 
 describe('TestEmbeddingProvider', () => {

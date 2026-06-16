@@ -21,7 +21,7 @@ const DEFAULT_EMBEDDING: EmbeddingConfig = {
   timeoutMs: 120_000,
 };
 
-const DEFAULT_INDEXING: IndexingConfig = { maxFileBytes: 1_048_576 };
+const DEFAULT_INDEXING: IndexingConfig = { maxFileBytes: 1_048_576, maxChunkChars: 6_000 };
 
 export const SECRET_IGNORE_PATHS = ['.env', '.env.*'];
 
@@ -61,6 +61,11 @@ const DEFAULT_CONFIG = (projectRoot: string): Config => ({
       'yarn.lock',
       'bun.lockb',
       '*.lock',
+      '__pycache__',
+      '*.pyc',
+      '.pytest_cache',
+      '.mypy_cache',
+      '.ruff_cache',
     ],
   },
   embedding: { ...DEFAULT_EMBEDDING },
@@ -126,6 +131,10 @@ export const loadConfig = async (options: LoadConfigOptions): Promise<Config> =>
         asPositiveInt(env.NEXUS_INDEXING_MAX_FILE_BYTES) ??
         validatePositiveInt(fileConfig.indexing?.maxFileBytes) ??
         defaults.indexing.maxFileBytes,
+      maxChunkChars:
+        asNonNegativeInt(env.NEXUS_INDEXING_MAX_CHUNK_CHARS) ??
+        validateNonNegativeInt(fileConfig.indexing?.maxChunkChars) ??
+        defaults.indexing.maxChunkChars,
     },
   };
 

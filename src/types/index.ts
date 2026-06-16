@@ -257,6 +257,8 @@ export interface StorageConfig {
 
 export interface IndexingConfig {
   maxFileBytes: number;
+  /** Maximum characters per chunk before splitting. 0 = unlimited. Default: 6000. */
+  maxChunkChars: number;
 }
 
 export interface Config {
@@ -293,6 +295,14 @@ export class RetryExhaustedError extends Error {
     super(message, options);
     this.name = 'RetryExhaustedError';
     this.attempts = attempts;
+  }
+}
+
+/** Thrown for embedding errors that must not be retried (e.g. HTTP 400 context-length exceeded). */
+export class NonRetryableEmbeddingError extends Error {
+  constructor(message: string, options?: ErrorOptions) {
+    super(message, options);
+    this.name = 'NonRetryableEmbeddingError';
   }
 }
 

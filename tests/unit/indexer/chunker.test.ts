@@ -121,3 +121,54 @@ describe('Chunker', () => {
     expect(chunks).toHaveLength(0);
   });
 });
+
+describe('Chunker – maxChunkChars', () => {
+  it('splits an oversized AST declaration into multiple sub-chunks', async () => {
+    // 1 declaration whose content is 200 chars; limit is 100
+    const longContent = 'x'.repeat(200);
+    const chunker = new Chunker(new PluginRegistry(), { maxChunkChars: 100 });
+
+    const chunks = await chunker.extractChunksWithYield(
+      {
+        rootType: 'program',
+        declarations: [{ type: 'function', name: 'bigFn', startLine: 1, endLine: 10, content: longContent }],
+      },
+      { filePath: 'big.ts', language: 'typescript', content: longContent },
+    );
+
+    expect(chunks.length).toBeGreaterThan(1);
+    expect(chunks.every((c) => c.content.length <= 100)).toBe(true);
+    // All sub-chunks belong to the same original symbol
+    expect(chunks.every((c) => c.symbolName === 'bigFn')).toBe(true);
+  });
+
+  it('does NOT split chunks that are within the limit', async () => {
+    const content = 'x'.repeat(50);
+    const chunker = new Chunker(new PluginRegistry(), { maxChunkChars: 100 });
+
+    const chunks = await chunker.extractChunksWithYield(
+      {
+        rootType: 'program',
+        declarations: [{ type: 'function', name: 'smallFn', startLine: 1, endLine: 2, content }],
+      },
+      { filePath: 'small.ts', language: 'typescript', content },
+    );
+
+    expect(chunks).toHaveLength(1);
+    expect(chunks[0]?.content).toBe(content);
+  });
+
+  it('fixed-line chunks also respect maxChunkChars', () => {
+    // 4 lines of 60 chars each; limit 100 → each 50-line window (here just 4 lines) is fine,
+    // but a single window of all 4 lines = 4*60+3 = 243 chars > 100 → must split
+    const longLine = 'a'.repeat(60);
+    const content = Array.from({ length: 4 }, () => longLine).join('\n');
+    const chunker = new Chunker(new PluginRegistry(), { maxChunkChars: 100 });
+    const chunks = chunker.chunkByFixedLines(
+      { filePath: 'f.txt', language: 'text', content },
+      { windowSize: 4, overlap: 0 },
+    );
+
+    expect(chunks.every((c) => c.content.length <= 100)).toBe(true);
+  });
+});
