@@ -1,5 +1,16 @@
 # Changelog
 
+## [1.13.2](https://github.com/yohi/nexus/compare/v1.13.1...v1.13.2) (2026-06-16)
+
+
+### Bug Fixes
+
+* **chunker:** 長大行のchar-split時の行番号二重加算バグを修正 ([18f054f](https://github.com/yohi/nexus/commit/18f054f68896b9f623bd54fc46f39a16e8718554))
+* **config:** maxChunkChars をデフォルト設定に追加し Chunker へ注入 ([11fbcf1](https://github.com/yohi/nexus/commit/11fbcf112a1bf3c122553918693e553f71b717af))
+* **embeddings:** Ollama HTTP 400 を非リトライに分類し truncate:true を明示送信 ([5b6da99](https://github.com/yohi/nexus/commit/5b6da99745eeb93a07b6502c713ebe09dd52f2a8))
+* **indexer:** チャンクサイズ上限(maxChunkChars)を導入し巨大チャンクを行単位で分割 ([3f9ae2e](https://github.com/yohi/nexus/commit/3f9ae2e930fdfd199f6963742ba46443800a288b))
+* Ollama 巨大チャンクによる CPU 高負荷を多層防御で修正 ([b0505f6](https://github.com/yohi/nexus/commit/b0505f6cb096dfebc159b720b90a9c78c10ab16d))
+
 ## [1.13.1](https://github.com/yohi/nexus/compare/v1.13.0...v1.13.1) (2026-06-15)
 
 
