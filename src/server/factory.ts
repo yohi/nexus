@@ -419,7 +419,7 @@ export class NexusServerFactory {
     const pipeline = new IndexPipeline({
       metadataStore,
       vectorStore,
-      chunker: new Chunker(pluginRegistry),
+      chunker: new Chunker(pluginRegistry, { maxChunkChars: config.indexing.maxChunkChars }),
       embeddingProvider,
       pluginRegistry,
       maxFileBytes: config.indexing.maxFileBytes,
