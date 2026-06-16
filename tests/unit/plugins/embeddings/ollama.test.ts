@@ -196,8 +196,6 @@ describe('OllamaEmbeddingProvider', () => {
     await catchPromise;
     expect(fetchMock).toHaveBeenCalledOnce();
   });
-});
-
   it('does NOT retry HTTP 400 "context length" errors and throws RetryExhaustedError immediately', async () => {
     const fetchMock = vi.fn().mockResolvedValue({
       ok: false,
@@ -247,6 +245,7 @@ describe('OllamaEmbeddingProvider', () => {
     const body = JSON.parse((fetchMock.mock.calls[0] as [string, RequestInit])[1].body as string) as Record<string, unknown>;
     expect(body['truncate']).toBe(true);
   });
+});
 
 describe('TestEmbeddingProvider', () => {
   it('returns deterministic 64-dimensional vectors for the same text', async () => {
