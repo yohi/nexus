@@ -1,5 +1,15 @@
 # Changelog
 
+## [1.15.3](https://github.com/yohi/nexus/compare/v1.15.2...v1.15.3) (2026-06-17)
+
+
+### Bug Fixes
+
+* ダッシュボードに必要な react と ink の依存関係を追加 ([2914d0d](https://github.com/yohi/nexus/commit/2914d0d5fe5d47bd309d289f6c99d0737991b9d9))
+* ダッシュボードに必要な react と ink の依存関係を追加 ([440db00](https://github.com/yohi/nexus/commit/440db005563daec684c6629295f995264f49bc05))
+* ライセンスチェッカーで OR 結合された複合ライセンスをサポート ([3fc0922](https://github.com/yohi/nexus/commit/3fc0922b15434721bf3e7b58deed58f8b96f8f6c))
+* 不要npmrc削除 ([066733c](https://github.com/yohi/nexus/commit/066733cbb0b9d7e4723aec912f468c65780fcb3e))
+
 ## [1.15.2](https://github.com/yohi/nexus/compare/v1.15.1...v1.15.2) (2026-06-17)
 
 
