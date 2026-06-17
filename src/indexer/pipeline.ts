@@ -185,6 +185,11 @@ export class IndexPipeline implements IIndexPipeline {
       }
     }
 
+    if (consumedEvents.size > 0) {
+      this.progress.totalFiles = Math.max(0, this.progress.totalFiles - consumedEvents.size);
+      this.safeNotifyMetrics((h) => { h.onIndexingProgress(this.progress.processedFiles, this.progress.totalFiles, true); });
+    }
+
     const pending: IndexEvent[] = [];
     for (const event of events) {
       if (consumedEvents.has(event)) {
