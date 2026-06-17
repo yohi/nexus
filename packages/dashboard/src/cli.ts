@@ -64,6 +64,10 @@ async function main() {
 
   const port = (() => {
     if (values.port !== undefined) {
+      if (!/^\d+$/.test(values.port)) {
+        console.error(`[Nexus Dashboard] Invalid --port value "${values.port}". Please specify a valid port number (1-65535).`);
+        process.exit(1);
+      }
       const parsed = parseInt(values.port, 10);
       if (isNaN(parsed) || parsed < 1 || parsed > 65535) {
         console.error(`[Nexus Dashboard] Invalid --port value "${values.port}". Please specify a valid port number (1-65535).`);
@@ -85,9 +89,14 @@ async function main() {
   })();
 
   const interval = (() => {
-    const parsed = parseInt(values.interval as string, 10);
+    const rawInterval = values.interval as string;
+    if (!/^\d+$/.test(rawInterval)) {
+      console.warn(`Invalid --interval value "${rawInterval}", falling back to 2000 (min 1000ms)`);
+      return 2000;
+    }
+    const parsed = parseInt(rawInterval, 10);
     if (isNaN(parsed) || parsed < 1000) {
-      console.warn(`Invalid --interval value "${values.interval}", falling back to 2000 (min 1000ms)`);
+      console.warn(`Invalid --interval value "${rawInterval}", falling back to 2000 (min 1000ms)`);
       return 2000;
     }
     return parsed;
