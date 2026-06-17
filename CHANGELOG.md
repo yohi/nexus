@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.15.2](https://github.com/yohi/nexus/compare/v1.15.1...v1.15.2) (2026-06-17)
+
+
+### Bug Fixes
+
+* ダッシュボードCLIのインポートエラーとbin指定の修正 ([f7e70c5](https://github.com/yohi/nexus/commit/f7e70c5927a01badc467263a71733bc3f4723ce0))
+* ダッシュボードCLIのインポートエラーとbin指定の修正 ([dc26f5d](https://github.com/yohi/nexus/commit/dc26f5d18301e436daef8efffbb724730ec9e40f))
+
 ## [1.15.1](https://github.com/yohi/nexus/compare/v1.15.0...v1.15.1) (2026-06-17)
 
 
