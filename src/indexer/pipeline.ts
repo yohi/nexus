@@ -1,5 +1,6 @@
 import { readFile, stat as fsStat } from 'node:fs/promises';
 import { Mutex, E_ALREADY_LOCKED, tryAcquire } from 'async-mutex';
+import pLimit from 'p-limit';
 
 import { DeadLetterQueue } from './dead-letter-queue.js';
 import { MerkleTree } from './merkle-tree.js';
@@ -12,6 +13,7 @@ import {
   type EmbeddingProvider,
   type IMetadataStore,
   type IVectorStore,
+  type CodeChunk,
   type IndexEvent,
   type RuntimeInitializationResult,
   type ReindexResult,
@@ -29,6 +31,8 @@ interface IndexPipelineOptions {
   pluginRegistry: PluginRegistry;
   eventQueue?: EventQueue;
   maxFileBytes?: number;
+  chunkConcurrency?: number;
+  embedBatchWindowSize?: number;
   onProgress?: (msg: string) => void;
   metricsHooks?: Pick<
     MetricsHooks,
@@ -41,6 +45,13 @@ interface IndexPipelineOptions {
 
 interface ProcessEventsResult {
   chunksIndexed: number;
+}
+
+interface FileWork {
+  event: IndexEvent;
+  chunks: CodeChunk[];
+  skipped: boolean;
+  skipReason?: string;
 }
 
 type ContentLoader = (filePath: string) => Promise<string>;
@@ -60,6 +71,8 @@ export class IndexPipeline implements IIndexPipeline {
 
   private abortController = new AbortController();
   private idleCompactionTimer: NodeJS.Timeout | undefined;
+  private readonly chunkConcurrency: number;
+  private readonly embedBatchWindowSize: number;
 
   private progress: PipelineProgress = {
     totalFiles: 0,
@@ -69,6 +82,8 @@ export class IndexPipeline implements IIndexPipeline {
 
   constructor(private readonly options: IndexPipelineOptions) {
     this.merkleTree = new MerkleTree(options.metadataStore);
+    this.chunkConcurrency = options.chunkConcurrency ?? 2;
+    this.embedBatchWindowSize = Math.max(1, options.embedBatchWindowSize ?? 16);
     this.deadLetterQueue = new DeadLetterQueue({
       metadataStore: options.metadataStore,
       embeddingHealthy: () => this.embeddingHealthy(),
@@ -162,82 +177,165 @@ export class IndexPipeline implements IIndexPipeline {
       }
     }
 
+    const pending: IndexEvent[] = [];
     for (const event of events) {
       if (consumedEvents.has(event)) {
         continue;
       }
 
-      this.progress.currentFile = event.filePath;
-
       if (event.type === 'deleted') {
+        this.progress.currentFile = event.filePath;
         await this.handleDeleteEvent(event.filePath);
         this.progress.processedFiles++;
         continue;
       }
 
-      if (loadContent === undefined) {
-        throw new Error('loadContent is required for added/modified events');
+      pending.push(event);
+    }
+
+    if (pending.length > 0 && loadContent === undefined) {
+      throw new Error('loadContent is required for added/modified events');
+    }
+
+    for (let windowStart = 0; windowStart < pending.length; windowStart += this.embedBatchWindowSize) {
+      if (this.abortController.signal.aborted) {
+        break;
       }
-
-      try {
-        let skipDueToSize = false;
-        let fileSize: number | undefined;
-        try {
-          const fileStat = await fsStat(event.filePath);
-          fileSize = fileStat.size;
-        } catch {
-          // File might not exist on disk, or we are in a test environment with a custom loadContent.
-        }
-
-        if (fileSize !== undefined && this.options.maxFileBytes !== undefined && fileSize > this.options.maxFileBytes) {
-          skipDueToSize = true;
-          this.safeLogProgress(
-            `Skipping (file too large: ${fileSize} bytes > ${this.options.maxFileBytes} limit): ${event.filePath}`,
-            event.filePath,
-          );
-          this.skippedFiles.set(event.filePath, `file too large: ${fileSize} bytes`);
-          await this.options.vectorStore.deleteByFilePath(event.filePath);
-          await this.merkleTree.update(event.filePath, event.contentHash ?? '');
-        }
-
-        if (!skipDueToSize) {
-          const content = await loadContent(event.filePath);
-          const bytes = fileSize ?? Buffer.byteLength(content, 'utf8');
-          if (fileSize === undefined && this.options.maxFileBytes !== undefined && bytes > this.options.maxFileBytes) {
-            this.safeLogProgress(
-              `Skipping (file too large: ${bytes} bytes > ${this.options.maxFileBytes} limit): ${event.filePath}`,
-              event.filePath,
-            );
-            this.skippedFiles.set(event.filePath, `file too large: ${bytes} bytes`);
-            await this.options.vectorStore.deleteByFilePath(event.filePath);
-            await this.merkleTree.update(event.filePath, event.contentHash ?? '');
-          } else {
-            const count = await this.indexFile(event.filePath, content, event.contentHash ?? '');
-            chunksIndexed += count;
-          }
-        }
-      } catch (error) {
-        if (error instanceof Error && error.name === 'RetryExhaustedError') {
-          this.skippedFiles.set(event.filePath, error.message);
-          await this.deadLetterQueue.enqueue({
-            filePath: event.filePath,
-            contentHash: event.contentHash ?? '',
-            errorMessage: error.message,
-            attempts: (error as RetryExhaustedError).attempts,
-          });
-          this.progress.processedFiles++;
-          continue;
-        }
-
-        this.progress.lastError = error instanceof Error ? error.message : String(error);
-        throw error;
-      }
-      this.progress.processedFiles++;
+      const window = pending.slice(windowStart, windowStart + this.embedBatchWindowSize);
+      chunksIndexed += await this.processEventWindow(window, loadContent as ContentLoader);
     }
 
     this.progress.currentFile = undefined;
     this.safeNotifyMetrics((h) => { h.onChunksIndexed(chunksIndexed); });
     return { chunksIndexed };
+  }
+
+  private async readAndChunkFile(
+    event: IndexEvent,
+    loadContent: ContentLoader,
+  ): Promise<FileWork> {
+    let fileSize: number | undefined;
+    try {
+      const fileStat = await fsStat(event.filePath);
+      fileSize = fileStat.size;
+    } catch {
+      // File might not exist on disk, or we are in a test environment with a custom loadContent.
+    }
+
+    if (fileSize !== undefined && this.options.maxFileBytes !== undefined && fileSize > this.options.maxFileBytes) {
+      return { event, chunks: [], skipped: true, skipReason: `file too large: ${fileSize} bytes` };
+    }
+
+    const content = await loadContent(event.filePath);
+    const bytes = fileSize ?? Buffer.byteLength(content, 'utf8');
+    if (this.options.maxFileBytes !== undefined && bytes > this.options.maxFileBytes) {
+      return { event, chunks: [], skipped: true, skipReason: `file too large: ${bytes} bytes` };
+    }
+
+    const chunks = await this.options.chunker.chunkFiles([
+      {
+        filePath: event.filePath,
+        language: this.detectLanguage(event.filePath),
+        content,
+      },
+    ]);
+    return { event, chunks, skipped: false };
+  }
+
+  /**
+   * Processes a window of added/modified events as a 3-stage pipeline:
+   *  Stage 1: read + chunk files concurrently (no shared-state writes).
+   *  Stage 2: a single cross-file embed() call for all chunks in the window.
+   *  Stage 3: serial per-file upsert + merkleTree.update (merkleTree.update is NOT concurrency-safe).
+   */
+  private async processEventWindow(
+    window: IndexEvent[],
+    loadContent: ContentLoader,
+  ): Promise<number> {
+    // Stage 1: bounded-concurrency read + chunk (no Merkle/vector writes here).
+    const limit = pLimit(this.chunkConcurrency);
+    const works = await Promise.all(
+      window.map((event) => limit(async () => this.readAndChunkFile(event, loadContent))),
+    );
+
+    // Stage 2: aggregate chunks across files into a single embed() call.
+    const toEmbed = works.filter((work) => !work.skipped && work.chunks.length > 0);
+    const allChunks = toEmbed.flatMap((work) => work.chunks);
+
+    let allEmbeddings: number[][] = [];
+    let embedError: RetryExhaustedError | undefined;
+    if (allChunks.length > 0) {
+      try {
+        allEmbeddings = await this.options.embeddingProvider.embed(allChunks.map((chunk) => chunk.content));
+      } catch (error) {
+        if (error instanceof Error && error.name === 'RetryExhaustedError') {
+          embedError = error as RetryExhaustedError;
+        } else {
+          // DimensionMismatchError and any other unexpected error abort the pipeline.
+          this.progress.lastError = error instanceof Error ? error.message : String(error);
+          throw error;
+        }
+      }
+      if (embedError === undefined && allEmbeddings.length !== allChunks.length) {
+        const msg = `Embedding count mismatch: expected ${allChunks.length}, got ${allEmbeddings.length}`;
+        this.progress.lastError = msg;
+        throw new Error(msg);
+      }
+    }
+
+    // Stage 3: serial per-file finalization (Merkle + vector writes must not run concurrently).
+    let chunksIndexed = 0;
+    let embeddingOffset = 0;
+    for (const work of works) {
+      if (this.abortController.signal.aborted) {
+        break;
+      }
+      this.progress.currentFile = work.event.filePath;
+
+      if (work.skipped) {
+        this.safeLogProgress(
+          `Skipping (${work.skipReason ?? 'file skipped'}): ${work.event.filePath}`,
+          work.event.filePath,
+        );
+        this.skippedFiles.set(work.event.filePath, work.skipReason ?? 'file skipped');
+        await this.options.vectorStore.deleteByFilePath(work.event.filePath);
+        await this.merkleTree.update(work.event.filePath, work.event.contentHash ?? '');
+        this.progress.processedFiles++;
+        continue;
+      }
+
+      if (work.chunks.length === 0) {
+        // Valid file that produced no chunks (e.g. empty file): drop stale vectors, keep Merkle current.
+        await this.options.vectorStore.deleteByFilePath(work.event.filePath);
+        await this.merkleTree.update(work.event.filePath, work.event.contentHash ?? '');
+        this.skippedFiles.delete(work.event.filePath);
+        this.progress.processedFiles++;
+        continue;
+      }
+
+      if (embedError !== undefined) {
+        // The window's shared embed batch failed; route every embedded file to the DLQ.
+        this.skippedFiles.set(work.event.filePath, embedError.message);
+        await this.deadLetterQueue.enqueue({
+          filePath: work.event.filePath,
+          contentHash: work.event.contentHash ?? '',
+          errorMessage: embedError.message,
+          attempts: embedError.attempts,
+        });
+        this.progress.processedFiles++;
+        continue;
+      }
+
+      const embeddings = allEmbeddings.slice(embeddingOffset, embeddingOffset + work.chunks.length);
+      embeddingOffset += work.chunks.length;
+      await this.options.vectorStore.upsertChunks(work.chunks, embeddings, [work.event.filePath]);
+      await this.merkleTree.update(work.event.filePath, work.event.contentHash ?? '');
+      this.skippedFiles.delete(work.event.filePath);
+      chunksIndexed += work.chunks.length;
+      this.progress.processedFiles++;
+    }
+
+    return chunksIndexed;
   }
 
   private async handleDeleteEvent(filePath: string): Promise<void> {

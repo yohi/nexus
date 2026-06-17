@@ -423,6 +423,8 @@ export class NexusServerFactory {
       embeddingProvider,
       pluginRegistry,
       maxFileBytes: config.indexing.maxFileBytes,
+      chunkConcurrency: config.indexing.chunkConcurrency,
+      embedBatchWindowSize: config.indexing.embedBatchWindowSize,
       onProgress: (msg) => onLog(msg),
       metricsHooks: metricsCollector,
     });
