@@ -457,6 +457,8 @@ export class NexusServerFactory {
         watcher,
         loadFileContent,
         metricsCollectorRegistry: metricsCollector.registry,
+        metricsPort: config.metricsPort,
+        storageDir: config.storage.rootDir,
         onClose: async () => {
           await onClose();
           if (drainListener) {

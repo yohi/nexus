@@ -23,6 +23,7 @@ import { executeReindex } from "./tools/reindex.js";
 import { executeSemanticSearch, type SemanticSearchToolArgs } from "./tools/semantic-search.js";
 import { MetricsHttpServer } from "../observability/metrics-server.js";
 import type { Registry } from "prom-client";
+import { writeMetricsPort, removeMetricsPort } from "./metrics-port.js";
 
 export interface NexusServerOptions {
   projectRoot: string;
@@ -42,6 +43,8 @@ export interface NexusRuntimeOptions extends NexusServerOptions {
   watcher: IFileWatcher;
   onClose?: () => Promise<void>;
   metricsCollectorRegistry?: Registry;
+  metricsPort?: number;
+  storageDir?: string;
 }
 
 export interface NexusRuntime {
@@ -272,17 +275,21 @@ export const buildNexusRuntime = (
           }
         });
 
-        const envPort = process.env.NEXUS_METRICS_PORT;
-        const port = envPort ? Number(envPort) : 9464;
-        const metricsPort =
-          Number.isInteger(port) && port > 0 && port <= 65535 ? port : 9464;
+        // Use port 0 for auto-assignment, unless explicitly overridden.
+        const preferredPort = options.metricsPort ?? 0;
         metricsServer = options.metricsCollectorRegistry
           ? new MetricsHttpServer(options.metricsCollectorRegistry)
           : null;
         if (metricsServer) {
-          await metricsServer.start(metricsPort).catch((err) => {
+          await metricsServer.start(preferredPort).catch((err) => {
             console.warn("[Nexus] Failed to start metrics HTTP server:", err);
           });
+          const resolvedPort = metricsServer.getPort();
+          if (resolvedPort !== undefined && options.storageDir) {
+            await writeMetricsPort(options.storageDir, resolvedPort).catch((err) => {
+              console.warn("[Nexus] Failed to write metrics port file:", err);
+            });
+          }
         }
       } catch (error) {
         await options.pipeline.stop().catch((stopError: unknown) => {
@@ -327,6 +334,9 @@ export const buildNexusRuntime = (
         await metricsServer.stop();
       } catch (error) {
         shutdownErrors.push(error);
+      }
+      if (options.storageDir) {
+        await removeMetricsPort(options.storageDir).catch(() => {});
       }
     }
 
