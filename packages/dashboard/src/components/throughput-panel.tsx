@@ -14,9 +14,22 @@ export const ThroughputPanel: React.FC<ThroughputPanelProps> = ({ data }) => {
   const samples = metric?.values ?? [];
   const avgDuration = calculateAvgDuration(samples, metric?.name);
 
+  const isIndexing = getValue(data, "nexus_indexing_active") === 1;
+  const processed = getValue(data, "nexus_indexing_processed_files");
+  const total = getValue(data, "nexus_indexing_total_files");
+
   return (
     <MetricPanel title="Indexing Throughput" icon="🚀" borderColor="green">
       <Box flexDirection="column" marginTop={1}>
+        <Box marginBottom={1}>
+          {isIndexing ? (
+            <Text color="yellow" bold>
+              ● Indexing: {processed} / {total} files
+            </Text>
+          ) : (
+            <Text color="gray">● Idle</Text>
+          )}
+        </Box>
         <Box>
           <Text>Chunks indexed: {chunks} (total)</Text>
         </Box>

@@ -1,5 +1,8 @@
 {
   "embedding": {
+    "provider": "ollama",
+    "model": "all-minilm",
+    "dimensions": 384,
     "batchSize": 32,
     "maxConcurrency": 1,
     "timeoutMs": 120000

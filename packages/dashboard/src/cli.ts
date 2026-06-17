@@ -7,20 +7,6 @@ import React from "react";
 import { render } from "ink";
 import { App } from "./app.js";
 
-const { values } = parseArgs({
-  options: {
-    port: { type: "string" },
-    interval: { type: "string", default: "2000" },
-    "project-root": { type: "string" },
-  },
-  strict: true,
-});
-
-const projectRoot = (() => {
-  const raw = values["project-root"];
-  return raw ? path.resolve(raw) : process.cwd();
-})();
-
 /** Resolve the .nexus storage dir: env var > .nexus.json > default */
 export async function resolveStorageDir(projectRoot: string): Promise<string> {
   if (process.env.NEXUS_STORAGE_ROOT_DIR) {
@@ -58,41 +44,82 @@ async function readMetricsPortFile(storageDir: string): Promise<number | undefin
   return undefined;
 }
 
-const storageDir = await resolveStorageDir(projectRoot);
-const autoPort = await readMetricsPortFile(storageDir);
+async function main() {
+  const { values } = parseArgs({
+    options: {
+      port: { type: "string" },
+      interval: { type: "string", default: "2000" },
+      "project-root": { type: "string" },
+    },
+    strict: true,
+  });
 
-const port = (() => {
-  if (values.port !== undefined) {
-    const parsed = parseInt(values.port, 10);
-    if (isNaN(parsed) || parsed < 1 || parsed > 65535) {
-      console.error(`[Nexus Dashboard] Invalid --port value "${values.port}". Please specify a valid port number (1-65535).`);
-      process.exit(1);
+  const projectRoot = (() => {
+    const raw = values["project-root"];
+    return raw ? path.resolve(raw) : process.cwd();
+  })();
+
+  const storageDir = await resolveStorageDir(projectRoot);
+  const autoPort = await readMetricsPortFile(storageDir);
+
+  const port = (() => {
+    if (values.port !== undefined) {
+      if (!/^\d+$/.test(values.port)) {
+        console.error(`[Nexus Dashboard] Invalid --port value "${values.port}". Please specify a valid port number (1-65535).`);
+        process.exit(1);
+      }
+      const parsed = parseInt(values.port, 10);
+      if (isNaN(parsed) || parsed < 1 || parsed > 65535) {
+        console.error(`[Nexus Dashboard] Invalid --port value "${values.port}". Please specify a valid port number (1-65535).`);
+        process.exit(1);
+      }
+      return parsed;
+    }
+    if (autoPort !== undefined) {
+      return autoPort;
+    }
+    // metrics.port が見つからない = サーバー未起動 or 別プロジェクトのサーバーに誤接続するリスクがある
+    console.error(
+      `[Nexus Dashboard] Could not determine metrics port for project: ${projectRoot}\n` +
+      `  Storage dir: ${storageDir}\n` +
+      `  No metrics.port file found. Is the Nexus server running for this project?\n` +
+      `  Hint: Start the server first, or specify the port with --port <number>.`
+    );
+    process.exit(1);
+  })();
+
+  const interval = (() => {
+    const rawInterval = values.interval as string;
+    if (!/^\d+$/.test(rawInterval)) {
+      console.warn(`Invalid --interval value "${rawInterval}", falling back to 2000 (min 1000ms)`);
+      return 2000;
+    }
+    const parsed = parseInt(rawInterval, 10);
+    if (isNaN(parsed) || parsed < 1000) {
+      console.warn(`Invalid --interval value "${rawInterval}", falling back to 2000 (min 1000ms)`);
+      return 2000;
     }
     return parsed;
-  }
-  if (autoPort !== undefined) {
-    return autoPort;
-  }
-  // metrics.port が見つからない = サーバー未起動 or 別プロジェクトのサーバーに誤接続するリスクがある
-  console.error(
-    `[Nexus Dashboard] Could not determine metrics port for project: ${projectRoot}\n` +
-    `  Storage dir: ${storageDir}\n` +
-    `  No metrics.port file found. Is the Nexus server running for this project?\n` +
-    `  Hint: Start the server first, or specify the port with --port <number>.`
-  );
-  process.exit(1);
-})()
+  })();
 
-const interval = (() => {
-  const parsed = parseInt(values.interval as string, 10);
-  if (isNaN(parsed) || parsed < 1000) {
-    console.warn(`Invalid --interval value "${values.interval}", falling back to 2000 (min 1000ms)`);
-    return 2000;
-  }
-  return parsed;
-})();
-
-if (process.argv[1] && fileURLToPath(import.meta.url) === path.resolve(process.argv[1])) {
   const { waitUntilExit } = render(React.createElement(App, { port, interval }));
   await waitUntilExit();
+}
+
+async function isMainModule(): Promise<boolean> {
+  if (!process.argv[1]) return false;
+  try {
+    const argPath = path.resolve(process.argv[1]);
+    const modulePath = fileURLToPath(import.meta.url);
+    return argPath === modulePath;
+  } catch {
+    return false;
+  }
+}
+
+if (await isMainModule()) {
+  main().catch((err) => {
+    console.error(err);
+    process.exit(1);
+  });
 }
