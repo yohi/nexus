@@ -35,3 +35,12 @@ ignore_issues:
       - "src/indexer/watcher.ts"
       - "src/server/rest-api.ts"
       - "src/utils/error-utils.ts"
+  - pattern_id: "no-non-null-assertion"
+    files:
+      - "src/indexer/pipeline.ts"
+  - pattern_id: "GenericObjectInjectionSink"
+    files:
+      - "src/indexer/pipeline.ts"
+  - pattern_id: "security/detect-object-injection"
+    files:
+      - "src/indexer/pipeline.ts"

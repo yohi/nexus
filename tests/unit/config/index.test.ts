@@ -82,7 +82,7 @@ describe('loadConfig', () => {
     });
 
     expect(config.watcher.debounceMs).toBe(100); // Should fallback to default 100, not use 250
-    expect(config.embedding.batchSize).toBe(4); // Should fallback to default 4
+    expect(config.embedding.batchSize).toBe(32); // Should fallback to default 32
   });
 
   it('uses 768 as default dimensions', async () => {
@@ -112,7 +112,7 @@ describe('loadConfig', () => {
     const config = await loadConfig({ projectRoot: tempDir, env: {} });
 
     expect(config.embedding.dimensions).toBe(768);
-    expect(config.embedding.batchSize).toBe(4);
+    expect(config.embedding.batchSize).toBe(32);
     expect(config.watcher.debounceMs).toBe(100);
   });
 

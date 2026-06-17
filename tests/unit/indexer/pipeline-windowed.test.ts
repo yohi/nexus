@@ -276,3 +276,128 @@ describe('IndexPipeline – windowed batching', () => {
     expect(stats.totalFiles).toBe(3);
   });
 });
+
+describe('IndexPipeline – chunk embedding cache', () => {
+  it('skips embed() on second processEvents call when content is identical', async () => {
+    const { metadataStore, vectorStore, chunker, registry } = await createPipeline();
+    const embedding = new CountingEmbeddingProvider();
+    const pipeline = new IndexPipeline({
+      metadataStore,
+      vectorStore,
+      chunker,
+      embeddingProvider: embedding,
+      pluginRegistry: registry,
+      embedBatchWindowSize: 16,
+      embeddingCacheSize: 10_000,
+    });
+
+    const content = tsFunctions(2, 'x');
+
+    // First index: cache is empty → embed() called.
+    await pipeline.processEvents([addEvent('src/a.ts', 'h1')], async () => content);
+    expect(embedding.calls).toBe(1);
+    const firstBatchSize = embedding.batchSizes[0]!;
+
+    // Second index with identical content: all chunks hit the cache → embed() NOT called.
+    await pipeline.processEvents(
+      [{ type: 'modified', filePath: 'src/a.ts', contentHash: 'h2', detectedAt: new Date().toISOString() }],
+      async () => content,
+    );
+    expect(embedding.calls).toBe(1); // no additional call
+    expect(embedding.batchSizes).toHaveLength(1); // still just the one batch from first call
+
+    // Vectors are still present after the second update.
+    const stats = await vectorStore.getStats();
+    expect(stats.totalChunks).toBeGreaterThan(0);
+    expect(stats.totalChunks).toBe(firstBatchSize); // same chunk count
+  });
+
+  it('re-embeds only changed chunks when content differs after modification', async () => {
+    const { metadataStore, vectorStore, chunker, registry } = await createPipeline();
+    const embedding = new CountingEmbeddingProvider();
+    const pipeline = new IndexPipeline({
+      metadataStore,
+      vectorStore,
+      chunker,
+      embeddingProvider: embedding,
+      pluginRegistry: registry,
+      embedBatchWindowSize: 16,
+      embeddingCacheSize: 10_000,
+    });
+
+    const original = tsFunctions(2, 'y');
+    const modified = tsFunctions(2, 'y') + '\n\nexport function y_fn2(): number { return 99; }';
+
+    await pipeline.processEvents([addEvent('src/b.ts', 'h1')], async () => original);
+    const callsAfterFirst = embedding.calls;
+
+    // Modified content → at least the new chunk must be embedded.
+    await pipeline.processEvents(
+      [{ type: 'modified', filePath: 'src/b.ts', contentHash: 'h2', detectedAt: new Date().toISOString() }],
+      async () => modified,
+    );
+    // embed() was called again because at least one chunk hash changed.
+    expect(embedding.calls).toBeGreaterThan(callsAfterFirst);
+  });
+
+  it('respects embeddingCacheSize=0 (cache disabled) and always calls embed()', async () => {
+    const { metadataStore, vectorStore, chunker, registry } = await createPipeline();
+    const embedding = new CountingEmbeddingProvider();
+    const pipeline = new IndexPipeline({
+      metadataStore,
+      vectorStore,
+      chunker,
+      embeddingProvider: embedding,
+      pluginRegistry: registry,
+      embedBatchWindowSize: 16,
+      embeddingCacheSize: 0,
+    });
+
+    const content = tsFunctions(1, 'z');
+
+    await pipeline.processEvents([addEvent('src/c.ts', 'h1')], async () => content);
+    expect(embedding.calls).toBe(1);
+
+    // Same content, cache disabled → embed() is called again.
+    await pipeline.processEvents(
+      [{ type: 'modified', filePath: 'src/c.ts', contentHash: 'h2', detectedAt: new Date().toISOString() }],
+      async () => content,
+    );
+    expect(embedding.calls).toBe(2);
+  });
+
+  it('evicts LRU entries when embeddingCacheSize is exceeded', async () => {
+    const { metadataStore, vectorStore, chunker, registry } = await createPipeline();
+    const embedding = new CountingEmbeddingProvider();
+    // Cache size of 1 forces eviction after every new chunk.
+    const pipeline = new IndexPipeline({
+      metadataStore,
+      vectorStore,
+      chunker,
+      embeddingProvider: embedding,
+      pluginRegistry: registry,
+      embedBatchWindowSize: 16,
+      embeddingCacheSize: 1,
+    });
+
+    const contentA = tsFunctions(1, 'lru_a');
+    const contentB = tsFunctions(1, 'lru_b');
+
+    // Index A (1 chunk in cache).
+    await pipeline.processEvents([addEvent('src/lru_a.ts', 'h1')], async () => contentA);
+    const callsAfterA = embedding.calls;
+
+    // Index B (evicts A from cache).
+    await pipeline.processEvents([addEvent('src/lru_b.ts', 'h2')], async () => contentB);
+    const callsAfterB = embedding.calls;
+
+    // Re-index A: A was evicted → embed() is called again.
+    await pipeline.processEvents(
+      [{ type: 'modified', filePath: 'src/lru_a.ts', contentHash: 'h3', detectedAt: new Date().toISOString() }],
+      async () => contentA,
+    );
+    expect(embedding.calls).toBeGreaterThan(callsAfterB);
+  });
+});
+
+

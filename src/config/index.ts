@@ -15,7 +15,7 @@ const DEFAULT_EMBEDDING: EmbeddingConfig = {
   dimensions: 768,
   baseUrl: 'http://127.0.0.1:11434',
   maxConcurrency: 1,
-  batchSize: 4,
+  batchSize: 32,
   retryCount: 3,
   retryBaseDelayMs: 250,
   timeoutMs: 120_000,

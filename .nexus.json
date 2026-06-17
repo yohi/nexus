@@ -1,7 +1,13 @@
 {
   "embedding": {
     "batchSize": 32,
-    "maxConcurrency": 1
+    "maxConcurrency": 1,
+    "timeoutMs": 120000
+  },
+  "indexing": {
+    "chunkConcurrency": 2,
+    "embedBatchWindowSize": 16,
+    "maxChunkChars": 3000
   },
   "watcher": {
     "debounceMs": 300,
