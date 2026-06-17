@@ -6,8 +6,8 @@ This is a local-first codebase indexing and hybrid search platform for AI agents
 
 ### 1. WHAT & WHY (Project Overview)
 - **Purpose**: Provide local, secure semantic (LanceDB) and exact text (ripgrep) hybrid search capabilities.
-- **Architecture**: A single process co-locating the MCP server and a background event-driven pipeline. For details, see [SPEC.md](file:///home/y_ohi/program/nexus/SPEC.md).
-- **Configuration**: Customizable via `.nexus.json` or env variables. See [docs/configuration.md](file:///home/y_ohi/program/nexus/docs/configuration.md).
+- **Architecture**: A single process co-locating the MCP server and a background event-driven pipeline. For details, see [SPEC.md](SPEC.md).
+- **Configuration**: Customizable via `.nexus.json` or env variables. See [docs/configuration.md](docs/configuration.md).
 
 ### 2. HOW (Development Commands)
 - **Build**: `npm run build`
