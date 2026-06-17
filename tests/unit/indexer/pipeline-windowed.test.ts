@@ -29,6 +29,14 @@ class DimensionErrorEmbeddingProvider extends TestEmbeddingProvider {
   }
 }
 
+class ShortEmbeddingProvider extends TestEmbeddingProvider {
+  // Returns one fewer embedding than chunks to simulate a broken provider.
+  override async embed(texts: string[]): Promise<number[][]> {
+    const all = await super.embed(texts);
+    return all.slice(0, Math.max(0, all.length - 1));
+  }
+}
+
 const addEvent = (filePath: string, contentHash: string): IndexEvent => ({
   type: 'added',
   filePath,
@@ -185,6 +193,27 @@ describe('IndexPipeline – windowed batching', () => {
       pipeline.processEvents([addEvent('src/a.ts', 'h0')], async () => tsFunctions(1, 'a')),
     ).rejects.toBeInstanceOf(DimensionMismatchError);
 
+    await expect(metadataStore.getDeadLetterEntries()).resolves.toEqual([]);
+  });
+
+  it('throws on embedding count mismatch instead of silently persisting bad data', async () => {
+    const { metadataStore, vectorStore, chunker, registry } = await createPipeline();
+    const pipeline = new IndexPipeline({
+      metadataStore,
+      vectorStore,
+      chunker,
+      embeddingProvider: new ShortEmbeddingProvider(),
+      pluginRegistry: registry,
+      embedBatchWindowSize: 16,
+    });
+
+    await expect(
+      pipeline.processEvents([addEvent('src/a.ts', 'h0')], async () => tsFunctions(1, 'a')),
+    ).rejects.toThrow(/Embedding count mismatch/);
+
+    // No data should have been persisted.
+    const stats = await vectorStore.getStats();
+    expect(stats.totalChunks).toBe(0);
     await expect(metadataStore.getDeadLetterEntries()).resolves.toEqual([]);
   });
 
