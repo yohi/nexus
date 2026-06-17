@@ -14,8 +14,7 @@
   "module": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "bin": {
-    "nexus": "./dist/bin/nexus.js",
-    "@yohi/nexus": "./dist/bin/nexus.js"
+    "nexus": "dist/bin/nexus.js"
   },
   "exports": {
     ".": {
