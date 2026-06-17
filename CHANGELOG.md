@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.15.1](https://github.com/yohi/nexus/compare/v1.15.0...v1.15.1) (2026-06-17)
+
+
+### Bug Fixes
+
+* **dashboard:** metrics.port未検出時のフォールバックポート9464を廃止 ([082af19](https://github.com/yohi/nexus/commit/082af190712bc0c0c6b229703741bde46488c31e))
+* **dashboard:** metrics.port未検出時のフォールバックポート9464を廃止 ([f3af409](https://github.com/yohi/nexus/commit/f3af409c5e9b49eee18117ccf2f2bbc96aae486b))
+
 ## [1.15.0](https://github.com/yohi/nexus/compare/v1.14.1...v1.15.0) (2026-06-17)
 
 
