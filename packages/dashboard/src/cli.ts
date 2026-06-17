@@ -65,18 +65,23 @@ const port = (() => {
   if (values.port !== undefined) {
     const parsed = parseInt(values.port, 10);
     if (isNaN(parsed) || parsed < 1 || parsed > 65535) {
-      console.warn(`Invalid --port value "${values.port}", falling back to 9464`);
-      return 9464;
+      console.error(`[Nexus Dashboard] Invalid --port value "${values.port}". Please specify a valid port number (1-65535).`);
+      process.exit(1);
     }
     return parsed;
   }
   if (autoPort !== undefined) {
     return autoPort;
   }
-  // サーバーがまだ起動していない場合のフォールバック
-  console.warn("[Nexus Dashboard] metrics.port not found, using default 9464. Is the server running?");
-  return 9464;
-})();
+  // metrics.port が見つからない = サーバー未起動 or 別プロジェクトのサーバーに誤接続するリスクがある
+  console.error(
+    `[Nexus Dashboard] Could not determine metrics port for project: ${projectRoot}\n` +
+    `  Storage dir: ${storageDir}\n` +
+    `  No metrics.port file found. Is the Nexus server running for this project?\n` +
+    `  Hint: Start the server first, or specify the port with --port <number>.`
+  );
+  process.exit(1);
+})()
 
 const interval = (() => {
   const parsed = parseInt(values.interval as string, 10);
