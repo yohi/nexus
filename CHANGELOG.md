@@ -1,5 +1,20 @@
 # Changelog
 
+## [1.16.0](https://github.com/yohi/nexus/compare/v1.15.3...v1.16.0) (2026-06-17)
+
+
+### Features
+
+* index作成中の進捗状況をダッシュボードにリアルタイム表示する機能を追加し、モデルをall-minilmに切り替え ([d9730c6](https://github.com/yohi/nexus/commit/d9730c662dfffd7b352434c3a644a5fb2169243e))
+* index作成中の進捗状況をダッシュボードにリアルタイム表示する機能を追加し、モデルをall-minilmに切り替え ([05e66f1](https://github.com/yohi/nexus/commit/05e66f139bc71b826d416ad0b6d3a3c12ac9c703))
+
+
+### Bug Fixes
+
+* **dashboard,indexer:** インポート時のブロック回避とリネーム時の進捗率計算の修正 ([b0fea4d](https://github.com/yohi/nexus/commit/b0fea4db8bb1ec2eeb1c6f4312f86f87985896f6))
+* **dashboard:** Codacyの非リテラル引数警告に対処するためisMainModuleの判定を簡略化 ([96ca9ea](https://github.com/yohi/nexus/commit/96ca9ea468ec7592cad4817aff1ae09ab7b5af2b))
+* **dashboard:** portおよびinterval引数に数字以外の文字が含まれている場合のバリデーションを追加 ([77d21df](https://github.com/yohi/nexus/commit/77d21dfeca4092d72ae86a94165ccc63cd45a81a))
+
 ## [1.15.3](https://github.com/yohi/nexus/compare/v1.15.2...v1.15.3) (2026-06-17)
 
 
