@@ -256,7 +256,7 @@ if (process.argv[2] === "dashboard") {
 
   // Start the TUI dashboard (the MCP server will not be started)
   try {
-    await import("@yohi/nexus-dashboard/cli");
+    await import(new URL("../../dashboard/cli.js", import.meta.url).href);
   } catch (error) {
     handleFatalError("Failed to start dashboard", error);
   }
