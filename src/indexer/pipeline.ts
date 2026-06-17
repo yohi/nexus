@@ -42,6 +42,7 @@ interface IndexPipelineOptions {
     | 'onReindexComplete'
     | 'onDlqSnapshot'
     | 'onRecoverySweepComplete'
+    | 'onIndexingProgress'
   >;
 }
 
@@ -194,6 +195,7 @@ export class IndexPipeline implements IIndexPipeline {
         this.progress.currentFile = event.filePath;
         await this.handleDeleteEvent(event.filePath);
         this.progress.processedFiles++;
+        this.safeNotifyMetrics((h) => { h.onIndexingProgress(this.progress.processedFiles, this.progress.totalFiles, true); });
         continue;
       }
 
@@ -210,6 +212,7 @@ export class IndexPipeline implements IIndexPipeline {
       }
       const window = pending.slice(windowStart, windowStart + this.embedBatchWindowSize);
       chunksIndexed += await this.processEventWindow(window, loadContent as ContentLoader);
+      this.safeNotifyMetrics((h) => { h.onIndexingProgress(this.progress.processedFiles, this.progress.totalFiles, true); });
     }
 
     this.progress.currentFile = undefined;
@@ -421,11 +424,13 @@ export class IndexPipeline implements IIndexPipeline {
         this.progress.processedFiles = 0;
         this.progress.totalFiles = 0;
         this.progress.lastError = undefined;
+        this.safeNotifyMetrics((h) => { h.onIndexingProgress(0, 0, true); });
 
         this.safeLogProgress(`Starting reindex (fullRebuild: ${!!fullRebuild})`);
         try {
           const events = await run({ fullScan: fullRebuild, reason: 'manual' });
           this.progress.totalFiles = events.length;
+          this.safeNotifyMetrics((h) => { h.onIndexingProgress(0, events.length, true); });
 
           const { chunksIndexed } = await this.processEvents(events, loadContent);
 
@@ -448,6 +453,7 @@ export class IndexPipeline implements IIndexPipeline {
           this.safeNotifyMetrics((h) => { h.onReindexComplete(durationMs, !!fullRebuild); });
 
           this.progress.status = 'idle';
+          this.safeNotifyMetrics((h) => { h.onIndexingProgress(this.progress.processedFiles, this.progress.totalFiles, false); });
           return {
             startedAt,
             finishedAt,
@@ -457,6 +463,7 @@ export class IndexPipeline implements IIndexPipeline {
           };
         } catch (error) {
           this.progress.status = 'idle';
+          this.safeNotifyMetrics((h) => { h.onIndexingProgress(this.progress.processedFiles, this.progress.totalFiles, false); });
           this.progress.lastError = error instanceof Error ? error.message : String(error);
           throw error;
         } finally {

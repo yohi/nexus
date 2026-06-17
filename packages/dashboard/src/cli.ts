@@ -92,7 +92,5 @@ const interval = (() => {
   return parsed;
 })();
 
-if (process.argv[1] && fileURLToPath(import.meta.url) === path.resolve(process.argv[1])) {
-  const { waitUntilExit } = render(React.createElement(App, { port, interval }));
-  await waitUntilExit();
-}
+const { waitUntilExit } = render(React.createElement(App, { port, interval }));
+await waitUntilExit();

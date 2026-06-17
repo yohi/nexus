@@ -16,6 +16,9 @@ export class MetricsCollector implements MetricsHooks {
   private readonly reindexHistogram: Histogram;
   private readonly dlqSizeGauge: Gauge;
   private readonly recoveryCounter: Counter;
+  private readonly indexingActiveGauge: Gauge;
+  private readonly indexingProcessedFilesGauge: Gauge;
+  private readonly indexingTotalFilesGauge: Gauge;
 
   private readonly prevDroppedBySource = new Map<string, number>();
 
@@ -70,6 +73,24 @@ export class MetricsCollector implements MetricsHooks {
       labelNames: ['dlq_id', 'result'] as const,
       registers: [this.registry],
     });
+
+    this.indexingActiveGauge = new Gauge({
+      name: 'nexus_indexing_active',
+      help: 'Whether indexing is currently active (1 = active, 0 = idle)',
+      registers: [this.registry],
+    });
+
+    this.indexingProcessedFilesGauge = new Gauge({
+      name: 'nexus_indexing_processed_files',
+      help: 'Number of processed files in the current indexing run',
+      registers: [this.registry],
+    });
+
+    this.indexingTotalFilesGauge = new Gauge({
+      name: 'nexus_indexing_total_files',
+      help: 'Total number of files to process in the current indexing run',
+      registers: [this.registry],
+    });
   }
 
   onQueueSnapshot(size: number, state: BackpressureState, droppedTotal: number, source = 'default'): void {
@@ -116,5 +137,11 @@ export class MetricsCollector implements MetricsHooks {
     if (purged > 0) this.recoveryCounter.labels({ ...labels, result: 'purged' }).inc(purged);
     if (skipped > 0) this.recoveryCounter.labels({ ...labels, result: 'skipped' }).inc(skipped);
     if (abandoned > 0) this.recoveryCounter.labels({ ...labels, result: 'abandoned' }).inc(abandoned);
+  }
+
+  onIndexingProgress(processed: number, total: number, active: boolean): void {
+    this.indexingActiveGauge.set(active ? 1 : 0);
+    this.indexingProcessedFilesGauge.set(processed);
+    this.indexingTotalFilesGauge.set(total);
   }
 }
