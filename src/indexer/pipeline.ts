@@ -33,6 +33,8 @@ interface IndexPipelineOptions {
   maxFileBytes?: number;
   chunkConcurrency?: number;
   embedBatchWindowSize?: number;
+  /** Maximum number of chunk embeddings to keep in the in-memory LRU cache. 0 = disabled. Default: 10_000. */
+  embeddingCacheSize?: number;
   onProgress?: (msg: string) => void;
   metricsHooks?: Pick<
     MetricsHooks,
@@ -73,6 +75,9 @@ export class IndexPipeline implements IIndexPipeline {
   private idleCompactionTimer: NodeJS.Timeout | undefined;
   private readonly chunkConcurrency: number;
   private readonly embedBatchWindowSize: number;
+  /** chunk content-hash → embedding vector (LRU eviction when at capacity) */
+  private readonly embeddingCache: Map<string, number[]>;
+  private readonly embeddingCacheSize: number;
 
   private progress: PipelineProgress = {
     totalFiles: 0,
@@ -84,6 +89,8 @@ export class IndexPipeline implements IIndexPipeline {
     this.merkleTree = new MerkleTree(options.metadataStore);
     this.chunkConcurrency = options.chunkConcurrency ?? 2;
     this.embedBatchWindowSize = Math.max(1, options.embedBatchWindowSize ?? 16);
+    this.embeddingCacheSize = options.embeddingCacheSize ?? 10_000;
+    this.embeddingCache = new Map<string, number[]>();
     this.deadLetterQueue = new DeadLetterQueue({
       metadataStore: options.metadataStore,
       embeddingHealthy: () => this.embeddingHealthy(),
@@ -245,7 +252,7 @@ export class IndexPipeline implements IIndexPipeline {
   /**
    * Processes a window of added/modified events as a 3-stage pipeline:
    *  Stage 1: read + chunk files concurrently (no shared-state writes).
-   *  Stage 2: a single cross-file embed() call for all chunks in the window.
+   *  Stage 2: cache-aware embed — cache hits skip embed(), misses are batched into one embed() call.
    *  Stage 3: serial per-file upsert + merkleTree.update (merkleTree.update is NOT concurrency-safe).
    */
   private async processEventWindow(
@@ -258,15 +265,52 @@ export class IndexPipeline implements IIndexPipeline {
       window.map((event) => limit(async () => this.readAndChunkFile(event, loadContent))),
     );
 
-    // Stage 2: aggregate chunks across files into a single embed() call.
+    // Stage 2: cache-aware embed.
     const toEmbed = works.filter((work) => !work.skipped && work.chunks.length > 0);
     const allChunks = toEmbed.flatMap((work) => work.chunks);
 
+    // Split chunks into cache hits and misses.
+    const missIndices: number[] = [];
+    const missTexts: string[] = [];
+    const resolvedEmbeddings: (number[] | undefined)[] = allChunks.map((chunk, i) => {
+      if (this.embeddingCacheSize > 0) {
+        const cached = this.embeddingCache.get(chunk.hash);
+        if (cached !== undefined) {
+          // LRU refresh: re-insert to bump to end of Map.
+          this.embeddingCache.delete(chunk.hash);
+          this.embeddingCache.set(chunk.hash, cached);
+          return cached;
+        }
+      }
+      missIndices.push(i);
+      missTexts.push(chunk.content);
+      return undefined;
+    });
+
     let allEmbeddings: number[][] = [];
     let embedError: RetryExhaustedError | undefined;
-    if (allChunks.length > 0) {
+    if (missTexts.length > 0) {
       try {
-        allEmbeddings = await this.options.embeddingProvider.embed(allChunks.map((chunk) => chunk.content));
+        const freshEmbeddings = await this.options.embeddingProvider.embed(missTexts);
+        if (freshEmbeddings.length !== missTexts.length) {
+          const msg = `Embedding count mismatch: expected ${missTexts.length}, got ${freshEmbeddings.length}`;
+          this.progress.lastError = msg;
+          throw new Error(msg);
+        }
+        // Write fresh embeddings back into resolvedEmbeddings and the cache.
+        for (let k = 0; k < missIndices.length; k++) {
+          const idx = missIndices[k]!;
+          const vec = freshEmbeddings[k]!;
+          resolvedEmbeddings[idx] = vec;
+          if (this.embeddingCacheSize > 0) {
+            // LRU eviction: drop oldest entry when at capacity.
+            if (this.embeddingCache.size >= this.embeddingCacheSize) {
+              const oldestKey = this.embeddingCache.keys().next().value as string;
+              this.embeddingCache.delete(oldestKey);
+            }
+            this.embeddingCache.set(allChunks[idx]!.hash, vec);
+          }
+        }
       } catch (error) {
         if (error instanceof Error && error.name === 'RetryExhaustedError') {
           embedError = error as RetryExhaustedError;
@@ -276,11 +320,11 @@ export class IndexPipeline implements IIndexPipeline {
           throw error;
         }
       }
-      if (embedError === undefined && allEmbeddings.length !== allChunks.length) {
-        const msg = `Embedding count mismatch: expected ${allChunks.length}, got ${allEmbeddings.length}`;
-        this.progress.lastError = msg;
-        throw new Error(msg);
-      }
+    }
+
+    // Build the flat allEmbeddings array aligned with allChunks (only used in Stage 3).
+    if (embedError === undefined) {
+      allEmbeddings = resolvedEmbeddings as number[][];
     }
 
     // Stage 3: serial per-file finalization (Merkle + vector writes must not run concurrently).
