@@ -2,6 +2,17 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
 import { createNexusServer, errorResult, toolResult, initializeNexusRuntime, type NexusRuntimeOptions } from '../../../src/server/index.js';
 import { PathSanitizer, PathTraversalError } from '../../../src/server/path-sanitizer.js';
+import * as metricsPortUtils from '../../../src/server/metrics-port.js';
+
+vi.mock('../../../src/observability/metrics-server.js', () => {
+  return {
+    MetricsHttpServer: vi.fn().mockImplementation(() => ({
+      start: vi.fn().mockResolvedValue(undefined),
+      stop: vi.fn().mockResolvedValue(undefined),
+      getPort: vi.fn().mockReturnValue(undefined),
+    })),
+  };
+});
 
 describe('NexusServer helpers', () => {
   const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
@@ -204,6 +215,54 @@ describe('NexusServer helpers', () => {
       stopDeferred.resolve();
       await initPromise.catch(() => {});
       expect(stopDeferred.called).toBe(true);
+    });
+  });
+
+  describe('initializeNexusRuntime metricsPort cleanup', () => {
+    it('calls removeMetricsPort when metrics server fails to start', async () => {
+      const removeSpy = vi.spyOn(metricsPortUtils, 'removeMetricsPort').mockResolvedValue(undefined);
+      const mockOptions = {
+        metadataStore: { initialize: vi.fn().mockResolvedValue(undefined) },
+        vectorStore: { initialize: vi.fn().mockResolvedValue(undefined) },
+        pipeline: {
+          reconcileOnStartup: vi.fn().mockResolvedValue({}),
+          start: vi.fn(),
+          stop: vi.fn().mockResolvedValue(undefined),
+        },
+        watcher: {
+          start: vi.fn().mockResolvedValue(undefined),
+          stop: vi.fn().mockResolvedValue(undefined),
+        },
+        metricsCollectorRegistry: {} as any, // Trigger metricsServer creation
+        storageDir: '/fake/storage',
+        projectRoot: '/tmp',
+        sanitizer: {} as any,
+        semanticSearch: {} as any,
+        grepEngine: {} as any,
+        orchestrator: {} as any,
+        pluginRegistry: {} as any,
+        runReindex: vi.fn(),
+        loadFileContent: vi.fn(),
+      } as any;
+
+      // We need to mock MetricsHttpServer to fail or return undefined port.
+      // Since it's instantiated inside, we can't easily mock the instance.
+      // But we can verify the behavior if we mock the module.
+      // For now, let's assume it fails to start (throws error in start or returns undefined in getPort)
+      
+      // Actually, if metricsCollectorRegistry is provided, it tries to start.
+      // If we don't mock MetricsHttpServer, it might actually try to start a real server.
+      
+      // Let's mock the module '../observability/metrics-server.js' if possible.
+      // But in Vitest, we use vi.mock().
+      
+      // Alternatively, we can just check if removeMetricsPort is called when resolvedPort is undefined.
+      // By default, our mock doesn't have a getPort method that returns something, so it will be undefined.
+      
+      const runtime = await initializeNexusRuntime(mockOptions);
+      expect(removeSpy).toHaveBeenCalledWith('/fake/storage');
+      await runtime.close();
+      removeSpy.mockRestore();
     });
   });
 });

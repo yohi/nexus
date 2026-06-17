@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { readFile } from "node:fs/promises";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 import React from "react";
 import { render } from "ink";
@@ -21,7 +22,7 @@ const projectRoot = (() => {
 })();
 
 /** Resolve the .nexus storage dir: env var > .nexus.json > default */
-async function resolveStorageDir(projectRoot: string): Promise<string> {
+export async function resolveStorageDir(projectRoot: string): Promise<string> {
   if (process.env.NEXUS_STORAGE_ROOT_DIR) {
     return path.resolve(process.env.NEXUS_STORAGE_ROOT_DIR);
   }
@@ -33,7 +34,7 @@ async function resolveStorageDir(projectRoot: string): Promise<string> {
       if (rootDir !== null && typeof rootDir === "object" && !Array.isArray(rootDir)) {
         const val = (rootDir as Record<string, unknown>).rootDir;
         if (typeof val === "string" && val.trim() !== "") {
-          return path.resolve(val.trim());
+          return path.resolve(projectRoot, val.trim());
         }
       }
     }
@@ -86,5 +87,7 @@ const interval = (() => {
   return parsed;
 })();
 
-const { waitUntilExit } = render(React.createElement(App, { port, interval }));
-await waitUntilExit();
+if (process.argv[1] && fileURLToPath(import.meta.url) === path.resolve(process.argv[1])) {
+  const { waitUntilExit } = render(React.createElement(App, { port, interval }));
+  await waitUntilExit();
+}

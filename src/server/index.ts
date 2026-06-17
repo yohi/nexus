@@ -289,6 +289,11 @@ export const buildNexusRuntime = (
             await writeMetricsPort(options.storageDir, resolvedPort).catch((err) => {
               console.warn("[Nexus] Failed to write metrics port file:", err);
             });
+          } else if (options.storageDir) {
+            // Explicitly delete metrics.port if server failed to start or port is undefined
+            await removeMetricsPort(options.storageDir).catch((err) => {
+              console.warn("[Nexus] Failed to remove stale metrics port file:", err);
+            });
           }
         }
       } catch (error) {
