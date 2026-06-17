@@ -7,8 +7,6 @@ import React from "react";
 import { render } from "ink";
 import { App } from "./app.js";
 
-import { realpath } from "node:fs/promises";
-
 /** Resolve the .nexus storage dir: env var > .nexus.json > default */
 export async function resolveStorageDir(projectRoot: string): Promise<string> {
   if (process.env.NEXUS_STORAGE_ROOT_DIR) {
@@ -104,13 +102,7 @@ async function isMainModule(): Promise<boolean> {
   try {
     const argPath = path.resolve(process.argv[1]);
     const modulePath = fileURLToPath(import.meta.url);
-    if (argPath === modulePath) return true;
-
-    const [realArg, realMod] = await Promise.all([
-      realpath(argPath),
-      realpath(modulePath),
-    ]);
-    return realArg === realMod;
+    return argPath === modulePath;
   } catch {
     return false;
   }
