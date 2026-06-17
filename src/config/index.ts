@@ -149,6 +149,10 @@ export const loadConfig = async (options: LoadConfigOptions): Promise<Config> =>
         validatePositiveInt(fileConfig.indexing?.embedBatchWindowSize) ??
         defaults.indexing.embedBatchWindowSize,
     },
+    metricsPort:
+      asPortNumber(env.NEXUS_METRICS_PORT) ??
+      validatePortNumber(fileConfig.metricsPort) ??
+      undefined,
   };
 
   return merged;
@@ -174,6 +178,16 @@ const asPositiveInt = (value: string | undefined): number | undefined => {
 
 const validatePositiveInt = (value: unknown): number | undefined =>
   typeof value === 'number' && Number.isInteger(value) && value > 0 ? value : undefined;
+
+const asPortNumber = (value: string | undefined): number | undefined => {
+  const parsed = asPositiveInt(value);
+  return parsed !== undefined && parsed <= 65535 ? parsed : undefined;
+};
+
+const validatePortNumber = (value: unknown): number | undefined => {
+  const parsed = validatePositiveInt(value);
+  return parsed !== undefined && parsed <= 65535 ? parsed : undefined;
+};
 
 const asNonNegativeInt = (value: string | undefined): number | undefined => {
   if (value === undefined || !/^\d+$/.test(value)) return undefined;
