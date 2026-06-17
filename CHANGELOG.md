@@ -1,5 +1,27 @@
 # Changelog
 
+## [1.15.0](https://github.com/yohi/nexus/compare/v1.14.1...v1.15.0) (2026-06-17)
+
+
+### Features
+
+* Config に metricsPort オプションを追加 ([d5b3f71](https://github.com/yohi/nexus/commit/d5b3f71a2925dad4cd1c633061e6f17f1be52d58))
+* チャンクレベルのEmbeddingキャッシュをIndexPipelineに追加 ([87545f3](https://github.com/yohi/nexus/commit/87545f3d61c947f4a939e249bdbcdaa02534db82))
+* メトリクスポートの自動割り当てとダッシュボード自動接続 ([0d3e2b8](https://github.com/yohi/nexus/commit/0d3e2b87be9ad1c24748659298de82bec6794de2))
+
+
+### Bug Fixes
+
+* dashboardコマンドのモジュール解決パスを修正 ([f7c9901](https://github.com/yohi/nexus/commit/f7c9901ffd2e8242ac664c01460dfbbb5f2bfea4))
+* dashboardコマンドのモジュール解決パスを修正 ([90142c6](https://github.com/yohi/nexus/commit/90142c619259c08fb1c5df442e2ba682f2afc6c9))
+* Improve embedding batch size and add caching to IndexPipeline ([d1bbe2f](https://github.com/yohi/nexus/commit/d1bbe2fc208d9a71c703a6d7688b966662369051))
+* パス解決の修正、ポートのバリデーション強化、およびポートファイルのクリーンアップ処理の追加 ([36d5e42](https://github.com/yohi/nexus/commit/36d5e4238c6f96b2a0678e5a70759bba968eb570))
+
+
+### Performance Improvements
+
+* デフォルトembeddingバッチサイズを4から32に変更 ([d8c0be6](https://github.com/yohi/nexus/commit/d8c0be6e78a593dcfd4957fe3d272ace7cfee89b))
+
 ## [1.14.1](https://github.com/yohi/nexus/compare/v1.14.0...v1.14.1) (2026-06-17)
 
 
