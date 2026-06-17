@@ -1,5 +1,22 @@
 # Changelog
 
+## [1.14.0](https://github.com/yohi/nexus/compare/v1.13.2...v1.14.0) (2026-06-17)
+
+
+### Features
+
+* Factory に並列パイプライン設定を配線 ([ef20d01](https://github.com/yohi/nexus/commit/ef20d01d658176bd60ca639f785afa0a49a7246c))
+* processEvents を 3 ステージ並列パイプラインに再構成 ([c37ce97](https://github.com/yohi/nexus/commit/c37ce9743db785b9ae879fa3c4b07c48bfe6c998))
+* ウィンドウ型パイプライン用の設定型を追加 ([6f2c9e9](https://github.com/yohi/nexus/commit/6f2c9e948c5ef4c008e6e4e2f15cc81ee9090202))
+* ウィンドウ型並列パイプラインで reindex 最適化 ([3044536](https://github.com/yohi/nexus/commit/30445369209c129f6ff35183ce3cc1f1f688ce05))
+
+
+### Bug Fixes
+
+* embedBatchWindowSize のゼロ/負数ガードと embed() 件数不一致チェックを追加 ([42a4313](https://github.com/yohi/nexus/commit/42a4313acbda9c386aaf2236ab5cb251b4f4dd8e))
+* 本番依存パッケージの脆弱性を解消 (hono/ws/qs) ([14b15f6](https://github.com/yohi/nexus/commit/14b15f68dbd60d06910392805041fa80f06eaa29))
+* 本番依存パッケージの脆弱性を解消 (hono/ws/qs) ([9197f1a](https://github.com/yohi/nexus/commit/9197f1a49ebb34c5d4e9f5621835da3b286de56c)), closes [#119](https://github.com/yohi/nexus/issues/119)
+
 ## [1.13.2](https://github.com/yohi/nexus/compare/v1.13.1...v1.13.2) (2026-06-16)
 
 
