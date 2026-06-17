@@ -83,7 +83,7 @@ export class IndexPipeline implements IIndexPipeline {
   constructor(private readonly options: IndexPipelineOptions) {
     this.merkleTree = new MerkleTree(options.metadataStore);
     this.chunkConcurrency = options.chunkConcurrency ?? 2;
-    this.embedBatchWindowSize = options.embedBatchWindowSize ?? 16;
+    this.embedBatchWindowSize = Math.max(1, options.embedBatchWindowSize ?? 16);
     this.deadLetterQueue = new DeadLetterQueue({
       metadataStore: options.metadataStore,
       embeddingHealthy: () => this.embeddingHealthy(),
@@ -275,6 +275,11 @@ export class IndexPipeline implements IIndexPipeline {
           this.progress.lastError = error instanceof Error ? error.message : String(error);
           throw error;
         }
+      }
+      if (embedError === undefined && allEmbeddings.length !== allChunks.length) {
+        const msg = `Embedding count mismatch: expected ${allChunks.length}, got ${allEmbeddings.length}`;
+        this.progress.lastError = msg;
+        throw new Error(msg);
       }
     }
 
