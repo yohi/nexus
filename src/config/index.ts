@@ -21,7 +21,12 @@ const DEFAULT_EMBEDDING: EmbeddingConfig = {
   timeoutMs: 120_000,
 };
 
-const DEFAULT_INDEXING: IndexingConfig = { maxFileBytes: 1_048_576, maxChunkChars: 6_000 };
+const DEFAULT_INDEXING: IndexingConfig = {
+  maxFileBytes: 1_048_576,
+  maxChunkChars: 6_000,
+  chunkConcurrency: 2,
+  embedBatchWindowSize: 16,
+};
 
 export const SECRET_IGNORE_PATHS = ['.env', '.env.*'];
 
@@ -135,6 +140,14 @@ export const loadConfig = async (options: LoadConfigOptions): Promise<Config> =>
         asNonNegativeInt(env.NEXUS_INDEXING_MAX_CHUNK_CHARS) ??
         validateNonNegativeInt(fileConfig.indexing?.maxChunkChars) ??
         defaults.indexing.maxChunkChars,
+      chunkConcurrency:
+        asPositiveInt(env.NEXUS_INDEXING_CHUNK_CONCURRENCY) ??
+        validatePositiveInt(fileConfig.indexing?.chunkConcurrency) ??
+        defaults.indexing.chunkConcurrency,
+      embedBatchWindowSize:
+        asPositiveInt(env.NEXUS_INDEXING_EMBED_BATCH_WINDOW_SIZE) ??
+        validatePositiveInt(fileConfig.indexing?.embedBatchWindowSize) ??
+        defaults.indexing.embedBatchWindowSize,
     },
   };
 

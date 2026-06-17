@@ -259,6 +259,10 @@ export interface IndexingConfig {
   maxFileBytes: number;
   /** Maximum characters per chunk before splitting. 0 = unlimited. Default: 6000. */
   maxChunkChars: number;
+  /** Number of files read & chunked concurrently in stage 1 of the indexing pipeline. Default: 2. */
+  chunkConcurrency: number;
+  /** Number of files whose chunks are aggregated into a single cross-file embed() batch. Default: 16. */
+  embedBatchWindowSize: number;
 }
 
 export interface Config {
