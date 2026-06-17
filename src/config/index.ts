@@ -149,6 +149,10 @@ export const loadConfig = async (options: LoadConfigOptions): Promise<Config> =>
         validatePositiveInt(fileConfig.indexing?.embedBatchWindowSize) ??
         defaults.indexing.embedBatchWindowSize,
     },
+    metricsPort:
+      asPositiveInt(env.NEXUS_METRICS_PORT) ??
+      validatePositiveInt(fileConfig.metricsPort) ??
+      undefined,
   };
 
   return merged;

@@ -271,6 +271,7 @@ export interface Config {
   watcher: WatcherConfig;
   embedding: EmbeddingConfig;
   indexing: IndexingConfig;
+  metricsPort?: number;
 }
 
 export interface DeadLetterEntry {
