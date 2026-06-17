@@ -1,5 +1,14 @@
 # Changelog
 
+## [1.14.1](https://github.com/yohi/nexus/compare/v1.14.0...v1.14.1) (2026-06-17)
+
+
+### Bug Fixes
+
+* CI環境でのdashboardビルド失敗を修正 ([3fd19f0](https://github.com/yohi/nexus/commit/3fd19f065d58ee03d64496eeb77b665cf8e22ab2))
+* グローバルインストール時のdashboardコマンド起動エラーを修正 ([4ffbe7b](https://github.com/yohi/nexus/commit/4ffbe7ba29367752d4040a9dd0fbf05ad9224520))
+* グローバルインストール時のdashboardコマンド起動エラーを修正 ([9806ad8](https://github.com/yohi/nexus/commit/9806ad82d4a904a9809907f0a387e2b6cf064d2d))
+
 ## [1.14.0](https://github.com/yohi/nexus/compare/v1.13.2...v1.14.0) (2026-06-17)
 
 
