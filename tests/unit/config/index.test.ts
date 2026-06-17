@@ -261,4 +261,38 @@ describe('loadConfig', () => {
     });
     expect(envOverride.indexing.maxFileBytes).toBe(4096);
   });
+
+  it('validates metricsPort range (1-65535)', async () => {
+    tempDir = await mkdtemp(path.join(os.tmpdir(), 'nexus-config-'));
+
+    // Valid port
+    const configValid = await loadConfig({
+      projectRoot: tempDir,
+      env: { NEXUS_METRICS_PORT: '8080' },
+    });
+    expect(configValid.metricsPort).toBe(8080);
+
+    // Invalid port (too high)
+    const configTooHigh = await loadConfig({
+      projectRoot: tempDir,
+      env: { NEXUS_METRICS_PORT: '70000' },
+    });
+    expect(configTooHigh.metricsPort).toBeUndefined();
+
+    // Invalid port (non-positive)
+    const configZero = await loadConfig({
+      projectRoot: tempDir,
+      env: { NEXUS_METRICS_PORT: '0' },
+    });
+    expect(configZero.metricsPort).toBeUndefined();
+
+    // File config too high
+    await writeFile(
+      path.join(tempDir, '.nexus.json'),
+      JSON.stringify({ metricsPort: 99999 }),
+      'utf8',
+    );
+    const configFileTooHigh = await loadConfig({ projectRoot: tempDir, env: {} });
+    expect(configFileTooHigh.metricsPort).toBeUndefined();
+  });
 });
