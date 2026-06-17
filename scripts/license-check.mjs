@@ -44,7 +44,14 @@ checker.init(
 
       const license = packageOverrides.get(packageName) ?? info.licenses;
 
-      if (typeof license !== 'string' || !allowed.has(license)) {
+      if (typeof license !== 'string') {
+        return [`${name}: Invalid license format`];
+      }
+
+      const licenses = license.replace(/[()]/g, '').split(/\s+OR\s+/i);
+      const isAllowed = licenses.some(lic => allowed.has(lic.trim()));
+
+      if (!isAllowed) {
         return [`${name}: ${String(license)}`];
       }
 
