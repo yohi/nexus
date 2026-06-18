@@ -4,6 +4,9 @@ import { RetryExhaustedError } from '../../../../src/types/index.js';
 import { OllamaEmbeddingProvider } from '../../../../src/plugins/embeddings/ollama.js';
 import { TestEmbeddingProvider } from './test-embedding-provider.js';
 
+vi.mock('../../../../src/utils/global-lock.js', () => ({
+  acquireGlobalLock: vi.fn().mockResolvedValue({ release: vi.fn().mockResolvedValue(undefined) }),
+}));
 describe('OllamaEmbeddingProvider', () => {
   afterEach(() => {
     vi.useRealTimers();
