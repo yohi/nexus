@@ -115,7 +115,13 @@ export class IndexPipeline implements IIndexPipeline {
     if (this.embeddingCacheSize <= 0) {
       return;
     }
-    // LRU eviction: drop oldest entry when at capacity.
+    // If key already exists, just update without eviction.
+    if (this.embeddingCache.has(hash)) {
+      this.embeddingCache.delete(hash);
+      this.embeddingCache.set(hash, vector);
+      return;
+    }
+    // New key: check capacity before insertion.
     if (this.embeddingCache.size >= this.embeddingCacheSize) {
       const oldestKey = this.embeddingCache.keys().next().value as string;
       this.embeddingCache.delete(oldestKey);
@@ -289,6 +295,15 @@ export class IndexPipeline implements IIndexPipeline {
     const toEmbed = works.filter((work) => !work.skipped && work.chunks.length > 0);
     const allChunks = toEmbed.flatMap((work) => work.chunks);
 
+    // allChunks index → filePath mapping for precise DLQ routing on embed failure.
+    const chunkToFilePath = new Map<number, string>();
+    let globalChunkIdx = 0;
+    for (const work of toEmbed) {
+      for (let i = 0; i < work.chunks.length; i++) {
+        chunkToFilePath.set(globalChunkIdx, work.event.filePath);
+        globalChunkIdx++;
+      }
+    }
     // L1 cache check.
     const l1Misses: Array<{ index: number; hash: string; text: string }> = [];
     const resolvedEmbeddings: (number[] | undefined)[] = allChunks.map((chunk, i) => {
@@ -322,6 +337,7 @@ export class IndexPipeline implements IIndexPipeline {
 
     let allEmbeddings: number[][] = [];
     let embedError: RetryExhaustedError | undefined;
+    const failedFilePaths = new Set<string>();
     if (trueMisses.length > 0) {
       try {
         const missTexts = trueMisses.map((m) => m.text);
@@ -348,6 +364,12 @@ export class IndexPipeline implements IIndexPipeline {
       } catch (error) {
         if (error instanceof Error && error.name === 'RetryExhaustedError') {
           embedError = error as RetryExhaustedError;
+          for (const miss of trueMisses) {
+            const fp = chunkToFilePath.get(miss.index);
+            if (fp !== undefined) {
+              failedFilePaths.add(fp);
+            }
+          }
         } else {
           // DimensionMismatchError and any other unexpected error abort the pipeline.
           this.progress.lastError = error instanceof Error ? error.message : String(error);
@@ -391,14 +413,14 @@ export class IndexPipeline implements IIndexPipeline {
         continue;
       }
 
-      if (embedError !== undefined) {
-        // The window's shared embed batch failed; route every embedded file to the DLQ.
-        this.skippedFiles.set(work.event.filePath, embedError.message);
+      if (failedFilePaths.has(work.event.filePath)) {
+        // The window's shared embed batch failed for this file; route to the DLQ.
+        this.skippedFiles.set(work.event.filePath, embedError!.message);
         await this.deadLetterQueue.enqueue({
           filePath: work.event.filePath,
           contentHash: work.event.contentHash ?? '',
-          errorMessage: embedError.message,
-          attempts: embedError.attempts,
+          errorMessage: embedError!.message,
+          attempts: embedError!.attempts,
         });
         this.progress.processedFiles++;
         continue;

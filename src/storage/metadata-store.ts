@@ -458,9 +458,14 @@ export class SqliteMetadataStore implements IMetadataStore {
   }
   async pruneEmbeddings(maxAgeDays: number): Promise<number> {
     await this.asyncBoundary();
+    // Calculate cutoff date in JavaScript to enable parameterization.
+    const cutoffDate = new Date();
+    cutoffDate.setDate(cutoffDate.getDate() - maxAgeDays);
+    const cutoffIso = cutoffDate.toISOString();
+
     const result = this.db
-      .prepare(`DELETE FROM embedding_cache WHERE created_at < date('now', '-${maxAgeDays} days')`)
-      .run();
+      .prepare(`DELETE FROM embedding_cache WHERE created_at < ?`)
+      .run(cutoffIso);
     return Number(result.changes ?? 0);
   }
 
