@@ -288,6 +288,8 @@ export class NexusServerFactory {
       throw lockError;
     }
 
+    try {
+
     const { metadataStore, vectorStore } =
       StorageManager.initializeStores(config);
     const pluginRegistry = this.setupPluginRegistry(config);
@@ -510,12 +512,15 @@ export class NexusServerFactory {
       }
       logStream.end();
       await finished(logStream).catch(() => {});
-      if (projectLock) {
-        await projectLock.release().catch(() => {});
-      }
       throw error;
     }
+  } catch (error) {
+    if (projectLock) {
+      await projectLock.release().catch(() => {});
+    }
+    throw error;
   }
+}
 
   private static setupPluginRegistry(config: Config): PluginRegistry {
     const registry = new PluginRegistry();
