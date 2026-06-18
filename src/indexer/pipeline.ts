@@ -21,8 +21,8 @@ import {
   type IIndexPipeline,
   type PipelineProgress,
   type RetryExhaustedError,
+  type EmbeddingCacheEntry,
 } from '../types/index.js';
-
 interface IndexPipelineOptions {
   metadataStore: IMetadataStore;
   vectorStore: IVectorStore;
@@ -109,6 +109,18 @@ export class IndexPipeline implements IIndexPipeline {
     } catch (err) {
       console.warn('[Nexus Pipeline] Metrics hook failed:', err);
     }
+  }
+
+  private setL1Cache(hash: string, vector: number[]): void {
+    if (this.embeddingCacheSize <= 0) {
+      return;
+    }
+    // LRU eviction: drop oldest entry when at capacity.
+    if (this.embeddingCache.size >= this.embeddingCacheSize) {
+      const oldestKey = this.embeddingCache.keys().next().value as string;
+      this.embeddingCache.delete(oldestKey);
+    }
+    this.embeddingCache.set(hash, vector);
   }
 
   start(): void {
@@ -273,13 +285,12 @@ export class IndexPipeline implements IIndexPipeline {
       window.map((event) => limit(async () => this.readAndChunkFile(event, loadContent))),
     );
 
-    // Stage 2: cache-aware embed.
+    // Stage 2: L1 (memory) + L2 (persistent) cache-aware embed.
     const toEmbed = works.filter((work) => !work.skipped && work.chunks.length > 0);
     const allChunks = toEmbed.flatMap((work) => work.chunks);
 
-    // Split chunks into cache hits and misses.
-    const missIndices: number[] = [];
-    const missTexts: string[] = [];
+    // L1 cache check.
+    const l1Misses: Array<{ index: number; hash: string; text: string }> = [];
     const resolvedEmbeddings: (number[] | undefined)[] = allChunks.map((chunk, i) => {
       if (this.embeddingCacheSize > 0) {
         const cached = this.embeddingCache.get(chunk.hash);
@@ -290,34 +301,47 @@ export class IndexPipeline implements IIndexPipeline {
           return cached;
         }
       }
-      missIndices.push(i);
-      missTexts.push(chunk.content);
+      l1Misses.push({ index: i, hash: chunk.hash, text: chunk.content });
       return undefined;
     });
 
+    // L2 persistent cache check.
+    const trueMisses: typeof l1Misses = [];
+    if (l1Misses.length > 0) {
+      const l2Cached = await this.options.metadataStore.getEmbeddings(l1Misses.map((m) => m.hash));
+      for (const miss of l1Misses) {
+        const vector = l2Cached.get(miss.hash);
+        if (vector !== undefined) {
+          resolvedEmbeddings[miss.index] = vector;
+          this.setL1Cache(miss.hash, vector);
+        } else {
+          trueMisses.push(miss);
+        }
+      }
+    }
+
     let allEmbeddings: number[][] = [];
     let embedError: RetryExhaustedError | undefined;
-    if (missTexts.length > 0) {
+    if (trueMisses.length > 0) {
       try {
+        const missTexts = trueMisses.map((m) => m.text);
         const freshEmbeddings = await this.options.embeddingProvider.embed(missTexts);
         if (freshEmbeddings.length !== missTexts.length) {
           const msg = `Embedding count mismatch: expected ${missTexts.length}, got ${freshEmbeddings.length}`;
           this.progress.lastError = msg;
           throw new Error(msg);
         }
-        // Write fresh embeddings back into resolvedEmbeddings and the cache.
-        for (let k = 0; k < missIndices.length; k++) {
-          const idx = missIndices[k]!;
+        // Write fresh embeddings back into resolvedEmbeddings and both caches.
+        const l2Entries: EmbeddingCacheEntry[] = [];
+        for (let k = 0; k < trueMisses.length; k++) {
+          const miss = trueMisses[k]!;
           const vec = freshEmbeddings[k]!;
-          resolvedEmbeddings[idx] = vec;
-          if (this.embeddingCacheSize > 0) {
-            // LRU eviction: drop oldest entry when at capacity.
-            if (this.embeddingCache.size >= this.embeddingCacheSize) {
-              const oldestKey = this.embeddingCache.keys().next().value as string;
-              this.embeddingCache.delete(oldestKey);
-            }
-            this.embeddingCache.set(allChunks[idx]!.hash, vec);
-          }
+          resolvedEmbeddings[miss.index] = vec;
+          this.setL1Cache(miss.hash, vec);
+          l2Entries.push({ hash: miss.hash, vector: vec });
+        }
+        if (l2Entries.length > 0) {
+          await this.options.metadataStore.setEmbeddings(l2Entries);
         }
       } catch (error) {
         if (error instanceof Error && error.name === 'RetryExhaustedError') {

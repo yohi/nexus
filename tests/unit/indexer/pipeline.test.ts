@@ -576,4 +576,62 @@ describe('IndexPipeline', () => {
     const stats = await vectorStore.getStats();
     expect(stats.totalChunks).toBeGreaterThan(0);
   });
+
+  it('reuses persistent L2 embedding cache across pipeline instances', async () => {
+    const { metadataStore, chunker, registry } = await createPipeline();
+    const vectorStore1 = new InMemoryVectorStore({ dimensions: 64 });
+    await vectorStore1.initialize();
+    const provider1 = new CountingEmbeddingProvider();
+    const pipeline1 = new IndexPipeline({
+      metadataStore,
+      vectorStore: vectorStore1,
+      chunker,
+      embeddingProvider: provider1,
+      pluginRegistry: registry,
+    });
+    const content = await readFile(fixturePath, 'utf8');
+
+    const result1 = await pipeline1.processEvents(
+      [
+        {
+          type: 'added',
+          filePath: fixturePath,
+          contentHash: 'hash-l2-first',
+          detectedAt: new Date().toISOString(),
+        },
+      ],
+      async () => content,
+    );
+    expect(result1.chunksIndexed).toBeGreaterThan(0);
+    expect(provider1.calls).toBe(1);
+
+    // Simulate a restart: new pipeline instance, fresh vector store, same persistent metadata store.
+    const vectorStore2 = new InMemoryVectorStore({ dimensions: 64 });
+    await vectorStore2.initialize();
+    const provider2 = new CountingEmbeddingProvider();
+    const pipeline2 = new IndexPipeline({
+      metadataStore,
+      vectorStore: vectorStore2,
+      chunker,
+      embeddingProvider: provider2,
+      pluginRegistry: registry,
+    });
+
+    const result2 = await pipeline2.processEvents(
+      [
+        {
+          type: 'added',
+          filePath: fixturePath,
+          contentHash: 'hash-l2-second',
+          detectedAt: new Date().toISOString(),
+        },
+      ],
+      async () => content,
+    );
+
+    expect(provider2.calls).toBe(0);
+    expect(result2.chunksIndexed).toBe(result1.chunksIndexed);
+    const stats2 = await vectorStore2.getStats();
+    expect(stats2.totalChunks).toBe(result1.chunksIndexed);
+  });
 });
