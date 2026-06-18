@@ -9,6 +9,7 @@ import picomatch from "picomatch";
 import { normalizeIgnorePaths } from "../utils/path-normalization.js";
 import { buildNexusRuntime, type NexusRuntime } from "./index.js";
 import { PathSanitizer } from "./path-sanitizer.js";
+import { acquireProjectLock, type ProjectLockHandle } from "../utils/project-lock.js";
 import { SemanticSearch } from "../search/semantic.js";
 import { SearchOrchestrator } from "../search/orchestrator.js";
 import { PluginRegistry } from "../plugins/registry.js";
@@ -278,6 +279,15 @@ export class NexusServerFactory {
     const { projectRoot } = config;
     await StorageManager.ensureDirectories(config);
 
+    // Acquire project-level lock to prevent multiple Nexus instances on the same project
+    let projectLock: ProjectLockHandle | undefined;
+    try {
+      projectLock = await acquireProjectLock(config.storage.rootDir);
+    } catch (lockError) {
+      console.error('[Nexus] Failed to acquire project lock:', lockError);
+      throw lockError;
+    }
+
     const { metadataStore, vectorStore } =
       StorageManager.initializeStores(config);
     const pluginRegistry = this.setupPluginRegistry(config);
@@ -466,6 +476,9 @@ export class NexusServerFactory {
           }
           logStream.end();
           await finished(logStream);
+          if (projectLock) {
+            await projectLock.release().catch(() => {});
+          }
         },
         runReindex: async (args) => {
           let scannedEvents: IndexEvent[] = [];
@@ -497,6 +510,9 @@ export class NexusServerFactory {
       }
       logStream.end();
       await finished(logStream).catch(() => {});
+      if (projectLock) {
+        await projectLock.release().catch(() => {});
+      }
       throw error;
     }
   }
