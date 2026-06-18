@@ -145,6 +145,12 @@ export interface IndexStatsRow {
   overflowCount: number;
 }
 
+export interface EmbeddingCacheEntry {
+  hash: string;
+  vector: number[];
+}
+
+
 export interface IMetadataStore {
   initialize(): Promise<void>;
   bulkUpsertMerkleNodes(nodes: MerkleNodeRow[]): Promise<void>;
@@ -165,6 +171,11 @@ export interface IMetadataStore {
   upsertDeadLetterEntries(entries: DeadLetterEntry[]): Promise<void>;
   removeDeadLetterEntries(ids: string[]): Promise<void>;
   getDeadLetterEntries(): Promise<DeadLetterEntry[]>;
+  getEmbeddings(hashes: string[]): Promise<Map<string, number[]>>;
+  setEmbeddings(entries: EmbeddingCacheEntry[]): Promise<void>;
+  deleteEmbeddings(hashes: string[]): Promise<void>;
+  clearEmbeddings(): Promise<void>;
+
 }
 
 export interface GrepParams {
