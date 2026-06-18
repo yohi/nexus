@@ -5,6 +5,7 @@ import { RetryExhaustedError, DimensionMismatchError, NonRetryableEmbeddingError
 import { BaseEmbeddingProvider } from './base.js';
 
 import { acquireGlobalLock } from '../../utils/global-lock.js';
+
 interface OllamaDependencies {
   fetch: typeof fetch;
   sleep: (ms: number) => Promise<void>;
@@ -43,10 +44,16 @@ export class OllamaEmbeddingProvider extends BaseEmbeddingProvider {
 
   async embed(texts: string[]): Promise<number[][]> {
     const batches = this.chunkTexts(texts, this.config.batchSize);
-    const promises = batches.map(async (batch) => this.limit(async () => this.embedBatchWithRetry(batch)));
-    const results = await Promise.all(promises);
+    const lock = await acquireGlobalLock('ollama');
 
-    return results.flat();
+    try {
+      const promises = batches.map(async (batch) => this.limit(async () => this.embedBatchWithRetry(batch)));
+      const results = await Promise.all(promises);
+
+      return results.flat();
+    } finally {
+      await lock.release().catch(() => {});
+    }
   }
 
   async healthCheck(): Promise<boolean> {
@@ -106,8 +113,6 @@ export class OllamaEmbeddingProvider extends BaseEmbeddingProvider {
       }, timeoutMs);
     }
 
-    const lock = await acquireGlobalLock('ollama');
-
     try {
       const response = await this.dependencies.fetch(new URL('/api/embed', this.config.baseUrl).toString(), {
         method: 'POST',
@@ -150,7 +155,6 @@ export class OllamaEmbeddingProvider extends BaseEmbeddingProvider {
 
       return payload.embeddings;
     } finally {
-      await lock.release().catch(() => {});
       clearTimeout(timer);
     }
   }

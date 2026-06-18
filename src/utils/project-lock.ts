@@ -3,7 +3,7 @@ import path from 'node:path';
 import lockfile from 'proper-lockfile';
 
 export const PROJECT_LOCK_FILENAME = '.nexus-lock';
-const PROJECT_LOCK_STALE_MS = 5000;
+const PROJECT_LOCK_STALE_MS = 30_000;
 const PROJECT_LOCK_RETRIES = 0;
 const PROJECT_LOCK_ERROR_MESSAGE = (rootDir: string): string =>
   `Another Nexus process is already running for this project (${rootDir}). Only one instance per project is allowed.`;

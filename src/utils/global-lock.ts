@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import { writeFile } from 'node:fs/promises';
 import lockfile from 'proper-lockfile';
 
-const GLOBAL_LOCK_STALE_MS = 5000;
+const GLOBAL_LOCK_STALE_MS = 60_000;
 const GLOBAL_LOCK_RETRIES = 0;
 const GLOBAL_LOCK_ERROR_MESSAGE = (name: string): string =>
   `Nexus global resource "${name}" is already in use by another process.`;
