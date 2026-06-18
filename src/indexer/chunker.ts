@@ -244,7 +244,7 @@ export class Chunker {
   private countLines(content: string): number {
     let count = 1;
     for (let i = 0; i < content.length; i++) {
-      if (content[i] === '\n') count++;
+      if (content.charCodeAt(i) === 10) count++;
     }
     return count;
   }

@@ -333,9 +333,11 @@ export class IndexPipeline implements IIndexPipeline {
         }
         // Write fresh embeddings back into resolvedEmbeddings and both caches.
         const l2Entries: EmbeddingCacheEntry[] = [];
-        for (let k = 0; k < trueMisses.length; k++) {
-          const miss = trueMisses[k]!;
-          const vec = freshEmbeddings[k]!;
+        for (const [k, miss] of trueMisses.entries()) {
+          const vec = freshEmbeddings[k];
+          if (vec === undefined) {
+            continue;
+          }
           resolvedEmbeddings[miss.index] = vec;
           this.setL1Cache(miss.hash, vec);
           l2Entries.push({ hash: miss.hash, vector: vec });
