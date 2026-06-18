@@ -44,7 +44,7 @@ async function readMetricsPortFile(storageDir: string): Promise<number | undefin
   return undefined;
 }
 
-async function main() {
+export async function main() {
   const { values } = parseArgs({
     options: {
       port: { type: "string" },
