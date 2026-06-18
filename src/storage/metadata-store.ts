@@ -443,7 +443,11 @@ export class SqliteMetadataStore implements IMetadataStore {
       .all(...hashes) as Array<{ hash: string; vector: string }>;
 
     for (const row of rows) {
-      result.set(row.hash, JSON.parse(row.vector) as number[]);
+      try {
+        result.set(row.hash, JSON.parse(row.vector) as number[]);
+      } catch {
+        console.warn(`[Nexus MetadataStore] Skipping corrupted embedding cache entry for hash ${row.hash}`);
+      }
     }
     return result;
   }
@@ -459,8 +463,7 @@ export class SqliteMetadataStore implements IMetadataStore {
       VALUES (@hash, @vector, @dimensions, @createdAt)
       ON CONFLICT(hash) DO UPDATE SET
         vector = excluded.vector,
-        dimensions = excluded.dimensions,
-        created_at = excluded.created_at
+        dimensions = excluded.dimensions
     `);
     const now = new Date().toISOString();
     const transaction = this.db.transaction((rows: EmbeddingCacheEntry[]) => {
