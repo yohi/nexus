@@ -379,9 +379,7 @@ export class IndexPipeline implements IIndexPipeline {
     }
 
     // Build the flat allEmbeddings array aligned with allChunks (only used in Stage 3).
-    if (embedError === undefined) {
-      allEmbeddings = resolvedEmbeddings as number[][];
-    }
+    allEmbeddings = resolvedEmbeddings as number[][];
 
     // Stage 3: serial per-file finalization (Merkle + vector writes must not run concurrently).
     let chunksIndexed = 0;
