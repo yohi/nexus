@@ -21,8 +21,8 @@ import {
   type IIndexPipeline,
   type PipelineProgress,
   type RetryExhaustedError,
+  type EmbeddingCacheEntry,
 } from '../types/index.js';
-
 interface IndexPipelineOptions {
   metadataStore: IMetadataStore;
   vectorStore: IVectorStore;
@@ -109,6 +109,24 @@ export class IndexPipeline implements IIndexPipeline {
     } catch (err) {
       console.warn('[Nexus Pipeline] Metrics hook failed:', err);
     }
+  }
+
+  private setL1Cache(hash: string, vector: number[]): void {
+    if (this.embeddingCacheSize <= 0) {
+      return;
+    }
+    // If key already exists, just update without eviction.
+    if (this.embeddingCache.has(hash)) {
+      this.embeddingCache.delete(hash);
+      this.embeddingCache.set(hash, vector);
+      return;
+    }
+    // New key: check capacity before insertion.
+    if (this.embeddingCache.size >= this.embeddingCacheSize) {
+      const oldestKey = this.embeddingCache.keys().next().value as string;
+      this.embeddingCache.delete(oldestKey);
+    }
+    this.embeddingCache.set(hash, vector);
   }
 
   start(): void {
@@ -273,13 +291,21 @@ export class IndexPipeline implements IIndexPipeline {
       window.map((event) => limit(async () => this.readAndChunkFile(event, loadContent))),
     );
 
-    // Stage 2: cache-aware embed.
+    // Stage 2: L1 (memory) + L2 (persistent) cache-aware embed.
     const toEmbed = works.filter((work) => !work.skipped && work.chunks.length > 0);
     const allChunks = toEmbed.flatMap((work) => work.chunks);
 
-    // Split chunks into cache hits and misses.
-    const missIndices: number[] = [];
-    const missTexts: string[] = [];
+    // allChunks index → filePath mapping for precise DLQ routing on embed failure.
+    const chunkToFilePath = new Map<number, string>();
+    let globalChunkIdx = 0;
+    for (const work of toEmbed) {
+      for (let i = 0; i < work.chunks.length; i++) {
+        chunkToFilePath.set(globalChunkIdx, work.event.filePath);
+        globalChunkIdx++;
+      }
+    }
+    // L1 cache check.
+    const l1Misses: Array<{ index: number; hash: string; text: string }> = [];
     const resolvedEmbeddings: (number[] | undefined)[] = allChunks.map((chunk, i) => {
       if (this.embeddingCacheSize > 0) {
         const cached = this.embeddingCache.get(chunk.hash);
@@ -290,38 +316,60 @@ export class IndexPipeline implements IIndexPipeline {
           return cached;
         }
       }
-      missIndices.push(i);
-      missTexts.push(chunk.content);
+      l1Misses.push({ index: i, hash: chunk.hash, text: chunk.content });
       return undefined;
     });
 
+    // L2 persistent cache check.
+    const trueMisses: typeof l1Misses = [];
+    if (l1Misses.length > 0) {
+      const l2Cached = await this.options.metadataStore.getEmbeddings(l1Misses.map((m) => m.hash));
+      for (const miss of l1Misses) {
+        const vector = l2Cached.get(miss.hash);
+        if (vector !== undefined) {
+          resolvedEmbeddings[miss.index] = vector;
+          this.setL1Cache(miss.hash, vector);
+        } else {
+          trueMisses.push(miss);
+        }
+      }
+    }
+
     let allEmbeddings: number[][] = [];
     let embedError: RetryExhaustedError | undefined;
-    if (missTexts.length > 0) {
+    const failedFilePaths = new Set<string>();
+    if (trueMisses.length > 0) {
       try {
+        const missTexts = trueMisses.map((m) => m.text);
         const freshEmbeddings = await this.options.embeddingProvider.embed(missTexts);
         if (freshEmbeddings.length !== missTexts.length) {
           const msg = `Embedding count mismatch: expected ${missTexts.length}, got ${freshEmbeddings.length}`;
           this.progress.lastError = msg;
           throw new Error(msg);
         }
-        // Write fresh embeddings back into resolvedEmbeddings and the cache.
-        for (let k = 0; k < missIndices.length; k++) {
-          const idx = missIndices[k]!;
-          const vec = freshEmbeddings[k]!;
-          resolvedEmbeddings[idx] = vec;
-          if (this.embeddingCacheSize > 0) {
-            // LRU eviction: drop oldest entry when at capacity.
-            if (this.embeddingCache.size >= this.embeddingCacheSize) {
-              const oldestKey = this.embeddingCache.keys().next().value as string;
-              this.embeddingCache.delete(oldestKey);
-            }
-            this.embeddingCache.set(allChunks[idx]!.hash, vec);
+        // Write fresh embeddings back into resolvedEmbeddings and both caches.
+        const l2Entries: EmbeddingCacheEntry[] = [];
+        for (const [k, miss] of trueMisses.entries()) {
+          const vec = freshEmbeddings[k];
+          if (vec === undefined) {
+            continue;
           }
+          resolvedEmbeddings[miss.index] = vec;
+          this.setL1Cache(miss.hash, vec);
+          l2Entries.push({ hash: miss.hash, vector: vec });
+        }
+        if (l2Entries.length > 0) {
+          await this.options.metadataStore.setEmbeddings(l2Entries);
         }
       } catch (error) {
         if (error instanceof Error && error.name === 'RetryExhaustedError') {
           embedError = error as RetryExhaustedError;
+          for (const miss of trueMisses) {
+            const fp = chunkToFilePath.get(miss.index);
+            if (fp !== undefined) {
+              failedFilePaths.add(fp);
+            }
+          }
         } else {
           // DimensionMismatchError and any other unexpected error abort the pipeline.
           this.progress.lastError = error instanceof Error ? error.message : String(error);
@@ -331,9 +379,7 @@ export class IndexPipeline implements IIndexPipeline {
     }
 
     // Build the flat allEmbeddings array aligned with allChunks (only used in Stage 3).
-    if (embedError === undefined) {
-      allEmbeddings = resolvedEmbeddings as number[][];
-    }
+    allEmbeddings = resolvedEmbeddings as number[][];
 
     // Stage 3: serial per-file finalization (Merkle + vector writes must not run concurrently).
     let chunksIndexed = 0;
@@ -365,14 +411,14 @@ export class IndexPipeline implements IIndexPipeline {
         continue;
       }
 
-      if (embedError !== undefined) {
-        // The window's shared embed batch failed; route every embedded file to the DLQ.
-        this.skippedFiles.set(work.event.filePath, embedError.message);
+      if (failedFilePaths.has(work.event.filePath)) {
+        // The window's shared embed batch failed for this file; route to the DLQ.
+        this.skippedFiles.set(work.event.filePath, embedError!.message);
         await this.deadLetterQueue.enqueue({
           filePath: work.event.filePath,
           contentHash: work.event.contentHash ?? '',
-          errorMessage: embedError.message,
-          attempts: embedError.attempts,
+          errorMessage: embedError!.message,
+          attempts: embedError!.attempts,
         });
         this.progress.processedFiles++;
         continue;

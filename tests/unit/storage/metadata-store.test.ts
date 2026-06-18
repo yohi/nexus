@@ -5,6 +5,7 @@ import os from 'node:os';
 
 import type { DeadLetterEntry, IndexStatsRow, MerkleNodeRow } from '../../../src/types/index.js';
 import { SqliteMetadataStore } from '../../../src/storage/metadata-store.js';
+import type { Database } from 'better-sqlite3';
 
 const makeNode = (overrides: Partial<MerkleNodeRow>): MerkleNodeRow => ({
   path: overrides.path ?? 'src/index.ts',
@@ -174,5 +175,99 @@ describe('SqliteMetadataStore', () => {
     expect(node?.isDirectory).toBe(false);
     expect(node?.hash).toBe('h1');
     await expect(store.getMerkleNode('nonexistent/path.ts')).resolves.toBeNull();
+  });
+
+
+  describe('embedding cache', () => {
+    it('stores and retrieves embeddings by hash', async () => {
+      await store.setEmbeddings([
+        { hash: 'hash-a', vector: [0.1, 0.2, 0.3] },
+        { hash: 'hash-b', vector: [0.4, 0.5, 0.6] },
+      ]);
+
+      const result = await store.getEmbeddings(['hash-a', 'hash-b']);
+      expect(result.get('hash-a')).toEqual([0.1, 0.2, 0.3]);
+      expect(result.get('hash-b')).toEqual([0.4, 0.5, 0.6]);
+    });
+
+    it('returns only existing embeddings', async () => {
+      await store.setEmbeddings([{ hash: 'hash-a', vector: [0.1, 0.2, 0.3] }]);
+
+      const result = await store.getEmbeddings(['hash-a', 'missing']);
+      expect(result.has('hash-a')).toBe(true);
+      expect(result.has('missing')).toBe(false);
+    });
+
+    it('updates an existing embedding', async () => {
+      await store.setEmbeddings([{ hash: 'hash-a', vector: [0.1, 0.2, 0.3] }]);
+      await store.setEmbeddings([{ hash: 'hash-a', vector: [0.9, 0.8, 0.7] }]);
+
+      const result = await store.getEmbeddings(['hash-a']);
+      expect(result.get('hash-a')).toEqual([0.9, 0.8, 0.7]);
+    });
+
+    it('deletes specific embeddings', async () => {
+      await store.setEmbeddings([
+        { hash: 'hash-a', vector: [0.1, 0.2, 0.3] },
+        { hash: 'hash-b', vector: [0.4, 0.5, 0.6] },
+      ]);
+
+      await store.deleteEmbeddings(['hash-a']);
+      const result = await store.getEmbeddings(['hash-a', 'hash-b']);
+      expect(result.has('hash-a')).toBe(false);
+      expect(result.has('hash-b')).toBe(true);
+    });
+
+    it('clears all embeddings', async () => {
+      await store.setEmbeddings([
+        { hash: 'hash-a', vector: [0.1, 0.2, 0.3] },
+        { hash: 'hash-b', vector: [0.4, 0.5, 0.6] },
+      ]);
+
+      await store.clearEmbeddings();
+      const result = await store.getEmbeddings(['hash-a', 'hash-b']);
+      expect(result.size).toBe(0);
+    });
+
+    it('handles batches larger than the SQLite variable limit (999)', async () => {
+      const entries = Array.from({ length: 1200 }, (_, i) => ({
+        hash: `hash-${i}`,
+        vector: [0.1, 0.2, 0.3],
+      }));
+      await store.setEmbeddings(entries);
+
+      const hashes = entries.map((e) => e.hash);
+      const result = await store.getEmbeddings(hashes);
+      expect(result.size).toBe(1200);
+      expect(result.get('hash-0')).toEqual([0.1, 0.2, 0.3]);
+      expect(result.get('hash-1199')).toEqual([0.1, 0.2, 0.3]);
+    });
+
+    it('gracefully skips corrupted JSON cache entries', async () => {
+      await store.setEmbeddings([
+        { hash: 'hash-valid', vector: [0.1, 0.2, 0.3] },
+      ]);
+      // Manually corrupt the stored JSON
+      const db = (store as unknown as { db: Database }).db;
+      db.prepare(`UPDATE embedding_cache SET vector = 'invalid-json' WHERE hash = 'hash-valid'`).run();
+
+      const result = await store.getEmbeddings(['hash-valid']);
+      expect(result.size).toBe(0);
+    });
+
+    it('prunes embeddings older than maxAgeDays', async () => {
+      await store.setEmbeddings([
+        { hash: 'hash-old', vector: [0.1, 0.2, 0.3] },
+      ]);
+      // Manually update created_at to an old date to simulate age
+      const db = (store as unknown as { db: Database }).db;
+      db.prepare(`UPDATE embedding_cache SET created_at = date('now', '-10 days') WHERE hash = 'hash-old'`).run();
+
+      const pruned = await store.pruneEmbeddings(7);
+      expect(pruned).toBe(1);
+
+      const remaining = await store.getEmbeddings(['hash-old']);
+      expect(remaining.size).toBe(0);
+    });
   });
 });

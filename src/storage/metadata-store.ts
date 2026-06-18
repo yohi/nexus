@@ -1,7 +1,7 @@
 import { dirname } from 'node:path';
 import Database from 'better-sqlite3';
 
-import type { DeadLetterEntry, IMetadataStore, IndexStatsRow, MerkleNodeRow } from '../types/index.js';
+import type { DeadLetterEntry, EmbeddingCacheEntry, IMetadataStore, IndexStatsRow, MerkleNodeRow } from '../types/index.js';
 import { DEFAULT_BATCH_SIZE } from '../config/index.js';
 import { executeBatchedWithYield } from './batched-transaction.js';
 
@@ -72,6 +72,13 @@ export class SqliteMetadataStore implements IMetadataStore {
       );
 
       CREATE INDEX IF NOT EXISTS idx_dlq_created ON dead_letter_queue (created_at);
+
+      CREATE TABLE IF NOT EXISTS embedding_cache (
+        hash TEXT PRIMARY KEY,
+        vector TEXT NOT NULL,
+        dimensions INTEGER NOT NULL,
+        created_at TEXT NOT NULL
+      );
     `);
 
     // Idempotent migration: add recovery_attempts column if missing (existing DBs)
@@ -422,6 +429,93 @@ export class SqliteMetadataStore implements IMetadataStore {
       )
       .all() as DeadLetterEntry[];
   }
+
+  async getEmbeddings(hashes: string[]): Promise<Map<string, number[]>> {
+    await this.asyncBoundary();
+    const result = new Map<string, number[]>();
+    if (hashes.length === 0) {
+      return result;
+    }
+
+    const MAX_VARIABLES = 999; // SQLite default limit for older versions
+    for (let offset = 0; offset < hashes.length; offset += MAX_VARIABLES) {
+      const batch = hashes.slice(offset, offset + MAX_VARIABLES);
+      const placeholders = batch.map(() => '?').join(', ');
+      const rows = this.db
+        .prepare(`SELECT hash, vector FROM embedding_cache WHERE hash IN (${placeholders})`)
+        .all(...batch) as Array<{ hash: string; vector: string }>;
+
+      for (const row of rows) {
+        try {
+          result.set(row.hash, JSON.parse(row.vector) as number[]);
+        } catch {
+          console.warn(`[Nexus MetadataStore] Skipping corrupted embedding cache entry for hash ${row.hash}`);
+        }
+      }
+    }
+
+    return result;
+  }
+  async pruneEmbeddings(maxAgeDays: number): Promise<number> {
+    await this.asyncBoundary();
+    // Calculate cutoff date in JavaScript to enable parameterization.
+    const cutoffDate = new Date();
+    cutoffDate.setDate(cutoffDate.getDate() - maxAgeDays);
+    const cutoffIso = cutoffDate.toISOString();
+
+    const result = this.db
+      .prepare(`DELETE FROM embedding_cache WHERE created_at < ?`)
+      .run(cutoffIso);
+    return Number(result.changes ?? 0);
+  }
+
+  async setEmbeddings(entries: EmbeddingCacheEntry[]): Promise<void> {
+    if (entries.length === 0) {
+      return;
+    }
+    await this.asyncBoundary();
+
+    const statement = this.db.prepare(`
+      INSERT INTO embedding_cache (hash, vector, dimensions, created_at)
+      VALUES (@hash, @vector, @dimensions, @createdAt)
+      ON CONFLICT(hash) DO UPDATE SET
+        vector = excluded.vector,
+        dimensions = excluded.dimensions
+    `);
+    const now = new Date().toISOString();
+    const transaction = this.db.transaction((rows: EmbeddingCacheEntry[]) => {
+      for (const entry of rows) {
+        statement.run({
+          hash: entry.hash,
+          vector: JSON.stringify(entry.vector),
+          dimensions: entry.vector.length,
+          createdAt: now,
+        });
+      }
+    });
+    transaction(entries);
+  }
+
+  async deleteEmbeddings(hashes: string[]): Promise<void> {
+    if (hashes.length === 0) {
+      return;
+    }
+    await this.asyncBoundary();
+
+    const statement = this.db.prepare('DELETE FROM embedding_cache WHERE hash = ?');
+    const transaction = this.db.transaction((rows: string[]) => {
+      for (const hash of rows) {
+        statement.run(hash);
+      }
+    });
+    transaction(hashes);
+  }
+
+  async clearEmbeddings(): Promise<void> {
+    await this.asyncBoundary();
+    this.db.exec('DELETE FROM embedding_cache');
+  }
+
 
   getPragmaValue(name: string): unknown {
     return this.db.pragma(`${name}`, { simple: true });

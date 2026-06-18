@@ -358,6 +358,9 @@ describe('IndexPipeline – chunk embedding cache', () => {
     await pipeline.processEvents([addEvent('src/c.ts', 'h1')], async () => content);
     expect(embedding.calls).toBe(1);
 
+    // Clear persistent L2 cache to isolate L1 cache-disabled behavior.
+    await metadataStore.clearEmbeddings();
+
     // Same content, cache disabled → embed() is called again.
     await pipeline.processEvents(
       [{ type: 'modified', filePath: 'src/c.ts', contentHash: 'h2', detectedAt: new Date().toISOString() }],
@@ -388,10 +391,14 @@ describe('IndexPipeline – chunk embedding cache', () => {
     const callsAfterA = embedding.calls;
 
     // Index B (evicts A from cache).
+    // Index B (evicts A from L1 cache).
     await pipeline.processEvents([addEvent('src/lru_b.ts', 'h2')], async () => contentB);
     const callsAfterB = embedding.calls;
 
-    // Re-index A: A was evicted → embed() is called again.
+    // Clear persistent L2 cache so re-indexing A exercises L1 eviction.
+    await metadataStore.clearEmbeddings();
+
+    // Re-index A: A was evicted from L1 and is no longer in L2 → embed() is called again.
     await pipeline.processEvents(
       [{ type: 'modified', filePath: 'src/lru_a.ts', contentHash: 'h3', detectedAt: new Date().toISOString() }],
       async () => contentA,

@@ -120,6 +120,20 @@ describe('Chunker', () => {
 
     expect(chunks).toHaveLength(0);
   });
+  it('uses xxhash for chunk hashes', async () => {
+    const chunker = new Chunker(new PluginRegistry());
+    const chunks = await chunker.chunkFiles([
+      {
+        filePath: 'hello.txt',
+        language: 'text',
+        content: 'hello world',
+      },
+    ]);
+
+    expect(chunks).toHaveLength(1);
+    expect(chunks[0]?.hash).toMatch(/^[0-9a-f]{16}$/);
+  });
+
 });
 
 describe('Chunker – maxChunkChars', () => {
@@ -158,13 +172,13 @@ describe('Chunker – maxChunkChars', () => {
     expect(chunks[0]?.content).toBe(content);
   });
 
-  it('fixed-line chunks also respect maxChunkChars', () => {
+  it('fixed-line chunks also respect maxChunkChars', async () => {
     // 4 lines of 60 chars each; limit 100 → each 50-line window (here just 4 lines) is fine,
     // but a single window of all 4 lines = 4*60+3 = 243 chars > 100 → must split
     const longLine = 'a'.repeat(60);
     const content = Array.from({ length: 4 }, () => longLine).join('\n');
     const chunker = new Chunker(new PluginRegistry(), { maxChunkChars: 100 });
-    const chunks = chunker.chunkByFixedLines(
+    const chunks = await chunker.chunkByFixedLines(
       { filePath: 'f.txt', language: 'text', content },
       { windowSize: 4, overlap: 0 },
     );
