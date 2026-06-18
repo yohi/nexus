@@ -167,7 +167,7 @@ export class InMemoryMetadataStore implements IMetadataStore {
     for (const hash of hashes) {
       const vector = this.embeddings.get(hash);
       if (vector !== undefined) {
-        result.set(hash, vector);
+        result.set(hash, [...vector]);
       }
     }
     return result;
@@ -175,7 +175,7 @@ export class InMemoryMetadataStore implements IMetadataStore {
 
   async setEmbeddings(entries: EmbeddingCacheEntry[]): Promise<void> {
     for (const entry of entries) {
-      this.embeddings.set(entry.hash, entry.vector);
+      this.embeddings.set(entry.hash, [...entry.vector]);
     }
   }
 
