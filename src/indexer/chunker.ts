@@ -1,4 +1,4 @@
-import { createHash } from 'node:crypto';
+import { computeStringHash } from './hash.js';
 
 import type { CodeChunk, FileToChunk, ParsedSourceFile } from '../types/index.js';
 import type { PluginRegistry } from '../plugins/registry.js';
@@ -26,7 +26,7 @@ export class Chunker {
     for (const file of files) {
       const plugin = this.pluginRegistry.getLanguagePlugin(file.filePath);
       if (plugin === undefined) {
-        chunks.push(...this.chunkByFixedLines(file));
+        chunks.push(...(await this.chunkByFixedLines(file)));
         continue;
       }
 
@@ -34,13 +34,13 @@ export class Chunker {
         const parser = await plugin.createParser();
         const parsed = await parser.parse(file);
         if (!parsed.declarations || parsed.declarations.length === 0) {
-          chunks.push(...this.chunkByFixedLines(file));
+          chunks.push(...(await this.chunkByFixedLines(file)));
         } else {
           chunks.push(...(await this.extractChunksWithYield(parsed, file)));
         }
       } catch (error) {
         console.warn('Parser failed, falling back to fixed-line chunking', file.filePath, error);
-        chunks.push(...this.chunkByFixedLines(file));
+        chunks.push(...(await this.chunkByFixedLines(file)));
       }
     }
 
@@ -62,7 +62,7 @@ export class Chunker {
         symbolKind: declaration.type,
       };
 
-      const subChunks = this.splitByMaxChars(
+      const subChunks = await this.splitByMaxChars(
         declaration.content,
         declaration.startLine,
         declaration.name,
@@ -79,7 +79,7 @@ export class Chunker {
     return chunks;
   }
 
-  chunkByFixedLines(file: FileToChunk, options: FixedLineChunkOptions = {}): CodeChunk[] {
+  async chunkByFixedLines(file: FileToChunk, options: FixedLineChunkOptions = {}): Promise<CodeChunk[]> {
     const windowSize = options.windowSize ?? 50;
     const overlap = options.overlap ?? 10;
 
@@ -118,7 +118,7 @@ export class Chunker {
         break;
       }
 
-      const windowChunks = this.splitByMaxChars(
+      const windowChunks = await this.splitByMaxChars(
         content,
         startLine,
         `file-${chunks.length + 1}`,
@@ -129,6 +129,7 @@ export class Chunker {
           symbolName: undefined,
           symbolKind: 'file',
         },
+        slice,
       );
       chunks.push(...windowChunks);
 
@@ -151,34 +152,36 @@ export class Chunker {
    * Splits on line boundaries where possible; falls back to char splits for
    * lines longer than the limit.
    */
-  private splitByMaxChars(
+  private async splitByMaxChars(
     content: string,
     startLine: number,
     baseName: string,
     filePath: string,
     meta: Omit<CodeChunk, 'id' | 'content' | 'startLine' | 'endLine' | 'hash'>,
-  ): CodeChunk[] {
+    lines?: string[],
+  ): Promise<CodeChunk[]> {
     if (this.maxChunkChars <= 0 || content.length <= this.maxChunkChars) {
+      const lineCount = lines ? lines.length : this.countLines(content);
       return [
         {
           ...meta,
-          id: this.createChunkId(filePath, startLine, startLine + content.split('\n').length - 1, baseName),
+          id: this.createChunkId(filePath, startLine, startLine + lineCount - 1, baseName),
           content,
           startLine,
-          endLine: startLine + content.split('\n').length - 1,
-          hash: this.hashContent(content),
+          endLine: startLine + lineCount - 1,
+          hash: await this.hashContent(content),
         },
       ];
     }
 
-    const lines = content.split('\n');
+    const contentLines = lines ?? content.split('\n');
     const result: CodeChunk[] = [];
     let buf: string[] = [];
     let bufChars = 0;
     let chunkStart = startLine;
     let lineOffset = 0;
 
-    const flush = () => {
+    const flush = async () => {
       if (buf.length === 0) return;
       const chunkContent = buf.join('\n');
       const chunkEnd = chunkStart + buf.length - 1;
@@ -189,17 +192,17 @@ export class Chunker {
         content: chunkContent,
         startLine: chunkStart,
         endLine: chunkEnd,
-        hash: this.hashContent(chunkContent),
+        hash: await this.hashContent(chunkContent),
       });
       chunkStart = chunkEnd + 1;
       buf = [];
       bufChars = 0;
     };
 
-    for (const line of lines) {
+    for (const line of contentLines) {
       if (line.length > this.maxChunkChars) {
         // Line itself exceeds limit — flush current buffer then emit char-split sub-chunks
-        flush();
+        await flush();
         for (let pos = 0; pos < line.length; pos += this.maxChunkChars) {
           const piece = line.slice(pos, pos + this.maxChunkChars);
           const partIndex = result.length + 1;
@@ -209,7 +212,7 @@ export class Chunker {
             content: piece,
             startLine: startLine + lineOffset,
             endLine: startLine + lineOffset,
-            hash: this.hashContent(piece),
+            hash: await this.hashContent(piece),
           });
         }
         lineOffset++;
@@ -219,13 +222,13 @@ export class Chunker {
 
       const addedChars = buf.length === 0 ? line.length : bufChars + 1 + line.length;
       if (addedChars > this.maxChunkChars && buf.length > 0) {
-        flush();
+        await flush();
       }
       buf.push(line);
       bufChars = buf.length === 1 ? line.length : bufChars + 1 + line.length;
       lineOffset++;
     }
-    flush();
+    await flush();
 
     return result;
   }
@@ -234,7 +237,15 @@ export class Chunker {
     return `${filePath}:${startLine}-${endLine}:${name}`;
   }
 
-  private hashContent(content: string): string {
-    return createHash('sha256').update(content).digest('hex');
+  private async hashContent(content: string): Promise<string> {
+    return computeStringHash(content);
+  }
+
+  private countLines(content: string): number {
+    let count = 1;
+    for (let i = 0; i < content.length; i++) {
+      if (content[i] === '\n') count++;
+    }
+    return count;
   }
 }
