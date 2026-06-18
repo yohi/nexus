@@ -5,6 +5,7 @@ import os from 'node:os';
 
 import type { DeadLetterEntry, IndexStatsRow, MerkleNodeRow } from '../../../src/types/index.js';
 import { SqliteMetadataStore } from '../../../src/storage/metadata-store.js';
+import type { Database } from 'better-sqlite3';
 
 const makeNode = (overrides: Partial<MerkleNodeRow>): MerkleNodeRow => ({
   path: overrides.path ?? 'src/index.ts',
@@ -226,6 +227,21 @@ describe('SqliteMetadataStore', () => {
       await store.clearEmbeddings();
       const result = await store.getEmbeddings(['hash-a', 'hash-b']);
       expect(result.size).toBe(0);
+    });
+
+    it('prunes embeddings older than maxAgeDays', async () => {
+      await store.setEmbeddings([
+        { hash: 'hash-old', vector: [0.1, 0.2, 0.3] },
+      ]);
+      // Manually update created_at to an old date to simulate age
+      const db = (store as unknown as { db: Database }).db;
+      db.prepare(`UPDATE embedding_cache SET created_at = date('now', '-10 days') WHERE hash = 'hash-old'`).run();
+
+      const pruned = await store.pruneEmbeddings(7);
+      expect(pruned).toBe(1);
+
+      const remaining = await store.getEmbeddings(['hash-old']);
+      expect(remaining.size).toBe(0);
     });
   });
 });

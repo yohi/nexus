@@ -175,6 +175,7 @@ export interface IMetadataStore {
   setEmbeddings(entries: EmbeddingCacheEntry[]): Promise<void>;
   deleteEmbeddings(hashes: string[]): Promise<void>;
   clearEmbeddings(): Promise<void>;
+  pruneEmbeddings(maxAgeDays: number): Promise<number>;
 
 }
 

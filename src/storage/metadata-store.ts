@@ -437,19 +437,31 @@ export class SqliteMetadataStore implements IMetadataStore {
       return result;
     }
 
-    const placeholders = hashes.map(() => '?').join(', ');
-    const rows = this.db
-      .prepare(`SELECT hash, vector FROM embedding_cache WHERE hash IN (${placeholders})`)
-      .all(...hashes) as Array<{ hash: string; vector: string }>;
+    const MAX_VARIABLES = 999; // SQLite default limit for older versions
+    for (let offset = 0; offset < hashes.length; offset += MAX_VARIABLES) {
+      const batch = hashes.slice(offset, offset + MAX_VARIABLES);
+      const placeholders = batch.map(() => '?').join(', ');
+      const rows = this.db
+        .prepare(`SELECT hash, vector FROM embedding_cache WHERE hash IN (${placeholders})`)
+        .all(...batch) as Array<{ hash: string; vector: string }>;
 
-    for (const row of rows) {
-      try {
-        result.set(row.hash, JSON.parse(row.vector) as number[]);
-      } catch {
-        console.warn(`[Nexus MetadataStore] Skipping corrupted embedding cache entry for hash ${row.hash}`);
+      for (const row of rows) {
+        try {
+          result.set(row.hash, JSON.parse(row.vector) as number[]);
+        } catch {
+          console.warn(`[Nexus MetadataStore] Skipping corrupted embedding cache entry for hash ${row.hash}`);
+        }
       }
     }
+
     return result;
+  }
+  async pruneEmbeddings(maxAgeDays: number): Promise<number> {
+    await this.asyncBoundary();
+    const result = this.db
+      .prepare(`DELETE FROM embedding_cache WHERE created_at < date('now', '-${maxAgeDays} days')`)
+      .run();
+    return Number(result.changes ?? 0);
   }
 
   async setEmbeddings(entries: EmbeddingCacheEntry[]): Promise<void> {

@@ -188,4 +188,9 @@ export class InMemoryMetadataStore implements IMetadataStore {
   async clearEmbeddings(): Promise<void> {
     this.embeddings.clear();
   }
+
+  async pruneEmbeddings(_maxAgeDays: number): Promise<number> {
+    // In-memory store has no persistent TTL concern for tests
+    return 0;
+  }
 }
