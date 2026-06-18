@@ -1,5 +1,21 @@
 # Changelog
 
+## [1.18.0](https://github.com/yohi/nexus/compare/v1.17.0...v1.18.0) (2026-06-18)
+
+
+### Features
+
+* add global lock for Ollama to prevent cross-process CPU contention ([7af2228](https://github.com/yohi/nexus/commit/7af22280f95ec7251dada1a753011bfdb10cf67e))
+* cross-process locking for CPU contention mitigation ([c974f24](https://github.com/yohi/nexus/commit/c974f24abb8413871dee56162bde3e0d73d466d0))
+* enforce single-instance per project via file lock ([2626da7](https://github.com/yohi/nexus/commit/2626da761c56d84a7a2ce32b46fb38a176dbd478))
+
+
+### Bug Fixes
+
+* address CodeRabbit review findings on lock handling ([6a8bd04](https://github.com/yohi/nexus/commit/6a8bd04efcc97946b4b5fbc7b75bdc2e4269a58b))
+* **lock:** add input validation and enable retries with short intervals ([af778d7](https://github.com/yohi/nexus/commit/af778d770059a9cf16237c908c9ae311c19282a0))
+* **lock:** adjust stale timeouts and fix concurrency with global lock ([46ed230](https://github.com/yohi/nexus/commit/46ed230b5928da803a8aa935f02e40bc0c91242c))
+
 ## [1.17.0](https://github.com/yohi/nexus/compare/v1.16.0...v1.17.0) (2026-06-18)
 
 
