@@ -4,7 +4,7 @@ import { writeFile } from 'node:fs/promises';
 import lockfile from 'proper-lockfile';
 
 const GLOBAL_LOCK_STALE_MS = 60_000;
-const GLOBAL_LOCK_RETRIES = 0;
+const GLOBAL_LOCK_RETRIES = 10;
 const GLOBAL_LOCK_ERROR_MESSAGE = (name: string): string =>
   `Nexus global resource "${name}" is already in use by another process.`;
 
@@ -13,6 +13,10 @@ export interface GlobalLockHandle {
 }
 
 export const acquireGlobalLock = async (name: string): Promise<GlobalLockHandle> => {
+  if (!/^[a-zA-Z0-9_-]+$/.test(name)) {
+    throw new Error(`Invalid global lock name: "${name}". Only alphanumeric characters, underscores, and hyphens are allowed.`);
+  }
+
   const lockfilePath = join(tmpdir(), `nexus-global-${name}.lock`);
   // proper-lockfile requires the target file to exist
   await writeFile(lockfilePath, '', { flag: 'wx' }).catch((err: unknown) => {
@@ -21,7 +25,11 @@ export const acquireGlobalLock = async (name: string): Promise<GlobalLockHandle>
   });
   try {
     const release = await lockfile.lock(lockfilePath, {
-      retries: GLOBAL_LOCK_RETRIES,
+      retries: {
+        retries: GLOBAL_LOCK_RETRIES,
+        minTimeout: 100,
+        maxTimeout: 1000,
+      },
       stale: GLOBAL_LOCK_STALE_MS,
     });
     return { release };
