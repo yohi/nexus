@@ -120,8 +120,6 @@ describe('Chunker', () => {
 
     expect(chunks).toHaveLength(0);
   });
-});
-
   it('uses xxhash for chunk hashes', async () => {
     const chunker = new Chunker(new PluginRegistry());
     const chunks = await chunker.chunkFiles([
@@ -136,6 +134,7 @@ describe('Chunker', () => {
     expect(chunks[0]?.hash).toMatch(/^[0-9a-f]{16}$/);
   });
 
+});
 
 describe('Chunker – maxChunkChars', () => {
   it('splits an oversized AST declaration into multiple sub-chunks', async () => {

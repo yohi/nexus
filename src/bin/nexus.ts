@@ -260,9 +260,10 @@ if (process.argv[2] === "dashboard") {
       main?: (() => Promise<void>) | undefined;
     }
     const module = (await import(new URL("../dashboard/cli.js", import.meta.url).href)) as DashboardCliModule;
-    if (typeof module.main === "function") {
-      await module.main();
+    if (typeof module.main !== "function") {
+      throw new Error("Dashboard module did not export a main() function");
     }
+    await module.main();
   } catch (error) {
     handleFatalError("Failed to start dashboard", error);
   }
