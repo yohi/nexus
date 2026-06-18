@@ -1,5 +1,31 @@
 # Changelog
 
+## [1.17.0](https://github.com/yohi/nexus/compare/v1.16.0...v1.17.0) (2026-06-18)
+
+
+### Features
+
+* EmbeddingCacheEntry型定義とIMetadataStoreにキャッシュ永続化メソッドを追加 ([5ae8bd1](https://github.com/yohi/nexus/commit/5ae8bd1de026f261c6353405acae86833282fd59))
+* IndexPipelineにL1+L2階層Embeddingキャッシュを統合 ([aede8c5](https://github.com/yohi/nexus/commit/aede8c5873e4f16c01842945d44e274b5123e2e1))
+* SQLiteにEmbeddingキャッシュテーブルを追加しCRUD操作を実装 ([8159136](https://github.com/yohi/nexus/commit/8159136017684c6144a5e2d4744bc91675da24ec))
+* チャンクハッシュをxxhashに変更し固定行チャンキングの分割処理を最適化 ([4bcdc8b](https://github.com/yohi/nexus/commit/4bcdc8b0b51d58cc247a9e898de067bd57abacc8))
+
+
+### Bug Fixes
+
+* Codacy指摘への対応 — JSONパースハンドリング、non-null assertion除去、charCodeAt使用 ([15ee126](https://github.com/yohi/nexus/commit/15ee1267e14e82025ee3392400c8b47108f13ea8))
+* DLQ対象をキャッシュミスファイルのみに限定しL1キャッシュevictionを最適化、pruneEmbeddingsをパラメータ化 ([d910b11](https://github.com/yohi/nexus/commit/d910b11aadabf594db8ef7356387619f4462d843))
+* EmbeddingキャッシュのJSONパースエラーハンドリングとcreated_at上書き問題を修正 ([472ff67](https://github.com/yohi/nexus/commit/472ff670f9a36603f8626d4dd8db6a977f464c8f))
+* **indexer:** 埋め込みエラー時もキャッシュされたエンベディングを保持するよう修正 ([e8ae453](https://github.com/yohi/nexus/commit/e8ae4530aa08c95ca0795bf9d598f147e6433166))
+* SQLiteバインド変数上限対策とEmbeddingキャッシュのTTLクリーンアップを追加 ([7cf040a](https://github.com/yohi/nexus/commit/7cf040a29b8d8e9ae59e548340f42e90953e8db4))
+* ダッシュボードCLIのmain()をexportしnexus.tsの型安全なdynamic importに対応 ([460be40](https://github.com/yohi/nexus/commit/460be40e8167e63c50dbee60c33e8719015ccf44))
+* ダッシュボードmain未定義時のエラー処理とテストのdescribeスコープ修正 ([4e1a9c2](https://github.com/yohi/nexus/commit/4e1a9c295947b2dd7dbf6a1a1e1042d4b0b8a126))
+
+
+### Performance Improvements
+
+* チャンクハッシュのxxhash化、チャンキング最適化、Embeddingキャッシュ永続化 ([78a2063](https://github.com/yohi/nexus/commit/78a20638a4cf396a7c2a4d5387901793c714574c))
+
 ## [1.16.0](https://github.com/yohi/nexus/compare/v1.15.3...v1.16.0) (2026-06-17)
 
 
