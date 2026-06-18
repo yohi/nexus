@@ -2,6 +2,7 @@ import { dirname } from 'node:path';
 
 import type {
   DeadLetterEntry,
+  EmbeddingCacheEntry,
   IMetadataStore,
   IndexStatsRow,
   MerkleNodeRow,
@@ -13,6 +14,8 @@ export class InMemoryMetadataStore implements IMetadataStore {
   private stats: IndexStatsRow | null = null;
 
   private readonly deadLetterEntries = new Map<string, DeadLetterEntry>();
+
+  private readonly embeddings = new Map<string, number[]>();
 
   async initialize(): Promise<void> {
     return;
@@ -157,5 +160,32 @@ export class InMemoryMetadataStore implements IMetadataStore {
 
   async getDeadLetterEntries(): Promise<DeadLetterEntry[]> {
     return [...this.deadLetterEntries.values()].sort((left, right) => left.createdAt.localeCompare(right.createdAt));
+  }
+
+  async getEmbeddings(hashes: string[]): Promise<Map<string, number[]>> {
+    const result = new Map<string, number[]>();
+    for (const hash of hashes) {
+      const vector = this.embeddings.get(hash);
+      if (vector !== undefined) {
+        result.set(hash, vector);
+      }
+    }
+    return result;
+  }
+
+  async setEmbeddings(entries: EmbeddingCacheEntry[]): Promise<void> {
+    for (const entry of entries) {
+      this.embeddings.set(entry.hash, entry.vector);
+    }
+  }
+
+  async deleteEmbeddings(hashes: string[]): Promise<void> {
+    for (const hash of hashes) {
+      this.embeddings.delete(hash);
+    }
+  }
+
+  async clearEmbeddings(): Promise<void> {
+    this.embeddings.clear();
   }
 }

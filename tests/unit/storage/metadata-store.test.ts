@@ -175,4 +175,57 @@ describe('SqliteMetadataStore', () => {
     expect(node?.hash).toBe('h1');
     await expect(store.getMerkleNode('nonexistent/path.ts')).resolves.toBeNull();
   });
+
+
+  describe('embedding cache', () => {
+    it('stores and retrieves embeddings by hash', async () => {
+      await store.setEmbeddings([
+        { hash: 'hash-a', vector: [0.1, 0.2, 0.3] },
+        { hash: 'hash-b', vector: [0.4, 0.5, 0.6] },
+      ]);
+
+      const result = await store.getEmbeddings(['hash-a', 'hash-b']);
+      expect(result.get('hash-a')).toEqual([0.1, 0.2, 0.3]);
+      expect(result.get('hash-b')).toEqual([0.4, 0.5, 0.6]);
+    });
+
+    it('returns only existing embeddings', async () => {
+      await store.setEmbeddings([{ hash: 'hash-a', vector: [0.1, 0.2, 0.3] }]);
+
+      const result = await store.getEmbeddings(['hash-a', 'missing']);
+      expect(result.has('hash-a')).toBe(true);
+      expect(result.has('missing')).toBe(false);
+    });
+
+    it('updates an existing embedding', async () => {
+      await store.setEmbeddings([{ hash: 'hash-a', vector: [0.1, 0.2, 0.3] }]);
+      await store.setEmbeddings([{ hash: 'hash-a', vector: [0.9, 0.8, 0.7] }]);
+
+      const result = await store.getEmbeddings(['hash-a']);
+      expect(result.get('hash-a')).toEqual([0.9, 0.8, 0.7]);
+    });
+
+    it('deletes specific embeddings', async () => {
+      await store.setEmbeddings([
+        { hash: 'hash-a', vector: [0.1, 0.2, 0.3] },
+        { hash: 'hash-b', vector: [0.4, 0.5, 0.6] },
+      ]);
+
+      await store.deleteEmbeddings(['hash-a']);
+      const result = await store.getEmbeddings(['hash-a', 'hash-b']);
+      expect(result.has('hash-a')).toBe(false);
+      expect(result.has('hash-b')).toBe(true);
+    });
+
+    it('clears all embeddings', async () => {
+      await store.setEmbeddings([
+        { hash: 'hash-a', vector: [0.1, 0.2, 0.3] },
+        { hash: 'hash-b', vector: [0.4, 0.5, 0.6] },
+      ]);
+
+      await store.clearEmbeddings();
+      const result = await store.getEmbeddings(['hash-a', 'hash-b']);
+      expect(result.size).toBe(0);
+    });
+  });
 });
