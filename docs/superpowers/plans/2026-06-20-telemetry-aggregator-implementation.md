@@ -1175,11 +1175,24 @@ describe('AggregatorServer', () => {
     await new Promise<void>((resolve) => blocker.close(() => resolve()));
   });
 
-  it('returns 500 if metrics aggregation fails unexpectedly', async () => {
-    const mockFetch = vi.fn().mockResolvedValue({
-      ok: true,
-      json: vi.fn().mockResolvedValue(null),
-    });
+  it('skips nodes that return non-array metrics JSON', async () => {
+    const mockFetch = vi
+      .fn()
+      .mockResolvedValueOnce({
+        ok: true,
+        json: vi.fn().mockResolvedValue(null),
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        json: vi.fn().mockResolvedValue([
+          {
+            name: 'nexus_valid_metric_total',
+            help: 'Valid metric',
+            type: 'counter',
+            values: [{ labels: { project: 'test-project', pid: '999' }, value: 1 }],
+          },
+        ]),
+      });
     server = new AggregatorServer(mockFetch as unknown as typeof fetch);
     await server.start(0);
     const serverPort = (server as any).server.address().port;
@@ -1193,8 +1206,18 @@ describe('AggregatorServer', () => {
       }),
     });
 
+    await fetch(`http://127.0.0.1:${serverPort}/api/discovery/register`, {
+      method: 'POST',
+      body: JSON.stringify({
+        projectId: 'test-project',
+        metricsPort: 9501,
+        pid: 1000,
+      }),
+    });
+
     const metricsRes = await fetch(`http://127.0.0.1:${serverPort}/metrics`);
-    expect(metricsRes.status).toBe(500);
+    expect(metricsRes.status).toBe(200);
+    expect(await metricsRes.text()).toContain('nexus_valid_metric_total');
   });
 });
 ```
@@ -1427,8 +1450,9 @@ export class AggregatorServer {
 
     const results = await Promise.allSettled(fetchPromises);
     const metricsLists = results
-      .filter((r): r is PromiseFulfilledResult<any> => r.status === 'fulfilled')
-      .map(r => r.value);
+      .filter((r): r is PromiseFulfilledResult<unknown> => r.status === 'fulfilled')
+      .map(r => r.value)
+      .filter((value): value is MetricObject[] => Array.isArray(value));
 
     const mergedText = serializeToPrometheus(metricsLists);
     res.writeHead(200, { 'Content-Type': 'text/plain; version=0.0.4; charset=utf-8' });
