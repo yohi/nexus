@@ -255,7 +255,7 @@ describe('OllamaEmbeddingProvider', () => {
     const body = JSON.parse((fetchMock.mock.calls[0] as [string, RequestInit])[1].body as string) as Record<string, unknown>;
     expect(body['truncate']).toBe(true);
   });
-  it('sends configured Ollama num_thread in the embed request body', async () => {
+  it.each([1, 2])('sends Ollama num_thread=%i in the embed request body', async (numThread) => {
     const fetchMock = vi.fn().mockResolvedValue({
       ok: true,
       json: async () => ({ embeddings: [[1, 2, 3, 4]] }),
@@ -270,7 +270,7 @@ describe('OllamaEmbeddingProvider', () => {
         batchSize: 1,
         retryCount: 0,
         retryBaseDelayMs: 1,
-        ollamaNumThread: 1,
+        ollamaNumThread: numThread,
       },
       { fetch: fetchMock, sleep: async () => {} },
     );
@@ -280,35 +280,7 @@ describe('OllamaEmbeddingProvider', () => {
     const body = JSON.parse((fetchMock.mock.calls[0] as [string, RequestInit])[1].body as string) as {
       options?: { num_thread?: number };
     };
-    expect(body.options).toEqual({ num_thread: 1 });
-  });
-
-  it('sends default Ollama num_thread when provider receives the default config value', async () => {
-    const fetchMock = vi.fn().mockResolvedValue({
-      ok: true,
-      json: async () => ({ embeddings: [[1, 2, 3, 4]] }),
-    });
-
-    const provider = new OllamaEmbeddingProvider(
-      {
-        baseUrl: 'http://localhost:11434',
-        model: 'nomic-embed-text',
-        dimensions: 4,
-        maxConcurrency: 1,
-        batchSize: 1,
-        retryCount: 0,
-        retryBaseDelayMs: 1,
-        ollamaNumThread: 2,
-      },
-      { fetch: fetchMock, sleep: async () => {} },
-    );
-
-    await provider.embed(['hello']);
-
-    const body = JSON.parse((fetchMock.mock.calls[0] as [string, RequestInit])[1].body as string) as {
-      options?: { num_thread?: number };
-    };
-    expect(body.options).toEqual({ num_thread: 2 });
+    expect(body.options).toEqual({ num_thread: numThread });
   });
 });
 
