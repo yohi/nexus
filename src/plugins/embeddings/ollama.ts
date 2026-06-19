@@ -33,7 +33,7 @@ export class OllamaEmbeddingProvider extends BaseEmbeddingProvider {
   constructor(
     private readonly config: Pick<
       EmbeddingConfig,
-      'baseUrl' | 'model' | 'dimensions' | 'maxConcurrency' | 'batchSize' | 'retryCount' | 'retryBaseDelayMs' | 'timeoutMs'
+      'baseUrl' | 'model' | 'dimensions' | 'maxConcurrency' | 'batchSize' | 'retryCount' | 'retryBaseDelayMs' | 'timeoutMs' | 'ollamaNumThread'
     >,
     private readonly dependencies: OllamaDependencies = defaultDependencies,
   ) {
@@ -123,6 +123,9 @@ export class OllamaEmbeddingProvider extends BaseEmbeddingProvider {
           model: this.config.model,
           input: batch,
           truncate: true,
+          options: {
+            num_thread: this.config.ollamaNumThread,
+          },
         }),
         signal: controller.signal,
       });
