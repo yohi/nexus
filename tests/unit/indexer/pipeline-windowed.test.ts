@@ -138,9 +138,9 @@ describe('IndexPipeline – windowed batching', () => {
     // and the chunks' filePaths must match the affected paths (offset attribution correct).
     expect(upsertSpy).toHaveBeenCalledTimes(2);
     for (const call of upsertSpy.mock.calls) {
-      const [chunks, embeddings, paths] = call;
+      const [chunks, embeddings, paths] = call as any[];
       expect(embeddings?.length).toBe(chunks.length);
-      expect(new Set(chunks.map((c) => c.filePath))).toEqual(new Set(paths));
+      expect(new Set((chunks as any[]).map((c: any) => c.filePath))).toEqual(new Set(paths));
     }
 
     // Per-file chunk counts retrievable via prefix filter.
