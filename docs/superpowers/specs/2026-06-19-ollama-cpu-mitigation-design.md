@@ -12,7 +12,7 @@ In scope:
 
 - Add per-request Ollama thread limiting with a configurable default.
 - Keep the existing process-wide Ollama lock and verify its behavior.
-- Verify that L1 in-memory and L2 SQLite embedding caches prevent unnecessary embedding calls.
+- Verify and, where necessary, reinforce that L1 in-memory and L2 SQLite embedding caches prevent unnecessary embedding calls.
 - Verify that the Merkle Tree path avoids unnecessary file-level work where applicable.
 - Add regression tests around the CPU-intensive paths.
 
@@ -46,7 +46,7 @@ Recommended naming:
 - Runtime config property: `ollamaNumThread`
 - Environment variable: `NEXUS_OLLAMA_NUM_THREAD`
 
-The config loader should normalize invalid or missing values before the provider sees them. The accepted range should be positive integers only. In `src/config/index.ts`, this should use the existing positive-integer parsing pattern (`asPositiveInt` for environment variables and `validatePositiveInt` for file config). Values such as `0`, negative numbers, decimals, empty strings, and non-numeric strings must fall back to the safe default `2`.
+The config loader should normalize invalid or missing values before the provider sees them. The accepted range should be positive integers from `1` through `16`. In `src/config/index.ts`, this can reuse the existing positive-integer parsing pattern (`asPositiveInt` for environment variables and `validatePositiveInt` for file config), but must add an Ollama-specific upper-bound check. Values such as `0`, negative numbers, decimals, empty strings, non-numeric strings, and values greater than `16` must fall back to the safe default `2`.
 
 ### 2. Ollama request payload
 
@@ -69,7 +69,7 @@ This belongs only in the Ollama provider. OpenAI-compatible embedding providers 
 
 Keep the existing `acquireGlobalLock('ollama')` behavior. The design does not replace it because the current implementation uses `proper-lockfile` on a lock file in the OS temporary directory, which matches the required responsibility: serialize Ollama access across separate Nexus MCP server processes.
 
-The verification focus is that the lock is acquired before embed requests and released in `finally`, including error paths. Lock acquisition failure should remain observable as an error rather than becoming an indefinite wait. Tests should explicitly guard against accidentally replacing this with an in-process-only mutex, because that would not protect the reported three-process MCP server scenario.
+The verification focus is that the lock is acquired before embed requests and released in `finally`, including error paths. Lock acquisition failure should remain observable as an error rather than becoming an indefinite wait. The expected lock behavior is the current bounded policy: stale locks become recoverable after `60_000ms`, and acquisition retries are bounded to 10 attempts with `100ms` minimum and `1000ms` maximum retry delays. This gives crashed processes time to be detected through `proper-lockfile`'s mtime-based stale detection while still ensuring later processes fail visibly instead of waiting forever. Tests should explicitly guard against accidentally replacing this with an in-process-only mutex, because that would not protect the reported three-process MCP server scenario.
 
 ### 4. Cache-aware embedding path
 
@@ -79,7 +79,7 @@ Keep the existing three-stage pipeline:
 2. Resolve embeddings through L1 memory cache, then L2 SQLite cache, then Ollama only for true misses.
 3. Persist vectors and update Merkle state serially.
 
-The key behavioral requirement is that cache hits do not call `embeddingProvider.embed()`. L1 hits should refresh their LRU position, and L2 hits should populate L1 for subsequent calls. The L1 cache must remain bounded by `embeddingCacheSize`; inserting more entries than the configured limit should evict the least-recently-used entry so a full scan of a large repository cannot grow the Node.js heap without bound.
+The key behavioral requirement is that cache hits do not call `embeddingProvider.embed()`. The existing `Map`-based L1 cache may remain in place if it preserves LRU semantics by deleting and re-inserting a key on every hit before evicting the oldest insertion-order entry. L2 hits should populate L1 and use the same bounded insertion path. The L1 cache must remain bounded by `embeddingCacheSize`; inserting more entries than the configured limit should evict the least-recently-used entry so a full scan of a large repository cannot grow the Node.js heap without bound. If tests show the `Map` behavior is FIFO rather than LRU, reinforcing this path is in scope; replacing it with an external LRU package is not required unless the minimal `Map` implementation cannot satisfy the tests.
 
 ### 5. Merkle Tree verification
 
@@ -104,14 +104,16 @@ If tests reveal that unchanged modified events still reach chunking unnecessaril
 
 - Ollama provider sends `options.num_thread` with the default value `2`.
 - Ollama provider sends configured values such as `1` when supplied by config.
-- Config parsing accepts positive integer `NEXUS_OLLAMA_NUM_THREAD` values and falls back to `2` for `0`, negative, decimal, empty, and non-numeric values.
+- Config parsing accepts positive integer `NEXUS_OLLAMA_NUM_THREAD` values from `1` through `16` and falls back to `2` for `0`, negative, decimal, empty, non-numeric, and greater-than-`16` values.
 - Ollama-specific options are isolated to the Ollama provider.
 - Global lock acquisition happens before the fetch call and release is attempted after success and failure.
 - The global lock implementation remains backed by `proper-lockfile` on a filesystem path, not by process-local `async-mutex` state.
+- Stale-lock and retry behavior remains bounded: stale timeout `60_000ms`, 10 retries, `100ms` minimum retry delay, and `1000ms` maximum retry delay.
 
 ### Pipeline tests
 
 - L1 cache hit skips `embeddingProvider.embed()`.
+- L1 cache hit refreshes `Map` insertion order through delete-and-set before eviction decisions.
 - L2 SQLite cache hit skips `embeddingProvider.embed()` and hydrates L1.
 - L2 hydration respects `embeddingCacheSize` and evicts old L1 entries when the cache is full.
 - True misses call `embeddingProvider.embed()` once per miss batch and persist fresh vectors to L2.
@@ -140,6 +142,7 @@ Manual CPU observation with tmux and htop is useful for local validation, but it
 
 - Ollama embed requests include `options.num_thread` by default.
 - Users can reduce the thread limit to `1` without changing code.
+- Users cannot accidentally bypass CPU mitigation with excessive thread counts; values above `16` fall back to `2`.
 - Multiple Nexus processes do not call Ollama concurrently through the provider path.
 - Reprocessing unchanged chunks uses L1 or L2 cache and avoids embedding calls.
 - Rename and delete paths avoid unnecessary embedding recomputation.
