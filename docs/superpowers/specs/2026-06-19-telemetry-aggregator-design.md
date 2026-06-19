@@ -329,13 +329,17 @@ type NodeMap = Map<number, RegisteredNode>;
 2. 全ノードの `/metrics/json` に `Promise.all` で並列リクエスト（タイムアウト: 3000ms）
 3. 各レスポンスの JSON 配列をフラット化
 4. メトリクス名 (`name`) でグループ化 → `values` を結合
+   - **ラベル一意性の保証**: 各ノードは `defaultLabels` により `project`/`pid` ラベルが事前付与済みのため、異なるノードの values は必ず異なるラベルセットを持つ。したがって単純な values 結合で Prometheus のラベル重複エラーは発生しない（算術加算は不要）。
+   - Histogram の `_bucket`/`_sum`/`_count` も同様にラベルセットで一意であり、そのまま結合できる。
 5. グループ化されたデータを Prometheus テキスト形式に再構築:
    - `# HELP {name} {help}`
    - `# TYPE {name} {type}`
    - `{name}{labels} {value}`
-   - Histogram: `_bucket`, `_sum`, `_count` を `metricName` フィールドで正しく出力
+   - Histogram: 各 value の `metricName` フィールド (`xxx_bucket`, `xxx_sum`, `xxx_count`) を使用して正しいメトリクス名で出力
 6. 特定ノードへのリクエスト失敗 → そのノードをスキップ（部分的成功を許容）
 7. 全ノード失敗 → 空テキストを返却（HTTP 200, Prometheus 互換）
+
+> **テスト要件**: `prometheus-serializer` のテストに、複数ノードからの Histogram メトリクス集約ケース（異なる `project`/`pid` ラベルを持つ `_bucket`/`_sum`/`_count` の結合と出力順序の検証）を必須テストケースとして含めること。
 
 ### 5.4. ヘルスチェック & エビクション
 
@@ -362,15 +366,16 @@ class HealthChecker {
   private async checkAll(): Promise<void> {
     const checks = [...this.nodes.entries()].map(
       async ([port]) => {
+        const controller = new AbortController();
+        const timeout = setTimeout(() => controller.abort(), this.timeoutMs);
         try {
-          const controller = new AbortController();
-          const timeout = setTimeout(() => controller.abort(), this.timeoutMs);
           await this.fetchFn(`http://127.0.0.1:${port}/health`, {
             signal: controller.signal,
           });
-          clearTimeout(timeout);
         } catch {
           this.nodes.delete(port);
+        } finally {
+          clearTimeout(timeout);
         }
       }
     );
@@ -407,7 +412,7 @@ async function main() {
   const { waitUntilExit } = render(<App ... />);
   await waitUntilExit();
 
-  // クリーンアップ
+  // クリーンアップ（stop() は冪等のため、start() の成否を問わず安全に呼べる）
   await aggregator.stop();
 }
 ```
@@ -417,6 +422,8 @@ Aggregator のシャットダウン順序:
 1. `HealthChecker.stop()` — タイマー停止
 2. `HTTPサーバー.close()` — 新規接続の受付停止
 3. `NodeMap.clear()` — インメモリ状態のクリア
+
+> **冪等性要件**: `stop()` は何度呼ばれても安全でなければならない。`start()` が失敗した場合（部分初期化状態）でも二次的な例外を発生させないこと。実装では各リソースの存在を optional chaining でガードする（`this.healthChecker?.stop()`, `this.server?.close()` 等）。
 
 ---
 
@@ -458,9 +465,9 @@ class RegistrationClient {
   }
 
   private async register(): Promise<void> {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), this.config.requestTimeoutMs);
     try {
-      const controller = new AbortController();
-      const timeout = setTimeout(() => controller.abort(), this.config.requestTimeoutMs);
       await this.fetchFn(
         `http://127.0.0.1:${this.config.aggregatorPort}/api/discovery/register`,
         {
@@ -470,9 +477,10 @@ class RegistrationClient {
           signal: controller.signal,
         },
       );
-      clearTimeout(timeout);
     } catch (error) {
       this.logger?.debug('Aggregator registration failed (non-fatal):', error);
+    } finally {
+      clearTimeout(timeout);
     }
   }
 }
@@ -514,13 +522,14 @@ shutdown() {
 
 `aggregatorPort` の解決順序:
 
-| 優先度 | ソース |
-|---|---|
-| 1（最優先） | `.nexus.json` の `aggregatorPort` |
-| 2 | 環境変数 `NEXUS_AGGREGATOR_PORT` |
-| 3（デフォルト） | `9470` |
+| 優先度 | ソース | 備考 |
+|---|---|---|
+| 1（最優先） | CLI 引数 `--aggregator-port` | `nexus dashboard` 起動時のみ |
+| 2 | `.nexus.json` の `aggregatorPort` | プロジェクト固有設定 |
+| 3 | 環境変数 `NEXUS_AGGREGATOR_PORT` | 環境レベル設定 |
+| 4（デフォルト） | `9470` | ハードコード |
 
-`src/config/index.ts` に `aggregatorPort?: number` を追加。
+`src/config/index.ts` に `aggregatorPort?: number` を追加。ノード側（`RegistrationClient`）は CLI 引数を持たないため、優先度2〜4で解決する。
 
 ### 6.5. 障害パターンと動作保証
 
