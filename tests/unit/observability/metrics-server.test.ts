@@ -76,11 +76,11 @@ describe("MetricsHttpServer", () => {
     const res = await fetch(`http://127.0.0.1:${boundPort}/metrics/json`);
     expect(res.status).toBe(200);
     expect(res.headers.get("content-type")).toContain("application/json");
-    const json = await res.json();
+    const json = await res.json() as unknown[];
     expect(Array.isArray(json)).toBe(true);
     expect(
       json.some(
-        (m: Record<string, unknown>) => m.name === "nexus_test_counter",
+        (m) => (m as Record<string, unknown>).name === "nexus_test_counter",
       ),
     ).toBe(true);
   });

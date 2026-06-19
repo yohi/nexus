@@ -64,7 +64,7 @@ describe('LanceVectorStore - resetForTest validation', () => {
 
     // 3. Verify totalFiles is reset in memory
     stats = await store.getStats();
-    expect(stats.totalFiles).toBe(0, 'totalFiles should be 0 after resetForTest (in-memory)');
+    expect(stats.totalFiles).toBe(0);
     expect(stats.totalChunks).toBe(0);
     expect(stats.fragmentationRatio).toBe(0);
 
@@ -77,7 +77,7 @@ describe('LanceVectorStore - resetForTest validation', () => {
     await store2.initialize();
     
     stats = await store2.getStats();
-    expect(stats.totalFiles).toBe(0, 'totalFiles should remain 0 after re-opening (persisted)');
+    expect(stats.totalFiles).toBe(0);
     expect(stats.totalChunks).toBe(0);
     await store2.close();
   });

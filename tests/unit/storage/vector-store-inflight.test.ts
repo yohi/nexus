@@ -169,7 +169,7 @@ describe('LanceVectorStore close() and trackOp() behavior', () => {
       await closePromise;
       
       expect(errorSpy).toHaveBeenCalledOnce();
-      expect(errorSpy.mock.calls[0][0]).toMatch(/close\(\) timed out after 1000ms/);
+      expect(errorSpy.mock.calls[0]![0]).toMatch(/close\(\) timed out after 1000ms/);
     } finally {
       vi.useRealTimers();
     }
