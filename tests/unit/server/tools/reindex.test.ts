@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
+import type { IIndexPipeline } from '../../../../src/types/index.js';
 import { executeReindex } from '../../../../src/server/tools/reindex.js';
-
 let lastFullRebuild: boolean | undefined;
 
 const pipeline = {
@@ -16,10 +16,11 @@ const pipeline = {
     };
   },
   getSkippedFiles: () => new Map<string, string>(),
+  getProgress: () => ({ totalFiles: 0, processedFiles: 0, status: 'idle' }),
   reconcileOnStartup: async () => ({ startedAt: '', finishedAt: '', durationMs: 0, reconciliation: { added: 0, modified: 0, deleted: 0, unchanged: 0 }, chunksIndexed: 0 }),
   start: () => undefined,
   stop: async () => {},
-};
+} as IIndexPipeline;
 
 describe('executeReindex', () => {
   it('delegates to the index pipeline reindex flow with fullRebuild flag', async () => {

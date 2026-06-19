@@ -30,6 +30,7 @@ describe('DeadLetterQueue recovery loop', () => {
       retried: 0,
       purged: 0,
       skipped: 0,
+      abandoned: 0,
     });
 
     const stop = queue.startRecoveryLoop(60_000);

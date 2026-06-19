@@ -138,9 +138,9 @@ describe('IndexPipeline – windowed batching', () => {
     // and the chunks' filePaths must match the affected paths (offset attribution correct).
     expect(upsertSpy).toHaveBeenCalledTimes(2);
     for (const call of upsertSpy.mock.calls) {
-      const [chunks, embeddings, paths] = call;
+      const [chunks, embeddings, paths] = call as any[];
       expect(embeddings?.length).toBe(chunks.length);
-      expect(new Set(chunks.map((c) => c.filePath))).toEqual(new Set(paths));
+      expect(new Set((chunks as any[]).map((c: any) => c.filePath))).toEqual(new Set(paths));
     }
 
     // Per-file chunk counts retrievable via prefix filter.
@@ -404,6 +404,51 @@ describe('IndexPipeline – chunk embedding cache', () => {
       async () => contentA,
     );
     expect(embedding.calls).toBeGreaterThan(callsAfterB);
+  });
+
+  it('refreshes L1 recency on cache hit before evicting the oldest entry', async () => {
+    const { metadataStore, vectorStore, chunker, registry } = await createPipeline();
+    const embedding = new CountingEmbeddingProvider();
+    const pipeline = new IndexPipeline({
+      metadataStore,
+      vectorStore,
+      chunker,
+      embeddingProvider: embedding,
+      pluginRegistry: registry,
+      embedBatchWindowSize: 16,
+      embeddingCacheSize: 2,
+    });
+
+    const contentA = tsFunctions(1, 'lru_refresh_a');
+    const contentB = tsFunctions(1, 'lru_refresh_b');
+    const contentC = tsFunctions(1, 'lru_refresh_c');
+
+    await pipeline.processEvents([addEvent('src/lru_refresh_a.ts', 'h1')], async () => contentA);
+    await pipeline.processEvents([addEvent('src/lru_refresh_b.ts', 'h2')], async () => contentB);
+    expect(embedding.calls).toBe(2);
+
+    await metadataStore.clearEmbeddings();
+
+    await pipeline.processEvents(
+      [{ type: 'modified', filePath: 'src/lru_refresh_a.ts', contentHash: 'h3', detectedAt: new Date().toISOString() }],
+      async () => contentA,
+    );
+    expect(embedding.calls).toBe(2);
+
+    await pipeline.processEvents([addEvent('src/lru_refresh_c.ts', 'h4')], async () => contentC);
+    expect(embedding.calls).toBe(3);
+
+    await pipeline.processEvents(
+      [{ type: 'modified', filePath: 'src/lru_refresh_b.ts', contentHash: 'h5', detectedAt: new Date().toISOString() }],
+      async () => contentB,
+    );
+    expect(embedding.calls).toBe(4);
+
+    await pipeline.processEvents(
+      [{ type: 'modified', filePath: 'src/lru_refresh_a.ts', contentHash: 'h6', detectedAt: new Date().toISOString() }],
+      async () => contentA,
+    );
+    expect(embedding.calls).toBe(5);
   });
 });
 

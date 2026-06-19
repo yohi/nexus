@@ -295,4 +295,64 @@ describe('loadConfig', () => {
     const configFileTooHigh = await loadConfig({ projectRoot: tempDir, env: {} });
     expect(configFileTooHigh.metricsPort).toBeUndefined();
   });
+  it('defaults Ollama num_thread to 2', async () => {
+    tempDir = await mkdtemp(path.join(os.tmpdir(), 'nexus-config-'));
+
+    const config = await loadConfig({ projectRoot: tempDir, env: {} });
+
+    expect(config.embedding.ollamaNumThread).toBe(2);
+  });
+
+  it('loads Ollama num_thread from environment variables and file config', async () => {
+    tempDir = await mkdtemp(path.join(os.tmpdir(), 'nexus-config-'));
+    await writeFile(
+      path.join(tempDir, '.nexus.json'),
+      JSON.stringify({ embedding: { ollamaNumThread: 1 } }),
+      'utf8',
+    );
+
+    const fileConfig = await loadConfig({ projectRoot: tempDir, env: {} });
+    expect(fileConfig.embedding.ollamaNumThread).toBe(1);
+
+    const envConfig = await loadConfig({
+      projectRoot: tempDir,
+      env: { NEXUS_OLLAMA_NUM_THREAD: '16' },
+    });
+    expect(envConfig.embedding.ollamaNumThread).toBe(16);
+  });
+
+  it.each([
+    ['0'],
+    ['-1'],
+    ['1.5'],
+    [''],
+    ['abc'],
+    ['17'],
+    ['128'],
+  ])('falls back to Ollama num_thread default for invalid env value %s', async (value) => {
+    tempDir = await mkdtemp(path.join(os.tmpdir(), 'nexus-config-'));
+
+    const config = await loadConfig({
+      projectRoot: tempDir,
+      env: { NEXUS_OLLAMA_NUM_THREAD: value },
+    });
+
+    expect(config.embedding.ollamaNumThread).toBe(2);
+  });
+
+  it.each([0, -1, 1.5, '', '2', 'abc', 17, 128, null])(
+    'falls back to Ollama num_thread default for invalid file value %s',
+    async (value) => {
+      tempDir = await mkdtemp(path.join(os.tmpdir(), 'nexus-config-'));
+      await writeFile(
+        path.join(tempDir, '.nexus.json'),
+        JSON.stringify({ embedding: { ollamaNumThread: value } }),
+        'utf8',
+      );
+
+      const config = await loadConfig({ projectRoot: tempDir, env: {} });
+
+      expect(config.embedding.ollamaNumThread).toBe(2);
+    },
+  );
 });

@@ -60,23 +60,25 @@ describe('Observability Hooks Integration', () => {
       
       const pipeline = new IndexPipeline({
         metadataStore: mockMetadataStore as unknown as IMetadataStore,
-        indexer: {} as any,
+        chunker: {} as any,
         vectorStore: {
           deleteByFilePath: vi.fn().mockResolvedValue(undefined),
         } as any,
-        chunker: {} as any,
         embeddingProvider: {} as any,
         pluginRegistry: {} as any,
         metricsHooks: {
           onChunksIndexed,
           onDlqSnapshot: vi.fn(),
+          onReindexComplete: vi.fn(),
+          onRecoverySweepComplete: vi.fn(),
+          onIndexingProgress: vi.fn(),
         }
       });
 
       // To trigger onChunksIndexed, we can process a simple 'deleted' event
       // which doesn't require complex dependencies like chunker/embeddings.
       await pipeline.processEvents([
-        { type: 'deleted', filePath: 'test.ts' }
+        { type: 'deleted', filePath: 'test.ts', detectedAt: new Date().toISOString() }
       ]);
 
       expect(onChunksIndexed).toHaveBeenCalledWith(0);

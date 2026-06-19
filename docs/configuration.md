@@ -34,49 +34,51 @@ Nexus は `<projectRoot>/.nexus.json` から設定を読み込みます。
     "batchSize": 4,
     "retryCount": 3,
     "retryBaseDelayMs": 250,
-    "timeoutMs": 120000
+    "timeoutMs": 120000,
+    "ollamaNumThread": 2
   }
 }
 ```
 
 ## Storage
 
-| Field | Type | Default | Environment Variable | Description |
-| --- | --- | --- | --- | --- |
-| `storage.rootDir` | string | `<projectRoot>/.nexus` | `NEXUS_STORAGE_ROOT_DIR` | Nexus が管理するローカル状態のルートディレクトリ |
-| `storage.metadataDbPath` | string | `<projectRoot>/.nexus/metadata.db` | `NEXUS_STORAGE_METADATA_DB_PATH` | SQLite metadata database のパス |
-| `storage.vectorDbPath` | string | `<projectRoot>/.nexus/vectors` | `NEXUS_STORAGE_VECTOR_DB_PATH` | LanceDB vector store ディレクトリ |
+| Field                    | Type   | Default                            | Environment Variable             | Description                                      |
+| ------------------------ | ------ | ---------------------------------- | -------------------------------- | ------------------------------------------------ |
+| `storage.rootDir`        | string | `<projectRoot>/.nexus`             | `NEXUS_STORAGE_ROOT_DIR`         | Nexus が管理するローカル状態のルートディレクトリ |
+| `storage.metadataDbPath` | string | `<projectRoot>/.nexus/metadata.db` | `NEXUS_STORAGE_METADATA_DB_PATH` | SQLite metadata database のパス                  |
+| `storage.vectorDbPath`   | string | `<projectRoot>/.nexus/vectors`     | `NEXUS_STORAGE_VECTOR_DB_PATH`   | LanceDB vector store ディレクトリ                |
 
 ## Watcher
 
-| Field | Type | Default | Environment Variable | Description |
-| --- | --- | --- | --- | --- |
-| `watcher.debounceMs` | positive integer | `100` | `NEXUS_WATCHER_DEBOUNCE_MS` | 連続した filesystem event を束ねる待ち時間 |
-| `watcher.maxQueueSize` | positive integer | `10000` | `NEXUS_WATCHER_MAX_QUEUE_SIZE` | overflow handling に入る前の最大キュー長 |
-| `watcher.fullScanThreshold` | positive integer | `5000` | `NEXUS_WATCHER_FULL_SCAN_THRESHOLD` | incremental 処理から広い scan recovery へ切り替える閾値 |
-| `watcher.ignorePaths` | string list | `['node_modules', '.git', '.worktrees', '.nexus', 'dist', 'build', 'out', 'coverage', '.cache', '.parcel-cache', 'venv', '.venv', 'env', '.idea', '.vscode', '.DS_Store', 'package-lock.json', 'pnpm-lock.yaml', 'yarn.lock', 'bun.lockb', '*.lock']` | `NEXUS_WATCHER_IGNORE_PATHS` | 監視・インデックス対象外とするパスのリスト |
+| Field                       | Type             | Default                                                                                                                                                                                                                                               | Environment Variable                | Description                                             |
+| --------------------------- | ---------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------- | ------------------------------------------------------- |
+| `watcher.debounceMs`        | positive integer | `100`                                                                                                                                                                                                                                                 | `NEXUS_WATCHER_DEBOUNCE_MS`         | 連続した filesystem event を束ねる待ち時間              |
+| `watcher.maxQueueSize`      | positive integer | `10000`                                                                                                                                                                                                                                               | `NEXUS_WATCHER_MAX_QUEUE_SIZE`      | overflow handling に入る前の最大キュー長                |
+| `watcher.fullScanThreshold` | positive integer | `5000`                                                                                                                                                                                                                                                | `NEXUS_WATCHER_FULL_SCAN_THRESHOLD` | incremental 処理から広い scan recovery へ切り替える閾値 |
+| `watcher.ignorePaths`       | string list      | `['node_modules', '.git', '.worktrees', '.nexus', 'dist', 'build', 'out', 'coverage', '.cache', '.parcel-cache', 'venv', '.venv', 'env', '.idea', '.vscode', '.DS_Store', 'package-lock.json', 'pnpm-lock.yaml', 'yarn.lock', 'bun.lockb', '*.lock']` | `NEXUS_WATCHER_IGNORE_PATHS`        | 監視・インデックス対象外とするパスのリスト              |
 
 > **シークレットファイルの常時除外**: `.env` および `.env.*` は、`watcher.ignorePaths` を `.nexus.json` や `NEXUS_WATCHER_IGNORE_PATHS` で上書きした場合でも、**常に**除外対象としてマージされます。シークレットが誤ってインデックス（ベクトル DB）へ取り込まれるのを防ぐためで、上書きによって再度有効化することはできません。
 
 ## Embedding
 
-| Field | Type | Default | Environment Variable | Description |
-| --- | --- | --- | --- | --- |
-| `embedding.provider` | `ollama \| openai-compat \| test` | `ollama` | `NEXUS_EMBEDDING_PROVIDER` | 有効化する embedding backend |
-| `embedding.model` | string | `nomic-embed-text` | `NEXUS_EMBEDDING_MODEL` | embedding provider へ渡す model 名 |
-| `embedding.dimensions` | positive integer | `768` | `NEXUS_EMBEDDING_DIMENSIONS` | 期待する embedding 次元数 |
-| `embedding.baseUrl` | string | `http://127.0.0.1:11434` | `NEXUS_EMBEDDING_BASE_URL` | HTTP ベース provider の base URL |
-| `embedding.apiKey` | string | unset | `NEXUS_EMBEDDING_API_KEY` | 認証が必要な provider 用の任意 API key |
-| `embedding.maxConcurrency` | positive integer | `1` | `NEXUS_EMBEDDING_MAX_CONCURRENCY` | 並列 embedding request の上限 |
-| `embedding.batchSize` | positive integer | `4` | `NEXUS_EMBEDDING_BATCH_SIZE` | 1 回の embed batch に含める chunk 数 |
-| `embedding.retryCount` | non-negative integer | `3` | `NEXUS_EMBEDDING_RETRY_COUNT` | 一時的失敗に対する retry 回数 |
-| `embedding.retryBaseDelayMs` | positive integer | `250` | `NEXUS_EMBEDDING_RETRY_BASE_DELAY_MS` | retry backoff の基準待機時間（ミリ秒） |
-| `embedding.timeoutMs` | positive integer | `120000` | `NEXUS_EMBEDDING_TIMEOUT_MS` | embedding HTTP リクエスト 1 回あたりのタイムアウト（ミリ秒） |
+| Field                        | Type                              | Default                  | Environment Variable                  | Description                                                                                        |
+| ---------------------------- | --------------------------------- | ------------------------ | ------------------------------------- | -------------------------------------------------------------------------------------------------- |
+| `embedding.provider`         | `ollama \| openai-compat \| test` | `ollama`                 | `NEXUS_EMBEDDING_PROVIDER`            | 有効化する embedding backend                                                                       |
+| `embedding.model`            | string                            | `nomic-embed-text`       | `NEXUS_EMBEDDING_MODEL`               | embedding provider へ渡す model 名                                                                 |
+| `embedding.dimensions`       | positive integer                  | `768`                    | `NEXUS_EMBEDDING_DIMENSIONS`          | 期待する embedding 次元数                                                                          |
+| `embedding.baseUrl`          | string                            | `http://127.0.0.1:11434` | `NEXUS_EMBEDDING_BASE_URL`            | HTTP ベース provider の base URL                                                                   |
+| `embedding.apiKey`           | string                            | unset                    | `NEXUS_EMBEDDING_API_KEY`             | 認証が必要な provider 用の任意 API key                                                             |
+| `embedding.maxConcurrency`   | positive integer                  | `1`                      | `NEXUS_EMBEDDING_MAX_CONCURRENCY`     | 並列 embedding request の上限                                                                      |
+| `embedding.batchSize`        | positive integer                  | `4`                      | `NEXUS_EMBEDDING_BATCH_SIZE`          | 1 回の embed batch に含める chunk 数                                                               |
+| `embedding.retryCount`       | non-negative integer              | `3`                      | `NEXUS_EMBEDDING_RETRY_COUNT`         | 一時的失敗に対する retry 回数                                                                      |
+| `embedding.retryBaseDelayMs` | positive integer                  | `250`                    | `NEXUS_EMBEDDING_RETRY_BASE_DELAY_MS` | retry backoff の基準待機時間（ミリ秒）                                                             |
+| `embedding.timeoutMs`        | positive integer                  | `120000`                 | `NEXUS_EMBEDDING_TIMEOUT_MS`          | embedding HTTP リクエスト 1 回あたりのタイムアウト（ミリ秒）                                       |
+| `embedding.ollamaNumThread`  | integer `1`〜`16`                 | `2`                      | `NEXUS_OLLAMA_NUM_THREAD`             | Ollama `/api/embed` リクエストに渡す `options.num_thread`。無効な値は `2` にフォールバックします。 |
 
 ## Indexing
 
-| Field | Type | Default | Environment Variable | Description |
-| --- | --- | --- | --- | --- |
+| Field                   | Type             | Default           | Environment Variable            | Description                                                                                                                                               |
+| ----------------------- | ---------------- | ----------------- | ------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `indexing.maxFileBytes` | positive integer | `1048576` (1 MiB) | `NEXUS_INDEXING_MAX_FILE_BYTES` | embedding 対象とするファイルの最大バイト数（UTF-8）。これを超えるファイルは embedding せずスキップし、`skippedFiles` に記録します（DLQ には送られません） |
 
 ## バリデーションの注意点
@@ -84,6 +86,7 @@ Nexus は `<projectRoot>/.nexus.json` から設定を読み込みます。
 - 空文字列は無視されます。
 - 数値の環境変数は 10 進整数である必要があります。
 - `retryCount` は `0` を許容しますが、その他の数値項目は `0` より大きい必要があります。
+- `embedding.ollamaNumThread` は `1` から `16` までの整数のみを受け付け、`0`、負数、小数、文字列、`16` を超える値はデフォルト `2` にフォールバックします。
 - 未対応の `embedding.provider` は無視され、設定ファイルまたはデフォルト値へフォールバックします。
 
 ## パフォーマンスチューニング: CPU-only Ollama 環境
@@ -96,6 +99,7 @@ CPU-only 環境では以下を推奨します:
 
 ```bash
 export NEXUS_EMBEDDING_MAX_CONCURRENCY=1
+export NEXUS_OLLAMA_NUM_THREAD=2
 ```
 
 あるいは `.nexus.json`:
@@ -103,7 +107,8 @@ export NEXUS_EMBEDDING_MAX_CONCURRENCY=1
 ```json
 {
   "embedding": {
-    "maxConcurrency": 1
+    "maxConcurrency": 1,
+    "ollamaNumThread": 2
   }
 }
 ```
@@ -117,11 +122,11 @@ export NEXUS_EMBEDDING_MAX_CONCURRENCY=1
 
 ### 目安
 
-| 環境 | 推奨 `maxConcurrency` |
-| --- | --- |
-| CPU-only Ollama | `1` |
-| GPU (8GB VRAM) | `2`〜`3` |
-| GPU (16GB+ VRAM) | `4`〜`8` |
+| 環境             | 推奨 `maxConcurrency` |
+| ---------------- | --------------------- |
+| CPU-only Ollama  | `1`                   |
+| GPU (8GB VRAM)   | `2`〜`3`              |
+| GPU (16GB+ VRAM) | `4`〜`8`              |
 
 VRAM および モデルサイズに応じて段階的に上げ、`abandoned` メトリクスが増えない範囲で最大化してください。
 
