@@ -98,6 +98,7 @@ Modify `tests/unit/observability/metrics-collector.test.ts` to add test cases fo
     const metrics = await registry.metrics();
     expect(metrics).toContain('nexus_embedding_requests_total{project="test-project",provider="ollama",status="success"} 1');
     expect(metrics).toContain('nexus_embedding_duration_seconds_bucket{le="2.5",project="test-project",provider="ollama"} 1');
+    expect(metrics).toContain('nexus_embedding_batch_size_bucket{le="5",project="test-project",provider="ollama"} 1');
   });
 ```
 
@@ -142,6 +143,7 @@ const REINDEX_BUCKETS = [0.1, 0.5, 1, 2, 5, 10, 30, 60, 120];
 const TOOL_DURATION_BUCKETS = [0.01, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10];
 const SEARCH_RESULTS_BUCKETS = [0, 1, 5, 10, 25, 50, 100, 250];
 const EMBEDDING_DURATION_BUCKETS = [0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30];
+const EMBEDDING_BATCH_SIZE_BUCKETS = [1, 2, 5, 10, 25, 50, 100, 250];
 
 export class MetricsCollector implements MetricsHooks {
   readonly registry: Registry;
@@ -165,6 +167,7 @@ export class MetricsCollector implements MetricsHooks {
   private readonly contextLinesFetchedTotal: Counter;
   private readonly embeddingRequestsTotal: Counter;
   private readonly embeddingDurationSeconds: Histogram;
+  private readonly embeddingBatchSize: Histogram;
 
   private readonly prevDroppedBySource = new Map<string, number>();
 
@@ -295,6 +298,14 @@ export class MetricsCollector implements MetricsHooks {
       buckets: EMBEDDING_DURATION_BUCKETS,
       registers: [this.registry],
     });
+
+    this.embeddingBatchSize = new Histogram({
+      name: 'nexus_embedding_batch_size',
+      help: 'Embedding request batch size distribution',
+      labelNames: ['provider'] as const,
+      buckets: EMBEDDING_BATCH_SIZE_BUCKETS,
+      registers: [this.registry],
+    });
   }
 
   // Existing methods implementation...
@@ -360,12 +371,15 @@ export class MetricsCollector implements MetricsHooks {
   }
 
   onContextLinesFetched(toolName: string, lineCount: number): void {
-    this.contextLinesFetchedTotal.labels(toolName).inc(lineCount);
+    if (lineCount > 0) {
+      this.contextLinesFetchedTotal.labels(toolName).inc(lineCount);
+    }
   }
 
-  onEmbeddingRequest(provider: string, status: 'success' | 'error', durationSeconds: number, _batchSize: number): void {
+  onEmbeddingRequest(provider: string, status: 'success' | 'error', durationSeconds: number, batchSize: number): void {
     this.embeddingRequestsTotal.labels(provider, status).inc();
     this.embeddingDurationSeconds.labels(provider).observe(durationSeconds);
+    this.embeddingBatchSize.labels(provider).observe(batchSize);
   }
 }
 ```
@@ -815,7 +829,9 @@ Wrap tool handlers with `withToolMetrics` in `createNexusServer` in `src/server/
             args,
           );
           const lineCount = result.endLine - result.startLine + 1;
-          options.metricsHooks?.onContextLinesFetched('get_context', lineCount);
+          if (lineCount > 0) {
+            options.metricsHooks?.onContextLinesFetched('get_context', lineCount);
+          }
           return toolResult(result);
         } catch (error) {
           return errorResult(error);
@@ -1158,6 +1174,28 @@ describe('AggregatorServer', () => {
 
     await new Promise<void>((resolve) => blocker.close(() => resolve()));
   });
+
+  it('returns 500 if metrics aggregation fails unexpectedly', async () => {
+    const mockFetch = vi.fn().mockResolvedValue({
+      ok: true,
+      json: vi.fn().mockResolvedValue(null),
+    });
+    server = new AggregatorServer(mockFetch as unknown as typeof fetch);
+    await server.start(0);
+    const serverPort = (server as any).server.address().port;
+
+    await fetch(`http://127.0.0.1:${serverPort}/api/discovery/register`, {
+      method: 'POST',
+      body: JSON.stringify({
+        projectId: 'test-project',
+        metricsPort: 9500,
+        pid: 999,
+      }),
+    });
+
+    const metricsRes = await fetch(`http://127.0.0.1:${serverPort}/metrics`);
+    expect(metricsRes.status).toBe(500);
+  });
 });
 ```
 
@@ -1345,7 +1383,14 @@ export class AggregatorServer {
     }
 
     if (req.method === 'GET' && url.pathname === '/metrics') {
-      void this.handleMetrics(res);
+      void this.handleMetrics(res).catch(() => {
+        if (!res.headersSent && !res.destroyed) {
+          res.writeHead(500, { 'Content-Type': 'text/plain; charset=utf-8' });
+        }
+        if (!res.destroyed) {
+          res.end('Internal Server Error');
+        }
+      });
       return;
     }
 
@@ -1788,6 +1833,20 @@ describe('cli integration', () => {
     expect(startSpy).toHaveBeenCalledWith(9470);
     expect(stopSpy).toHaveBeenCalled();
   });
+
+  it('exits when aggregator port is invalid', async () => {
+    const exitSpy = vi.spyOn(process, 'exit').mockImplementation((() => {
+      throw new Error('process.exit');
+    }) as never);
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    process.argv = ['node', 'cli.js', '--project-root', './', '--port', '9500', '--aggregator-port', 'abc'];
+
+    await expect(main()).rejects.toThrow('process.exit');
+    expect(errorSpy).toHaveBeenCalledWith(expect.stringContaining('Invalid --aggregator-port value "abc"'));
+    expect(exitSpy).toHaveBeenCalledWith(1);
+    expect(startSpy).not.toHaveBeenCalled();
+  });
 });
 ```
 
@@ -1811,6 +1870,19 @@ export async function main() {
     strict: true,
   });
 
+  const parsePortOption = (raw: string, optionName: string): number => {
+    if (!/^\d+$/.test(raw)) {
+      console.error(`[Nexus Dashboard] Invalid ${optionName} value "${raw}". Please specify a valid port number (1-65535).`);
+      process.exit(1);
+    }
+    const parsed = parseInt(raw, 10);
+    if (isNaN(parsed) || parsed < 1 || parsed > 65535) {
+      console.error(`[Nexus Dashboard] Invalid ${optionName} value "${raw}". Please specify a valid port number (1-65535).`);
+      process.exit(1);
+    }
+    return parsed;
+  };
+
   const projectRoot = (() => {
     const raw = values["project-root"];
     return raw ? path.resolve(raw) : process.cwd();
@@ -1821,16 +1893,7 @@ export async function main() {
 
   const port = (() => {
     if (values.port !== undefined) {
-      if (!/^\d+$/.test(values.port)) {
-        console.error(`[Nexus Dashboard] Invalid --port value "${values.port}". Please specify a valid port number (1-65535).`);
-        process.exit(1);
-      }
-      const parsed = parseInt(values.port, 10);
-      if (isNaN(parsed) || parsed < 1 || parsed > 65535) {
-        console.error(`[Nexus Dashboard] Invalid --port value "${values.port}". Please specify a valid port number (1-65535).`);
-        process.exit(1);
-      }
-      return parsed;
+      return parsePortOption(values.port, '--port');
     }
     if (autoPort !== undefined) {
       return autoPort;
@@ -1861,10 +1924,10 @@ export async function main() {
   // Resolve aggregatorPort
   const aggregatorPort = (() => {
     if (values["aggregator-port"] !== undefined) {
-      return parseInt(values["aggregator-port"], 10);
+      return parsePortOption(values["aggregator-port"], '--aggregator-port');
     }
     if (process.env.NEXUS_AGGREGATOR_PORT) {
-      return parseInt(process.env.NEXUS_AGGREGATOR_PORT, 10);
+      return parsePortOption(process.env.NEXUS_AGGREGATOR_PORT, 'NEXUS_AGGREGATOR_PORT');
     }
     return 9470;
   })();
