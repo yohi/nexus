@@ -9,6 +9,9 @@ export interface LoadConfigOptions {
   configFileName?: string;
 }
 
+export const DEFAULT_OLLAMA_NUM_THREAD = 2;
+export const MAX_OLLAMA_NUM_THREAD = 16;
+
 const DEFAULT_EMBEDDING: EmbeddingConfig = {
   provider: 'ollama',
   model: 'nomic-embed-text',
@@ -19,6 +22,7 @@ const DEFAULT_EMBEDDING: EmbeddingConfig = {
   retryCount: 3,
   retryBaseDelayMs: 250,
   timeoutMs: 120_000,
+  ollamaNumThread: DEFAULT_OLLAMA_NUM_THREAD,
 };
 
 const DEFAULT_INDEXING: IndexingConfig = {
@@ -130,6 +134,10 @@ export const loadConfig = async (options: LoadConfigOptions): Promise<Config> =>
         asPositiveInt(env.NEXUS_EMBEDDING_TIMEOUT_MS) ??
         validatePositiveInt(fileConfig.embedding?.timeoutMs) ??
         defaults.embedding.timeoutMs,
+      ollamaNumThread:
+        asBoundedPositiveInt(env.NEXUS_OLLAMA_NUM_THREAD, MAX_OLLAMA_NUM_THREAD) ??
+        validateBoundedPositiveInt(fileConfig.embedding?.ollamaNumThread, MAX_OLLAMA_NUM_THREAD) ??
+        defaults.embedding.ollamaNumThread,
     },
     indexing: {
       maxFileBytes:
@@ -178,6 +186,24 @@ const asPositiveInt = (value: string | undefined): number | undefined => {
 
 const validatePositiveInt = (value: unknown): number | undefined =>
   typeof value === 'number' && Number.isInteger(value) && value > 0 ? value : undefined;
+
+/** Parses environment values that must be integers in the inclusive range 1..max. */
+const asBoundedPositiveInt = (
+  value: string | undefined,
+  max: number,
+): number | undefined => {
+  const parsed = asPositiveInt(value);
+  return parsed !== undefined && parsed <= max ? parsed : undefined;
+};
+
+/** Validates config-file values that must be integers in the inclusive range 1..max. */
+const validateBoundedPositiveInt = (
+  value: unknown,
+  max: number,
+): number | undefined => {
+  const parsed = validatePositiveInt(value);
+  return parsed !== undefined && parsed <= max ? parsed : undefined;
+};
 
 const asPortNumber = (value: string | undefined): number | undefined => {
   const parsed = asPositiveInt(value);

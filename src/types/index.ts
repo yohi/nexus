@@ -215,6 +215,7 @@ export interface EmbeddingConfig {
   retryCount: number;
   retryBaseDelayMs: number;
   timeoutMs?: number;
+  ollamaNumThread: number;
 }
 
 export interface EmbeddingProvider {
