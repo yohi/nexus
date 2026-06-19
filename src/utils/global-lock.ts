@@ -3,8 +3,10 @@ import { tmpdir } from 'node:os';
 import { writeFile } from 'node:fs/promises';
 import lockfile from 'proper-lockfile';
 
-const GLOBAL_LOCK_STALE_MS = 60_000;
-const GLOBAL_LOCK_RETRIES = 10;
+export const GLOBAL_LOCK_STALE_MS = 60_000;
+export const GLOBAL_LOCK_RETRIES = 10;
+export const GLOBAL_LOCK_RETRY_MIN_TIMEOUT_MS = 100;
+export const GLOBAL_LOCK_RETRY_MAX_TIMEOUT_MS = 1000;
 const GLOBAL_LOCK_ERROR_MESSAGE = (name: string): string =>
   `Nexus global resource "${name}" is already in use by another process.`;
 
@@ -27,8 +29,8 @@ export const acquireGlobalLock = async (name: string): Promise<GlobalLockHandle>
     const release = await lockfile.lock(lockfilePath, {
       retries: {
         retries: GLOBAL_LOCK_RETRIES,
-        minTimeout: 100,
-        maxTimeout: 1000,
+        minTimeout: GLOBAL_LOCK_RETRY_MIN_TIMEOUT_MS,
+        maxTimeout: GLOBAL_LOCK_RETRY_MAX_TIMEOUT_MS,
       },
       stale: GLOBAL_LOCK_STALE_MS,
     });
