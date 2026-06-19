@@ -1,5 +1,19 @@
 # Changelog
 
+## [1.19.0](https://github.com/yohi/nexus/compare/v1.18.0...v1.19.0) (2026-06-19)
+
+
+### Features
+
+* **config:** Ollamaスレッド数設定を追加 ([602b914](https://github.com/yohi/nexus/commit/602b9148f7e43d4dcd59ccd292a685abaab91ac4))
+* **config:** Ollamaスレッド数設定を追加 ([ccf4b27](https://github.com/yohi/nexus/commit/ccf4b27156f8548528f8b7c6259b85659abcd108))
+* **embeddings:** Ollama embed payloadにnum_threadを追加 ([6aeca20](https://github.com/yohi/nexus/commit/6aeca209c1988a512f136854e736aea317bd039e))
+
+
+### Bug Fixes
+
+* **docs:** /metrics 集約アルゴリズムで Promise.all を Promise.allSettled に修正 ([c754f77](https://github.com/yohi/nexus/commit/c754f7768f7e22fbbea6f184b5a9fda640b5df3b))
+
 ## [1.18.0](https://github.com/yohi/nexus/compare/v1.17.0...v1.18.0) (2026-06-18)
 
 
