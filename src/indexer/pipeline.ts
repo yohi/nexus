@@ -320,12 +320,10 @@ export class IndexPipeline implements IIndexPipeline {
     // L1 cache check.
     const l1Misses: Array<{ index: number; hash: string; text: string }> = [];
     const resolvedEmbeddings: (number[] | undefined)[] = allChunks.map((chunk, i) => {
-      if (this.embeddingCacheSize > 0) {
         const cached = this.getL1Cache(chunk.hash);
         if (cached !== undefined) {
           return cached;
         }
-      }
       l1Misses.push({ index: i, hash: chunk.hash, text: chunk.content });
       return undefined;
     });

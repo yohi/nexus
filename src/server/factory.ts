@@ -26,7 +26,8 @@ import { RipgrepEngine } from "../search/grep.js";
 import { FileWatcher } from "../indexer/watcher.js";
 import { EventQueue } from "../indexer/event-queue.js";
 import { MetricsCollector } from "../observability/metrics-collector.js";
-import type { Config, GrepMatch, IndexEvent } from "../types/index.js";
+import type { Config, GrepMatch, IndexEvent, OllamaEmbeddingConfig } from "../types/index.js";
+import { DEFAULT_OLLAMA_NUM_THREAD } from "../config/index.js";
 
 /**
  * Type-safe interface for ripgrep JSON output.
@@ -530,9 +531,14 @@ export class NexusServerFactory {
 
     let provider;
     switch (config.embedding.provider) {
-      case "ollama":
-        provider = new OllamaEmbeddingProvider(config.embedding);
+      case "ollama": {
+        const ollamaConfig = {
+          ...config.embedding,
+          ollamaNumThread: config.embedding.ollamaNumThread ?? DEFAULT_OLLAMA_NUM_THREAD,
+        };
+        provider = new OllamaEmbeddingProvider(ollamaConfig as OllamaEmbeddingConfig);
         break;
+      }
       case "openai-compat":
         provider = new OpenAICompatEmbeddingProvider(config.embedding);
         break;

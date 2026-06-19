@@ -1,6 +1,6 @@
 import pLimit from 'p-limit';
 
-import type { EmbeddingConfig } from '../../types/index.js';
+import type { OllamaEmbeddingConfig } from '../../types/index.js';
 import { RetryExhaustedError, DimensionMismatchError, NonRetryableEmbeddingError } from '../../types/index.js';
 import { BaseEmbeddingProvider } from './base.js';
 
@@ -32,7 +32,7 @@ export class OllamaEmbeddingProvider extends BaseEmbeddingProvider {
 
   constructor(
     private readonly config: Pick<
-      EmbeddingConfig,
+      OllamaEmbeddingConfig,
       'baseUrl' | 'model' | 'dimensions' | 'maxConcurrency' | 'batchSize' | 'retryCount' | 'retryBaseDelayMs' | 'timeoutMs' | 'ollamaNumThread'
     >,
     private readonly dependencies: OllamaDependencies = defaultDependencies,
