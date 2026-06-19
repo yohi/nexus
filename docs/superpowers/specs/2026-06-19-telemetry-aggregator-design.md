@@ -326,8 +326,8 @@ type NodeMap = Map<number, RegisteredNode>;
 #### GET /metrics 集約アルゴリズム（JSON マージ方式）
 
 1. NodeMap から生存ノード一覧を取得
-2. 全ノードの `/metrics/json` に `Promise.all` で並列リクエスト（タイムアウト: 3000ms）
-3. 各レスポンスの JSON 配列をフラット化
+2. 全ノードの `/metrics/json` に `Promise.allSettled` で並列リクエスト（各リクエストは個別に `try/catch` でラップし、タイムアウト: 3000ms）
+3. `fulfilled` な結果のみをフィルタし（`rejected` はスキップ）、JSON 配列をフラット化
 4. メトリクス名 (`name`) でグループ化 → `values` を結合
    - **ラベル一意性の保証**: 各ノードは `defaultLabels` により `project`/`pid` ラベルが事前付与済みのため、異なるノードの values は必ず異なるラベルセットを持つ。したがって単純な values 結合で Prometheus のラベル重複エラーは発生しない（算術加算は不要）。
    - Histogram の `_bucket`/`_sum`/`_count` も同様にラベルセットで一意であり、そのまま結合できる。
