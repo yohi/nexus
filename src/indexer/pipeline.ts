@@ -111,20 +111,33 @@ export class IndexPipeline implements IIndexPipeline {
     }
   }
 
+  private getL1Cache(hash: string): number[] | undefined {
+    if (this.embeddingCacheSize <= 0) {
+      return undefined;
+    }
+    const cached = this.embeddingCache.get(hash);
+    if (cached === undefined) {
+      return undefined;
+    }
+    this.embeddingCache.delete(hash);
+    this.embeddingCache.set(hash, cached);
+    return cached;
+  }
+
   private setL1Cache(hash: string, vector: number[]): void {
     if (this.embeddingCacheSize <= 0) {
       return;
     }
-    // If key already exists, just update without eviction.
     if (this.embeddingCache.has(hash)) {
       this.embeddingCache.delete(hash);
       this.embeddingCache.set(hash, vector);
       return;
     }
-    // New key: check capacity before insertion.
     if (this.embeddingCache.size >= this.embeddingCacheSize) {
-      const oldestKey = this.embeddingCache.keys().next().value as string;
-      this.embeddingCache.delete(oldestKey);
+      const oldestKey = this.embeddingCache.keys().next().value;
+      if (oldestKey !== undefined) {
+        this.embeddingCache.delete(oldestKey);
+      }
     }
     this.embeddingCache.set(hash, vector);
   }
@@ -308,11 +321,8 @@ export class IndexPipeline implements IIndexPipeline {
     const l1Misses: Array<{ index: number; hash: string; text: string }> = [];
     const resolvedEmbeddings: (number[] | undefined)[] = allChunks.map((chunk, i) => {
       if (this.embeddingCacheSize > 0) {
-        const cached = this.embeddingCache.get(chunk.hash);
+        const cached = this.getL1Cache(chunk.hash);
         if (cached !== undefined) {
-          // LRU refresh: re-insert to bump to end of Map.
-          this.embeddingCache.delete(chunk.hash);
-          this.embeddingCache.set(chunk.hash, cached);
           return cached;
         }
       }
