@@ -79,7 +79,7 @@ Keep the existing three-stage pipeline:
 2. Resolve embeddings through L1 memory cache, then L2 SQLite cache, then Ollama only for true misses.
 3. Persist vectors and update Merkle state serially.
 
-The key behavioral requirement is that cache hits do not call `embeddingProvider.embed()`. The existing `Map`-based L1 cache may remain in place if it preserves LRU semantics by deleting and re-inserting a key on every hit before evicting the oldest insertion-order entry. L2 hits should populate L1 and use the same bounded insertion path. The L1 cache must remain bounded by `embeddingCacheSize`; inserting more entries than the configured limit should evict the least-recently-used entry so a full scan of a large repository cannot grow the Node.js heap without bound. If tests show the `Map` behavior is FIFO rather than LRU, reinforcing this path is in scope; replacing it with an external LRU package is not required unless the minimal `Map` implementation cannot satisfy the tests.
+The key behavioral requirement is that cache hits do not call `embeddingProvider.embed()`. The existing `Map`-based L1 cache may remain in place if it preserves LRU semantics by deleting and re-inserting a key on every hit before evicting the oldest insertion-order entry. Cache lookup and insertion should be centralized behind small L1 helper methods so `processEventWindow()` does not duplicate eviction semantics inline. L2 hits should populate L1 and use the same bounded insertion path. The L1 cache must remain bounded by `embeddingCacheSize`; inserting more entries than the configured limit should evict the least-recently-used entry so a full scan of a large repository cannot grow the Node.js heap without bound. If tests show the `Map` behavior is FIFO rather than LRU, reinforcing this path is in scope; replacing it with an external LRU package is not required unless the minimal `Map` implementation cannot satisfy the tests.
 
 ### 5. Merkle Tree verification
 
@@ -114,6 +114,7 @@ If tests reveal that unchanged modified events still reach chunking unnecessaril
 
 - L1 cache hit skips `embeddingProvider.embed()`.
 - L1 cache hit refreshes `Map` insertion order through delete-and-set before eviction decisions.
+- L1 cache lookup and insertion are covered as characterization/regression behavior and centralized behind helper methods during implementation.
 - L2 SQLite cache hit skips `embeddingProvider.embed()` and hydrates L1.
 - L2 hydration respects `embeddingCacheSize` and evicts old L1 entries when the cache is full.
 - True misses call `embeddingProvider.embed()` once per miss batch and persist fresh vectors to L2.

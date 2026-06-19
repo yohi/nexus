@@ -28,7 +28,7 @@
 
 ## File Structure
 
-- Modify `src/types/index.ts`: add `ollamaNumThread: number` to `EmbeddingConfig` so config, factory, and provider receive a typed value.
+- Modify `src/types/index.ts:207-218`: add `ollamaNumThread: number` to `EmbeddingConfig` so config, factory, and provider receive a typed value.
 - Modify `src/config/index.ts`: add default `ollamaNumThread: 2`, parse `NEXUS_OLLAMA_NUM_THREAD`, parse `.nexus.json` `embedding.ollamaNumThread`, and enforce range `1..16`.
 - Modify `src/plugins/embeddings/ollama.ts`: include `ollamaNumThread` in the constructor config pick and send it as `options.num_thread` in `/api/embed` JSON.
 - Modify `src/utils/global-lock.ts`: export lock policy constants so tests can assert the bounded process-lock behavior without duplicating magic numbers.
@@ -44,7 +44,7 @@
 ### Task 1: Add bounded Ollama thread config
 
 **Files:**
-- Modify: `src/types/index.ts:33-43`
+- Modify: `src/types/index.ts:207-218`
 - Modify: `src/config/index.ts:12-22`
 - Modify: `src/config/index.ts:110-133`
 - Modify: `src/config/index.ts:173-190`
@@ -454,7 +454,7 @@ Do not commit unless the user explicitly requested commits in this execution ses
 
 ---
 
-### Task 4: Add targeted L1 LRU refresh regression test
+### Task 4: Characterize and centralize L1 LRU cache behavior
 
 **Files:**
 - Modify: `src/indexer/pipeline.ts:114-130`
@@ -463,9 +463,9 @@ Do not commit unless the user explicitly requested commits in this execution ses
 
 **Interfaces:**
 - Consumes: existing `IndexPipeline` constructor option `embeddingCacheSize?: number`, existing L1 cache implementation in `src/indexer/pipeline.ts`, existing test helpers `createPipeline()`, `addEvent(...)`, `tsFunctions(...)`, and `CountingEmbeddingProvider` in `tests/unit/indexer/pipeline-windowed.test.ts`.
-- Produces: `private getL1Cache(hash: string): number[] | undefined`, existing `private setL1Cache(hash: string, vector: number[]): void` with centralized LRU semantics, and regression coverage proving a cache hit refreshes recency before the next eviction.
+- Produces: `private getL1Cache(hash: string): number[] | undefined`, existing `private setL1Cache(hash: string, vector: number[]): void` with centralized LRU semantics, and characterization/regression coverage proving a cache hit refreshes recency before the next eviction.
 
-- [ ] **Step 1: Write the LRU refresh test**
+- [ ] **Step 1: Write the LRU refresh characterization test**
 
 Add this test inside `describe('IndexPipeline – chunk embedding cache', () => { ... })` in `tests/unit/indexer/pipeline-windowed.test.ts`:
 
@@ -516,11 +516,11 @@ Add this test inside `describe('IndexPipeline – chunk embedding cache', () => 
   });
 ```
 
-- [ ] **Step 2: Run the cache tests and verify current behavior**
+- [ ] **Step 2: Run the cache tests and characterize current behavior**
 
 Run: `npx vitest run tests/unit/indexer/pipeline-windowed.test.ts`
 
-Expected: PASS if the existing delete-and-set `Map` behavior already satisfies LRU semantics. Continue to Step 3 even if this passes; the refactor is still required to centralize cache semantics and keep `processEventWindow()` readable.
+Expected: PASS is acceptable because existing inline delete-and-set logic may already satisfy LRU semantics. This step is a characterization/regression check, not a red-first TDD failure gate. Continue to Step 3 even if this passes; the refactor is still required to centralize cache semantics and keep `processEventWindow()` readable.
 
 - [ ] **Step 3: Extract L1 cache accessors while preserving behavior**
 
