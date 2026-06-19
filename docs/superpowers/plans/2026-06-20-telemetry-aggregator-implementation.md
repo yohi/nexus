@@ -28,7 +28,7 @@
 **Interfaces:**
 - Consumes: None (Existing codebase)
 - Produces:
-  - `MetricsCollector` updated constructor: `constructor(projectNameOrRegistry?: string | Registry, registry?: Registry)`
+- `MetricsCollector` updated constructor: `constructor(options?: { projectName?: string; registry?: Registry })`
   - `MetricsHooks` updated interface with new method definitions.
 
 - [ ] **Step 1: Verify Node.js engine constraint in package.json**
@@ -41,7 +41,7 @@ Expected: `engines` block is configured properly.
 Modify `src/server/factory.ts` to instantiate `MetricsCollector` passing the project name:
 ```typescript
 // Around line 429 in src/server/factory.ts
-const metricsCollector = new MetricsCollector(config.projectName || path.basename(projectRoot));
+const metricsCollector = new MetricsCollector({ projectName: config.projectName || path.basename(projectRoot) });
 ```
 Expected: `MetricsCollector` initialization uses the configured project name for default labels.
 
@@ -57,7 +57,7 @@ Modify `tests/unit/observability/metrics-collector.test.ts` to add test cases fo
 
   it('defaultLabels are set on registry', async () => {
     const customRegistry = new Registry();
-    const collector = new MetricsCollector('test-project-labels', customRegistry);
+    const collector = new MetricsCollector({ projectName: 'test-project-labels', registry: customRegistry });
     
     // Trigger any metric to populate values with default labels
     collector.onChunksIndexed(5);
@@ -67,7 +67,7 @@ Modify `tests/unit/observability/metrics-collector.test.ts` to add test cases fo
   });
 
   it('onToolCall increments counters and observes durations', async () => {
-    const collector = new MetricsCollector('test-project', registry);
+    const collector = new MetricsCollector({ projectName: 'test-project', registry });
     collector.onToolCall('semantic_search', 'success', 0.45);
 
     const metrics = await registry.metrics();
@@ -76,7 +76,7 @@ Modify `tests/unit/observability/metrics-collector.test.ts` to add test cases fo
   });
 
   it('onSearchResults records results counts', async () => {
-    const collector = new MetricsCollector('test-project', registry);
+    const collector = new MetricsCollector({ projectName: 'test-project', registry });
     collector.onSearchResults('hybrid', 15);
 
     const metrics = await registry.metrics();
@@ -84,7 +84,7 @@ Modify `tests/unit/observability/metrics-collector.test.ts` to add test cases fo
   });
 
   it('onContextLinesFetched increments line count metrics', async () => {
-    const collector = new MetricsCollector('test-project', registry);
+    const collector = new MetricsCollector({ projectName: 'test-project', registry });
     collector.onContextLinesFetched('get_context', 120);
 
     const metrics = await registry.metrics();
@@ -92,7 +92,7 @@ Modify `tests/unit/observability/metrics-collector.test.ts` to add test cases fo
   });
 
   it('onEmbeddingRequest records embedding stats', async () => {
-    const collector = new MetricsCollector('test-project', registry);
+    const collector = new MetricsCollector({ projectName: 'test-project', registry });
     collector.onEmbeddingRequest('ollama', 'success', 1.25, 4);
 
     const metrics = await registry.metrics();
@@ -171,14 +171,9 @@ export class MetricsCollector implements MetricsHooks {
 
   private readonly prevDroppedBySource = new Map<string, number>();
 
-  constructor(projectNameOrRegistry?: string | Registry, registry?: Registry) {
-    let projectName: string | undefined;
-    if (projectNameOrRegistry instanceof Registry) {
-      this.registry = projectNameOrRegistry;
-    } else {
-      projectName = projectNameOrRegistry;
-      this.registry = registry ?? new Registry();
-    }
+  constructor(options: { projectName?: string; registry?: Registry } = {}) {
+    const { projectName, registry } = options;
+    this.registry = registry ?? new Registry();
     
     this.registry.setDefaultLabels({
       project: projectName || process.env.NEXUS_PROJECT_NAME || path.basename(process.cwd()),
