@@ -12,4 +12,10 @@ export interface MetricsHooks {
   onRecoverySweepComplete(retried: number, purged: number, skipped: number, abandoned: number, source?: string): void;
 
   onIndexingProgress(processed: number, total: number, active: boolean): void;
+
+  // New hooks
+  onToolCall(toolName: string, status: 'success' | 'error', durationSeconds: number): void;
+  onSearchResults(searchType: 'semantic' | 'grep' | 'hybrid', resultCount: number): void;
+  onContextLinesFetched(toolName: string, lineCount: number): void;
+  onEmbeddingRequest(provider: string, status: 'success' | 'error', durationSeconds: number, batchSize: number): void;
 }

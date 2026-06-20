@@ -24,6 +24,7 @@ import { executeSemanticSearch, type SemanticSearchToolArgs } from "./tools/sema
 import { MetricsHttpServer } from "../observability/metrics-server.js";
 import type { Registry } from "prom-client";
 import { writeMetricsPort, removeMetricsPort } from "./metrics-port.js";
+import type { MetricsHooks } from "../observability/types.js";
 
 export interface NexusServerOptions {
   projectRoot: string;
@@ -37,6 +38,7 @@ export interface NexusServerOptions {
   pluginRegistry: PluginRegistry;
   runReindex: (options?: ReindexOptions) => Promise<IndexEvent[]>;
   loadFileContent: (filePath: string) => Promise<string>;
+  metricsHooks?: MetricsHooks;
 }
 
 export interface NexusRuntimeOptions extends NexusServerOptions {
