@@ -48,7 +48,8 @@ checker.init(
         return [`${name}: Invalid license format`];
       }
 
-      const licenses = license.replace(/[()]/g, '').split(/\s+OR\s+/i);
+      const cleaned = license.replace(/[()]/g, '');
+      const licenses = cleaned.split(/[ \t]+OR[ \t]+/i);
       const isAllowed = licenses.some(lic => allowed.has(lic.trim()));
 
       if (!isAllowed) {

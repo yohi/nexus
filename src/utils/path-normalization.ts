@@ -8,7 +8,7 @@
  */
 export const normalizeIgnorePaths = (ignorePaths: string[]): string[] =>
   ignorePaths.flatMap((p) => {
-    const normalized = p.replaceAll("\\", "/").replace(/^\.\/+|\/+$/g, "");
+    const normalized = p.replaceAll("\\", "/").replace(/^\.\/+/, "").replace(/\/+$/, "");
     if (normalized === "" || normalized.trim() === "") {
       return [];
     }
