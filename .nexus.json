@@ -10,7 +10,7 @@
   "indexing": {
     "chunkConcurrency": 2,
     "embedBatchWindowSize": 16,
-    "maxChunkChars": 3000
+    "maxChunkChars": 1000
   },
   "watcher": {
     "debounceMs": 300,

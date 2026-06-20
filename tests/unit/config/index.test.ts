@@ -295,6 +295,48 @@ describe('loadConfig', () => {
     const configFileTooHigh = await loadConfig({ projectRoot: tempDir, env: {} });
     expect(configFileTooHigh.metricsPort).toBeUndefined();
   });
+
+  it('defaults aggregatorPort to 9470 and lets file config override environment', async () => {
+    tempDir = await mkdtemp(path.join(os.tmpdir(), 'nexus-config-'));
+
+    const defaults = await loadConfig({ projectRoot: tempDir, env: {} });
+    expect(defaults.aggregatorPort).toBe(9470);
+
+    await writeFile(
+      path.join(tempDir, '.nexus.json'),
+      JSON.stringify({ aggregatorPort: 9555 }),
+      'utf8',
+    );
+    const config = await loadConfig({
+      projectRoot: tempDir,
+      env: { NEXUS_AGGREGATOR_PORT: '9666' },
+    });
+
+    expect(config.aggregatorPort).toBe(9555);
+  });
+
+  it('loads projectName from file config with environment fallback', async () => {
+    tempDir = await mkdtemp(path.join(os.tmpdir(), 'nexus-config-'));
+
+    const envConfig = await loadConfig({
+      projectRoot: tempDir,
+      env: { NEXUS_PROJECT_NAME: 'env-project' },
+    });
+    expect(envConfig.projectName).toBe('env-project');
+
+    await writeFile(
+      path.join(tempDir, '.nexus.json'),
+      JSON.stringify({ projectName: 'file-project' }),
+      'utf8',
+    );
+    const fileConfig = await loadConfig({
+      projectRoot: tempDir,
+      env: { NEXUS_PROJECT_NAME: 'env-project' },
+    });
+
+    expect(fileConfig.projectName).toBe('file-project');
+  });
+
   it('defaults Ollama num_thread to 2', async () => {
     tempDir = await mkdtemp(path.join(os.tmpdir(), 'nexus-config-'));
 
