@@ -192,6 +192,18 @@ describe('MetricsCollector', () => {
     collector.onChunksIndexed(5);
     const metrics = await metricsCollectorRegistry.metrics();
     expect(metrics).toMatch(/\{(?=[^}]*project="test-project-labels")[^}]*\}/);
+    expect(metrics).toMatch(/\{(?=[^}]*pid="\d+")[^}]*\}/);
+  });
+
+  it('defaultLabels are set on an injected registry', async () => {
+    const customRegistry = new Registry();
+    const collector = new MetricsCollector({ projectName: 'test-project-labels', registry: customRegistry });
+
+    collector.onChunksIndexed(5);
+    const metrics = await customRegistry.metrics();
+
+    expect(metrics).toMatch(/\{(?=[^}]*project="test-project-labels")[^}]*\}/);
+    expect(metrics).toMatch(/\{(?=[^}]*pid="\d+")[^}]*\}/);
   });
 
   it('onToolCall increments counters and observes durations', async () => {
@@ -210,7 +222,7 @@ describe('MetricsCollector', () => {
     collector.onSearchResults('hybrid', 15);
 
     const metrics = await searchRegistry.metrics();
-    expect(metrics).toMatch(metricPattern('nexus_search_results_bucket', 1, 'le="25"', 'project="test-project"', 'search_type="hybrid"'));
+    expect(metrics).toMatch(metricPattern('nexus_search_results_count_bucket', 1, 'le="25"', 'project="test-project"', 'search_type="hybrid"'));
   });
 
   it('onContextLinesFetched increments line count metrics', async () => {

@@ -40,11 +40,10 @@ export class MetricsCollector implements MetricsHooks {
   constructor(options: { projectName?: string; registry?: Registry } = {}) {
     const { projectName, registry } = options;
     this.registry = registry ?? new Registry();
-    if (!registry) {
-      this.registry.setDefaultLabels({
-        project: projectName || process.env.NEXUS_PROJECT_NAME || path.basename(process.cwd()),
-      });
-    }
+    this.registry.setDefaultLabels({
+      project: projectName || process.env.NEXUS_PROJECT_NAME || path.basename(process.cwd()),
+      pid: process.pid.toString(),
+    });
 
     this.queueSizeGauge = new Gauge({
       name: 'nexus_event_queue_size',
@@ -130,7 +129,7 @@ export class MetricsCollector implements MetricsHooks {
     });
 
     this.searchResults = new Histogram({
-      name: 'nexus_search_results',
+      name: 'nexus_search_results_count',
       help: 'Search hit results count distribution',
       labelNames: ['search_type'] as const,
       buckets: SEARCH_RESULTS_BUCKETS,

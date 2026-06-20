@@ -1,7 +1,7 @@
 import { spawn } from "node:child_process";
 import { readFile, mkdir, readdir, rename } from "node:fs/promises";
 import { createWriteStream } from "node:fs";
-import { dirname, join, relative, resolve, sep } from "node:path";
+import { basename, dirname, join, relative, resolve, sep } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { finished } from "node:stream/promises";
 import picomatch from "picomatch";
@@ -295,7 +295,7 @@ export class NexusServerFactory {
     const { metadataStore, vectorStore } =
       StorageManager.initializeStores(config);
     const pluginRegistry = this.setupPluginRegistry(config);
-    const metricsCollector = new MetricsCollector({ projectName: config.projectName || path.basename(projectRoot) });
+    const metricsCollector = new MetricsCollector({ projectName: config.projectName || basename(projectRoot) });
     let embeddingProvider = pluginRegistry.getEmbeddingProvider();
 
     if (!embeddingProvider) {
