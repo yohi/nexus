@@ -288,6 +288,7 @@ export interface Config {
   embedding: EmbeddingConfig;
   indexing: IndexingConfig;
   metricsPort?: number;
+  aggregatorPort?: number;
 }
 
 export interface DeadLetterEntry {

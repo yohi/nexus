@@ -26,6 +26,7 @@ import type { Registry } from "prom-client";
 import { writeMetricsPort, removeMetricsPort } from "./metrics-port.js";
 import { withToolMetrics } from "./tool-instrumentation.js";
 import type { MetricsHooks } from "../observability/types.js";
+import { RegistrationClient } from "../observability/registration-client.js";
 
 export interface NexusServerOptions {
   projectRoot: string;
@@ -49,6 +50,7 @@ export interface NexusRuntimeOptions extends NexusServerOptions {
   metricsPort?: number;
   storageDir?: string;
   projectName?: string;
+  aggregatorPort?: number;
 }
 
 export interface NexusRuntime {
@@ -58,6 +60,7 @@ export interface NexusRuntime {
   initialize(): Promise<void>;
   close(): Promise<void>;
   reindex(fullRebuild?: boolean): Promise<void>;
+  registrationClient?: RegistrationClient | null;
 }
 
 export const createNexusServer = (
@@ -275,6 +278,7 @@ export const buildNexusRuntime = (
   const server = createNexusServer(options, () => initialize());
   let metricsServer: MetricsHttpServer | null = null;
   let initPromise: Promise<void> | null = null;
+  let registrationClient: RegistrationClient | null = null;
 
   const initialize = (): Promise<void> => {
     if (initPromise) {
@@ -324,6 +328,13 @@ export const buildNexusRuntime = (
               console.warn("[Nexus] Failed to remove stale metrics port file:", err);
             });
           }
+          if (resolvedPort !== undefined && options.aggregatorPort !== undefined) {
+            registrationClient = new RegistrationClient(
+              { projectId: options.projectName ?? 'unknown', metricsPort: resolvedPort, pid: process.pid },
+              { aggregatorPort: options.aggregatorPort, heartbeatIntervalMs: 30000, requestTimeoutMs: 5000 },
+            );
+            registrationClient.start();
+          }
         }
       } catch (error) {
         await options.pipeline.stop().catch((stopError: unknown) => {
@@ -372,6 +383,10 @@ export const buildNexusRuntime = (
       if (options.storageDir) {
         await removeMetricsPort(options.storageDir).catch(() => {});
       }
+    }
+    if (registrationClient) {
+      registrationClient.stop();
+      registrationClient = null;
     }
 
 
@@ -423,6 +438,7 @@ export const buildNexusRuntime = (
     initialize,
     close,
     reindex,
+    get registrationClient() { return registrationClient; }
   };
 };
 

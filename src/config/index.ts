@@ -161,6 +161,10 @@ export const loadConfig = async (options: LoadConfigOptions): Promise<Config> =>
       asPortNumber(env.NEXUS_METRICS_PORT) ??
       validatePortNumber(fileConfig.metricsPort) ??
       undefined,
+    aggregatorPort:
+      asPortNumber(env.NEXUS_AGGREGATOR_PORT) ??
+      validatePortNumber(fileConfig.aggregatorPort) ??
+      undefined,
   };
 
   return merged;
