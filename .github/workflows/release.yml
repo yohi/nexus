@@ -63,8 +63,10 @@ jobs:
         if: ${{ steps.release.outputs.release_created }}
 
       - name: Clone Bitbucket Marketplace Repo
+        env:
+          BITBUCKET_TOKEN: ${{ secrets.BITBUCKET_TOKEN }}
         run: |
-          git clone https://x-token-auth:${{ secrets.BITBUCKET_TOKEN }}@bitbucket.org/dh_ohi/claude-plugins.git bitbucket-repo
+          git clone https://x-token-auth:${BITBUCKET_TOKEN}@bitbucket.org/dh_ohi/claude-plugins.git bitbucket-repo
           cd bitbucket-repo
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
@@ -113,6 +115,8 @@ jobs:
         if: ${{ steps.release.outputs.release_created }}
 
       - name: Push changes to Bitbucket
+        env:
+          BITBUCKET_TOKEN: ${{ secrets.BITBUCKET_TOKEN }}
         run: |
           cd bitbucket-repo
           PLUGIN_NAME="${{ github.event.repository.name }}"
@@ -123,8 +127,7 @@ jobs:
             echo "No changes to commit"
           else
             git commit -m "chore: release $TAG_NAME for $PLUGIN_NAME [skip ci]"
-            # HTTPS認証情報を使ってプッシュ
-            git push https://x-token-auth:${{ secrets.BITBUCKET_TOKEN }}@bitbucket.org/dh_ohi/claude-plugins.git HEAD
+            git push https://x-token-auth:${BITBUCKET_TOKEN}@bitbucket.org/dh_ohi/claude-plugins.git HEAD
           fi
         if: ${{ steps.release.outputs.release_created }}
 

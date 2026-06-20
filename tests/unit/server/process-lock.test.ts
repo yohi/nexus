@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { mkdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
+import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 import os from 'node:os';
 
@@ -9,7 +10,7 @@ describe('ProcessLock', () => {
   let testDir: string;
 
   beforeEach(async () => {
-    testDir = path.join(os.tmpdir(), `nexus-lock-test-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+    testDir = path.join(os.tmpdir(), `nexus-lock-test-${process.pid}-${Date.now()}-${randomUUID()}`);
     await mkdir(testDir, { recursive: true });
   });
 
@@ -68,7 +69,7 @@ describe('ProcessLock', () => {
   });
 
   it('creates the storage directory if it does not exist', async () => {
-    const nestedDir = path.join(testDir, 'subdir-' + Math.random().toString(36).slice(2));
+    const nestedDir = path.join(testDir, 'subdir-' + randomUUID());
 
     const result = await acquireProcessLock(nestedDir);
 
