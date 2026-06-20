@@ -328,10 +328,11 @@ export const buildNexusRuntime = (
               console.warn("[Nexus] Failed to remove stale metrics port file:", err);
             });
           }
-          if (resolvedPort !== undefined && options.aggregatorPort !== undefined) {
+          if (resolvedPort !== undefined) {
+            const aggregatorPort = options.aggregatorPort ?? 9470;
             registrationClient = new RegistrationClient(
-              { projectId: options.projectName ?? 'unknown', metricsPort: resolvedPort, pid: process.pid },
-              { aggregatorPort: options.aggregatorPort, heartbeatIntervalMs: 30000, requestTimeoutMs: 5000 },
+              { projectId: options.projectName ?? options.projectRoot.split(/[\\/]/).filter(Boolean).at(-1) ?? 'unknown', metricsPort: resolvedPort, pid: process.pid },
+              { aggregatorPort, heartbeatIntervalMs: 30000, requestTimeoutMs: 1000 },
             );
             registrationClient.start();
           }
