@@ -482,6 +482,7 @@ export class NexusServerFactory {
         storageDir: config.storage.rootDir,
         projectName: config.projectName,
         metricsHooks: metricsCollector,
+        aggregatorPort: config.aggregatorPort,
         onClose: async () => {
           await onClose();
           if (drainListener) {
