@@ -45,6 +45,27 @@ async function readMetricsPortFile(storageDir: string): Promise<number | undefin
   return undefined;
 }
 
+function isJsonObject(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+async function readAggregatorPortFromConfig(projectRoot: string): Promise<number | undefined> {
+  try {
+    const raw = await readFile(path.join(projectRoot, ".nexus.json"), "utf8");
+    const parsed: unknown = JSON.parse(raw);
+    if (!isJsonObject(parsed)) {
+      return undefined;
+    }
+    const value = parsed.aggregatorPort;
+    return Number.isInteger(value) && typeof value === "number" && value > 0 && value <= 65535
+      ? value
+      : undefined;
+  } catch {
+    // no-excuse-ok: catch - absent or malformed optional dashboard config falls back to env/default.
+    return undefined;
+  }
+}
+
 export async function main() {
   const { values } = parseArgs({
     options: {
@@ -76,6 +97,7 @@ export async function main() {
 
   const storageDir = await resolveStorageDir(projectRoot);
   const autoPort = await readMetricsPortFile(storageDir);
+  const configAggregatorPort = await readAggregatorPortFromConfig(projectRoot);
 
   const port = (() => {
     if (values.port !== undefined) {
@@ -109,6 +131,9 @@ export async function main() {
   const aggregatorPort = (() => {
     if (values["aggregator-port"] !== undefined) {
       return parsePortOption(values["aggregator-port"], '--aggregator-port');
+    }
+    if (configAggregatorPort !== undefined) {
+      return configAggregatorPort;
     }
     if (process.env.NEXUS_AGGREGATOR_PORT) {
       return parsePortOption(process.env.NEXUS_AGGREGATOR_PORT, 'NEXUS_AGGREGATOR_PORT');
