@@ -6,6 +6,7 @@ import { parseArgs } from "node:util";
 import React from "react";
 import { render } from "ink";
 import { App } from "./app.js";
+import { AggregatorServer } from "./server/aggregator.js";
 
 /** Resolve the .nexus storage dir: env var > .nexus.json > default */
 export async function resolveStorageDir(projectRoot: string): Promise<string> {
@@ -50,9 +51,23 @@ export async function main() {
       port: { type: "string" },
       interval: { type: "string", default: "2000" },
       "project-root": { type: "string" },
+      "aggregator-port": { type: "string" },
     },
     strict: true,
   });
+
+  const parsePortOption = (raw: string, optionName: string): number => {
+    if (!/^\d+$/.test(raw)) {
+      console.error(`[Nexus Dashboard] Invalid ${optionName} value "${raw}". Please specify a valid port number (1-65535).`);
+      process.exit(1);
+    }
+    const parsed = parseInt(raw, 10);
+    if (isNaN(parsed) || parsed < 1 || parsed > 65535) {
+      console.error(`[Nexus Dashboard] Invalid ${optionName} value "${raw}". Please specify a valid port number (1-65535).`);
+      process.exit(1);
+    }
+    return parsed;
+  };
 
   const projectRoot = (() => {
     const raw = values["project-root"];
@@ -64,21 +79,11 @@ export async function main() {
 
   const port = (() => {
     if (values.port !== undefined) {
-      if (!/^\d+$/.test(values.port)) {
-        console.error(`[Nexus Dashboard] Invalid --port value "${values.port}". Please specify a valid port number (1-65535).`);
-        process.exit(1);
-      }
-      const parsed = parseInt(values.port, 10);
-      if (isNaN(parsed) || parsed < 1 || parsed > 65535) {
-        console.error(`[Nexus Dashboard] Invalid --port value "${values.port}". Please specify a valid port number (1-65535).`);
-        process.exit(1);
-      }
-      return parsed;
+      return parsePortOption(values.port, '--port');
     }
     if (autoPort !== undefined) {
       return autoPort;
     }
-    // metrics.port が見つからない = サーバー未起動 or 別プロジェクトのサーバーに誤接続するリスクがある
     console.error(
       `[Nexus Dashboard] Could not determine metrics port for project: ${projectRoot}\n` +
       `  Storage dir: ${storageDir}\n` +
@@ -101,9 +106,35 @@ export async function main() {
     }
     return parsed;
   })();
+  const aggregatorPort = (() => {
+    if (values["aggregator-port"] !== undefined) {
+      return parsePortOption(values["aggregator-port"], '--aggregator-port');
+    }
+    if (process.env.NEXUS_AGGREGATOR_PORT) {
+      return parsePortOption(process.env.NEXUS_AGGREGATOR_PORT, 'NEXUS_AGGREGATOR_PORT');
+    }
+    return 9470;
+  })();
 
-  const { waitUntilExit } = render(React.createElement(App, { port, interval }));
-  await waitUntilExit();
+  const aggregator = new AggregatorServer();
+  try {
+    await aggregator.start(aggregatorPort);
+  } catch (err: unknown) {
+    if ((err as NodeJS.ErrnoException).code === 'EADDRINUSE') {
+      console.warn(`[Nexus Dashboard] Aggregator already running on port ${aggregatorPort}, skipping setup.`);
+    } else {
+      // Non-fatal: continue with TUI even if aggregator fails (degraded mode).
+      // Dashboard local metrics (from --port) remain functional.
+      console.error('[Nexus Dashboard] Failed to start aggregator:', err);
+    }
+  }
+
+  try {
+    const { waitUntilExit } = render(React.createElement(App, { port, interval }));
+    await waitUntilExit();
+  } finally {
+    await aggregator.stop();
+  }
 }
 
 async function isMainModule(): Promise<boolean> {
