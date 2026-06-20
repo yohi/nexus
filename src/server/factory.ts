@@ -1,7 +1,7 @@
 import { spawn } from "node:child_process";
 import { readFile, mkdir, readdir, rename } from "node:fs/promises";
 import { createWriteStream } from "node:fs";
-import { dirname, join, relative, resolve, sep } from "node:path";
+import { dirname, join, relative, resolve, sep, basename } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { finished } from "node:stream/promises";
 import picomatch from "picomatch";
@@ -427,7 +427,7 @@ export class NexusServerFactory {
       projectRoot,
     });
 
-    const metricsCollector = new MetricsCollector();
+    const metricsCollector = new MetricsCollector({ projectName: config.projectName || basename(projectRoot) });
 
     const pipeline = new IndexPipeline({
       metadataStore,
