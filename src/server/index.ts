@@ -24,6 +24,7 @@ import { executeSemanticSearch, type SemanticSearchToolArgs } from "./tools/sema
 import { MetricsHttpServer } from "../observability/metrics-server.js";
 import type { Registry } from "prom-client";
 import { writeMetricsPort, removeMetricsPort } from "./metrics-port.js";
+import { withToolMetrics } from "./tool-instrumentation.js";
 import type { MetricsHooks } from "../observability/types.js";
 
 export interface NexusServerOptions {
@@ -47,6 +48,7 @@ export interface NexusRuntimeOptions extends NexusServerOptions {
   metricsCollectorRegistry?: Registry;
   metricsPort?: number;
   storageDir?: string;
+  projectName?: string;
 }
 
 export interface NexusRuntime {
@@ -87,21 +89,25 @@ export const createNexusServer = (
         language: z.string().optional(),
       },
     },
-    async (args, extra) => {
-      if (awaitInitialize) await awaitInitialize();
-      try {
-        return toolResult(
-          await executeSemanticSearch(
+    withToolMetrics(
+      "semantic_search",
+      options.metricsHooks,
+      async (args, extra) => {
+        if (awaitInitialize) await awaitInitialize();
+        try {
+          const result = await executeSemanticSearch(
             options.semanticSearch,
             options.sanitizer,
             args as SemanticSearchToolArgs & { filePattern?: string },
             extra?.signal,
-          ),
-        );
-      } catch (error) {
-        return errorResult(error);
-      }
-    },
+          );
+          options.metricsHooks?.onSearchResults('semantic', result.results.length);
+          return toolResult(result);
+        } catch (error) {
+          return errorResult(error);
+        }
+      },
+    )
   );
 
   server.registerTool(
@@ -116,22 +122,26 @@ export const createNexusServer = (
         maxResults: z.number().int().positive().optional(),
       },
     },
-    async (args, extra) => {
-      if (awaitInitialize) await awaitInitialize();
-      try {
-        return toolResult(
-          await executeGrepSearch(
+    withToolMetrics(
+      "grep_search",
+      options.metricsHooks,
+      async (args, extra) => {
+        if (awaitInitialize) await awaitInitialize();
+        try {
+          const result = await executeGrepSearch(
             options.grepEngine,
             options.projectRoot,
             options.sanitizer,
             args as GrepSearchToolArgs,
             extra?.signal,
-          ),
-        );
-      } catch (error) {
-        return errorResult(error);
-      }
-    },
+          );
+          options.metricsHooks?.onSearchResults('grep', result.matches.length);
+          return toolResult(result);
+        } catch (error) {
+          return errorResult(error);
+        }
+      },
+    )
   );
 
   server.registerTool(
@@ -147,21 +157,25 @@ export const createNexusServer = (
         grepPattern: z.string().optional(),
       },
     },
-    async (args, extra) => {
-      if (awaitInitialize) await awaitInitialize();
-      try {
-        return toolResult(
-          await executeHybridSearch(
+    withToolMetrics(
+      "hybrid_search",
+      options.metricsHooks,
+      async (args, extra) => {
+        if (awaitInitialize) await awaitInitialize();
+        try {
+          const result = await executeHybridSearch(
             options.orchestrator,
             options.sanitizer,
             args as HybridSearchToolArgs & { filePattern?: string },
             extra?.signal,
-          ),
-        );
-      } catch (error) {
-        return errorResult(error);
-      }
-    },
+          );
+          options.metricsHooks?.onSearchResults('hybrid', result.results.length);
+          return toolResult(result);
+        } catch (error) {
+          return errorResult(error);
+        }
+      },
+    )
   );
 
   server.registerTool(
@@ -175,20 +189,25 @@ export const createNexusServer = (
         endLine: z.number().int().positive().optional(),
       },
     },
-    async (args) => {
-      if (awaitInitialize) await awaitInitialize();
-      try {
-        return toolResult(
-          await executeGetContext(
+    withToolMetrics(
+      "get_context",
+      options.metricsHooks,
+      async (args) => {
+        if (awaitInitialize) await awaitInitialize();
+        try {
+          const result = await executeGetContext(
             options.loadFileContent,
             options.sanitizer,
             args,
-          ),
-        );
-      } catch (error) {
-        return errorResult(error);
-      }
-    },
+          );
+          const lineCount = result.endLine - result.startLine + 1;
+          options.metricsHooks?.onContextLinesFetched('get_context', lineCount);
+          return toolResult(result);
+        } catch (error) {
+          return errorResult(error);
+        }
+      },
+    )
   );
 
   server.registerTool(
@@ -197,21 +216,25 @@ export const createNexusServer = (
       description: "Return index state and statistics",
       inputSchema: {},
     },
-    async () => {
-      if (awaitInitialize) await awaitInitialize();
-      try {
-        return toolResult(
-          await executeIndexStatus(
-            options.metadataStore,
-            options.vectorStore,
-            options.pluginRegistry,
-            options.pipeline,
-          ),
-        );
-      } catch (error) {
-        return errorResult(error);
-      }
-    },
+    withToolMetrics(
+      "index_status",
+      options.metricsHooks,
+      async () => {
+        if (awaitInitialize) await awaitInitialize();
+        try {
+          return toolResult(
+            await executeIndexStatus(
+              options.metadataStore,
+              options.vectorStore,
+              options.pluginRegistry,
+              options.pipeline,
+            ),
+          );
+        } catch (error) {
+          return errorResult(error);
+        }
+      },
+    )
   );
 
   server.registerTool(
@@ -222,21 +245,25 @@ export const createNexusServer = (
         fullRebuild: z.boolean().optional(),
       },
     },
-    async (args) => {
-      if (awaitInitialize) await awaitInitialize();
-      try {
-        return toolResult(
-          await executeReindex(
-            options.pipeline,
-            options.runReindex,
-            options.loadFileContent,
-            args,
-          ),
-        );
-      } catch (error) {
-        return errorResult(error);
-      }
-    },
+    withToolMetrics(
+      "reindex",
+      options.metricsHooks,
+      async (args) => {
+        if (awaitInitialize) await awaitInitialize();
+        try {
+          return toolResult(
+            await executeReindex(
+              options.pipeline,
+              options.runReindex,
+              options.loadFileContent,
+              args,
+            ),
+          );
+        } catch (error) {
+          return errorResult(error);
+        }
+      },
+    )
   );
 
   return server;
@@ -347,6 +374,7 @@ export const buildNexusRuntime = (
       }
     }
 
+
     if (options.onClose) {
       try {
         await options.onClose();
@@ -388,7 +416,14 @@ export const buildNexusRuntime = (
     await options.runReindex({ fullScan: fullRebuild });
   };
 
-  return { server, orchestrator: options.orchestrator, sanitizer: options.sanitizer, initialize, close, reindex };
+  return {
+    server,
+    orchestrator: options.orchestrator,
+    sanitizer: options.sanitizer,
+    initialize,
+    close,
+    reindex,
+  };
 };
 
 export const initializeNexusRuntime = async (
