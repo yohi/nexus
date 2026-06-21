@@ -15,6 +15,8 @@ export interface DashboardProjectConfig {
   aggregatorPort?: number;
 }
 
+const SAFE_PROJECT_ROOT_PATTERN = /^[A-Za-z0-9._/\\~ -]+$/;
+
 async function validateProjectRoot(projectRoot: string): Promise<string> {
   const sanitizedProjectRoot = projectRoot.trim();
 
@@ -24,6 +26,10 @@ async function validateProjectRoot(projectRoot: string): Promise<string> {
 
   if (sanitizedProjectRoot.includes("\0")) {
     throw new Error('Project root contains invalid characters');
+  }
+
+  if (!SAFE_PROJECT_ROOT_PATTERN.test(sanitizedProjectRoot)) {
+    throw new Error('Project root contains unsupported characters');
   }
 
   const normalizedInput = path.normalize(sanitizedProjectRoot);
