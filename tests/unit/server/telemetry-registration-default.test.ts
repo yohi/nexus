@@ -1,3 +1,4 @@
+import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { initializeNexusRuntime, type NexusRuntimeOptions } from '../../../src/server/index.js';
 
@@ -63,7 +64,7 @@ describe('initializeNexusRuntime telemetry registration defaults', () => {
         stop: vi.fn().mockResolvedValue(undefined),
       },
       metricsCollectorRegistry: {},
-      projectRoot: '/tmp/test-project',
+      projectRoot: path.join(process.cwd(), 'test-project'),
       sanitizer: {},
       semanticSearch: {},
       grepEngine: {},
