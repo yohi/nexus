@@ -85,12 +85,12 @@ async function syncMetricsPortFile(storageDir: string | undefined, resolvedPort:
 }
 
 function createRegistrationClient(
-  aggregatorPort: number | undefined,
+  aggregatorPort: number,
   resolvedPort: number | undefined,
   projectRoot: string,
   projectName?: string,
 ): RegistrationClient | null {
-  if (aggregatorPort === undefined || resolvedPort === undefined) {
+  if (resolvedPort === undefined) {
     return null;
   }
 
@@ -363,7 +363,7 @@ export const buildNexusRuntime = (
           const resolvedPort = metricsServer.getPort();
           await syncMetricsPortFile(options.storageDir, resolvedPort);
           registrationClient = createRegistrationClient(
-            options.aggregatorPort,
+            options.aggregatorPort ?? 9470,
             resolvedPort,
             options.projectRoot,
             options.projectName,

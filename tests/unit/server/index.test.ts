@@ -3,6 +3,7 @@ import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
 import { createNexusServer, errorResult, toolResult, initializeNexusRuntime, type NexusRuntimeOptions } from '../../../src/server/index.js';
 import { PathSanitizer, PathTraversalError } from '../../../src/server/path-sanitizer.js';
 import * as metricsPortUtils from '../../../src/server/metrics-port.js';
+import { createMockNexusRuntimeOptions } from '../../shared/test-helpers.js';
 
 vi.mock('../../../src/observability/metrics-server.js', () => {
   return {
@@ -111,27 +112,15 @@ describe('NexusServer helpers', () => {
 
   describe('initializeNexusRuntime shutdown', () => {
     it('throws AggregateError if both watcher and server fail to close', async () => {
-      const mockOptions = {
-        metadataStore: { initialize: async () => {} },
-        vectorStore: { initialize: async () => {} },
-        pipeline: {
-          reconcileOnStartup: async () => ({}),
-          start: vi.fn(),
-          stop: vi.fn().mockResolvedValue(undefined),
-        },
+      const mockOptions = createMockNexusRuntimeOptions({
         watcher: {
           start: async () => {},
           stop: async () => { throw new Error('watcher stop failed'); }
         },
         projectRoot: '/tmp',
-        sanitizer: {} as any,
-        semanticSearch: {} as any,
-        grepEngine: {} as any,
-        orchestrator: {} as any,
-        pluginRegistry: {} as any,
         runReindex: async () => [],
         loadFileContent: async () => '',
-      } as unknown as NexusRuntimeOptions;
+      });
 
       const runtime = await initializeNexusRuntime(mockOptions);
       
@@ -184,20 +173,11 @@ describe('NexusServer helpers', () => {
         stop: vi.fn().mockResolvedValue(undefined),
       };
 
-      const mockOptions = {
-        metadataStore: { initialize: vi.fn().mockResolvedValue(undefined) },
-        vectorStore: { initialize: vi.fn().mockResolvedValue(undefined) },
+      const mockOptions = createMockNexusRuntimeOptions({
         pipeline: mockPipeline,
         watcher: mockWatcher,
         projectRoot: '/tmp',
-        sanitizer: {} as any,
-        semanticSearch: {} as any,
-        grepEngine: {} as any,
-        orchestrator: {} as any,
-        pluginRegistry: {} as any,
-        runReindex: vi.fn(),
-        loadFileContent: vi.fn(),
-      } as any;
+      });
 
       const initPromise = initializeNexusRuntime(mockOptions);
 
@@ -221,29 +201,11 @@ describe('NexusServer helpers', () => {
   describe('initializeNexusRuntime metricsPort cleanup', () => {
     it('calls removeMetricsPort when metrics server fails to start', async () => {
       const removeSpy = vi.spyOn(metricsPortUtils, 'removeMetricsPort').mockResolvedValue(undefined);
-      const mockOptions = {
-        metadataStore: { initialize: vi.fn().mockResolvedValue(undefined) },
-        vectorStore: { initialize: vi.fn().mockResolvedValue(undefined) },
-        pipeline: {
-          reconcileOnStartup: vi.fn().mockResolvedValue({}),
-          start: vi.fn(),
-          stop: vi.fn().mockResolvedValue(undefined),
-        },
-        watcher: {
-          start: vi.fn().mockResolvedValue(undefined),
-          stop: vi.fn().mockResolvedValue(undefined),
-        },
+      const mockOptions = createMockNexusRuntimeOptions({
         metricsCollectorRegistry: {} as any, // Trigger metricsServer creation
         storageDir: '/fake/storage',
         projectRoot: '/tmp',
-        sanitizer: {} as any,
-        semanticSearch: {} as any,
-        grepEngine: {} as any,
-        orchestrator: {} as any,
-        pluginRegistry: {} as any,
-        runReindex: vi.fn(),
-        loadFileContent: vi.fn(),
-      } as any;
+      });
 
       // We need to mock MetricsHttpServer to fail or return undefined port.
       // Since it's instantiated inside, we can't easily mock the instance.
@@ -265,4 +227,5 @@ describe('NexusServer helpers', () => {
       removeSpy.mockRestore();
     });
   });
+
 });

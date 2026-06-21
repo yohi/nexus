@@ -4,6 +4,9 @@ import { TypeScriptLanguagePlugin } from '../../src/plugins/languages/typescript
 import type { LanguagePlugin } from '../../src/types/index.js';
 import { InMemoryMetadataStore } from '../unit/storage/in-memory-metadata-store.js';
 import { InMemoryVectorStore } from '../unit/storage/in-memory-vector-store.js';
+import { vi } from 'vitest';
+import type { NexusRuntimeOptions } from '../../src/server/index.js';
+import path from 'node:path';
 
 export interface CreatePipelineOptions {
   dimensions?: number;
@@ -37,3 +40,29 @@ export const createPipeline = async (options: CreatePipelineOptions = {}) => {
     registry,
   };
 };
+
+export const createMockNexusRuntimeOptions = (overrides: Partial<NexusRuntimeOptions> = {}): NexusRuntimeOptions => {
+  return {
+    metadataStore: { initialize: vi.fn().mockResolvedValue(undefined) },
+    vectorStore: { initialize: vi.fn().mockResolvedValue(undefined) },
+    pipeline: {
+      reconcileOnStartup: vi.fn().mockResolvedValue({}),
+      start: vi.fn(),
+      stop: vi.fn().mockResolvedValue(undefined),
+    },
+    watcher: {
+      start: vi.fn().mockResolvedValue(undefined),
+      stop: vi.fn().mockResolvedValue(undefined),
+    },
+    projectRoot: path.join(process.cwd(), 'test-project'),
+    sanitizer: {},
+    semanticSearch: {},
+    grepEngine: {},
+    orchestrator: {},
+    pluginRegistry: {},
+    runReindex: vi.fn(),
+    loadFileContent: vi.fn(),
+    ...overrides,
+  } as unknown as NexusRuntimeOptions;
+};
+
