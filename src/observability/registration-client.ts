@@ -38,7 +38,7 @@ export class RegistrationClient {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), this.config.requestTimeoutMs);
     try {
-      await this.fetchFn(
+      const response = await this.fetchFn(
         `http://127.0.0.1:${this.config.aggregatorPort}/api/discovery/register`,
         {
           method: 'POST',
@@ -47,6 +47,9 @@ export class RegistrationClient {
           signal: controller.signal,
         },
       );
+      if (!response.ok) {
+        throw new Error(`Aggregator registration failed with status ${response.status} ${response.statusText}`.trim());
+      }
     } catch (error) {
       this.logger?.debug?.('Aggregator registration failed (non-fatal):', error);
     } finally {

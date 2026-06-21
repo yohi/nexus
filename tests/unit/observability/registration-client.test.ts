@@ -35,4 +35,23 @@ describe('RegistrationClient', () => {
 
     client.stop();
   });
+
+  it('logs non-ok registration responses as non-fatal failures', async () => {
+    const mockFetch = vi.fn().mockResolvedValue({ ok: false, status: 503, statusText: 'Service Unavailable' });
+    const debug = vi.fn();
+    const payload = { projectId: 'test', metricsPort: 8080, pid: 123 };
+    const config = { aggregatorPort: 9470, heartbeatIntervalMs: 1000, requestTimeoutMs: 200 };
+
+    const client = new RegistrationClient(payload, config, mockFetch, { debug });
+    client.start();
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(debug).toHaveBeenCalledTimes(1);
+    expect(debug).toHaveBeenCalledWith(
+      'Aggregator registration failed (non-fatal):',
+      expect.objectContaining({ message: 'Aggregator registration failed with status 503 Service Unavailable' }),
+    );
+
+    client.stop();
+  });
 });
