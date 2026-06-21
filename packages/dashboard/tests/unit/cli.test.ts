@@ -62,4 +62,42 @@ describe('resolveStorageDir', () => {
       'storage.rootDir must stay within the project root'
     );
   });
+
+  it('rejects storage rootDir that traverses through a symlink to an external missing path', async () => {
+    const projectRoot = tempDir!;
+    const { mkdir, symlink } = await import('node:fs/promises');
+    const outsideDir = await mkdtemp(path.join(os.tmpdir(), 'nexus-cli-outside-link-'));
+    const linkedDir = path.join(projectRoot, 'linked');
+
+    await mkdir(projectRoot, { recursive: true });
+    await symlink(outsideDir, linkedDir, 'dir');
+    await writeFile(
+      path.join(projectRoot, '.nexus.json'),
+      JSON.stringify({ storage: { rootDir: 'linked/missing-child' } }),
+      'utf8'
+    );
+
+    await expect(resolveStorageDir(projectRoot)).rejects.toThrow(
+      'storage.rootDir must stay within the project root'
+    );
+
+    await rm(outsideDir, { recursive: true, force: true });
+  });
+
+  it('rejects env storage root that resolves outside its validated directory', async () => {
+    const projectRoot = tempDir!;
+    const storageRoot = path.join(projectRoot, 'linked-storage');
+    vi.stubEnv('NEXUS_STORAGE_ROOT_DIR', storageRoot);
+
+    const { symlink, mkdir } = await import('node:fs/promises');
+    const outsideDir = await mkdtemp(path.join(os.tmpdir(), 'nexus-cli-outside-'));
+    await mkdir(path.dirname(storageRoot), { recursive: true });
+    await symlink(outsideDir, storageRoot, 'dir');
+
+    await expect(resolveStorageDir(projectRoot)).rejects.toThrow(
+      'Project root must resolve within the requested directory'
+    );
+
+    await rm(outsideDir, { recursive: true, force: true });
+  });
 });

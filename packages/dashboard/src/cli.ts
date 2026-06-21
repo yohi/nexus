@@ -15,7 +15,18 @@ export interface DashboardProjectConfig {
   aggregatorPort?: number;
 }
 
-const SAFE_PROJECT_ROOT_PATTERN = /^[A-Za-z0-9._/\\~ :.-]+$/;
+const SAFE_PROJECT_ROOT_PATTERN = /^[A-Za-z0-9._/\\~ :-]+$/;
+
+function ensureResolvedPathWithinRequestedDirectory(requestedPath: string, resolvedPath: string): string {
+  const normalizedRequestedPath = path.resolve(requestedPath);
+  const relativePath = path.relative(normalizedRequestedPath, resolvedPath);
+
+  if (relativePath.startsWith('..') || path.isAbsolute(relativePath)) {
+    throw new Error('Project root must resolve within the requested directory');
+  }
+
+  return resolvedPath;
+}
 
 function hasSupportedProjectRootSyntax(projectRoot: string): boolean {
   if (!SAFE_PROJECT_ROOT_PATTERN.test(projectRoot)) {
@@ -27,7 +38,7 @@ function hasSupportedProjectRootSyntax(projectRoot: string): boolean {
     return true;
   }
 
-  return colonIndex === 1 && /^[A-Za-z]:/.test(projectRoot) && projectRoot.indexOf(':', colonIndex + 1) === -1;
+  return colonIndex === 1 && /^[A-Za-z]:/.test(projectRoot) && !projectRoot.slice(colonIndex + 1).includes(':');
 }
 
 async function validateProjectRoot(projectRoot: string): Promise<string> {
@@ -59,7 +70,8 @@ async function validateProjectRoot(projectRoot: string): Promise<string> {
   } catch {
     throw new Error('Project root must be an existing directory');
   }
-  return fsPromises.realpath(sanitizedProjectRoot);
+  const resolvedProjectRoot = await fsPromises.realpath(sanitizedProjectRoot);
+  return ensureResolvedPathWithinRequestedDirectory(sanitizedProjectRoot, resolvedProjectRoot);
 }
 
 async function resolveProjectPathWithinRoot(projectRoot: string, relativePath: string): Promise<string> {
@@ -67,13 +79,7 @@ async function resolveProjectPathWithinRoot(projectRoot: string, relativePath: s
   const projectRootRealPath = await validateProjectRoot(projectRoot);
   const candidate = path.resolve(projectRootRealPath, normalizedRelativePath);
   const candidateParentDir = path.dirname(candidate);
-  let candidateParentRealPath: string;
-  try {
-    candidateParentRealPath = await fsPromises.realpath(candidateParentDir);
-  } catch {
-    // 親ディレクトリが存在しない場合は、正規化されたパスを使用して検証
-    candidateParentRealPath = path.normalize(candidateParentDir);
-  }
+  const candidateParentRealPath = await resolvePathThroughExistingAncestors(candidateParentDir);
   const relativeToRoot = path.relative(projectRootRealPath, candidateParentRealPath);
   if (relativeToRoot.startsWith('..') || path.isAbsolute(relativeToRoot)) {
     throw new Error('storage.rootDir must stay within the project root');
@@ -81,9 +87,31 @@ async function resolveProjectPathWithinRoot(projectRoot: string, relativePath: s
   return candidate;
 }
 
+async function resolvePathThroughExistingAncestors(targetPath: string): Promise<string> {
+  const missingSegments: string[] = [];
+  let currentPath = path.resolve(targetPath);
+
+  while (true) {
+    try {
+      const resolvedPath = await fsPromises.realpath(currentPath);
+      return missingSegments.length === 0
+        ? resolvedPath
+        : path.join(resolvedPath, ...missingSegments.reverse());
+    } catch {
+      const parentPath = path.dirname(currentPath);
+      if (parentPath === currentPath) {
+        throw new Error('storage.rootDir must stay within the project root');
+      }
+      missingSegments.push(path.basename(currentPath));
+      currentPath = parentPath;
+    }
+  }
+}
+
 export async function loadProjectConfig(projectRoot: string): Promise<DashboardProjectConfig | undefined> {
   try {
-    const raw = await fsPromises.readFile(path.join(projectRoot, ".nexus.json"), "utf8");
+    const resolvedProjectRoot = await validateProjectRoot(projectRoot);
+    const raw = await fsPromises.readFile(path.join(resolvedProjectRoot, ".nexus.json"), "utf8");
     const parsed: unknown = JSON.parse(raw);
     return isDashboardProjectConfig(parsed) ? parsed : undefined;
   } catch {
@@ -130,7 +158,8 @@ function isDashboardProjectConfig(value: unknown): value is DashboardProjectConf
 /** Read port from <storageDir>/metrics.port written by the running server */
 async function readMetricsPortFile(storageDir: string): Promise<number | undefined> {
   try {
-    const content = await fsPromises.readFile(path.join(storageDir, "metrics.port"), "utf8");
+    const resolvedStorageDir = await validateProjectRoot(storageDir);
+    const content = await fsPromises.readFile(path.join(resolvedStorageDir, "metrics.port"), "utf8");
     const port = Number.parseInt(content.trim(), 10);
     if (Number.isInteger(port) && port > 0 && port <= 65535) {
       return port;

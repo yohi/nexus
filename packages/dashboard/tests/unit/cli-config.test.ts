@@ -39,4 +39,13 @@ describe('dashboard cli config helpers', () => {
 
     expect(storageDir).toBe(String.raw`C:\repo\.nexus`);
   });
+
+  it('skips loading config when the resolved project root escapes the requested directory', async () => {
+    readFileMock.mockResolvedValue('{"aggregatorPort":9555}');
+    realpathMock.mockResolvedValue('/resolved/repo');
+
+    await expect(loadProjectConfig('/repo-link')).resolves.toBeUndefined();
+
+    expect(readFileMock).not.toHaveBeenCalled();
+  });
 });
