@@ -66,3 +66,22 @@ export const createMockNexusRuntimeOptions = (overrides: Partial<NexusRuntimeOpt
   } as unknown as NexusRuntimeOptions;
 };
 
+import type { MetricsHooks } from '../../src/observability/types.js';
+import type { Registry } from 'prom-client';
+
+export const createMockMetricsHooks = (): MetricsHooks => ({
+  onQueueSnapshot: vi.fn(),
+  onChunksIndexed: vi.fn(),
+  onReindexComplete: vi.fn(),
+  onDlqSnapshot: vi.fn(),
+  onRecoverySweepComplete: vi.fn(),
+  onIndexingProgress: vi.fn(),
+  onToolCall: vi.fn(),
+  onSearchResults: vi.fn(),
+  onContextLinesFetched: vi.fn(),
+  onEmbeddingRequest: vi.fn(),
+});
+
+export const createMockRegistry = (): Registry =>
+  ({ metrics: vi.fn().mockResolvedValue(''), getMetricsAsJSON: vi.fn().mockResolvedValue([]) } as unknown as Registry);
+

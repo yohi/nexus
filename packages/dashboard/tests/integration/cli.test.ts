@@ -51,7 +51,7 @@ describe('cli integration', () => {
 
   it('tolerates EADDRINUSE during AggregatorServer startup and continues running', async () => {
     const error = new Error('Address already in use');
-    (error as any).code = 'EADDRINUSE';
+    (error as NodeJS.ErrnoException).code = 'EADDRINUSE';
     startSpy.mockRejectedValue(error);
 
     process.argv = ['node', 'cli.js', '--project-root', './', '--port', '9500', '--aggregator-port', '9470'];

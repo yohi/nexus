@@ -1,12 +1,10 @@
 import { describe, it, expect, vi } from 'vitest';
 import { withToolMetrics } from '../../../src/server/tool-instrumentation.js';
-import type { MetricsHooks } from '../../../src/observability/types.js';
+import { createMockMetricsHooks } from '../../shared/test-helpers.js';
 
 describe('withToolMetrics', () => {
   it('logs success status and records latency for successful tool calls', async () => {
-    const mockHooks: MetricsHooks = {
-      onToolCall: vi.fn(),
-    } as any;
+    const mockHooks = createMockMetricsHooks();
     const handler = vi.fn().mockResolvedValue({ isError: false, content: [] });
     
     const instrumented = withToolMetrics('test_tool', mockHooks, handler);
@@ -18,9 +16,7 @@ describe('withToolMetrics', () => {
   });
 
   it('logs error status when tool handler returns an object with isError: true', async () => {
-    const mockHooks: MetricsHooks = {
-      onToolCall: vi.fn(),
-    } as any;
+    const mockHooks = createMockMetricsHooks();
     const handler = vi.fn().mockResolvedValue({ isError: true, content: [] });
 
     const instrumented = withToolMetrics('test_tool', mockHooks, handler);
@@ -31,9 +27,7 @@ describe('withToolMetrics', () => {
   });
 
   it('logs error status and records latency for failed tool calls that throw', async () => {
-    const mockHooks: MetricsHooks = {
-      onToolCall: vi.fn(),
-    } as any;
+    const mockHooks = createMockMetricsHooks();
     const handler = vi.fn().mockRejectedValue(new Error('failure'));
 
     const instrumented = withToolMetrics('test_tool', mockHooks, handler);

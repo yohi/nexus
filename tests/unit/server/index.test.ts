@@ -3,7 +3,7 @@ import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
 import { createNexusServer, errorResult, toolResult, initializeNexusRuntime, type NexusRuntimeOptions } from '../../../src/server/index.js';
 import { PathSanitizer, PathTraversalError } from '../../../src/server/path-sanitizer.js';
 import * as metricsPortUtils from '../../../src/server/metrics-port.js';
-import { createMockNexusRuntimeOptions } from '../../shared/test-helpers.js';
+import { createMockNexusRuntimeOptions, createMockRegistry } from '../../shared/test-helpers.js';
 
 vi.mock('../../../src/observability/metrics-server.js', () => {
   return {
@@ -202,7 +202,7 @@ describe('NexusServer helpers', () => {
     it('calls removeMetricsPort when metrics server fails to start', async () => {
       const removeSpy = vi.spyOn(metricsPortUtils, 'removeMetricsPort').mockResolvedValue(undefined);
       const mockOptions = createMockNexusRuntimeOptions({
-        metricsCollectorRegistry: {} as any, // Trigger metricsServer creation
+        metricsCollectorRegistry: createMockRegistry(), // Trigger metricsServer creation
         storageDir: '/fake/storage',
         projectRoot: '/tmp',
       });

@@ -1,7 +1,7 @@
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { initializeNexusRuntime } from '../../../src/server/index.js';
-import { createMockNexusRuntimeOptions } from '../../shared/test-helpers.js';
+import { createMockNexusRuntimeOptions, createMockRegistry } from '../../shared/test-helpers.js';
 
 interface MockState {
   metricsPort: number | undefined;
@@ -54,7 +54,7 @@ describe('initializeNexusRuntime telemetry registration defaults', () => {
     mockState.metricsPort = 43123;
     const mockOptions = createMockNexusRuntimeOptions({
       projectRoot: path.join(process.cwd(), 'test-project'),
-      metricsCollectorRegistry: {} as any,
+      metricsCollectorRegistry: createMockRegistry(),
     });
 
     const runtime = await initializeNexusRuntime(mockOptions);
