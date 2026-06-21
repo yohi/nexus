@@ -26,16 +26,15 @@ async function validateProjectRoot(projectRoot: string): Promise<string> {
     throw new Error('Project root must not contain parent directory traversal');
   }
 
-  const resolvedProjectRoot = path.resolve(projectRoot);
   try {
-    const info = await stat(resolvedProjectRoot);
+    const info = await stat(projectRoot);
     if (!info.isDirectory()) {
       throw new Error('Project root must be an existing directory');
     }
   } catch {
     throw new Error('Project root must be an existing directory');
   }
-  return resolvedProjectRoot;
+  return realpath(projectRoot);
 }
 
 async function resolveProjectPathWithinRoot(projectRoot: string, relativePath: string): Promise<string> {
