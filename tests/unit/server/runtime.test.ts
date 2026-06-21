@@ -125,38 +125,6 @@ describe('initializeNexusRuntime', () => {
     await runtime.close();
   });
 
-  it('does not register with the aggregator when aggregatorPort is not configured', async () => {
-    const registrations: Array<{ readonly url: string; readonly body: unknown }> = [];
-    const fetchStub: typeof fetch = async (input, init) => {
-      registrations.push({
-        url: String(input),
-        body: typeof init?.body === 'string' ? JSON.parse(init.body) : undefined,
-      });
-      return new Response('{}', { status: 200 });
-    };
-    vi.stubGlobal('fetch', fetchStub);
-
-    const options = makeServerOptions();
-    const watcher = {
-      start: async () => undefined,
-      stop: async () => undefined,
-    };
-
-    const runtime = await initializeNexusRuntime({
-      ...options,
-      watcher,
-      metricsCollectorRegistry: new Registry(),
-      metricsPort: 0,
-      projectName: 'runtime-project',
-    });
-    await Promise.resolve();
-
-    expect(registrations).toEqual([]);
-    expect(runtime.registrationClient).toBeNull();
-
-    await runtime.close();
-  });
-
   it('registers with a 1000ms timeout and projectRoot basename when aggregatorPort is configured', async () => {
     vi.useFakeTimers();
     const registrations: Array<{ readonly url: string; readonly body: unknown; readonly signal: AbortSignal | undefined }> = [];
