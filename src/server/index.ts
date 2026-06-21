@@ -64,7 +64,7 @@ export interface NexusRuntime {
 }
 
 function resolveProjectId(projectRoot: string, projectName?: string): string {
-  return projectName ?? projectRoot.split(/[\\/]/).filter(Boolean).at(-1) ?? "unknown";
+  return projectName ?? projectRoot.split(/[\\/]/).findLast(Boolean) ?? "unknown";
 }
 
 async function syncMetricsPortFile(storageDir: string | undefined, resolvedPort: number | undefined): Promise<void> {
