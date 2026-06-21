@@ -1,4 +1,5 @@
 import { createServer, type IncomingMessage, type ServerResponse, type Server } from 'node:http';
+import type { AddressInfo } from 'node:net';
 
 export interface RegisteredNode {
   projectId: string;
@@ -19,6 +20,8 @@ export interface MetricObject {
   type: string;
   values: MetricValue[];
 }
+
+const MAX_REGISTER_BODY_BYTES = 64 * 1024;
 
 export class HealthChecker {
   private timer: NodeJS.Timeout | undefined;
@@ -110,6 +113,14 @@ export class AggregatorServer {
 
   constructor(private readonly fetchFn: typeof fetch = fetch) {}
 
+  get listeningPort(): number | undefined {
+    const address = this.server?.address();
+    if (address && typeof address === 'object') {
+      return (address as AddressInfo).port;
+    }
+    return undefined;
+  }
+
   async start(port: number): Promise<void> {
     this.server = createServer((req, res) => {
       this.handleRequest(req, res);
@@ -148,8 +159,29 @@ export class AggregatorServer {
     
     if (req.method === 'POST' && url.pathname === '/api/discovery/register') {
       let body = '';
-      req.on('data', chunk => { body += chunk; });
+      let bodySize = 0;
+      req.on('data', chunk => {
+        if (res.writableEnded) {
+          return;
+        }
+
+        const chunkSize = typeof chunk === 'string' ? Buffer.byteLength(chunk) : chunk.length;
+        bodySize += chunkSize;
+
+        if (bodySize > MAX_REGISTER_BODY_BYTES) {
+          res.writeHead(413, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'Payload Too Large' }));
+          req.destroy();
+          return;
+        }
+
+        body += typeof chunk === 'string' ? chunk : chunk.toString('utf8');
+      });
       req.on('end', () => {
+        if (res.writableEnded) {
+          return;
+        }
+
         try {
           const payload = JSON.parse(body);
           if (typeof payload.projectId !== 'string' || typeof payload.metricsPort !== 'number' || typeof payload.pid !== 'number') {
@@ -216,13 +248,31 @@ export class AggregatorServer {
         clearTimeout(id);
       }
     });
+    const isStringRecord = (value: unknown): value is Record<string, string> => {
+      return value !== null
+        && typeof value === 'object'
+        && !Array.isArray(value)
+        && Object.values(value).every((entry) => typeof entry === 'string');
+    };
+    const isMetricValue = (value: unknown): value is MetricValue => {
+      if (!value || typeof value !== 'object' || Array.isArray(value)) {
+        return false;
+      }
+
+      const metricValue = value as Record<string, unknown>;
+      return typeof metricValue.value === 'number'
+        && Number.isFinite(metricValue.value)
+        && isStringRecord(metricValue.labels)
+        && (metricValue.metricName === undefined || typeof metricValue.metricName === 'string');
+    };
     const isValidMetricObject = (obj: unknown): obj is MetricObject => {
       if (!obj || typeof obj !== 'object') return false;
       const m = obj as Record<string, unknown>;
       return typeof m.name === 'string' &&
              typeof m.help === 'string' &&
              typeof m.type === 'string' &&
-             Array.isArray(m.values);
+             Array.isArray(m.values) &&
+             m.values.every(isMetricValue);
     };
 
     const results = await Promise.allSettled(fetchPromises);
