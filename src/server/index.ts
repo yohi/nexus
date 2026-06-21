@@ -363,7 +363,7 @@ export const buildNexusRuntime = (
           const resolvedPort = metricsServer.getPort();
           await syncMetricsPortFile(options.storageDir, resolvedPort);
           registrationClient = createRegistrationClient(
-            options.aggregatorPort,
+            options.aggregatorPort ?? 9470,
             resolvedPort,
             options.projectRoot,
             options.projectName,
