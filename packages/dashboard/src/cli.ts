@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { readFile } from "node:fs/promises";
+import { readFile, realpath, stat } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
@@ -13,6 +13,31 @@ export interface DashboardProjectConfig {
     rootDir?: string;
   };
   aggregatorPort?: number;
+}
+
+async function validateProjectRoot(projectRoot: string): Promise<string> {
+  const resolvedProjectRoot = path.resolve(projectRoot);
+  try {
+    const info = await stat(resolvedProjectRoot);
+    if (!info.isDirectory()) {
+      throw new Error('Project root must be an existing directory');
+    }
+  } catch {
+    throw new Error('Project root must be an existing directory');
+  }
+  return resolvedProjectRoot;
+}
+
+async function resolveProjectPathWithinRoot(projectRoot: string, relativePath: string): Promise<string> {
+  const normalizedRelativePath = relativePath.trim();
+  const candidate = path.resolve(projectRoot, normalizedRelativePath);
+  const projectRootRealPath = await realpath(projectRoot);
+  const candidateParentRealPath = await realpath(path.dirname(candidate));
+  const relativeToRoot = path.relative(projectRootRealPath, candidateParentRealPath);
+  if (relativeToRoot.startsWith('..') || path.isAbsolute(relativeToRoot)) {
+    throw new Error('storage.rootDir must stay within the project root');
+  }
+  return candidate;
 }
 
 export async function loadProjectConfig(projectRoot: string): Promise<DashboardProjectConfig | undefined> {
@@ -30,9 +55,10 @@ export async function resolveStorageDir(projectRoot: string, config?: DashboardP
   if (process.env.NEXUS_STORAGE_ROOT_DIR) {
     return path.resolve(process.env.NEXUS_STORAGE_ROOT_DIR);
   }
-  const rootDir = config?.storage?.rootDir;
+  const effectiveConfig = config ?? await loadProjectConfig(projectRoot);
+  const rootDir = effectiveConfig?.storage?.rootDir;
   if (typeof rootDir === "string" && rootDir.trim() !== "") {
-    return path.resolve(projectRoot, rootDir.trim());
+    return resolveProjectPathWithinRoot(projectRoot, rootDir);
   }
   return path.join(projectRoot, ".nexus");
 }
@@ -78,7 +104,7 @@ export async function main() {
       console.error(`[Nexus Dashboard] Invalid ${optionName} value "${raw}". Please specify a valid port number (1-65535).`);
       process.exit(1);
     }
-    const parsed = parseInt(raw, 10);
+    const parsed = Number.parseInt(raw, 10);
     if (isNaN(parsed) || parsed < 1 || parsed > 65535) {
       console.error(`[Nexus Dashboard] Invalid ${optionName} value "${raw}". Please specify a valid port number (1-65535).`);
       process.exit(1);
@@ -86,10 +112,14 @@ export async function main() {
     return parsed;
   };
 
-  const projectRoot = (() => {
+  const projectRootInput = (() => {
     const raw = values["project-root"];
     return raw ? path.resolve(raw) : process.cwd();
   })();
+  const projectRoot = await validateProjectRoot(projectRootInput).catch((error: unknown) => {
+    console.error(`[Nexus Dashboard] ${(error as Error).message}: ${projectRootInput}`);
+    process.exit(1);
+  });
 
   const projectConfig = await loadProjectConfig(projectRoot);
   const storageDir = await resolveStorageDir(projectRoot, projectConfig);
@@ -118,7 +148,7 @@ export async function main() {
       console.warn(`Invalid --interval value "${rawInterval}", falling back to 2000 (min 1000ms)`);
       return 2000;
     }
-    const parsed = parseInt(rawInterval, 10);
+    const parsed = Number.parseInt(rawInterval, 10);
     if (isNaN(parsed) || parsed < 1000) {
       console.warn(`Invalid --interval value "${rawInterval}", falling back to 2000 (min 1000ms)`);
       return 2000;
@@ -171,8 +201,10 @@ async function isMainModule(): Promise<boolean> {
 }
 
 if (await isMainModule()) {
-  main().catch((err) => {
+  try {
+    await main();
+  } catch (err) {
     console.error(err);
     process.exit(1);
-  });
+  }
 }

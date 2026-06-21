@@ -1,9 +1,13 @@
 import { describe, expect, it, vi, beforeEach } from 'vitest';
 
 const readFileMock = vi.hoisted(() => vi.fn());
+const realpathMock = vi.hoisted(() => vi.fn(async (input: string) => input));
+const statMock = vi.hoisted(() => vi.fn(async () => ({ isDirectory: () => true })));
 
 vi.mock('node:fs/promises', () => ({
   readFile: readFileMock,
+  realpath: realpathMock,
+  stat: statMock,
 }));
 
 import { loadProjectConfig, readAggregatorPortFromConfig, resolveStorageDir } from '../../src/cli.js';
@@ -11,6 +15,8 @@ import { loadProjectConfig, readAggregatorPortFromConfig, resolveStorageDir } fr
 describe('dashboard cli config helpers', () => {
   beforeEach(() => {
     readFileMock.mockReset();
+    realpathMock.mockClear();
+    statMock.mockClear();
   });
 
   it('loads .nexus.json once and reuses the parsed config', async () => {

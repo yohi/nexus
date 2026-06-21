@@ -75,4 +75,21 @@ describe('cli integration', () => {
     expect(exitSpy).toHaveBeenCalledWith(1);
     expect(startSpy).not.toHaveBeenCalled();
   });
+
+  it('exits when project-root is not a directory', async () => {
+    const filePath = path.join(await mkdtemp(path.join(os.tmpdir(), 'nexus-dashboard-cli-file-')), 'project.txt');
+    await writeFile(filePath, 'not a directory', 'utf8');
+
+    const exitSpy = vi.spyOn(process, 'exit').mockImplementation((() => {
+      throw new Error('process.exit');
+    }) as never);
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    process.argv = ['node', 'cli.js', '--project-root', filePath, '--port', '9500'];
+
+    await expect(main()).rejects.toThrow('process.exit');
+    expect(errorSpy).toHaveBeenCalledWith(expect.stringContaining('Project root must be an existing directory'));
+    expect(exitSpy).toHaveBeenCalledWith(1);
+    expect(startSpy).not.toHaveBeenCalled();
+  });
 });
