@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { HealthChecker } from '../../src/server/aggregator.js';
+import { HealthChecker, type RegisteredNode } from '../../src/server/aggregator.js';
 
 describe('HealthChecker', () => {
   beforeEach(() => {
@@ -12,9 +12,9 @@ describe('HealthChecker', () => {
   });
 
   it('evicts unhealthy nodes from the mapping', async () => {
-    const nodes = new Map<number, any>([
-      [9001, { projectId: 'foo', metricsPort: 9001, pid: 123 }],
-      [9002, { projectId: 'bar', metricsPort: 9002, pid: 456 }],
+    const nodes = new Map<number, RegisteredNode>([
+      [9001, { projectId: 'foo', metricsPort: 9001, pid: 123, registeredAt: 1 }],
+      [9002, { projectId: 'bar', metricsPort: 9002, pid: 456, registeredAt: 2 }],
     ]);
 
     const mockFetch = vi.fn().mockImplementation(async (url: string) => {
@@ -37,8 +37,8 @@ describe('HealthChecker', () => {
   });
 
   it('evicts nodes that respond with non-ok status', async () => {
-    const nodes = new Map<number, any>([
-      [9001, { projectId: 'foo', metricsPort: 9001, pid: 123 }],
+    const nodes = new Map<number, RegisteredNode>([
+      [9001, { projectId: 'foo', metricsPort: 9001, pid: 123, registeredAt: 1 }],
     ]);
 
     const mockFetch = vi.fn().mockResolvedValue({ ok: false, status: 503 });
