@@ -129,7 +129,7 @@ export class MetricsCollector implements MetricsHooks {
     });
 
     this.searchResults = new Histogram({
-      name: 'nexus_search_results_count',
+      name: 'nexus_search_results_hits',
       help: 'Search hit results count distribution',
       labelNames: ['search_type'] as const,
       buckets: SEARCH_RESULTS_BUCKETS,

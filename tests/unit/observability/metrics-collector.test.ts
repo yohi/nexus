@@ -222,7 +222,7 @@ describe('MetricsCollector', () => {
     collector.onSearchResults('hybrid', 15);
 
     const metrics = await searchRegistry.metrics();
-    expect(metrics).toMatch(metricPattern('nexus_search_results_count_bucket', 1, 'le="25"', 'project="test-project"', 'search_type="hybrid"'));
+    expect(metrics).toMatch(metricPattern('nexus_search_results_hits_bucket', 1, 'le="25"', 'project="test-project"', 'search_type="hybrid"'));
   });
 
   it('onContextLinesFetched increments line count metrics', async () => {
