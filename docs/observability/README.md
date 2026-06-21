@@ -48,3 +48,4 @@ Import the JSON file at `docs/observability/grafana-dashboard.json` into Grafana
 | `nexus_context_lines_fetched_total` | Counter | `project`, `pid`, `tool_name` | Cumulative lines fetched by code viewer |
 | `nexus_embedding_requests_total` | Counter | `project`, `pid`, `provider`, `status` | Embedding provider requests count |
 | `nexus_embedding_duration_seconds` | Histogram | `project`, `pid`, `provider` | Embedding request latency |
+| `nexus_embedding_batch_size` | Histogram | `project`, `pid`, `provider` | Embedding request batch size distribution |
