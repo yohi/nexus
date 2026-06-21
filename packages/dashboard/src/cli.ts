@@ -62,16 +62,19 @@ async function validateProjectRoot(projectRoot: string): Promise<string> {
     throw new Error('Project root must not contain parent directory traversal');
   }
 
+  const isWindowsDrivePath = /^[A-Za-z]:[\\/]/.test(sanitizedProjectRoot);
+  const absolutePathToCheck = isWindowsDrivePath ? sanitizedProjectRoot : path.resolve(sanitizedProjectRoot);
+
   try {
-    const info = await fsPromises.stat(sanitizedProjectRoot);
+    const info = await fsPromises.stat(absolutePathToCheck);
     if (!info.isDirectory()) {
       throw new Error('Project root must be an existing directory');
     }
   } catch {
     throw new Error('Project root must be an existing directory');
   }
-  const resolvedProjectRoot = await fsPromises.realpath(sanitizedProjectRoot);
-  return ensureResolvedPathWithinRequestedDirectory(sanitizedProjectRoot, resolvedProjectRoot);
+  const resolvedProjectRoot = await fsPromises.realpath(absolutePathToCheck);
+  return ensureResolvedPathWithinRequestedDirectory(absolutePathToCheck, resolvedProjectRoot);
 }
 
 async function resolveProjectPathWithinRoot(projectRoot: string, relativePath: string): Promise<string> {
@@ -96,7 +99,7 @@ async function resolvePathThroughExistingAncestors(targetPath: string): Promise<
       const resolvedPath = await fsPromises.realpath(currentPath);
       return missingSegments.length === 0
         ? resolvedPath
-        : path.join(resolvedPath, ...missingSegments.reverse());
+        : path.join(resolvedPath, ...missingSegments.toReversed());
     } catch {
       const parentPath = path.dirname(currentPath);
       if (parentPath === currentPath) {
@@ -111,7 +114,11 @@ async function resolvePathThroughExistingAncestors(targetPath: string): Promise<
 export async function loadProjectConfig(projectRoot: string): Promise<DashboardProjectConfig | undefined> {
   try {
     const resolvedProjectRoot = await validateProjectRoot(projectRoot);
-    const raw = await fsPromises.readFile(path.join(resolvedProjectRoot, ".nexus.json"), "utf8");
+    const targetPath = path.resolve(resolvedProjectRoot, ".nexus.json");
+    if (!targetPath.startsWith(resolvedProjectRoot)) {
+      throw new Error('Path traversal attempt detected');
+    }
+    const raw = await fsPromises.readFile(targetPath, "utf8");
     const parsed: unknown = JSON.parse(raw);
     return isDashboardProjectConfig(parsed) ? parsed : undefined;
   } catch {
@@ -159,7 +166,11 @@ function isDashboardProjectConfig(value: unknown): value is DashboardProjectConf
 async function readMetricsPortFile(storageDir: string): Promise<number | undefined> {
   try {
     const resolvedStorageDir = await validateProjectRoot(storageDir);
-    const content = await fsPromises.readFile(path.join(resolvedStorageDir, "metrics.port"), "utf8");
+    const targetPath = path.resolve(resolvedStorageDir, "metrics.port");
+    if (!targetPath.startsWith(resolvedStorageDir)) {
+      throw new Error('Path traversal attempt detected');
+    }
+    const content = await fsPromises.readFile(targetPath, "utf8");
     const port = Number.parseInt(content.trim(), 10);
     if (Number.isInteger(port) && port > 0 && port <= 65535) {
       return port;
