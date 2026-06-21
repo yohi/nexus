@@ -65,6 +65,12 @@ async function validateProjectRoot(projectRoot: string): Promise<string> {
   const isWindowsDrivePath = /^[A-Za-z]:[\\/]/.test(sanitizedProjectRoot);
   const absolutePathToCheck = isWindowsDrivePath ? sanitizedProjectRoot : path.resolve(sanitizedProjectRoot);
 
+  const systemRoot = path.parse(absolutePathToCheck).root;
+  const relativeFromRoot = path.relative(systemRoot, absolutePathToCheck);
+  if (relativeFromRoot.startsWith('..') || path.isAbsolute(relativeFromRoot)) {
+    throw new Error('Project root must stay within the system boundaries');
+  }
+
   let resolvedProjectRoot: string;
   try {
     resolvedProjectRoot = await fsPromises.realpath(absolutePathToCheck);
@@ -73,6 +79,12 @@ async function validateProjectRoot(projectRoot: string): Promise<string> {
   }
 
   ensureResolvedPathWithinRequestedDirectory(absolutePathToCheck, resolvedProjectRoot);
+
+  const resolvedSystemRoot = path.parse(resolvedProjectRoot).root;
+  const resolvedRelativeFromRoot = path.relative(resolvedSystemRoot, resolvedProjectRoot);
+  if (resolvedRelativeFromRoot.startsWith('..') || path.isAbsolute(resolvedRelativeFromRoot)) {
+    throw new Error('Project root must stay within the system boundaries');
+  }
 
   try {
     const info = await fsPromises.stat(resolvedProjectRoot);
@@ -124,7 +136,8 @@ export async function loadProjectConfig(projectRoot: string): Promise<DashboardP
   try {
     const resolvedProjectRoot = await validateProjectRoot(projectRoot);
     const targetPath = path.resolve(resolvedProjectRoot, ".nexus.json");
-    if (!targetPath.startsWith(resolvedProjectRoot)) {
+    const relative = path.relative(resolvedProjectRoot, targetPath);
+    if (relative.startsWith('..') || path.isAbsolute(relative)) {
       throw new Error('Path traversal attempt detected');
     }
     const raw = await fsPromises.readFile(targetPath, "utf8");
@@ -176,7 +189,8 @@ async function readMetricsPortFile(storageDir: string): Promise<number | undefin
   try {
     const resolvedStorageDir = await validateProjectRoot(storageDir);
     const targetPath = path.resolve(resolvedStorageDir, "metrics.port");
-    if (!targetPath.startsWith(resolvedStorageDir)) {
+    const relative = path.relative(resolvedStorageDir, targetPath);
+    if (relative.startsWith('..') || path.isAbsolute(relative)) {
       throw new Error('Path traversal attempt detected');
     }
     const content = await fsPromises.readFile(targetPath, "utf8");
