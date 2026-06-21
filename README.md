@@ -92,7 +92,7 @@ When using **Nexus MCP** tools for codebase exploration and semantic search, adh
       "command": "nexus",
       "args": [],
       "env": {
-        "NEXUS_STORAGE_ROOT_DIR": ".nexus"
+        "NEXUS_STORAGE_ROOT_DIR": "/path/to/your/project/.nexus"
       }
     }
   }
