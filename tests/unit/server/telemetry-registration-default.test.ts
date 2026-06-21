@@ -1,6 +1,7 @@
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { initializeNexusRuntime, type NexusRuntimeOptions } from '../../../src/server/index.js';
+import { initializeNexusRuntime } from '../../../src/server/index.js';
+import { createMockNexusRuntimeOptions } from '../../shared/test-helpers.js';
 
 interface MockState {
   metricsPort: number | undefined;
@@ -51,28 +52,10 @@ describe('initializeNexusRuntime telemetry registration defaults', () => {
 
   it('uses default aggregator port when metrics server resolves a port and config omits aggregatorPort', async () => {
     mockState.metricsPort = 43123;
-    const mockOptions = {
-      metadataStore: { initialize: vi.fn().mockResolvedValue(undefined) },
-      vectorStore: { initialize: vi.fn().mockResolvedValue(undefined) },
-      pipeline: {
-        reconcileOnStartup: vi.fn().mockResolvedValue({}),
-        start: vi.fn(),
-        stop: vi.fn().mockResolvedValue(undefined),
-      },
-      watcher: {
-        start: vi.fn().mockResolvedValue(undefined),
-        stop: vi.fn().mockResolvedValue(undefined),
-      },
-      metricsCollectorRegistry: {},
+    const mockOptions = createMockNexusRuntimeOptions({
       projectRoot: path.join(process.cwd(), 'test-project'),
-      sanitizer: {},
-      semanticSearch: {},
-      grepEngine: {},
-      orchestrator: {},
-      pluginRegistry: {},
-      runReindex: vi.fn(),
-      loadFileContent: vi.fn(),
-    } as unknown as NexusRuntimeOptions;
+      metricsCollectorRegistry: {} as any,
+    });
 
     const runtime = await initializeNexusRuntime(mockOptions);
 
