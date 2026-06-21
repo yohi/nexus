@@ -49,4 +49,17 @@ describe('resolveStorageDir', () => {
     const resolved = await resolveStorageDir(projectRoot);
     expect(resolved).toBe(path.join(projectRoot, '.nexus'));
   });
+
+  it('rejects storage rootDir that escapes projectRoot', async () => {
+    const projectRoot = tempDir!;
+    await writeFile(
+      path.join(projectRoot, '.nexus.json'),
+      JSON.stringify({ storage: { rootDir: '../outside-storage' } }),
+      'utf8'
+    );
+
+    await expect(resolveStorageDir(projectRoot)).rejects.toThrow(
+      'storage.rootDir must stay within the project root'
+    );
+  });
 });

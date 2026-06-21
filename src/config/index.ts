@@ -86,6 +86,7 @@ export const loadConfig = async (options: LoadConfigOptions): Promise<Config> =>
   const configPath = path.join(options.projectRoot, options.configFileName ?? '.nexus.json');
   const defaults = DEFAULT_CONFIG(options.projectRoot);
   const fileConfig = await readJsonFile(configPath);
+  const projectName = validateString(fileConfig.projectName) ?? asString(env.NEXUS_PROJECT_NAME);
 
   const merged: Config = {
     projectRoot: options.projectRoot,
@@ -162,12 +163,12 @@ export const loadConfig = async (options: LoadConfigOptions): Promise<Config> =>
       validatePortNumber(fileConfig.metricsPort) ??
       undefined,
     aggregatorPort:
-      asPortNumber(env.NEXUS_AGGREGATOR_PORT) ??
       validatePortNumber(fileConfig.aggregatorPort) ??
+      asPortNumber(env.NEXUS_AGGREGATOR_PORT) ??
       undefined,
   };
 
-  return merged;
+  return projectName === undefined ? merged : { ...merged, projectName };
 };
 
 const asString = (value: string | undefined): string | undefined => {

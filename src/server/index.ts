@@ -63,6 +63,49 @@ export interface NexusRuntime {
   registrationClient?: RegistrationClient | null;
 }
 
+function resolveProjectId(projectRoot: string, projectName?: string): string {
+  return projectName ?? projectRoot.split(/[\\/]/).findLast(Boolean) ?? "unknown";
+}
+
+async function syncMetricsPortFile(storageDir: string | undefined, resolvedPort: number | undefined): Promise<void> {
+  if (!storageDir) {
+    return;
+  }
+
+  if (resolvedPort !== undefined) {
+    await writeMetricsPort(storageDir, resolvedPort).catch((err) => {
+      console.warn("[Nexus] Failed to write metrics port file:", err);
+    });
+    return;
+  }
+
+  await removeMetricsPort(storageDir).catch((err) => {
+    console.warn("[Nexus] Failed to remove stale metrics port file:", err);
+  });
+}
+
+function createRegistrationClient(
+  aggregatorPort: number | undefined,
+  resolvedPort: number | undefined,
+  projectRoot: string,
+  projectName?: string,
+): RegistrationClient | null {
+  if (aggregatorPort === undefined || resolvedPort === undefined) {
+    return null;
+  }
+
+  const client = new RegistrationClient(
+    {
+      projectId: resolveProjectId(projectRoot, projectName),
+      metricsPort: resolvedPort,
+      pid: process.pid,
+    },
+    { aggregatorPort, heartbeatIntervalMs: 30000, requestTimeoutMs: 1000 },
+  );
+  client.start();
+  return client;
+}
+
 export const createNexusServer = (
   options: NexusServerOptions,
   awaitInitialize?: () => Promise<void>,
@@ -318,23 +361,13 @@ export const buildNexusRuntime = (
             console.warn("[Nexus] Failed to start metrics HTTP server:", err);
           });
           const resolvedPort = metricsServer.getPort();
-          if (resolvedPort !== undefined && options.storageDir) {
-            await writeMetricsPort(options.storageDir, resolvedPort).catch((err) => {
-              console.warn("[Nexus] Failed to write metrics port file:", err);
-            });
-          } else if (options.storageDir) {
-            // Explicitly delete metrics.port if server failed to start or port is undefined
-            await removeMetricsPort(options.storageDir).catch((err) => {
-              console.warn("[Nexus] Failed to remove stale metrics port file:", err);
-            });
-          }
-          if (resolvedPort !== undefined && options.aggregatorPort !== undefined) {
-            registrationClient = new RegistrationClient(
-              { projectId: options.projectName ?? 'unknown', metricsPort: resolvedPort, pid: process.pid },
-              { aggregatorPort: options.aggregatorPort, heartbeatIntervalMs: 30000, requestTimeoutMs: 5000 },
-            );
-            registrationClient.start();
-          }
+          await syncMetricsPortFile(options.storageDir, resolvedPort);
+          registrationClient = createRegistrationClient(
+            options.aggregatorPort,
+            resolvedPort,
+            options.projectRoot,
+            options.projectName,
+          );
         }
       } catch (error) {
         await options.pipeline.stop().catch((stopError: unknown) => {

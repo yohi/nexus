@@ -80,7 +80,7 @@ Modify `tests/unit/observability/metrics-collector.test.ts` to add test cases fo
     collector.onSearchResults('hybrid', 15);
 
     const metrics = await registry.metrics();
-    expect(metrics).toContain('nexus_search_results_count_bucket{le="25",project="test-project",search_type="hybrid"} 1');
+expect(metrics).toContain('nexus_search_results_hits_bucket{le="25",project="test-project",search_type="hybrid"} 1');
   });
 
   it('onContextLinesFetched increments line count metrics', async () => {
@@ -265,7 +265,7 @@ export class MetricsCollector implements MetricsHooks {
     });
 
     this.searchResultsCount = new Histogram({
-      name: 'nexus_search_results_count',
+    name: 'nexus_search_results_hits',
       help: 'Search hit results count distribution',
       labelNames: ['search_type'] as const,
       buckets: SEARCH_RESULTS_BUCKETS,
@@ -2045,7 +2045,7 @@ Import the JSON file at `docs/observability/grafana-dashboard.json` into Grafana
 | `nexus_indexing_total_files` | Gauge | `project`, `pid` | Total files to process in current run |
 | `nexus_tool_calls_total` | Counter | `project`, `pid`, `tool_name`, `status` | Cumulative tool calls count |
 | `nexus_tool_duration_seconds` | Histogram | `project`, `pid`, `tool_name` | Latency distribution of tool calls |
-| `nexus_search_results_count` | Histogram | `project`, `pid`, `search_type` | Hits count per search query |
+| `nexus_search_results_hits` | Histogram | `project`, `pid`, `search_type` | Hits count per search query |
 | `nexus_context_lines_fetched_total` | Counter | `project`, `pid`, `tool_name` | Cumulative lines fetched by code viewer |
 | `nexus_embedding_requests_total` | Counter | `project`, `pid`, `provider`, `status` | Embedding provider requests count |
 | `nexus_embedding_duration_seconds` | Histogram | `project`, `pid`, `provider` | Embedding request latency |
@@ -2179,7 +2179,7 @@ Create the JSON payload at `docs/observability/grafana-dashboard.json` containin
       "type": "bargauge",
       "targets": [
         {
-          "expr": "sum by (search_type) (rate(nexus_search_results_count_sum{project=~\"$project\"}[5m])) / sum by (search_type) (rate(nexus_search_results_count_count{project=~\"$project\"}[5m]))",
+"expr": "sum by (search_type) (rate(nexus_search_results_hits_sum{project=~\"$project\"}[5m])) / sum by (search_type) (rate(nexus_search_results_hits_count{project=~\"$project\"}[5m]))",
           "refId": "A"
         }
       ]

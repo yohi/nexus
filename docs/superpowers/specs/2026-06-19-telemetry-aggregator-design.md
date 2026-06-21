@@ -115,7 +115,7 @@ export interface MetricsHooks {
 |---|---|---|---|
 | `nexus_tool_calls_total` | Counter | `tool_name`, `status` | ツール呼び出し回数・エラー率 |
 | `nexus_tool_duration_seconds` | Histogram | `tool_name` | ツール実行レイテンシ |
-| `nexus_search_results_count` | Histogram | `search_type` | 検索ヒット件数分布（空振り検知） |
+| `nexus_search_results_hits` | Histogram | `search_type` | 検索ヒット件数分布（空振り検知） |
 | `nexus_context_lines_fetched_total` | Counter | `tool_name` | エージェント取得コード行数 |
 | `nexus_embedding_requests_total` | Counter | `provider`, `status` | エンベディング API 呼び出し回数 |
 | `nexus_embedding_duration_seconds` | Histogram | `provider` | エンベディング API レイテンシ |
@@ -584,7 +584,7 @@ shutdown() {
 |---|---|---|
 | Tool Latency P95 | Time Series | `histogram_quantile(0.95, sum by (le, tool_name) (rate(nexus_tool_duration_seconds_bucket{project=~"$project"}[5m])))` |
 | Tool Latency P99 | Time Series | `histogram_quantile(0.99, sum by (le, tool_name) (rate(nexus_tool_duration_seconds_bucket{project=~"$project"}[5m])))` |
-| Avg Results per Search | Bar Gauge | `sum by (search_type) (rate(nexus_search_results_count_sum{project=~"$project"}[5m])) / sum by (search_type) (rate(nexus_search_results_count_count{project=~"$project"}[5m]))` |
+| Avg Results per Search | Bar Gauge | `sum by (search_type) (rate(nexus_search_results_hits_sum{project=~"$project"}[5m])) / sum by (search_type) (rate(nexus_search_results_hits_count{project=~"$project"}[5m]))` |
 | Error Rate by Tool | Time Series (Bar) | `sum by (tool_name) (rate(nexus_tool_calls_total{project=~"$project",status="error"}[5m]))` |
 
 #### Row 3: Indexing Pipeline Health
