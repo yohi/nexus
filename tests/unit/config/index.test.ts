@@ -296,11 +296,11 @@ describe('loadConfig', () => {
     expect(configFileTooHigh.metricsPort).toBeUndefined();
   });
 
-  it('defaults aggregatorPort to 9470 and lets file config override environment', async () => {
+  it('keeps aggregatorPort opt-in and lets file config override environment', async () => {
     tempDir = await mkdtemp(path.join(os.tmpdir(), 'nexus-config-'));
 
     const defaults = await loadConfig({ projectRoot: tempDir, env: {} });
-    expect(defaults.aggregatorPort).toBe(9470);
+    expect(defaults.aggregatorPort).toBeUndefined();
 
     await writeFile(
       path.join(tempDir, '.nexus.json'),
@@ -313,6 +313,17 @@ describe('loadConfig', () => {
     });
 
     expect(config.aggregatorPort).toBe(9555);
+  });
+
+  it('uses environment aggregatorPort when file config is absent', async () => {
+    tempDir = await mkdtemp(path.join(os.tmpdir(), 'nexus-config-'));
+
+    const config = await loadConfig({
+      projectRoot: tempDir,
+      env: { NEXUS_AGGREGATOR_PORT: '9666' },
+    });
+
+    expect(config.aggregatorPort).toBe(9666);
   });
 
   it('loads projectName from file config with environment fallback', async () => {

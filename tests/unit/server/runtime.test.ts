@@ -125,7 +125,7 @@ describe('initializeNexusRuntime', () => {
     await runtime.close();
   });
 
-  it('registers with the default aggregator port when metrics server starts', async () => {
+  it('does not register with the aggregator when aggregatorPort is not configured', async () => {
     const registrations: Array<{ readonly url: string; readonly body: unknown }> = [];
     const fetchStub: typeof fetch = async (input, init) => {
       registrations.push({
@@ -151,16 +151,13 @@ describe('initializeNexusRuntime', () => {
     });
     await Promise.resolve();
 
-    expect(registrations).toContainEqual({
-      url: 'http://127.0.0.1:9470/api/discovery/register',
-      body: expect.objectContaining({ projectId: 'runtime-project' }),
-    });
-    expect(runtime.registrationClient).toBeDefined();
+    expect(registrations).toEqual([]);
+    expect(runtime.registrationClient).toBeNull();
 
     await runtime.close();
   });
 
-  it('registers with a 1000ms timeout and projectRoot basename when projectName is omitted', async () => {
+  it('registers with a 1000ms timeout and projectRoot basename when aggregatorPort is configured', async () => {
     vi.useFakeTimers();
     const registrations: Array<{ readonly url: string; readonly body: unknown; readonly signal: AbortSignal | undefined }> = [];
     const fetchStub: typeof fetch = (input, init) => {
@@ -186,6 +183,7 @@ describe('initializeNexusRuntime', () => {
         projectRoot: path.join(process.cwd(), 'project-alpha'),
         metricsCollectorRegistry: new Registry(),
         metricsPort: 0,
+        aggregatorPort: 9470,
       });
       await Promise.resolve();
 
