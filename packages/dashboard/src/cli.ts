@@ -16,25 +16,31 @@ export interface DashboardProjectConfig {
 }
 
 async function validateProjectRoot(projectRoot: string): Promise<string> {
-  if (projectRoot.includes("\0")) {
+  const sanitizedProjectRoot = projectRoot.trim();
+
+  if (sanitizedProjectRoot.length === 0) {
+    throw new Error('Project root must not be empty');
+  }
+
+  if (sanitizedProjectRoot.includes("\0")) {
     throw new Error('Project root contains invalid characters');
   }
 
-  const normalizedInput = path.normalize(projectRoot);
+  const normalizedInput = path.normalize(sanitizedProjectRoot);
   const segments = normalizedInput.split(/[\\/]+/).filter(Boolean);
   if (segments.includes('..')) {
     throw new Error('Project root must not contain parent directory traversal');
   }
 
   try {
-    const info = await stat(projectRoot);
+    const info = await stat(sanitizedProjectRoot);
     if (!info.isDirectory()) {
       throw new Error('Project root must be an existing directory');
     }
   } catch {
     throw new Error('Project root must be an existing directory');
   }
-  return realpath(projectRoot);
+  return realpath(sanitizedProjectRoot);
 }
 
 async function resolveProjectPathWithinRoot(projectRoot: string, relativePath: string): Promise<string> {
@@ -127,7 +133,7 @@ export async function main() {
 
   const projectRootInput = (() => {
     const raw = values["project-root"];
-    return raw ? path.resolve(raw) : process.cwd();
+    return raw ?? process.cwd();
   })();
   const projectRoot = await validateProjectRoot(projectRootInput).catch((error: unknown) => {
     console.error(`[Nexus Dashboard] ${(error as Error).message}: ${projectRootInput}`);
