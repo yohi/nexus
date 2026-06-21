@@ -63,9 +63,9 @@ describe('cli integration', () => {
   });
 
   it('exits when aggregator port is invalid', async () => {
-    const exitSpy = vi.spyOn(process, 'exit').mockImplementation((() => {
+    const exitSpy = vi.spyOn(process, 'exit').mockImplementation(() => {
       throw new Error('process.exit');
-    }) as never);
+    });
     const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
 
     process.argv = ['node', 'cli.js', '--project-root', './', '--port', '9500', '--aggregator-port', 'abc'];
@@ -80,9 +80,9 @@ describe('cli integration', () => {
     const filePath = path.join(await mkdtemp(path.join(os.tmpdir(), 'nexus-dashboard-cli-file-')), 'project.txt');
     await writeFile(filePath, 'not a directory', 'utf8');
 
-    const exitSpy = vi.spyOn(process, 'exit').mockImplementation((() => {
+    const exitSpy = vi.spyOn(process, 'exit').mockImplementation(() => {
       throw new Error('process.exit');
-    }) as never);
+    });
     const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
 
     process.argv = ['node', 'cli.js', '--project-root', filePath, '--port', '9500'];

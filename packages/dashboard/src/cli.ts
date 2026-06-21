@@ -16,6 +16,16 @@ export interface DashboardProjectConfig {
 }
 
 async function validateProjectRoot(projectRoot: string): Promise<string> {
+  if (projectRoot.includes("\0")) {
+    throw new Error('Project root contains invalid characters');
+  }
+
+  const normalizedInput = path.normalize(projectRoot);
+  const segments = normalizedInput.split(/[\\/]+/).filter(Boolean);
+  if (segments.includes('..')) {
+    throw new Error('Project root must not contain parent directory traversal');
+  }
+
   const resolvedProjectRoot = path.resolve(projectRoot);
   try {
     const info = await stat(resolvedProjectRoot);
@@ -44,7 +54,7 @@ export async function loadProjectConfig(projectRoot: string): Promise<DashboardP
   try {
     const raw = await readFile(path.join(projectRoot, ".nexus.json"), "utf8");
     const parsed: unknown = JSON.parse(raw);
-    return isJsonObject(parsed) ? (parsed as DashboardProjectConfig) : undefined;
+    return isDashboardProjectConfig(parsed) ? parsed : undefined;
   } catch {
     return undefined;
   }
@@ -72,6 +82,10 @@ export function readAggregatorPortFromConfig(config?: DashboardProjectConfig): n
 
 function isJsonObject(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function isDashboardProjectConfig(value: unknown): value is DashboardProjectConfig {
+  return isJsonObject(value);
 }
 
 /** Read port from <storageDir>/metrics.port written by the running server */
