@@ -1,4 +1,6 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import path from 'node:path';
+import { Registry } from 'prom-client';
 
 import { initializeNexusRuntime, type NexusRuntimeOptions } from '../../../src/server/index.js';
 
@@ -57,6 +59,10 @@ const makeServerOptions = (): Omit<NexusRuntimeOptions, 'watcher'> => ({
 });
 
 describe('initializeNexusRuntime', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
   it('initializes stores, runs startup reconciliation, and starts the watcher in order', async () => {
     const calls: string[] = [];
     const options = makeServerOptions();
@@ -117,5 +123,51 @@ describe('initializeNexusRuntime', () => {
     expect(runtime.server).toBeDefined();
 
     await runtime.close();
+  });
+
+  it('registers with a 1000ms timeout and projectRoot basename when aggregatorPort is configured', async () => {
+    vi.useFakeTimers();
+    const registrations: Array<{ readonly url: string; readonly body: unknown; readonly signal: AbortSignal | undefined }> = [];
+    const fetchStub: typeof fetch = (input, init) => {
+      registrations.push({
+        url: String(input),
+        body: typeof init?.body === 'string' ? JSON.parse(init.body) : undefined,
+        signal: init?.signal ?? undefined,
+      });
+      return new Promise<Response>(() => {});
+    };
+    vi.stubGlobal('fetch', fetchStub);
+
+    const options = makeServerOptions();
+    const watcher = {
+      start: async () => undefined,
+      stop: async () => undefined,
+    };
+
+    try {
+      const runtime = await initializeNexusRuntime({
+        ...options,
+        watcher,
+        projectRoot: path.join(process.cwd(), 'project-alpha'),
+        metricsCollectorRegistry: new Registry(),
+        metricsPort: 0,
+        aggregatorPort: 9470,
+      });
+      await Promise.resolve();
+
+      expect(registrations).toContainEqual({
+        url: 'http://127.0.0.1:9470/api/discovery/register',
+        body: expect.objectContaining({ projectId: 'project-alpha' }),
+        signal: expect.any(AbortSignal),
+      });
+      expect(registrations[0]?.signal?.aborted).toBe(false);
+
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(registrations[0]?.signal?.aborted).toBe(true);
+
+      await runtime.close();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

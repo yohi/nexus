@@ -257,7 +257,7 @@ if (process.argv[2] === "dashboard") {
   // Start the TUI dashboard (the MCP server will not be started)
   try {
     interface DashboardCliModule {
-      main?: (() => Promise<void>) | undefined;
+      main?: () => Promise<void>;
     }
     const module = (await import(new URL("../dashboard/cli.js", import.meta.url).href)) as DashboardCliModule;
     if (typeof module.main !== "function") {

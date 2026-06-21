@@ -16,7 +16,7 @@ describe("Metrics E2E Integration", () => {
 
   beforeEach(async () => {
     registry = new Registry();
-    collector = new MetricsCollector(registry);
+    collector = new MetricsCollector({ registry });
     httpServer = new MetricsHttpServer(registry);
 
     mockMetadataStore = {
@@ -115,7 +115,7 @@ describe("Metrics E2E Integration", () => {
 
       collector.onChunksIndexed(42);
       const metrics = await registry.metrics();
-      expect(metrics).toContain("nexus_indexing_chunks_total 42");
+      expect(metrics).toMatch(/nexus_indexing_chunks_total.*\b42\b/);
     } finally {
       otherServer.close();
     }
@@ -130,6 +130,6 @@ describe("Metrics E2E Integration", () => {
 
     collector.onChunksIndexed(1);
     const metrics = await registry.metrics();
-    expect(metrics).toContain("nexus_indexing_chunks_total 1");
+      expect(metrics).toMatch(/nexus_indexing_chunks_total.*\b1\b/);
   });
 });

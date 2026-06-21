@@ -1,12 +1,18 @@
 import { Registry, Gauge, Counter, Histogram } from 'prom-client';
+import path from 'node:path';
 import type { MetricsHooks } from './types.js';
 import type { BackpressureState } from '../indexer/event-queue.js';
 
 const BACKPRESSURE_STATES = ['normal', 'overflow', 'full_scan'] as const satisfies readonly BackpressureState[];
-
 const REINDEX_BUCKETS = [0.1, 0.5, 1, 2, 5, 10, 30, 60, 120];
 
+const TOOL_DURATION_BUCKETS = [0.01, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10];
+const SEARCH_RESULTS_BUCKETS = [0, 1, 5, 10, 25, 50, 100, 250];
+const EMBEDDING_DURATION_BUCKETS = [0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30];
+const EMBEDDING_BATCH_SIZE_BUCKETS = [1, 2, 5, 10, 25, 50, 100, 250];
 export class MetricsCollector implements MetricsHooks {
+
+
   readonly registry: Registry;
 
   private readonly queueSizeGauge: Gauge;
@@ -19,11 +25,25 @@ export class MetricsCollector implements MetricsHooks {
   private readonly indexingActiveGauge: Gauge;
   private readonly indexingProcessedFilesGauge: Gauge;
   private readonly indexingTotalFilesGauge: Gauge;
+  // New metrics
+  private readonly toolCallsTotal: Counter;
+  private readonly toolDurationSeconds: Histogram;
+  private readonly searchResults: Histogram;
+  private readonly contextLinesFetchedTotal: Counter;
+  private readonly embeddingRequestsTotal: Counter;
+  private readonly embeddingDurationSeconds: Histogram;
+  private readonly embeddingBatchSize: Histogram;
 
   private readonly prevDroppedBySource = new Map<string, number>();
 
-  constructor(registry?: Registry) {
+
+  constructor(options: { projectName?: string; registry?: Registry } = {}) {
+    const { projectName, registry } = options;
     this.registry = registry ?? new Registry();
+    this.registry.setDefaultLabels({
+      project: projectName || process.env.NEXUS_PROJECT_NAME || path.basename(process.cwd()),
+      pid: process.pid.toString(),
+    });
 
     this.queueSizeGauge = new Gauge({
       name: 'nexus_event_queue_size',
@@ -91,7 +111,62 @@ export class MetricsCollector implements MetricsHooks {
       help: 'Total number of files to process in the current indexing run',
       registers: [this.registry],
     });
+
+    // Initialize new metrics
+    this.toolCallsTotal = new Counter({
+      name: 'nexus_tool_calls_total',
+      help: 'Total tool calls count',
+      labelNames: ['tool_name', 'status'] as const,
+      registers: [this.registry],
+    });
+
+    this.toolDurationSeconds = new Histogram({
+      name: 'nexus_tool_duration_seconds',
+      help: 'Tool execution duration in seconds',
+      labelNames: ['tool_name'] as const,
+      buckets: TOOL_DURATION_BUCKETS,
+      registers: [this.registry],
+    });
+
+    this.searchResults = new Histogram({
+      name: 'nexus_search_results_hits',
+      help: 'Search hit results count distribution',
+      labelNames: ['search_type'] as const,
+      buckets: SEARCH_RESULTS_BUCKETS,
+      registers: [this.registry],
+    });
+
+    this.contextLinesFetchedTotal = new Counter({
+      name: 'nexus_context_lines_fetched_total',
+      help: 'Total number of lines fetched by context tools',
+      labelNames: ['tool_name'] as const,
+      registers: [this.registry],
+    });
+
+    this.embeddingRequestsTotal = new Counter({
+      name: 'nexus_embedding_requests_total',
+      help: 'Total embedding provider request count',
+      labelNames: ['provider', 'status'] as const,
+      registers: [this.registry],
+    });
+
+    this.embeddingDurationSeconds = new Histogram({
+      name: 'nexus_embedding_duration_seconds',
+      help: 'Embedding request duration in seconds',
+      labelNames: ['provider'] as const,
+      buckets: EMBEDDING_DURATION_BUCKETS,
+      registers: [this.registry],
+    });
+
+    this.embeddingBatchSize = new Histogram({
+      name: 'nexus_embedding_batch_size',
+      help: 'Embedding request batch size distribution',
+      labelNames: ['provider'] as const,
+      buckets: EMBEDDING_BATCH_SIZE_BUCKETS,
+      registers: [this.registry],
+    });
   }
+
 
   onQueueSnapshot(size: number, state: BackpressureState, droppedTotal: number, source = 'default'): void {
     const labels = { queue_id: source };
@@ -143,5 +218,27 @@ export class MetricsCollector implements MetricsHooks {
     this.indexingActiveGauge.set(active ? 1 : 0);
     this.indexingProcessedFilesGauge.set(processed);
     this.indexingTotalFilesGauge.set(total);
+  }
+
+  // Implement new hooks
+  onToolCall(toolName: string, status: 'success' | 'error', durationSeconds: number): void {
+    this.toolCallsTotal.labels(toolName, status).inc();
+    this.toolDurationSeconds.labels(toolName).observe(durationSeconds);
+  }
+
+  onSearchResults(searchType: 'semantic' | 'grep' | 'hybrid', resultCount: number): void {
+    this.searchResults.labels(searchType).observe(resultCount);
+  }
+
+  onContextLinesFetched(toolName: string, lineCount: number): void {
+    if (lineCount > 0) {
+      this.contextLinesFetchedTotal.labels(toolName).inc(lineCount);
+    }
+  }
+
+  onEmbeddingRequest(provider: string, status: 'success' | 'error', durationSeconds: number, batchSize: number): void {
+    this.embeddingRequestsTotal.labels(provider, status).inc();
+    this.embeddingDurationSeconds.labels(provider).observe(durationSeconds);
+    this.embeddingBatchSize.labels(provider).observe(batchSize);
   }
 }

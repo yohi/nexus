@@ -283,11 +283,13 @@ export interface IndexingConfig {
 
 export interface Config {
   projectRoot: string;
+  projectName?: string;
   storage: StorageConfig;
   watcher: WatcherConfig;
   embedding: EmbeddingConfig;
   indexing: IndexingConfig;
   metricsPort?: number;
+  aggregatorPort?: number;
 }
 
 export interface DeadLetterEntry {

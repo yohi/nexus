@@ -1,7 +1,7 @@
 import { spawn } from "node:child_process";
 import { readFile, mkdir, readdir, rename } from "node:fs/promises";
 import { createWriteStream } from "node:fs";
-import { dirname, join, relative, resolve, sep } from "node:path";
+import { basename, dirname, join, relative, resolve, sep } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { finished } from "node:stream/promises";
 import picomatch from "picomatch";
@@ -19,6 +19,7 @@ import { TypeScriptLanguagePlugin } from "../plugins/languages/typescript.js";
 import { PythonLanguagePlugin } from "../plugins/languages/python.js";
 import { GoLanguagePlugin } from "../plugins/languages/go.js";
 import { OllamaEmbeddingProvider } from "../plugins/embeddings/ollama.js";
+import { InstrumentedEmbeddingProvider } from "../plugins/embeddings/instrumented.js";
 import { OpenAICompatEmbeddingProvider } from "../plugins/embeddings/openai-compat.js";
 import { SqliteMetadataStore } from "../storage/metadata-store.js";
 import { LanceVectorStore } from "../storage/vector-store.js";
@@ -294,11 +295,18 @@ export class NexusServerFactory {
     const { metadataStore, vectorStore } =
       StorageManager.initializeStores(config);
     const pluginRegistry = this.setupPluginRegistry(config);
-    const embeddingProvider = pluginRegistry.getEmbeddingProvider();
+    const metricsCollector = new MetricsCollector({ projectName: config.projectName || basename(projectRoot) });
+    let embeddingProvider = pluginRegistry.getEmbeddingProvider();
 
     if (!embeddingProvider) {
       throw new Error("No embedding provider configured.");
     }
+
+    embeddingProvider = new InstrumentedEmbeddingProvider(
+      embeddingProvider,
+      metricsCollector,
+      config.embedding.provider,
+    );
 
     const LOG_MAX_BYTES = 10 * 1024 * 1024;
     const LOG_MAX_FILES = 5;
@@ -427,7 +435,7 @@ export class NexusServerFactory {
       projectRoot,
     });
 
-    const metricsCollector = new MetricsCollector();
+
 
     const pipeline = new IndexPipeline({
       metadataStore,
@@ -472,6 +480,9 @@ export class NexusServerFactory {
         metricsCollectorRegistry: metricsCollector.registry,
         metricsPort: config.metricsPort,
         storageDir: config.storage.rootDir,
+        projectName: config.projectName,
+        metricsHooks: metricsCollector,
+        aggregatorPort: config.aggregatorPort,
         onClose: async () => {
           await onClose();
           if (drainListener) {

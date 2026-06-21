@@ -24,6 +24,9 @@ import { executeSemanticSearch, type SemanticSearchToolArgs } from "./tools/sema
 import { MetricsHttpServer } from "../observability/metrics-server.js";
 import type { Registry } from "prom-client";
 import { writeMetricsPort, removeMetricsPort } from "./metrics-port.js";
+import { withToolMetrics } from "./tool-instrumentation.js";
+import type { MetricsHooks } from "../observability/types.js";
+import { RegistrationClient } from "../observability/registration-client.js";
 
 export interface NexusServerOptions {
   projectRoot: string;
@@ -37,6 +40,7 @@ export interface NexusServerOptions {
   pluginRegistry: PluginRegistry;
   runReindex: (options?: ReindexOptions) => Promise<IndexEvent[]>;
   loadFileContent: (filePath: string) => Promise<string>;
+  metricsHooks?: MetricsHooks;
 }
 
 export interface NexusRuntimeOptions extends NexusServerOptions {
@@ -45,6 +49,8 @@ export interface NexusRuntimeOptions extends NexusServerOptions {
   metricsCollectorRegistry?: Registry;
   metricsPort?: number;
   storageDir?: string;
+  projectName?: string;
+  aggregatorPort?: number;
 }
 
 export interface NexusRuntime {
@@ -54,6 +60,50 @@ export interface NexusRuntime {
   initialize(): Promise<void>;
   close(): Promise<void>;
   reindex(fullRebuild?: boolean): Promise<void>;
+  registrationClient?: RegistrationClient | null;
+}
+
+function resolveProjectId(projectRoot: string, projectName?: string): string {
+  return projectName ?? projectRoot.split(/[\\/]/).findLast(Boolean) ?? "unknown";
+}
+
+async function syncMetricsPortFile(storageDir: string | undefined, resolvedPort: number | undefined): Promise<void> {
+  if (!storageDir) {
+    return;
+  }
+
+  if (resolvedPort !== undefined) {
+    await writeMetricsPort(storageDir, resolvedPort).catch((err) => {
+      console.warn("[Nexus] Failed to write metrics port file:", err);
+    });
+    return;
+  }
+
+  await removeMetricsPort(storageDir).catch((err) => {
+    console.warn("[Nexus] Failed to remove stale metrics port file:", err);
+  });
+}
+
+function createRegistrationClient(
+  aggregatorPort: number,
+  resolvedPort: number | undefined,
+  projectRoot: string,
+  projectName?: string,
+): RegistrationClient | null {
+  if (resolvedPort === undefined) {
+    return null;
+  }
+
+  const client = new RegistrationClient(
+    {
+      projectId: resolveProjectId(projectRoot, projectName),
+      metricsPort: resolvedPort,
+      pid: process.pid,
+    },
+    { aggregatorPort, heartbeatIntervalMs: 30000, requestTimeoutMs: 1000 },
+  );
+  client.start();
+  return client;
 }
 
 export const createNexusServer = (
@@ -85,21 +135,25 @@ export const createNexusServer = (
         language: z.string().optional(),
       },
     },
-    async (args, extra) => {
-      if (awaitInitialize) await awaitInitialize();
-      try {
-        return toolResult(
-          await executeSemanticSearch(
+    withToolMetrics(
+      "semantic_search",
+      options.metricsHooks,
+      async (args, extra) => {
+        if (awaitInitialize) await awaitInitialize();
+        try {
+          const result = await executeSemanticSearch(
             options.semanticSearch,
             options.sanitizer,
             args as SemanticSearchToolArgs & { filePattern?: string },
             extra?.signal,
-          ),
-        );
-      } catch (error) {
-        return errorResult(error);
-      }
-    },
+          );
+          options.metricsHooks?.onSearchResults('semantic', result.results.length);
+          return toolResult(result);
+        } catch (error) {
+          return errorResult(error);
+        }
+      },
+    )
   );
 
   server.registerTool(
@@ -114,22 +168,26 @@ export const createNexusServer = (
         maxResults: z.number().int().positive().optional(),
       },
     },
-    async (args, extra) => {
-      if (awaitInitialize) await awaitInitialize();
-      try {
-        return toolResult(
-          await executeGrepSearch(
+    withToolMetrics(
+      "grep_search",
+      options.metricsHooks,
+      async (args, extra) => {
+        if (awaitInitialize) await awaitInitialize();
+        try {
+          const result = await executeGrepSearch(
             options.grepEngine,
             options.projectRoot,
             options.sanitizer,
             args as GrepSearchToolArgs,
             extra?.signal,
-          ),
-        );
-      } catch (error) {
-        return errorResult(error);
-      }
-    },
+          );
+          options.metricsHooks?.onSearchResults('grep', result.matches.length);
+          return toolResult(result);
+        } catch (error) {
+          return errorResult(error);
+        }
+      },
+    )
   );
 
   server.registerTool(
@@ -145,21 +203,25 @@ export const createNexusServer = (
         grepPattern: z.string().optional(),
       },
     },
-    async (args, extra) => {
-      if (awaitInitialize) await awaitInitialize();
-      try {
-        return toolResult(
-          await executeHybridSearch(
+    withToolMetrics(
+      "hybrid_search",
+      options.metricsHooks,
+      async (args, extra) => {
+        if (awaitInitialize) await awaitInitialize();
+        try {
+          const result = await executeHybridSearch(
             options.orchestrator,
             options.sanitizer,
             args as HybridSearchToolArgs & { filePattern?: string },
             extra?.signal,
-          ),
-        );
-      } catch (error) {
-        return errorResult(error);
-      }
-    },
+          );
+          options.metricsHooks?.onSearchResults('hybrid', result.results.length);
+          return toolResult(result);
+        } catch (error) {
+          return errorResult(error);
+        }
+      },
+    )
   );
 
   server.registerTool(
@@ -173,20 +235,25 @@ export const createNexusServer = (
         endLine: z.number().int().positive().optional(),
       },
     },
-    async (args) => {
-      if (awaitInitialize) await awaitInitialize();
-      try {
-        return toolResult(
-          await executeGetContext(
+    withToolMetrics(
+      "get_context",
+      options.metricsHooks,
+      async (args) => {
+        if (awaitInitialize) await awaitInitialize();
+        try {
+          const result = await executeGetContext(
             options.loadFileContent,
             options.sanitizer,
             args,
-          ),
-        );
-      } catch (error) {
-        return errorResult(error);
-      }
-    },
+          );
+          const lineCount = result.endLine - result.startLine + 1;
+          options.metricsHooks?.onContextLinesFetched('get_context', lineCount);
+          return toolResult(result);
+        } catch (error) {
+          return errorResult(error);
+        }
+      },
+    )
   );
 
   server.registerTool(
@@ -195,21 +262,25 @@ export const createNexusServer = (
       description: "Return index state and statistics",
       inputSchema: {},
     },
-    async () => {
-      if (awaitInitialize) await awaitInitialize();
-      try {
-        return toolResult(
-          await executeIndexStatus(
-            options.metadataStore,
-            options.vectorStore,
-            options.pluginRegistry,
-            options.pipeline,
-          ),
-        );
-      } catch (error) {
-        return errorResult(error);
-      }
-    },
+    withToolMetrics(
+      "index_status",
+      options.metricsHooks,
+      async () => {
+        if (awaitInitialize) await awaitInitialize();
+        try {
+          return toolResult(
+            await executeIndexStatus(
+              options.metadataStore,
+              options.vectorStore,
+              options.pluginRegistry,
+              options.pipeline,
+            ),
+          );
+        } catch (error) {
+          return errorResult(error);
+        }
+      },
+    )
   );
 
   server.registerTool(
@@ -220,21 +291,25 @@ export const createNexusServer = (
         fullRebuild: z.boolean().optional(),
       },
     },
-    async (args) => {
-      if (awaitInitialize) await awaitInitialize();
-      try {
-        return toolResult(
-          await executeReindex(
-            options.pipeline,
-            options.runReindex,
-            options.loadFileContent,
-            args,
-          ),
-        );
-      } catch (error) {
-        return errorResult(error);
-      }
-    },
+    withToolMetrics(
+      "reindex",
+      options.metricsHooks,
+      async (args) => {
+        if (awaitInitialize) await awaitInitialize();
+        try {
+          return toolResult(
+            await executeReindex(
+              options.pipeline,
+              options.runReindex,
+              options.loadFileContent,
+              args,
+            ),
+          );
+        } catch (error) {
+          return errorResult(error);
+        }
+      },
+    )
   );
 
   return server;
@@ -246,6 +321,7 @@ export const buildNexusRuntime = (
   const server = createNexusServer(options, () => initialize());
   let metricsServer: MetricsHttpServer | null = null;
   let initPromise: Promise<void> | null = null;
+  let registrationClient: RegistrationClient | null = null;
 
   const initialize = (): Promise<void> => {
     if (initPromise) {
@@ -285,16 +361,13 @@ export const buildNexusRuntime = (
             console.warn("[Nexus] Failed to start metrics HTTP server:", err);
           });
           const resolvedPort = metricsServer.getPort();
-          if (resolvedPort !== undefined && options.storageDir) {
-            await writeMetricsPort(options.storageDir, resolvedPort).catch((err) => {
-              console.warn("[Nexus] Failed to write metrics port file:", err);
-            });
-          } else if (options.storageDir) {
-            // Explicitly delete metrics.port if server failed to start or port is undefined
-            await removeMetricsPort(options.storageDir).catch((err) => {
-              console.warn("[Nexus] Failed to remove stale metrics port file:", err);
-            });
-          }
+          await syncMetricsPortFile(options.storageDir, resolvedPort);
+          registrationClient = createRegistrationClient(
+            options.aggregatorPort ?? 9470,
+            resolvedPort,
+            options.projectRoot,
+            options.projectName,
+          );
         }
       } catch (error) {
         await options.pipeline.stop().catch((stopError: unknown) => {
@@ -344,6 +417,11 @@ export const buildNexusRuntime = (
         await removeMetricsPort(options.storageDir).catch(() => {});
       }
     }
+    if (registrationClient) {
+      registrationClient.stop();
+      registrationClient = null;
+    }
+
 
     if (options.onClose) {
       try {
@@ -386,7 +464,15 @@ export const buildNexusRuntime = (
     await options.runReindex({ fullScan: fullRebuild });
   };
 
-  return { server, orchestrator: options.orchestrator, sanitizer: options.sanitizer, initialize, close, reindex };
+  return {
+    server,
+    orchestrator: options.orchestrator,
+    sanitizer: options.sanitizer,
+    initialize,
+    close,
+    reindex,
+    get registrationClient() { return registrationClient; }
+  };
 };
 
 export const initializeNexusRuntime = async (

@@ -122,13 +122,13 @@ describe("MetricsHttpServer", () => {
     const port = (otherServer.address() as net.AddressInfo).port;
 
     try {
-      const collector = new MetricsCollector(registry);
+      const collector = new MetricsCollector({ registry });
       const serverOnPort = new MetricsHttpServer(registry);
       await serverOnPort.start(port);
 
       collector.onChunksIndexed(5);
       const metrics = await registry.metrics();
-      expect(metrics).toContain("nexus_indexing_chunks_total 5");
+      expect(metrics).toMatch(/nexus_indexing_chunks_total.*\b5\b/);
     } finally {
       await stopRawServer(otherServer);
     }

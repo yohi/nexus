@@ -1,39 +1,199 @@
 #!/usr/bin/env node
-import { readFile } from "node:fs/promises";
+import * as fsPromises from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 import React from "react";
 import { render } from "ink";
 import { App } from "./app.js";
+import { AggregatorServer } from "./server/aggregator.js";
 
-/** Resolve the .nexus storage dir: env var > .nexus.json > default */
-export async function resolveStorageDir(projectRoot: string): Promise<string> {
-  if (process.env.NEXUS_STORAGE_ROOT_DIR) {
-    return path.resolve(process.env.NEXUS_STORAGE_ROOT_DIR);
+export interface DashboardProjectConfig {
+  storage?: {
+    rootDir?: string;
+  };
+  aggregatorPort?: number;
+}
+
+const SAFE_PROJECT_ROOT_PATTERN = /^[A-Za-z0-9._/\\~ :-]+$/;
+
+function ensureResolvedPathWithinRequestedDirectory(requestedPath: string, resolvedPath: string): string {
+  const normalizedRequestedPath = path.resolve(requestedPath);
+  const relativePath = path.relative(normalizedRequestedPath, resolvedPath);
+
+  if (relativePath.startsWith('..') || path.isAbsolute(relativePath)) {
+    throw new Error('Project root must resolve within the requested directory');
   }
+
+  return resolvedPath;
+}
+
+function hasSupportedProjectRootSyntax(projectRoot: string): boolean {
+  if (!SAFE_PROJECT_ROOT_PATTERN.test(projectRoot)) {
+    return false;
+  }
+
+  const colonIndex = projectRoot.indexOf(':');
+  if (colonIndex === -1) {
+    return true;
+  }
+
+  return colonIndex === 1 && /^[A-Za-z]:/.test(projectRoot) && !projectRoot.slice(colonIndex + 1).includes(':');
+}
+
+async function validateProjectRoot(projectRoot: string): Promise<string> {
+  const sanitizedProjectRoot = projectRoot.trim();
+
+  if (sanitizedProjectRoot.length === 0) {
+    throw new Error('Project root must not be empty');
+  }
+
+  if (sanitizedProjectRoot.includes("\0")) {
+    throw new Error('Project root contains invalid characters');
+  }
+
+  if (!hasSupportedProjectRootSyntax(sanitizedProjectRoot)) {
+    throw new Error('Project root contains unsupported characters');
+  }
+
+  const normalizedInput = path.normalize(sanitizedProjectRoot);
+  const segments = normalizedInput.split(/[\\/]+/).filter(Boolean);
+  if (segments.includes('..')) {
+    throw new Error('Project root must not contain parent directory traversal');
+  }
+
+  const isWindowsDrivePath = /^[A-Za-z]:[\\/]/.test(sanitizedProjectRoot);
+  const absolutePathToCheck = isWindowsDrivePath ? sanitizedProjectRoot : path.resolve(sanitizedProjectRoot);
+
+  const systemRoot = path.parse(absolutePathToCheck).root;
+  const relativeFromRoot = path.relative(systemRoot, absolutePathToCheck);
+  if (relativeFromRoot.startsWith('..') || path.isAbsolute(relativeFromRoot)) {
+    throw new Error('Project root must stay within the system boundaries');
+  }
+
+  let resolvedProjectRoot: string;
   try {
-    const raw = await readFile(path.join(projectRoot, ".nexus.json"), "utf8");
-    const parsed = JSON.parse(raw) as unknown;
-    if (parsed !== null && typeof parsed === "object" && !Array.isArray(parsed)) {
-      const rootDir = (parsed as Record<string, unknown>).storage;
-      if (rootDir !== null && typeof rootDir === "object" && !Array.isArray(rootDir)) {
-        const val = (rootDir as Record<string, unknown>).rootDir;
-        if (typeof val === "string" && val.trim() !== "") {
-          return path.resolve(projectRoot, val.trim());
-        }
-      }
+    resolvedProjectRoot = await fsPromises.realpath(absolutePathToCheck);
+  } catch {
+    throw new Error('Project root must be an existing directory');
+  }
+
+  ensureResolvedPathWithinRequestedDirectory(absolutePathToCheck, resolvedProjectRoot);
+
+  const resolvedSystemRoot = path.parse(resolvedProjectRoot).root;
+  const resolvedRelativeFromRoot = path.relative(resolvedSystemRoot, resolvedProjectRoot);
+  if (resolvedRelativeFromRoot.startsWith('..') || path.isAbsolute(resolvedRelativeFromRoot)) {
+    throw new Error('Project root must stay within the system boundaries');
+  }
+
+  try {
+    const info = await fsPromises.stat(resolvedProjectRoot);
+    if (!info.isDirectory()) {
+      throw new Error('Project root must be an existing directory');
     }
   } catch {
-    // .nexus.json がなければデフォルトを使う
+    throw new Error('Project root must be an existing directory');
+  }
+
+  return resolvedProjectRoot;
+}
+
+async function resolveProjectPathWithinRoot(projectRoot: string, relativePath: string): Promise<string> {
+  const normalizedRelativePath = relativePath.trim();
+  const projectRootRealPath = await validateProjectRoot(projectRoot);
+  const candidate = path.resolve(projectRootRealPath, normalizedRelativePath);
+  const candidateParentDir = path.dirname(candidate);
+  const candidateParentRealPath = await resolvePathThroughExistingAncestors(candidateParentDir);
+  const relativeToRoot = path.relative(projectRootRealPath, candidateParentRealPath);
+  if (relativeToRoot.startsWith('..') || path.isAbsolute(relativeToRoot)) {
+    throw new Error('storage.rootDir must stay within the project root');
+  }
+  return candidate;
+}
+
+async function resolvePathThroughExistingAncestors(targetPath: string): Promise<string> {
+  const missingSegments: string[] = [];
+  let currentPath = path.resolve(targetPath);
+
+  while (true) {
+    try {
+      const resolvedPath = await fsPromises.realpath(currentPath);
+      return missingSegments.length === 0
+        ? resolvedPath
+        : path.join(resolvedPath, ...missingSegments.toReversed());
+    } catch {
+      const parentPath = path.dirname(currentPath);
+      if (parentPath === currentPath) {
+        throw new Error('storage.rootDir must stay within the project root');
+      }
+      missingSegments.push(path.basename(currentPath));
+      currentPath = parentPath;
+    }
+  }
+}
+
+export async function loadProjectConfig(projectRoot: string): Promise<DashboardProjectConfig | undefined> {
+  try {
+    const resolvedProjectRoot = await validateProjectRoot(projectRoot);
+    const targetPath = path.resolve(resolvedProjectRoot, ".nexus.json");
+    const relative = path.relative(resolvedProjectRoot, targetPath);
+    if (relative.startsWith('..') || path.isAbsolute(relative)) {
+      throw new Error('Path traversal attempt detected');
+    }
+    const raw = await fsPromises.readFile(targetPath, "utf8");
+    const parsed: unknown = JSON.parse(raw);
+    return isDashboardProjectConfig(parsed) ? parsed : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** Resolve the .nexus storage dir: env var > .nexus.json > default */
+export async function resolveStorageDir(projectRoot: string, config?: DashboardProjectConfig): Promise<string> {
+  if (process.env.NEXUS_STORAGE_ROOT_DIR) {
+    const storageRootDir = process.env.NEXUS_STORAGE_ROOT_DIR;
+    try {
+      return await validateProjectRoot(storageRootDir);
+    } catch (error: unknown) {
+      if (error instanceof Error && error.message === 'Project root must be an existing directory') {
+        return path.resolve(storageRootDir);
+      }
+      throw error;
+    }
+  }
+  const effectiveConfig = config ?? await loadProjectConfig(projectRoot);
+  const rootDir = effectiveConfig?.storage?.rootDir;
+  if (typeof rootDir === "string" && rootDir.trim() !== "") {
+    return resolveProjectPathWithinRoot(projectRoot, rootDir);
   }
   return path.join(projectRoot, ".nexus");
+}
+
+export function readAggregatorPortFromConfig(config?: DashboardProjectConfig): number | undefined {
+  const value = config?.aggregatorPort;
+  return Number.isInteger(value) && typeof value === "number" && value > 0 && value <= 65535
+    ? value
+    : undefined;
+}
+
+function isJsonObject(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function isDashboardProjectConfig(value: unknown): value is DashboardProjectConfig {
+  return isJsonObject(value);
 }
 
 /** Read port from <storageDir>/metrics.port written by the running server */
 async function readMetricsPortFile(storageDir: string): Promise<number | undefined> {
   try {
-    const content = await readFile(path.join(storageDir, "metrics.port"), "utf8");
+    const resolvedStorageDir = await validateProjectRoot(storageDir);
+    const targetPath = path.resolve(resolvedStorageDir, "metrics.port");
+    const relative = path.relative(resolvedStorageDir, targetPath);
+    if (relative.startsWith('..') || path.isAbsolute(relative)) {
+      throw new Error('Path traversal attempt detected');
+    }
+    const content = await fsPromises.readFile(targetPath, "utf8");
     const port = Number.parseInt(content.trim(), 10);
     if (Number.isInteger(port) && port > 0 && port <= 65535) {
       return port;
@@ -50,35 +210,45 @@ export async function main() {
       port: { type: "string" },
       interval: { type: "string", default: "2000" },
       "project-root": { type: "string" },
+      "aggregator-port": { type: "string" },
     },
     strict: true,
   });
 
-  const projectRoot = (() => {
-    const raw = values["project-root"];
-    return raw ? path.resolve(raw) : process.cwd();
-  })();
+  const parsePortOption = (raw: string, optionName: string): number => {
+    if (!/^\d+$/.test(raw)) {
+      console.error(`[Nexus Dashboard] Invalid ${optionName} value "${raw}". Please specify a valid port number (1-65535).`);
+      process.exit(1);
+    }
+    const parsed = Number.parseInt(raw, 10);
+    if (isNaN(parsed) || parsed < 1 || parsed > 65535) {
+      console.error(`[Nexus Dashboard] Invalid ${optionName} value "${raw}". Please specify a valid port number (1-65535).`);
+      process.exit(1);
+    }
+    return parsed;
+  };
 
-  const storageDir = await resolveStorageDir(projectRoot);
+  const projectRootInput = (() => {
+    const raw = values["project-root"];
+    return raw ?? process.cwd();
+  })();
+  const projectRoot = await validateProjectRoot(projectRootInput).catch((error: unknown) => {
+    console.error(`[Nexus Dashboard] ${(error as Error).message}: ${projectRootInput}`);
+    process.exit(1);
+  });
+
+  const projectConfig = await loadProjectConfig(projectRoot);
+  const storageDir = await resolveStorageDir(projectRoot, projectConfig);
   const autoPort = await readMetricsPortFile(storageDir);
+  const configAggregatorPort = readAggregatorPortFromConfig(projectConfig);
 
   const port = (() => {
     if (values.port !== undefined) {
-      if (!/^\d+$/.test(values.port)) {
-        console.error(`[Nexus Dashboard] Invalid --port value "${values.port}". Please specify a valid port number (1-65535).`);
-        process.exit(1);
-      }
-      const parsed = parseInt(values.port, 10);
-      if (isNaN(parsed) || parsed < 1 || parsed > 65535) {
-        console.error(`[Nexus Dashboard] Invalid --port value "${values.port}". Please specify a valid port number (1-65535).`);
-        process.exit(1);
-      }
-      return parsed;
+      return parsePortOption(values.port, '--port');
     }
     if (autoPort !== undefined) {
       return autoPort;
     }
-    // metrics.port が見つからない = サーバー未起動 or 別プロジェクトのサーバーに誤接続するリスクがある
     console.error(
       `[Nexus Dashboard] Could not determine metrics port for project: ${projectRoot}\n` +
       `  Storage dir: ${storageDir}\n` +
@@ -94,16 +264,45 @@ export async function main() {
       console.warn(`Invalid --interval value "${rawInterval}", falling back to 2000 (min 1000ms)`);
       return 2000;
     }
-    const parsed = parseInt(rawInterval, 10);
+    const parsed = Number.parseInt(rawInterval, 10);
     if (isNaN(parsed) || parsed < 1000) {
       console.warn(`Invalid --interval value "${rawInterval}", falling back to 2000 (min 1000ms)`);
       return 2000;
     }
     return parsed;
   })();
+  const aggregatorPort = (() => {
+    if (values["aggregator-port"] !== undefined) {
+      return parsePortOption(values["aggregator-port"], '--aggregator-port');
+    }
+    if (configAggregatorPort !== undefined) {
+      return configAggregatorPort;
+    }
+    if (process.env.NEXUS_AGGREGATOR_PORT) {
+      return parsePortOption(process.env.NEXUS_AGGREGATOR_PORT, 'NEXUS_AGGREGATOR_PORT');
+    }
+    return 9470;
+  })();
 
-  const { waitUntilExit } = render(React.createElement(App, { port, interval }));
-  await waitUntilExit();
+  const aggregator = new AggregatorServer();
+  try {
+    await aggregator.start(aggregatorPort);
+  } catch (err: unknown) {
+    if ((err as NodeJS.ErrnoException).code === 'EADDRINUSE') {
+      console.warn(`[Nexus Dashboard] Aggregator already running on port ${aggregatorPort}, skipping setup.`);
+    } else {
+      // Non-fatal: continue with TUI even if aggregator fails (degraded mode).
+      // Dashboard local metrics (from --port) remain functional.
+      console.error('[Nexus Dashboard] Failed to start aggregator:', err);
+    }
+  }
+
+  try {
+    const { waitUntilExit } = render(React.createElement(App, { port, interval }));
+    await waitUntilExit();
+  } finally {
+    await aggregator.stop();
+  }
 }
 
 async function isMainModule(): Promise<boolean> {
@@ -118,8 +317,10 @@ async function isMainModule(): Promise<boolean> {
 }
 
 if (await isMainModule()) {
-  main().catch((err) => {
+  try {
+    await main();
+  } catch (err) {
     console.error(err);
     process.exit(1);
-  });
+  }
 }
