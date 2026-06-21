@@ -65,16 +65,25 @@ async function validateProjectRoot(projectRoot: string): Promise<string> {
   const isWindowsDrivePath = /^[A-Za-z]:[\\/]/.test(sanitizedProjectRoot);
   const absolutePathToCheck = isWindowsDrivePath ? sanitizedProjectRoot : path.resolve(sanitizedProjectRoot);
 
+  let resolvedProjectRoot: string;
   try {
-    const info = await fsPromises.stat(absolutePathToCheck);
+    resolvedProjectRoot = await fsPromises.realpath(absolutePathToCheck);
+  } catch {
+    throw new Error('Project root must be an existing directory');
+  }
+
+  ensureResolvedPathWithinRequestedDirectory(absolutePathToCheck, resolvedProjectRoot);
+
+  try {
+    const info = await fsPromises.stat(resolvedProjectRoot);
     if (!info.isDirectory()) {
       throw new Error('Project root must be an existing directory');
     }
   } catch {
     throw new Error('Project root must be an existing directory');
   }
-  const resolvedProjectRoot = await fsPromises.realpath(absolutePathToCheck);
-  return ensureResolvedPathWithinRequestedDirectory(absolutePathToCheck, resolvedProjectRoot);
+
+  return resolvedProjectRoot;
 }
 
 async function resolveProjectPathWithinRoot(projectRoot: string, relativePath: string): Promise<string> {
