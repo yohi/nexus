@@ -118,7 +118,7 @@ nexus dashboard --port 9470 --interval 3000
 nexus dashboard --aggregator-port 9470
 
 # リポジトリ内から実行する場合
-npx tsx src/bin/nexus.ts dashboard --port 9470
+npx tsx src/bin/nexus.ts dashboard
 ```
 
 > [!TIP]
