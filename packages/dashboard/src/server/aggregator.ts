@@ -84,10 +84,10 @@ export function serializeToPrometheus(metricsLists: MetricObject[][]): string {
   }
 
   const escapeLabelValue = (val: string): string => {
-    return val.replaceAll('\\', '\\\\').replaceAll('"', '\\"').replaceAll('\n', '\\n');
+    return val.replaceAll('\\', String.raw`\\`).replaceAll('"', String.raw`\"`).replaceAll('\n', String.raw`\n`);
   };
   const escapeHelpText = (val: string): string => {
-    return val.replaceAll('\\', '\\\\').replaceAll('\n', '\\n');
+    return val.replaceAll('\\', String.raw`\\`).replaceAll('\n', String.raw`\n`);
   };
 
   const lines: string[] = [];
