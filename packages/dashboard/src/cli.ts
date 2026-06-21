@@ -8,27 +8,44 @@ import { render } from "ink";
 import { App } from "./app.js";
 import { AggregatorServer } from "./server/aggregator.js";
 
+export interface DashboardProjectConfig {
+  storage?: {
+    rootDir?: string;
+  };
+  aggregatorPort?: number;
+}
+
+export async function loadProjectConfig(projectRoot: string): Promise<DashboardProjectConfig | undefined> {
+  try {
+    const raw = await readFile(path.join(projectRoot, ".nexus.json"), "utf8");
+    const parsed: unknown = JSON.parse(raw);
+    return isJsonObject(parsed) ? (parsed as DashboardProjectConfig) : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 /** Resolve the .nexus storage dir: env var > .nexus.json > default */
-export async function resolveStorageDir(projectRoot: string): Promise<string> {
+export async function resolveStorageDir(projectRoot: string, config?: DashboardProjectConfig): Promise<string> {
   if (process.env.NEXUS_STORAGE_ROOT_DIR) {
     return path.resolve(process.env.NEXUS_STORAGE_ROOT_DIR);
   }
-  try {
-    const raw = await readFile(path.join(projectRoot, ".nexus.json"), "utf8");
-    const parsed = JSON.parse(raw) as unknown;
-    if (parsed !== null && typeof parsed === "object" && !Array.isArray(parsed)) {
-      const rootDir = (parsed as Record<string, unknown>).storage;
-      if (rootDir !== null && typeof rootDir === "object" && !Array.isArray(rootDir)) {
-        const val = (rootDir as Record<string, unknown>).rootDir;
-        if (typeof val === "string" && val.trim() !== "") {
-          return path.resolve(projectRoot, val.trim());
-        }
-      }
-    }
-  } catch {
-    // .nexus.json がなければデフォルトを使う
+  const rootDir = config?.storage?.rootDir;
+  if (typeof rootDir === "string" && rootDir.trim() !== "") {
+    return path.resolve(projectRoot, rootDir.trim());
   }
   return path.join(projectRoot, ".nexus");
+}
+
+export function readAggregatorPortFromConfig(config?: DashboardProjectConfig): number | undefined {
+  const value = config?.aggregatorPort;
+  return Number.isInteger(value) && typeof value === "number" && value > 0 && value <= 65535
+    ? value
+    : undefined;
+}
+
+function isJsonObject(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
 /** Read port from <storageDir>/metrics.port written by the running server */
@@ -43,27 +60,6 @@ async function readMetricsPortFile(storageDir: string): Promise<number | undefin
     // ファイルが存在しない場合は undefined
   }
   return undefined;
-}
-
-function isJsonObject(value: unknown): value is Record<string, unknown> {
-  return value !== null && typeof value === "object" && !Array.isArray(value);
-}
-
-async function readAggregatorPortFromConfig(projectRoot: string): Promise<number | undefined> {
-  try {
-    const raw = await readFile(path.join(projectRoot, ".nexus.json"), "utf8");
-    const parsed: unknown = JSON.parse(raw);
-    if (!isJsonObject(parsed)) {
-      return undefined;
-    }
-    const value = parsed.aggregatorPort;
-    return Number.isInteger(value) && typeof value === "number" && value > 0 && value <= 65535
-      ? value
-      : undefined;
-  } catch {
-    // no-excuse-ok: catch - absent or malformed optional dashboard config falls back to env/default.
-    return undefined;
-  }
 }
 
 export async function main() {
@@ -95,9 +91,10 @@ export async function main() {
     return raw ? path.resolve(raw) : process.cwd();
   })();
 
-  const storageDir = await resolveStorageDir(projectRoot);
+  const projectConfig = await loadProjectConfig(projectRoot);
+  const storageDir = await resolveStorageDir(projectRoot, projectConfig);
   const autoPort = await readMetricsPortFile(storageDir);
-  const configAggregatorPort = await readAggregatorPortFromConfig(projectRoot);
+  const configAggregatorPort = readAggregatorPortFromConfig(projectConfig);
 
   const port = (() => {
     if (values.port !== undefined) {
