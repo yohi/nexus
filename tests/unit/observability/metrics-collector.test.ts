@@ -8,7 +8,8 @@ const escapeRegExp = (value: string): string =>
 
 const metricPattern = (name: string, value: string | number, ...labels: readonly string[]): RegExp => {
   const labelChecks = labels.map((label) => '(?=[^}]*' + escapeRegExp(label) + ')').join('');
-  return new RegExp(String.raw`${name}(?:\{${labelChecks}[^}]*\})? ${value}`);
+  const escapedValue = escapeRegExp(String(value));
+  return new RegExp(String.raw`${name}(?:\{${labelChecks}[^}]*\})? ${escapedValue}`);
 };
 
 describe('MetricsCollector', () => {
@@ -16,6 +17,13 @@ describe('MetricsCollector', () => {
 
   beforeEach(() => {
     registry = new Registry();
+  });
+
+  it('metricPattern escapes regex metacharacters in metric values', () => {
+    const pattern = metricPattern('nexus_metric_total', '+Inf');
+
+    expect('nexus_metric_total +Inf').toMatch(pattern);
+    expect('nexus_metric_total Inf').not.toMatch(pattern);
   });
 
   it('onQueueSnapshot で Gauge が更新される', async () => {

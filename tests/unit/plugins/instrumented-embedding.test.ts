@@ -1,7 +1,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import { InstrumentedEmbeddingProvider } from '../../../src/plugins/embeddings/instrumented.js';
 import type { EmbeddingProvider } from '../../../src/types/index.js';
-import type { MetricsHooks } from '../../../src/observability/types.js';
+import { createMockMetricsHooks } from '../../shared/test-helpers.js';
 
 describe('InstrumentedEmbeddingProvider', () => {
   it('instruments embed calls reporting performance to metricsHooks', async () => {
@@ -10,9 +10,7 @@ describe('InstrumentedEmbeddingProvider', () => {
       healthCheck: vi.fn().mockResolvedValue(true),
       embed: vi.fn().mockResolvedValue([[0.1, 0.2]]),
     };
-    const mockHooks: MetricsHooks = {
-      onEmbeddingRequest: vi.fn(),
-    } as any;
+    const mockHooks = createMockMetricsHooks();
 
     const provider = new InstrumentedEmbeddingProvider(mockInner, mockHooks, 'test-provider');
     const result = await provider.embed(['hello']);
@@ -33,9 +31,7 @@ describe('InstrumentedEmbeddingProvider', () => {
       healthCheck: vi.fn().mockResolvedValue(true),
       embed: vi.fn().mockRejectedValue(new Error('Embedding failed')),
     };
-    const mockHooks: MetricsHooks = {
-      onEmbeddingRequest: vi.fn(),
-    } as any;
+    const mockHooks = createMockMetricsHooks();
 
     const provider = new InstrumentedEmbeddingProvider(mockInner, mockHooks, 'test-provider');
     await expect(provider.embed(['hello'])).rejects.toThrow('Embedding failed');
