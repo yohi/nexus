@@ -131,7 +131,7 @@
       "type": "bargauge",
       "targets": [
         {
-          "expr": "sum by (search_type) (rate(nexus_search_results_count_sum{project=~\"$project\"}[5m])) / sum by (search_type) (rate(nexus_search_results_count_count{project=~\"$project\"}[5m]))",
+          "expr": "sum by (search_type) (rate(nexus_search_results_hits_sum{project=~\"$project\"}[5m])) / sum by (search_type) (rate(nexus_search_results_hits_count{project=~\"$project\"}[5m]))",
           "refId": "A"
         }
       ]
