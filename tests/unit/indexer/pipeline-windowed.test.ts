@@ -171,7 +171,7 @@ describe('IndexPipeline – windowed batching', () => {
     await pipeline.processEvents(events, async (p) => files[p] ?? '');
 
     const dlq = await metadataStore.getDeadLetterEntries();
-    expect(dlq.map((e) => e.filePath).sort()).toEqual(['src/a.ts', 'src/b.ts']);
+    expect(dlq.map((e) => e.filePath).sort((a, b) => a.localeCompare(b))).toEqual(['src/a.ts', 'src/b.ts']);
     expect(dlq.every((e) => e.errorMessage === 'embed failed' && e.attempts === 3)).toBe(true);
     expect(pipeline.getSkippedFiles().size).toBe(2);
     const stats = await vectorStore.getStats();
@@ -388,8 +388,6 @@ describe('IndexPipeline – chunk embedding cache', () => {
 
     // Index A (1 chunk in cache).
     await pipeline.processEvents([addEvent('src/lru_a.ts', 'h1')], async () => contentA);
-    const callsAfterA = embedding.calls;
-
     // Index B (evicts A from cache).
     // Index B (evicts A from L1 cache).
     await pipeline.processEvents([addEvent('src/lru_b.ts', 'h2')], async () => contentB);
@@ -451,5 +449,4 @@ describe('IndexPipeline – chunk embedding cache', () => {
     expect(embedding.calls).toBe(5);
   });
 });
-
 

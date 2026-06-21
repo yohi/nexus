@@ -23,7 +23,7 @@ export const sanitizeErrorMessage = (error: unknown): string => {
   // We block things like /home/user, C:\Users, /tmp/secret, or ../../secret
   // Improved regex to avoid over-matching common URL paths like /api/ or /v1/
   const hasSensitivePath =
-    /(\/(home|Users|tmp|var|etc|opt)\/|[a-zA-Z]:\\|\.\.\/)/i.test(
+    /(\/(home|Users|tmp|var|etc|opt)\/|[a-z]:\\|\.\.\/)/i.test(
       message,
     );
   if (hasSensitivePath) {

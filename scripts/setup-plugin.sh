@@ -5,9 +5,9 @@ set -e
 cd "$(dirname "$0")/.."
 
 # 1. Install dependencies if node_modules is missing
-if [ ! -d "node_modules" ]; then
+if [[ ! -d "node_modules" ]]; then
   echo "[Nexus Plugin] Installing dependencies..."
-  if [ -f "scripts/bootstrap.mjs" ] && [ ! -f "dist/bin/nexus.js" ]; then
+  if [[ -f "scripts/bootstrap.mjs" ]] && [[ ! -f "dist/bin/nexus.js" ]]; then
     node scripts/bootstrap.mjs
   else
     npm install --no-audit --no-fund
@@ -15,8 +15,7 @@ if [ ! -d "node_modules" ]; then
 fi
 
 # 2. Build if dist/bin/nexus.js is missing
-if [ ! -f "dist/bin/nexus.js" ]; then
+if [[ ! -f "dist/bin/nexus.js" ]]; then
   echo "[Nexus Plugin] Building project..."
   npm run build
 fi
-

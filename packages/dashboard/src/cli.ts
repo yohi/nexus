@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { readFile, realpath, stat } from "node:fs/promises";
+import * as fsPromises from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
@@ -39,24 +39,24 @@ async function validateProjectRoot(projectRoot: string): Promise<string> {
   }
 
   try {
-    const info = await stat(sanitizedProjectRoot);
+    const info = await fsPromises.stat(sanitizedProjectRoot);
     if (!info.isDirectory()) {
       throw new Error('Project root must be an existing directory');
     }
   } catch {
     throw new Error('Project root must be an existing directory');
   }
-  return realpath(sanitizedProjectRoot);
+  return fsPromises.realpath(sanitizedProjectRoot);
 }
 
 async function resolveProjectPathWithinRoot(projectRoot: string, relativePath: string): Promise<string> {
   const normalizedRelativePath = relativePath.trim();
-  const candidate = path.resolve(projectRoot, normalizedRelativePath);
-  const projectRootRealPath = await realpath(projectRoot);
+  const projectRootRealPath = await validateProjectRoot(projectRoot);
+  const candidate = path.resolve(projectRootRealPath, normalizedRelativePath);
   const candidateParentDir = path.dirname(candidate);
   let candidateParentRealPath: string;
   try {
-    candidateParentRealPath = await realpath(candidateParentDir);
+    candidateParentRealPath = await fsPromises.realpath(candidateParentDir);
   } catch {
     // 親ディレクトリが存在しない場合は、正規化されたパスを使用して検証
     candidateParentRealPath = path.normalize(candidateParentDir);
@@ -70,7 +70,7 @@ async function resolveProjectPathWithinRoot(projectRoot: string, relativePath: s
 
 export async function loadProjectConfig(projectRoot: string): Promise<DashboardProjectConfig | undefined> {
   try {
-    const raw = await readFile(path.join(projectRoot, ".nexus.json"), "utf8");
+    const raw = await fsPromises.readFile(path.join(projectRoot, ".nexus.json"), "utf8");
     const parsed: unknown = JSON.parse(raw);
     return isDashboardProjectConfig(parsed) ? parsed : undefined;
   } catch {
@@ -81,7 +81,15 @@ export async function loadProjectConfig(projectRoot: string): Promise<DashboardP
 /** Resolve the .nexus storage dir: env var > .nexus.json > default */
 export async function resolveStorageDir(projectRoot: string, config?: DashboardProjectConfig): Promise<string> {
   if (process.env.NEXUS_STORAGE_ROOT_DIR) {
-    return path.resolve(process.env.NEXUS_STORAGE_ROOT_DIR);
+    const storageRootDir = process.env.NEXUS_STORAGE_ROOT_DIR;
+    try {
+      return await validateProjectRoot(storageRootDir);
+    } catch (error: unknown) {
+      if (error instanceof Error && error.message === 'Project root must be an existing directory') {
+        return path.resolve(storageRootDir);
+      }
+      throw error;
+    }
   }
   const effectiveConfig = config ?? await loadProjectConfig(projectRoot);
   const rootDir = effectiveConfig?.storage?.rootDir;
@@ -109,7 +117,7 @@ function isDashboardProjectConfig(value: unknown): value is DashboardProjectConf
 /** Read port from <storageDir>/metrics.port written by the running server */
 async function readMetricsPortFile(storageDir: string): Promise<number | undefined> {
   try {
-    const content = await readFile(path.join(storageDir, "metrics.port"), "utf8");
+    const content = await fsPromises.readFile(path.join(storageDir, "metrics.port"), "utf8");
     const port = Number.parseInt(content.trim(), 10);
     if (Number.isInteger(port) && port > 0 && port <= 65535) {
       return port;
