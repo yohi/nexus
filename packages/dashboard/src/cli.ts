@@ -15,7 +15,20 @@ export interface DashboardProjectConfig {
   aggregatorPort?: number;
 }
 
-const SAFE_PROJECT_ROOT_PATTERN = /^[A-Za-z0-9._/\\~ -]+$/;
+const SAFE_PROJECT_ROOT_PATTERN = /^[A-Za-z0-9._/\\~ :.-]+$/;
+
+function hasSupportedProjectRootSyntax(projectRoot: string): boolean {
+  if (!SAFE_PROJECT_ROOT_PATTERN.test(projectRoot)) {
+    return false;
+  }
+
+  const colonIndex = projectRoot.indexOf(':');
+  if (colonIndex === -1) {
+    return true;
+  }
+
+  return colonIndex === 1 && /^[A-Za-z]:/.test(projectRoot) && projectRoot.indexOf(':', colonIndex + 1) === -1;
+}
 
 async function validateProjectRoot(projectRoot: string): Promise<string> {
   const sanitizedProjectRoot = projectRoot.trim();
@@ -28,7 +41,7 @@ async function validateProjectRoot(projectRoot: string): Promise<string> {
     throw new Error('Project root contains invalid characters');
   }
 
-  if (!SAFE_PROJECT_ROOT_PATTERN.test(sanitizedProjectRoot)) {
+  if (!hasSupportedProjectRootSyntax(sanitizedProjectRoot)) {
     throw new Error('Project root contains unsupported characters');
   }
 

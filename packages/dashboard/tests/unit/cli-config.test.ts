@@ -17,6 +17,7 @@ describe('dashboard cli config helpers', () => {
     readFileMock.mockReset();
     realpathMock.mockClear();
     statMock.mockClear();
+    vi.unstubAllEnvs();
   });
 
   it('loads .nexus.json once and reuses the parsed config', async () => {
@@ -29,5 +30,13 @@ describe('dashboard cli config helpers', () => {
     expect(storageDir).toBe('/repo/custom/.nexus');
     expect(aggregatorPort).toBe(9555);
     expect(readFileMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('accepts Windows drive-letter storage roots from the environment', async () => {
+    vi.stubEnv('NEXUS_STORAGE_ROOT_DIR', String.raw`C:\repo\.nexus`);
+
+    const storageDir = await resolveStorageDir('/repo');
+
+    expect(storageDir).toBe(String.raw`C:\repo\.nexus`);
   });
 });
