@@ -1,5 +1,46 @@
 # Changelog
 
+## [1.20.0](https://github.com/yohi/nexus/compare/v1.19.0...v1.20.0) (2026-06-21)
+
+
+### Features
+
+* Enhance observability with MetricsCollector, telemetry, and dashboard updates ([a2c039e](https://github.com/yohi/nexus/commit/a2c039e06fb9993861108e95e61acc2fbca70d18))
+* **instrumentation:** add InstrumentedEmbeddingProvider and withToolMetrics wrapper ([ef145a8](https://github.com/yohi/nexus/commit/ef145a8a693f42f4f7a2791cadf0eca64b5b33e0))
+* **observability:** CLI integration and Grafana dashboard provisioning ([ccc15ef](https://github.com/yohi/nexus/commit/ccc15ef252b5e41463d82d88418b34dc5f2772b6))
+* **observability:** expand MetricsCollector with new constructor, defaultLabels, and app-level hooks ([3059cc4](https://github.com/yohi/nexus/commit/3059cc4e6ca8d090ad2f6b1e2bf6dfe43142a19e))
+* **observability:** integrate AggregatorServer with CLI dashboard and add Grafana provisioning ([847edeb](https://github.com/yohi/nexus/commit/847edebebe594baa5556970eaaea52d933f40c08))
+* **telemetry-aggregator:** add AggregatorServer, HealthChecker, serializeToPrometheus, and RegistrationClient ([72a06a4](https://github.com/yohi/nexus/commit/72a06a4ba91bab3d5ff5d007835b570eef25b186))
+
+
+### Bug Fixes
+
+* **config:** aggregatorPortの解決順を修正しprojectNameを設定に追加 ([e60aa47](https://github.com/yohi/nexus/commit/e60aa47da58620d318bc224a98b9d4cab9a69a9a))
+* **dashboard:** .nexus.json の読込を一度に統一 ([c3471aa](https://github.com/yohi/nexus/commit/c3471aac2803d73d4031695803eb040c50f15533))
+* **dashboard:** aggregatorPort設定の解決順を修正 ([41b1967](https://github.com/yohi/nexus/commit/41b1967e31254a791a650b91f2d28693679d8d8a))
+* **dashboard:** aggregatorのString.raw使用を修正 ([bc13610](https://github.com/yohi/nexus/commit/bc13610c10146c91fea7fc4aac51e841a2a970a1))
+* **dashboard:** aggregatorの入力検証を強化 ([705cc80](https://github.com/yohi/nexus/commit/705cc8016a3a2438868092044fa520fe7815a619))
+* **dashboard:** CLIのパス検証とSonar指摘を解消 ([fdb0fab](https://github.com/yohi/nexus/commit/fdb0fabf03bf98364be01aa3bb4b1bf0012f4023))
+* **dashboard:** CLIパス検証を強化しSonarCloudセキュリティ指摘に対応 ([a983bd8](https://github.com/yohi/nexus/commit/a983bd8a4625934867881b5a9272503e3181c977))
+* **dashboard:** CodeRabbit指摘のバグ修正 ([3cc551a](https://github.com/yohi/nexus/commit/3cc551ad6eabf75883c0492e3b58a20fcc7bb8f1))
+* **dashboard:** path.relativeを用いた境界チェックを追加し、SonarCloud S8707の誤検知を解決 ([d476009](https://github.com/yohi/nexus/commit/d476009174d36a6f75dca49e61831832bbf6076d))
+* **dashboard:** projectRoot入力に許可文字検証を追加 ([2349207](https://github.com/yohi/nexus/commit/234920726aa76a87936435693cbf774002089a13))
+* **dashboard:** projectRoot入力の検証順序を調整 ([788334c](https://github.com/yohi/nexus/commit/788334c6466ae6a2fbc26ee2183e088063a420ed))
+* **dashboard:** projectRoot検証のcanonicalize順序を修正 ([e7025a6](https://github.com/yohi/nexus/commit/e7025a657a8efb65465a673533cef0fd33966aad))
+* **dashboard:** SonarCloudのS8707警告を解決するため、statチェック前にプロジェクトルートパスを検証するように修正 ([bb6a346](https://github.com/yohi/nexus/commit/bb6a3464d17bd00d53bee40031aea69da670ac6d))
+* **dashboard:** SonarCloudのパストラバーサル警告とreverse()警告を修正 ([c86b6a9](https://github.com/yohi/nexus/commit/c86b6a9916e515044e0d8ae6d1ad6c04bbd20a7a))
+* **dashboard:** Sonarの型指摘と入力検証を調整 ([e4e5444](https://github.com/yohi/nexus/commit/e4e5444c79d5181d2379e77d7428e267d9b8c10c))
+* **dashboard:** Windowsパス形式のstorage rootを許可 ([87bbc2c](https://github.com/yohi/nexus/commit/87bbc2c496cd4bf468ed876b42cea301e6830467))
+* **metrics:** search results histogram名を修正 ([2cb09fa](https://github.com/yohi/nexus/commit/2cb09facae17c87d8fcfd2e50d5131240d2c2bc2))
+* **metrics:** メトリクス名を統一しpidラベルを追加 ([f86bcb8](https://github.com/yohi/nexus/commit/f86bcb819703ebbe9bbd7896a34b444b7141d981))
+* **observability:** registration失敗レスポンスを検知 ([a5f8486](https://github.com/yohi/nexus/commit/a5f84860e1955ebf5c8924da9a3f8c5ffea51c18))
+* **security:** address SonarCloud hotspots - replace Math.random with crypto, fix secret expansion in workflow, mitigate regex DoS ([3a5851b](https://github.com/yohi/nexus/commit/3a5851bc40fa8a77fd86ef3ed178c0a270c99065))
+* **server:** aggregatorPort のデフォルト値とテストを追加 ([e4b43cd](https://github.com/yohi/nexus/commit/e4b43cd9e72d61222eb9af955baa49d20b9c26ab))
+* **server:** telemetry登録の既定値を設計に合わせる ([2b2ab0d](https://github.com/yohi/nexus/commit/2b2ab0d616729d805cc337f4f35501500342fea0))
+* **server:** telemetry登録を明示設定時のみ有効化 ([fecd14d](https://github.com/yohi/nexus/commit/fecd14d6fb32ab6ff55459c6d913a26094c2d4a4))
+* **sonarcloud:** 複数のセキュリティ・品質指摘に対応 ([affd2fb](https://github.com/yohi/nexus/commit/affd2fba046468e0ef35d26c404a3f6cceea9f0d))
+* telemetry aggregator設定とメトリクスの整合性修正 ([25ab74f](https://github.com/yohi/nexus/commit/25ab74f001549b5dff4e3be6b46e8e34846c3ce0))
+
 ## [1.19.0](https://github.com/yohi/nexus/compare/v1.18.0...v1.19.0) (2026-06-19)
 
 
