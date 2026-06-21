@@ -1,6 +1,6 @@
 
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
-import { createNexusServer, errorResult, toolResult, initializeNexusRuntime, type NexusRuntimeOptions } from '../../../src/server/index.js';
+import { createNexusServer, errorResult, toolResult, initializeNexusRuntime } from '../../../src/server/index.js';
 import { PathSanitizer, PathTraversalError } from '../../../src/server/path-sanitizer.js';
 import * as metricsPortUtils from '../../../src/server/metrics-port.js';
 import { createMockNexusRuntimeOptions, createMockRegistry } from '../../shared/test-helpers.js';

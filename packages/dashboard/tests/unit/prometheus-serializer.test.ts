@@ -39,15 +39,15 @@ describe('serializeToPrometheus', () => {
         help: 'Total tool calls count',
         type: 'counter',
         values: [
-          { value: 1, labels: { project: 'foo"bar', pid: '123\\456', tool_name: 'line\nbreak', status: 'success' } }
+          { value: 1, labels: { project: 'foo"bar', pid: String.raw`123\456`, tool_name: 'line\nbreak', status: 'success' } }
         ]
       }
     ];
 
     const output = serializeToPrometheus([source]);
-    expect(output).toContain('project="foo\\"bar"');
-    expect(output).toContain('pid="123\\\\456"');
-    expect(output).toContain('tool_name="line\\nbreak"');
+    expect(output).toContain(String.raw`project="foo\"bar"`);
+    expect(output).toContain(String.raw`pid="123\\456"`);
+    expect(output).toContain(String.raw`tool_name="line\nbreak"`);
   });
 
   it('sorts metric groups by metric name for stable output', () => {

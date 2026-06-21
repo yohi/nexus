@@ -73,7 +73,7 @@ describe('AggregatorServer', () => {
           },
         ]),
       });
-    server = new AggregatorServer(mockFetch as unknown as typeof fetch);
+    server = new AggregatorServer(mockFetch);
     await server.start(0);
     const serverPort = (server as any).server.address().port;
 

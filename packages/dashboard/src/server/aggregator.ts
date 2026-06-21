@@ -81,20 +81,20 @@ export function serializeToPrometheus(metricsLists: MetricObject[][]): string {
   }
 
   const escapeLabelValue = (val: string): string => {
-    return val.replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/\n/g, '\\n');
+    return val.replaceAll('\\', '\\\\').replaceAll('"', '\\"').replaceAll('\n', '\\n');
   };
   const escapeHelpText = (val: string): string => {
-    return val.replace(/\\/g, '\\\\').replace(/\n/g, '\\n');
+    return val.replaceAll('\\', '\\\\').replaceAll('\n', '\\n');
   };
 
   const lines: string[] = [];
   const sortedEntries = [...mergedMap.entries()].sort((a, b) => a[0].localeCompare(b[0]));
   for (const [name, metric] of sortedEntries) {
-    lines.push(`# HELP ${name} ${escapeHelpText(metric.help)}`);
-    lines.push(`# TYPE ${name} ${metric.type}`);
+    lines.push(`# HELP ${name} ${escapeHelpText(metric.help)}`, `# TYPE ${name} ${metric.type}`);
     for (const val of metric.values) {
-      const labelsStr = Object.keys(val.labels).length > 0
-        ? `{${Object.entries(val.labels).map(([k, v]) => `${k}="${escapeLabelValue(v)}"`).join(',')}}`
+      const labelPairs = Object.entries(val.labels).map(([k, v]) => k + '="' + escapeLabelValue(v) + '"');
+      const labelsStr = labelPairs.length > 0
+        ? '{' + labelPairs.join(',') + '}'
         : '';
       const metricName = val.metricName || name;
       lines.push(`${metricName}${labelsStr} ${val.value}`);
