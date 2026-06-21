@@ -53,7 +53,14 @@ async function resolveProjectPathWithinRoot(projectRoot: string, relativePath: s
   const normalizedRelativePath = relativePath.trim();
   const candidate = path.resolve(projectRoot, normalizedRelativePath);
   const projectRootRealPath = await realpath(projectRoot);
-  const candidateParentRealPath = await realpath(path.dirname(candidate));
+  const candidateParentDir = path.dirname(candidate);
+  let candidateParentRealPath: string;
+  try {
+    candidateParentRealPath = await realpath(candidateParentDir);
+  } catch {
+    // 親ディレクトリが存在しない場合は、正規化されたパスを使用して検証
+    candidateParentRealPath = path.normalize(candidateParentDir);
+  }
   const relativeToRoot = path.relative(projectRootRealPath, candidateParentRealPath);
   if (relativeToRoot.startsWith('..') || path.isAbsolute(relativeToRoot)) {
     throw new Error('storage.rootDir must stay within the project root');

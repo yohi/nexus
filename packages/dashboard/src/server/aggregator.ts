@@ -216,12 +216,22 @@ export class AggregatorServer {
         clearTimeout(id);
       }
     });
+    const isValidMetricObject = (obj: unknown): obj is MetricObject => {
+      if (!obj || typeof obj !== 'object') return false;
+      const m = obj as Record<string, unknown>;
+      return typeof m.name === 'string' &&
+             typeof m.help === 'string' &&
+             typeof m.type === 'string' &&
+             Array.isArray(m.values);
+    };
 
     const results = await Promise.allSettled(fetchPromises);
     const metricsLists = results
       .filter((r): r is PromiseFulfilledResult<unknown> => r.status === 'fulfilled')
       .map(r => r.value)
-      .filter((value): value is MetricObject[] => Array.isArray(value));
+      .filter((value): value is MetricObject[] =>
+        Array.isArray(value) && value.every(isValidMetricObject)
+      );
 
     const mergedText = serializeToPrometheus(metricsLists);
     res.writeHead(200, { 'Content-Type': 'text/plain; version=0.0.4; charset=utf-8' });
