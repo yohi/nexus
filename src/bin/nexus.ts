@@ -271,9 +271,23 @@ if (process.argv[2] === "aggregator") {
       options: {
         port: { type: "string" },
         "project-root": { type: "string" },
+        help: { type: "boolean", short: "h" },
       },
-      strict: false,
+      strict: true,
     });
+
+    if (values.help) {
+      console.log(
+        `Nexus Metrics Aggregator - Standalone Prometheus metrics aggregator\n\n` +
+        `Usage:\n` +
+        `  nexus-aggregator [options]\n\n` +
+        `Options:\n` +
+        `  --port <number>        Port for the metrics aggregator server (default: 9470)\n` +
+        `  --project-root <path>  Path to the project root directory\n` +
+        `  -h, --help             Show help`
+      );
+      process.exit(0);
+    }
 
     const rawProjectRoot = (
       (values["project-root"] as string) ??
@@ -285,10 +299,10 @@ if (process.argv[2] === "aggregator") {
 
     const aggregatorPort = (() => {
       if (values.port !== undefined) {
-        if (!/^\d+$/.test(values.port as string)) {
+        if (!/^\d+$/.test(values.port)) {
           throw new Error(`Invalid port value: ${values.port}`);
         }
-        return Number.parseInt(values.port as string, 10);
+        return Number.parseInt(values.port, 10);
       }
       if (config.aggregatorPort !== undefined) {
         return config.aggregatorPort;

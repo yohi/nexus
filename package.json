@@ -15,8 +15,8 @@
   "types": "./dist/index.d.ts",
   "bin": {
     "nexus": "dist/bin/nexus.js",
-    "dashboard": "dist/bin/dashboard.js",
-    "aggregator": "dist/bin/aggregator.js"
+    "nexus-dashboard": "dist/bin/dashboard.js",
+    "nexus-aggregator": "dist/bin/aggregator.js"
   },
   "exports": {
     ".": {
