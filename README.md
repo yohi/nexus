@@ -121,8 +121,43 @@ nexus dashboard --aggregator-port 9470
 npx tsx src/bin/nexus.ts dashboard
 ```
 
-> [!TIP]
-> サーバー側で `NEXUS_METRICS_PORT` を指定して起動している場合は、ダッシュボード起動時にも `--port` で同じポート番号を指定してください。Aggregator は `nexus dashboard` 内で自動起動し、既に同じポートで起動済みの場合は TUI クライアントとして継続します。
+### メトリクス集約サーバー (Aggregator) の単体・デーモン起動
+
+TUI（画面表示）を起動せずに、メトリクス集約サーバー (Aggregator) のみをバックグラウンドや systemd 等で常時起動しておきたい場合は、`aggregator` コマンドを使用します。
+
+```bash
+# 9470 ポート（デフォルト）で集約サーバーのみを起動
+node dist/bin/nexus.js aggregator
+
+# ポート番号を指定して起動する場合
+node dist/bin/nexus.js aggregator --port 9472
+```
+
+#### systemd による自動起動（デーモン化）設定例
+マシン起動時に集約サーバーが自動起動するようにするには、`/etc/systemd/system/nexus-aggregator.service` を以下の内容で作成します（`User` や `WorkingDirectory` はご利用の環境に合わせて適宜修正してください）。
+
+```ini
+[Unit]
+Description=Nexus Metrics Aggregator
+After=network.target
+
+[Service]
+Type=simple
+User=y_ohi
+WorkingDirectory=/home/y_ohi/program/nexus
+ExecStart=/usr/bin/node dist/bin/nexus.js aggregator
+Restart=on-failure
+
+[Install]
+WantedBy=multi-user.target
+```
+
+サービスファイルを配置後、以下のコマンドで自動起動を有効化・起動します。
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable nexus-aggregator
+sudo systemctl start nexus-aggregator
+```
 
 ### Prometheus / Grafana 連携
 
