@@ -29,7 +29,8 @@ async function main() {
       `Nexus - AI-native codebase indexing and search MCP server\n\n` +
       `Usage:\n` +
       `  nexus [options]\n` +
-      `  nexus dashboard\n\n` +
+      `  nexus dashboard\n` +
+      `  nexus aggregator\n\n` +
       `Options:\n` +
       `  --project-root <path>  Path to the project root directory\n` +
       `  --port <number>        Start HTTP server (with MCP + REST API) on the given port\n` +
@@ -269,9 +270,18 @@ if (process.argv[2] === "aggregator") {
     const { values } = parseArgs({
       options: {
         port: { type: "string" },
+        "project-root": { type: "string" },
       },
       strict: false,
     });
+
+    const rawProjectRoot = (
+      (values["project-root"] as string) ??
+      process.env.NEXUS_PROJECT_ROOT ??
+      ""
+    ).trim();
+    const root = rawProjectRoot ? path.resolve(rawProjectRoot) : process.cwd();
+    const config = await loadConfig({ projectRoot: root });
 
     const aggregatorPort = (() => {
       if (values.port !== undefined) {
@@ -280,13 +290,20 @@ if (process.argv[2] === "aggregator") {
         }
         return Number.parseInt(values.port as string, 10);
       }
+      if (config.aggregatorPort !== undefined) {
+        return config.aggregatorPort;
+      }
       if (process.env.NEXUS_AGGREGATOR_PORT) {
-        return Number.parseInt(process.env.NEXUS_AGGREGATOR_PORT, 10);
+        const rawEnvPort = process.env.NEXUS_AGGREGATOR_PORT.trim();
+        if (!/^\d+$/.test(rawEnvPort)) {
+          throw new Error(`Invalid NEXUS_AGGREGATOR_PORT environment variable: ${rawEnvPort}`);
+        }
+        return Number.parseInt(rawEnvPort, 10);
       }
       return 9470;
     })();
 
-    if (isNaN(aggregatorPort) || aggregatorPort < 1 || aggregatorPort > 65535) {
+    if (Number.isNaN(aggregatorPort) || aggregatorPort < 1 || aggregatorPort > 65535) {
       throw new Error(`Invalid port: ${aggregatorPort}`);
     }
 
