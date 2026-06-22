@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.20.1](https://github.com/yohi/nexus/compare/v1.20.0...v1.20.1) (2026-06-22)
+
+
+### Bug Fixes
+
+* ファイルスキップ時の埋め込みデータのオフセットずれによるクラッシュを修正 ([fe15830](https://github.com/yohi/nexus/commit/fe158303305222f65c2c1ff8367f94494c05f245))
+* ファイルスキップ時の埋め込みデータのオフセットずれによるクラッシュを修正 ([adb4f29](https://github.com/yohi/nexus/commit/adb4f2997f04427b56cf366e0f93ff5312e6e277))
+
 ## [1.20.0](https://github.com/yohi/nexus/compare/v1.19.0...v1.20.0) (2026-06-21)
 
 
