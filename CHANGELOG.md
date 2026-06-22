@@ -1,5 +1,18 @@
 # Changelog
 
+## [1.21.0](https://github.com/yohi/nexus/compare/v1.20.1...v1.21.0) (2026-06-22)
+
+
+### Features
+
+* **observability:** 集約サーバー(aggregator)単体起動コマンドの追加 ([06b9570](https://github.com/yohi/nexus/commit/06b95705c84770b2bd48c11a34d16973145b6b9b))
+* **observability:** 集約サーバー(aggregator)単体起動コマンドの追加とドキュメントの整備 ([f17e971](https://github.com/yohi/nexus/commit/f17e97194ab768808d3fc9ecbf20b3f957bf3455))
+
+
+### Bug Fixes
+
+* **observability:** 集約サーバー起動時のポート解決ロジックとエラーハンドリングの修正 ([c47117b](https://github.com/yohi/nexus/commit/c47117bab41ee0d5b3914a9a93540bd017b7cf84))
+
 ## [1.20.1](https://github.com/yohi/nexus/compare/v1.20.0...v1.20.1) (2026-06-22)
 
 
