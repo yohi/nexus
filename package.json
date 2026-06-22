@@ -14,7 +14,9 @@
   "module": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "bin": {
-    "nexus": "dist/bin/nexus.js"
+    "nexus": "dist/bin/nexus.js",
+    "dashboard": "dist/bin/dashboard.js",
+    "aggregator": "dist/bin/aggregator.js"
   },
   "exports": {
     ".": {
@@ -39,7 +41,7 @@
     "node": ">=24.0.0"
   },
   "scripts": {
-    "build": "tsc -p tsconfig.build.json && shx chmod +x dist/bin/nexus.js && npm run build -w packages/dashboard && shx mkdir -p dist/dashboard && shx cp packages/dashboard/dist/cli.js dist/dashboard/cli.js",
+    "build": "tsc -p tsconfig.build.json && shx chmod +x dist/bin/nexus.js dist/bin/dashboard.js dist/bin/aggregator.js && npm run build -w packages/dashboard && shx mkdir -p dist/dashboard && shx cp packages/dashboard/dist/cli.js dist/dashboard/cli.js",
     "lint": "eslint src/**/*.ts vitest.config.ts",
     "test": "vitest run --passWithNoTests",
     "test:bench": "vitest bench tests/benchmarks/**/*.bench.ts",
