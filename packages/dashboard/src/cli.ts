@@ -213,9 +213,25 @@ export async function main() {
       interval: { type: "string", default: "2000" },
       "project-root": { type: "string" },
       "aggregator-port": { type: "string" },
+      help: { type: "boolean", short: "h" },
     },
     strict: true,
   });
+
+  if (values.help) {
+    console.log(
+      `Nexus Dashboard - Real-time TUI dashboard for Nexus observability\n\n` +
+      `Usage:\n` +
+      `  nexus-dashboard [options]\n\n` +
+      `Options:\n` +
+      `  --port <number>             Metrics server port to connect to (auto-detected if running)\n` +
+      `  --interval <ms>             Metrics polling interval in milliseconds (default: 2000)\n` +
+      `  --project-root <path>       Path to the project root directory (default: current working directory)\n` +
+      `  --aggregator-port <number>  Port for the metrics aggregator server (default: 9470)\n` +
+      `  -h, --help                  Show help`
+    );
+    process.exit(0);
+  }
 
   const parsePortOption = (raw: string, optionName: string): number => {
     if (!/^\d+$/.test(raw)) {
