@@ -237,11 +237,12 @@ Aggregator のエンドポイントは以下の通りです。
 - Aggregator 未起動、停止、ネットワーク遅延、タイムアウトは debug ログのみで扱われ、Nexus 本体の稼働を停止させません。
 - Aggregator は 15 秒間隔で登録ノードの `/health` を確認し、失敗または非 OK 応答のノードを即座に evict します。誤判定された場合も、次回 Heartbeat により最大 30 秒程度で再登録されます。
 
-### 8.5. TUI Dashboard & Grafana
+### 8.5. TUI Dashboard, Standalone Aggregator & Grafana
 
 - Dashboard は独立した npm workspace パッケージ (`@yohi/nexus-dashboard`) として実装されています。
 - `nexus dashboard` サブコマンドで起動し、React と ink を使用した Queue / Throughput / DLQ Health の TUI を提供します。
+- `nexus aggregator` サブコマンドは、TUI画面を立ち上げず、メトリクス集約サーバー（AggregatorServer）のみをバックグラウンド（単体プロセスやデーモン）で起動するために使用します。
 - `--port <number>` で接続先メトリクスサーバーのポートを指定できます。指定がない場合は `metrics.port` ファイルから自動検出し、自動検出できない場合はエラー終了します。
-- `--aggregator-port <number>` で Aggregator の待受ポートを指定できます。解決順序は `--aggregator-port`、`.nexus.json` の `aggregatorPort`、`NEXUS_AGGREGATOR_PORT`、`9470` です。
-- Aggregator 起動時に `EADDRINUSE` が発生した場合は、既に別プロセスで Aggregator が起動済みとみなし、TUI クライアントとして継続します。
+- `--aggregator-port <number>` (または `aggregator` コマンドにおける `--port`) で Aggregator の待受ポートを指定できます。解決順序はオプション引数、`.nexus.json` の `aggregatorPort`、`NEXUS_AGGREGATOR_PORT`、`9470` です。
+- Aggregator 起動時に `EADDRINUSE` が発生した場合は、既に別プロセスで Aggregator が起動済みとみなし、TUI クライアント（または集約プロセス）として継続、あるいはスキップします。
 - Grafana ダッシュボード定義は `docs/observability/grafana-dashboard.json`、セットアップ手順とメトリクスカタログは `docs/observability/README.md` にあります。

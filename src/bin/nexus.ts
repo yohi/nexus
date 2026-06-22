@@ -250,7 +250,65 @@ function setupSignalHandlers(
   process.once("SIGTERM", handleShutdown);
 }
 
-if (process.argv[2] === "dashboard") {
+if (process.argv[2] === "aggregator") {
+  // Remove "aggregator" from argv so parseArgs doesn't complain.
+  process.argv.splice(2, 1);
+
+  try {
+    interface DashboardCliModule {
+      AggregatorServer?: new () => {
+        start: (port: number) => Promise<void>;
+        stop: () => Promise<void>;
+      };
+    }
+    const module = (await import(new URL("../dashboard/cli.js", import.meta.url).href)) as DashboardCliModule;
+    if (!module.AggregatorServer) {
+      throw new Error("Dashboard module did not export AggregatorServer");
+    }
+
+    const { values } = parseArgs({
+      options: {
+        port: { type: "string" },
+      },
+      strict: false,
+    });
+
+    const aggregatorPort = (() => {
+      if (values.port !== undefined) {
+        if (!/^\d+$/.test(values.port as string)) {
+          throw new Error(`Invalid port value: ${values.port}`);
+        }
+        return Number.parseInt(values.port as string, 10);
+      }
+      if (process.env.NEXUS_AGGREGATOR_PORT) {
+        return Number.parseInt(process.env.NEXUS_AGGREGATOR_PORT, 10);
+      }
+      return 9470;
+    })();
+
+    if (isNaN(aggregatorPort) || aggregatorPort < 1 || aggregatorPort > 65535) {
+      throw new Error(`Invalid port: ${aggregatorPort}`);
+    }
+
+    const aggregator = new module.AggregatorServer();
+    await aggregator.start(aggregatorPort);
+    console.error(`🚀 Nexus Metrics Aggregator running on http://127.0.0.1:${aggregatorPort}`);
+
+    const handleShutdown = () => {
+      aggregator.stop()
+        .then(() => {
+          process.exit(0);
+        })
+        .catch((err: unknown) => {
+          handleFatalError("Failed to stop aggregator", err);
+        });
+    };
+    process.once("SIGINT", handleShutdown);
+    process.once("SIGTERM", handleShutdown);
+  } catch (error) {
+    handleFatalError("Failed to start aggregator", error);
+  }
+} else if (process.argv[2] === "dashboard") {
   // Remove "dashboard" from argv so the sub-command's parseArgs doesn't complain.
   process.argv.splice(2, 1);
 
@@ -272,3 +330,4 @@ if (process.argv[2] === "dashboard") {
     handleFatalError("Fatal error starting Nexus", error);
   });
 }
+
