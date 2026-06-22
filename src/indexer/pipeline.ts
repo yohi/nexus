@@ -398,7 +398,7 @@ export class IndexPipeline implements IIndexPipeline {
       }
       this.progress.currentFile = work.event.filePath;
 
-      // Extract embeddings and advance offset regardless of skip status to keep aligned
+      // Extract embeddings and advance offset regardless of skip or DLQ-routing status to keep aligned
       const embeddings = allEmbeddings.slice(embeddingOffset, embeddingOffset + work.chunks.length);
       embeddingOffset += work.chunks.length;
 
