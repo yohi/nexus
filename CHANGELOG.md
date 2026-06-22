@@ -1,5 +1,18 @@
 # Changelog
 
+## [1.22.0](https://github.com/yohi/nexus/compare/v1.21.0...v1.22.0) (2026-06-22)
+
+
+### Features
+
+* dashboardとaggregatorの個別バイナリを追加し、直接起動に対応 ([3b6b691](https://github.com/yohi/nexus/commit/3b6b69111e629f0adf507e7f82bf2932d2f01c57))
+* dashboardとaggregatorの個別バイナリを追加し、直接起動に対応 ([b3804f6](https://github.com/yohi/nexus/commit/b3804f62d92293f5e8bb170197a6d1798d2de303))
+
+
+### Bug Fixes
+
+* バイナリ名の競合リスク回避と個別バイナリのヘルプ対応 ([2892aaa](https://github.com/yohi/nexus/commit/2892aaa7036e340f71ee2d4a01f49bd1c7ee630b))
+
 ## [1.21.0](https://github.com/yohi/nexus/compare/v1.20.1...v1.21.0) (2026-06-22)
 
 
