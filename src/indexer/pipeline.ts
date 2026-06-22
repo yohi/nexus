@@ -398,6 +398,10 @@ export class IndexPipeline implements IIndexPipeline {
       }
       this.progress.currentFile = work.event.filePath;
 
+      // Extract embeddings and advance offset regardless of skip or DLQ-routing status to keep aligned
+      const embeddings = allEmbeddings.slice(embeddingOffset, embeddingOffset + work.chunks.length);
+      embeddingOffset += work.chunks.length;
+
       if (work.skipped) {
         this.safeLogProgress(
           `Skipping (${work.skipReason ?? 'file skipped'}): ${work.event.filePath}`,
@@ -432,8 +436,6 @@ export class IndexPipeline implements IIndexPipeline {
         continue;
       }
 
-      const embeddings = allEmbeddings.slice(embeddingOffset, embeddingOffset + work.chunks.length);
-      embeddingOffset += work.chunks.length;
       await this.options.vectorStore.upsertChunks(work.chunks, embeddings, [work.event.filePath]);
       await this.merkleTree.update(work.event.filePath, work.event.contentHash ?? '');
       this.skippedFiles.delete(work.event.filePath);
