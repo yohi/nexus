@@ -119,12 +119,15 @@ GitHub Actions 上で staging ディレクトリを作成し、以下を Bitbuck
 1. GitHub リポジトリの最新リリースタグを GitHub API で取得する。
 2. Bitbucket 配布リポジトリの現在のタグを `git ls-remote --tags` で確認する。
    - SSH 鍵は GitHub Secret から一時ファイルに書き出して使用する。
-   - 取得した最新タグと一致していればジョブを正常終了する。
+   - アノテーテッドタグの peeled ref（`^{}`）は除外する。
+   - 取得した最新タグと一致していれば `skip=true` フラグを立て、後続ステップを全てスキップする。
 3. 一致していなければ、該当タグを checkout する。
-4. `npm ci`、`npm run build`、`npm run test`、`npm run lint`、 `claude plugin validate` を実行する。
-5. staging ディレクトリを作成し、配布物のみコピーする。
-6. staging 内で git init し、1 コミット作成。
-7. Bitbucket 配布リポジトリへ tag 付きで force-push する。
+4. `npm ci`、`npm run build`、`npm run test`、`npm run lint` を実行する。
+5. `claude plugin validate` を **ビルド後** に実行する。
+6. staging ディレクトリを作成し、配布物のみコピーする。
+   - `scripts/` 内は `plugin.json` から参照されているファイルのみコピーする。
+7. staging 内で `git init -b main` し、1 コミット作成。
+8. Bitbucket 配布リポジトリへ tag 付きで force-push する。
 
 ```yaml
 name: Deploy plugin to Bitbucket
@@ -156,61 +159,93 @@ jobs:
           mkdir -p ~/.ssh
           printf '%s\n' "${BITBUCKET_SSH_KEY}" > ~/.ssh/bitbucket
           chmod 600 ~/.ssh/bitbucket
-          TAG=$(GIT_SSH_COMMAND='ssh -i ~/.ssh/bitbucket -o StrictHostKeyChecking=accept-new' git ls-remote --tags "${BITBUCKET_REPO_URL}" | awk -F'/' '{print $3}' | sort -V | tail -n 1)
+          TAG=$(GIT_SSH_COMMAND='ssh -i ~/.ssh/bitbucket -o StrictHostKeyChecking=accept-new' \
+            git ls-remote --tags "${BITBUCKET_REPO_URL}" \
+            | awk -F'/' '{print $3}' \
+            | grep -v '\^{}' \
+            | sort -V \
+            | tail -n 1)
           echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+          if [ "${TAG}" = "${RELEASE_TAG}" ]; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            echo "Bitbucket already at ${TAG}. Nothing to do."
+          fi
         env:
           BITBUCKET_REPO_URL: git@bitbucket.org:company/plugin-a-dist.git
           BITBUCKET_SSH_KEY: ${{ secrets.BITBUCKET_SSH_KEY }}
-        continue-on-error: true
-
-      - name: Skip if already up to date
-        if: steps.bitbucket.outputs.tag == steps.release.outputs.tag
-        run: |
-          echo "Bitbucket already at ${{ steps.release.outputs.tag }}. Nothing to do."
-          exit 0
+          RELEASE_TAG: ${{ steps.release.outputs.tag }}
 
       - name: Checkout release tag
+        if: steps.bitbucket.outputs.skip != 'true'
         uses: actions/checkout@v4
         with:
           ref: ${{ steps.release.outputs.tag }}
 
       - name: Setup Node.js
+        if: steps.bitbucket.outputs.skip != 'true'
         uses: actions/setup-node@v4
         with:
           node-version: '20'
           cache: 'npm'
 
       - name: Install dependencies
+        if: steps.bitbucket.outputs.skip != 'true'
         run: npm ci
 
       - name: Lint and test
+        if: steps.bitbucket.outputs.skip != 'true'
         run: |
           npm run lint
           npm run test
 
-      - name: Validate plugin
-        run: npx claude plugin validate ./ --strict
-
       - name: Build
+        if: steps.bitbucket.outputs.skip != 'true'
         run: npm run build
 
+      - name: Validate plugin
+        if: steps.bitbucket.outputs.skip != 'true'
+        run: npx claude plugin validate ./ --strict
+
       - name: Stage distribution files
+        if: steps.bitbucket.outputs.skip != 'true'
         run: |
           mkdir -p dist-staging/.claude-plugin
           cp .claude-plugin/plugin.json dist-staging/.claude-plugin/
           cp -r dist dist-staging/
+
           # plugin.json から参照される scripts/ 内のファイルのみコピー
-          if [ -d scripts ]; then
-            cp -r scripts dist-staging/
+          node <<'NODE'
+          const fs = require('fs');
+          const plugin = JSON.parse(fs.readFileSync('.claude-plugin/plugin.json', 'utf8'));
+          const refs = new Set();
+          function walk(v) {
+            if (typeof v === 'string') {
+              const m = v.match(/"?\$\{CLAUDE_PLUGIN_ROOT\}"?\/scripts\/([^"\s]+)/);
+              if (m) refs.add(m[1]);
+            } else if (Array.isArray(v)) {
+              v.forEach(walk);
+            } else if (v && typeof v === 'object') {
+              Object.values(v).forEach(walk);
+            }
+          }
+          walk(plugin);
+          fs.writeFileSync('/tmp/referenced-scripts.txt', Array.from(refs).join('\n') + '\n');
+          NODE
+          if [ -s /tmp/referenced-scripts.txt ]; then
+            mkdir -p dist-staging/scripts
+            while IFS= read -r f; do
+              [ -n "$f" ] && cp "scripts/$f" "dist-staging/scripts/$f"
+            done < /tmp/referenced-scripts.txt
           fi
 
       - name: Push to Bitbucket
+        if: steps.bitbucket.outputs.skip != 'true'
         run: |
           mkdir -p ~/.ssh
           printf '%s\n' "${BITBUCKET_SSH_KEY}" > ~/.ssh/bitbucket
           chmod 600 ~/.ssh/bitbucket
           cd dist-staging
-          git init
+          git init -b main
           git config user.name "github-actions"
           git config user.email "github-actions@users.noreply.github.com"
           git add .
@@ -230,11 +265,13 @@ jobs:
 動作概要:
 
 1. GitHub リポジトリの最新リリースタグを取得する。
-2. Bitbucket marketplace 配布リポジトリの現在のタグを確認し、一致していれば終了する。
+2. Bitbucket marketplace 配布リポジトリの現在のタグを確認し、一致していれば後続をスキップする。
+   - アノテーテッドタグの peeled ref（`^{}`）は除外する。
 3. `plugin-sources.json` に記載された各 plugin について、GitHub API で最新リリースタグを取得する。
 4. `marketplace.json` 内の各 plugin の `source.ref` を最新タグに更新する。
 5. staging ディレクトリを作成し、`.claude-plugin/marketplace.json` のみコピーする。
-6. Bitbucket marketplace 配布リポジトリへ tag 付きで force-push する。
+6. staging 内で `git init -b main` し、1 コミット作成。
+7. Bitbucket marketplace 配布リポジトリへ tag 付きで force-push する。
 
 ```yaml
 name: Deploy marketplace to Bitbucket
@@ -269,20 +306,24 @@ jobs:
           mkdir -p ~/.ssh
           printf '%s\n' "${BITBUCKET_SSH_KEY}" > ~/.ssh/bitbucket
           chmod 600 ~/.ssh/bitbucket
-          TAG=$(GIT_SSH_COMMAND='ssh -i ~/.ssh/bitbucket -o StrictHostKeyChecking=accept-new' git ls-remote --tags "${BITBUCKET_REPO_URL}" | awk -F'/' '{print $3}' | sort -V | tail -n 1)
+          TAG=$(GIT_SSH_COMMAND='ssh -i ~/.ssh/bitbucket -o StrictHostKeyChecking=accept-new' \
+            git ls-remote --tags "${BITBUCKET_REPO_URL}" \
+            | awk -F'/' '{print $3}' \
+            | grep -v '\^{}' \
+            | sort -V \
+            | tail -n 1)
           echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+          if [ "${TAG}" = "${RELEASE_TAG}" ]; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            echo "Bitbucket already at ${TAG}. Nothing to do."
+          fi
         env:
           BITBUCKET_REPO_URL: git@bitbucket.org:company/claude-plugins-marketplace.git
           BITBUCKET_SSH_KEY: ${{ secrets.BITBUCKET_SSH_KEY }}
-        continue-on-error: true
-
-      - name: Skip if already up to date
-        if: steps.bitbucket.outputs.tag == steps.release.outputs.tag
-        run: |
-          echo "Marketplace already at ${{ steps.release.outputs.tag }}. Nothing to do."
-          exit 0
+          RELEASE_TAG: ${{ steps.release.outputs.tag }}
 
       - name: Update plugin refs to latest releases
+        if: steps.bitbucket.outputs.skip != 'true'
         uses: actions/github-script@v7
         with:
           script: |
@@ -298,6 +339,7 @@ jobs:
             fs.writeFileSync('.claude-plugin/marketplace.json', JSON.stringify(marketplace, null, 2) + '\n');
 
       - name: Validate marketplace manifest
+        if: steps.bitbucket.outputs.skip != 'true'
         run: |
           # marketplace.json の構造を簡易検証
           node -e "JSON.parse(require('fs').readFileSync('.claude-plugin/marketplace.json'))"
@@ -310,6 +352,7 @@ jobs:
           "
 
       - name: Push to Bitbucket
+        if: steps.bitbucket.outputs.skip != 'true'
         run: |
           mkdir -p ~/.ssh
           printf '%s\n' "${BITBUCKET_SSH_KEY}" > ~/.ssh/bitbucket
@@ -317,7 +360,7 @@ jobs:
           mkdir -p dist-staging/.claude-plugin
           cp .claude-plugin/marketplace.json dist-staging/.claude-plugin/
           cd dist-staging
-          git init
+          git init -b main
           git config user.name "github-actions"
           git config user.email "github-actions@users.noreply.github.com"
           git add .
@@ -364,7 +407,7 @@ jobs:
 ## 8. バージョニングとべき等性
 
 - 配布は GitHub Release tag を単位とする。
-- ワークフローはデプロイ前に Bitbucket 側の最新 tag を確認し、一致していれば即終了する。
+- ワークフローはデプロイ前に Bitbucket 側の最新 tag を確認し、一致していれば `skip=true` フラグで後続をスキップする。
 - 配布リポジトリは常に force-push により 1 commit のみ保持する。
 
 ## 9. セキュリティ・運用留意点
@@ -372,7 +415,7 @@ jobs:
 - Bitbucket 配布リポジトリは private に設定する。
 - GitHub Actions の secret は最小権限で運用し、Bitbucket deploy key は read + write 権限を限定して発行する。
 - plugin 内で外部コマンドや MCP server を起動する場合、配布物に不要なファイル（ソースコード、テスト、.env 等）が含まれていないことを staging ルールで徹底する。
-- `claude plugin validate --strict` を plugin ワークフロー内で必ず実行し、manifest typo や型ミスをデプロイ前に検出する。
+- `claude plugin validate --strict` を plugin ワークフロー内で **ビルド後** に必ず実行し、manifest typo や型ミスをデプロイ前に検出する。
 
 ## 10. 次のステップ
 
