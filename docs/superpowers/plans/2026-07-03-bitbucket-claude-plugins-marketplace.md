@@ -46,6 +46,7 @@ examples/bitbucket-claude-plugins-marketplace/
     │   └── index.test.ts
     ├── .gitignore
     ├── package.json
+    ├── package-lock.json
     ├── tsconfig.json
     └── vitest.config.ts
 ```
@@ -94,6 +95,7 @@ examples/bitbucket-claude-plugins-marketplace/
 
 - 配布 repo は force-push により常に 1 commit のみ保持される。
 - plugin workflow は release tag 単位で実行され、Bitbucket 側の最新 tag と一致する場合はスキップされる。
+- 本 PoC の workflow では `StrictHostKeyChecking=accept-new` を使用している。実運用では Bitbucket の SSH ホストキーを `known_hosts` に事前登録すること。
 ```
 
 - [ ] **Step 2: 作成したファイルが正しく配置されていることを確認する**
@@ -163,8 +165,6 @@ jobs:
   deploy:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
 
       - name: Get latest marketplace release
         id: release
@@ -183,6 +183,7 @@ jobs:
           mkdir -p ~/.ssh
           printf '%s\n' "${BITBUCKET_SSH_KEY}" > ~/.ssh/bitbucket
           chmod 600 ~/.ssh/bitbucket
+          # PoC 段階では accept-new を使用。実運用では Bitbucket のホストキーを known_hosts に事前登録してください。
           TAG=$(GIT_SSH_COMMAND='ssh -i ~/.ssh/bitbucket -o StrictHostKeyChecking=accept-new' \
             git ls-remote --tags "${BITBUCKET_REPO_URL}" \
             | awk -F'/' '{print $3}' \
@@ -198,6 +199,9 @@ jobs:
           BITBUCKET_REPO_URL: git@bitbucket.org:acme-corp/claude-plugins-marketplace.git
           BITBUCKET_SSH_KEY: ${{ secrets.BITBUCKET_SSH_KEY }}
           RELEASE_TAG: ${{ steps.release.outputs.tag }}
+      - name: Checkout
+        if: steps.bitbucket.outputs.skip != 'true'
+        uses: actions/checkout@v4
 
       - name: Update plugin refs to latest releases
         if: steps.bitbucket.outputs.skip != 'true'
@@ -242,7 +246,9 @@ jobs:
           git add .
           git commit -m "deploy marketplace ${{ steps.release.outputs.tag }}"
           git tag "${{ steps.release.outputs.tag }}"
+          # PoC 段階では accept-new を使用。実運用では Bitbucket のホストキーを known_hosts に事前登録してください。
           GIT_SSH_COMMAND='ssh -i ~/.ssh/bitbucket -o StrictHostKeyChecking=accept-new' git push --force "${BITBUCKET_REPO_URL}" main
+          # PoC 段階では accept-new を使用。実運用では Bitbucket のホストキーを known_hosts に事前登録してください。
           GIT_SSH_COMMAND='ssh -i ~/.ssh/bitbucket -o StrictHostKeyChecking=accept-new' git push --force "${BITBUCKET_REPO_URL}" "${{ steps.release.outputs.tag }}"
         env:
           BITBUCKET_REPO_URL: git@bitbucket.org:acme-corp/claude-plugins-marketplace.git
@@ -272,6 +278,7 @@ git commit -m "feat: marketplace source repo のテンプレートを追加"
 - Create: `examples/bitbucket-claude-plugins-marketplace/plugin-a-src/src/index.ts`
 - Create: `examples/bitbucket-claude-plugins-marketplace/plugin-a-src/tests/index.test.ts`
 - Create: `examples/bitbucket-claude-plugins-marketplace/plugin-a-src/package.json`
+- Create: `examples/bitbucket-claude-plugins-marketplace/plugin-a-src/package-lock.json`
 - Create: `examples/bitbucket-claude-plugins-marketplace/plugin-a-src/tsconfig.json`
 - Create: `examples/bitbucket-claude-plugins-marketplace/plugin-a-src/vitest.config.ts`
 - Create: `examples/bitbucket-claude-plugins-marketplace/plugin-a-src/.gitignore`
@@ -327,6 +334,7 @@ jobs:
           mkdir -p ~/.ssh
           printf '%s\n' "${BITBUCKET_SSH_KEY}" > ~/.ssh/bitbucket
           chmod 600 ~/.ssh/bitbucket
+          # PoC 段階では accept-new を使用。実運用では Bitbucket のホストキーを known_hosts に事前登録してください。
           TAG=$(GIT_SSH_COMMAND='ssh -i ~/.ssh/bitbucket -o StrictHostKeyChecking=accept-new' \
             git ls-remote --tags "${BITBUCKET_REPO_URL}" \
             | awk -F'/' '{print $3}' \
@@ -418,7 +426,9 @@ jobs:
           git add .
           git commit -m "deploy ${{ steps.release.outputs.tag }}"
           git tag "${{ steps.release.outputs.tag }}"
+          # PoC 段階では accept-new を使用。実運用では Bitbucket のホストキーを known_hosts に事前登録してください。
           GIT_SSH_COMMAND='ssh -i ~/.ssh/bitbucket -o StrictHostKeyChecking=accept-new' git push --force "${BITBUCKET_REPO_URL}" main
+          # PoC 段階では accept-new を使用。実運用では Bitbucket のホストキーを known_hosts に事前登録してください。
           GIT_SSH_COMMAND='ssh -i ~/.ssh/bitbucket -o StrictHostKeyChecking=accept-new' git push --force "${BITBUCKET_REPO_URL}" "${{ steps.release.outputs.tag }}"
         env:
           BITBUCKET_REPO_URL: git@bitbucket.org:acme-corp/plugin-a-dist.git
@@ -479,7 +489,15 @@ describe('greet', () => {
 }
 ```
 
-- [ ] **Step 7: `tsconfig.json` を作成する**
+- [ ] **Step 7: `package-lock.json` を生成する**
+
+Run: `cd examples/bitbucket-claude-plugins-marketplace/plugin-a-src && npm install`
+Expected: `package-lock.json` が生成される。
+
+> 本 PoC テンプレートでは手動で `npm install` を実行し、生成された `package-lock.json` をコミットしてください。CI 内の `npm ci` と `actions/setup-node` の `cache: 'npm'` はロックファイルを必要とします。
+
+
+- [ ] **Step 8: `tsconfig.json` を作成する**
 
 ```json
 {
@@ -498,7 +516,7 @@ describe('greet', () => {
 }
 ```
 
-- [ ] **Step 8: `vitest.config.ts` を作成する**
+- [ ] **Step 9: `vitest.config.ts` を作成する**
 
 ```typescript
 import { defineConfig } from 'vitest/config';
@@ -511,7 +529,7 @@ export default defineConfig({
 });
 ```
 
-- [ ] **Step 9: `.gitignore` を作成する**
+- [ ] **Step 10: `.gitignore` を作成する**
 
 ```gitignore
 node_modules/
@@ -520,12 +538,12 @@ dist/
 *.log
 ```
 
-- [ ] **Step 10: `scripts/setup-plugin.sh` に実行権限を付与する**
+- [ ] **Step 11: `scripts/setup-plugin.sh` に実行権限を付与する**
 
 Run: `chmod +x examples/bitbucket-claude-plugins-marketplace/plugin-a-src/scripts/setup-plugin.sh`
 Expected: 実行権限が付与され、exit code 0。
 
-- [ ] **Step 11: JSON / シェルスクリプトの構文を検証する**
+- [ ] **Step 12: JSON / シェルスクリプトの構文を検証する**
 
 Run: `python3 -m json.tool examples/bitbucket-claude-plugins-marketplace/plugin-a-src/.claude-plugin/plugin.json >/dev/null && python3 -m json.tool examples/bitbucket-claude-plugins-marketplace/plugin-a-src/package.json >/dev/null && python3 -m json.tool examples/bitbucket-claude-plugins-marketplace/plugin-a-src/tsconfig.json >/dev/null`
 Expected: exit code 0。
@@ -533,7 +551,7 @@ Expected: exit code 0。
 Run: `bash -n examples/bitbucket-claude-plugins-marketplace/plugin-a-src/scripts/setup-plugin.sh`
 Expected: exit code 0。
 
-- [ ] **Step 12: Commit する**
+- [ ] **Step 13: Commit する**
 
 ```bash
 git add examples/bitbucket-claude-plugins-marketplace/plugin-a-src/
