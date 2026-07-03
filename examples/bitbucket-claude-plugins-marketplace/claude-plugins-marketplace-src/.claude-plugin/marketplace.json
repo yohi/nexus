@@ -1,0 +1,14 @@
+{
+  "id": "company-internal-plugins",
+  "name": "Company Internal Plugins",
+  "description": "Internal Claude Code plugins distributed via Bitbucket Cloud.",
+  "plugins": {
+    "plugin-a": {
+      "name": "Plugin A",
+      "source": {
+        "repo": "git@bitbucket.org:acme-corp/plugin-a-dist.git",
+        "ref": "v0.1.0"
+      }
+    }
+  }
+}
