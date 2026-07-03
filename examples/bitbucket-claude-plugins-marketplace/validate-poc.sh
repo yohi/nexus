@@ -11,6 +11,11 @@ json_files=(
   "${BASE_DIR}/plugin-a-src/tsconfig.json"
 )
 
+if ! command -v python3 >/dev/null 2>&1; then
+  echo "python3 not found; cannot validate JSON files." >&2
+  exit 1
+fi
+
 for f in "${json_files[@]}"; do
   echo "Validating JSON: ${f}"
   python3 -m json.tool "$f" >/dev/null
