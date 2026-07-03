@@ -31,12 +31,17 @@ jobs:
               }
             }
 
-      - name: Check existing Bitbucket tag
-        id: bitbucket
+      - name: Setup Bitbucket SSH
         run: |
           mkdir -p ~/.ssh
           printf '%s\n' "${BITBUCKET_SSH_KEY}" > ~/.ssh/bitbucket
           chmod 600 ~/.ssh/bitbucket
+        env:
+          BITBUCKET_SSH_KEY: ${{ secrets.BITBUCKET_SSH_KEY }}
+
+      - name: Check existing Bitbucket tag
+        id: bitbucket
+        run: |
           # PoC 段階では accept-new を使用。実運用では Bitbucket のホストキーを known_hosts に事前登録してください。
           TAG=$(GIT_SSH_COMMAND='ssh -i ~/.ssh/bitbucket -o StrictHostKeyChecking=accept-new' \
             git ls-remote --tags "${BITBUCKET_REPO_URL}" \
@@ -55,7 +60,6 @@ jobs:
             echo "Tag ${RELEASE_TAG} already exists on Bitbucket. Tag push will be skipped."
           fi
         env:
-          BITBUCKET_SSH_KEY: ${{ secrets.BITBUCKET_SSH_KEY }}
           RELEASE_TAG: ${{ steps.release.outputs.tag }}
 
       - name: Checkout release tag
@@ -123,9 +127,6 @@ jobs:
       - name: Push to Bitbucket
         if: steps.bitbucket.outputs.skip != 'true'
         run: |
-          mkdir -p ~/.ssh
-          printf '%s\n' "${BITBUCKET_SSH_KEY}" > ~/.ssh/bitbucket
-          chmod 600 ~/.ssh/bitbucket
           cd dist-staging
           git init -b main
           git config user.name "github-actions"
@@ -141,5 +142,3 @@ jobs:
           else
             GIT_SSH_COMMAND='ssh -i ~/.ssh/bitbucket -o StrictHostKeyChecking=accept-new' git push "${BITBUCKET_REPO_URL}" "${{ steps.release.outputs.tag }}"
           fi
-        env:
-          BITBUCKET_SSH_KEY: ${{ secrets.BITBUCKET_SSH_KEY }}
