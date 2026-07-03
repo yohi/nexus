@@ -70,6 +70,7 @@ jobs:
         if: steps.bitbucket.outputs.skip != 'true'
         uses: actions/github-script@v7
         with:
+          github-token: ${{ secrets.GH_PAT || github.token }}
           script: |
             const fs = require('fs');
             const marketplace = JSON.parse(fs.readFileSync('.claude-plugin/marketplace.json', 'utf8'));

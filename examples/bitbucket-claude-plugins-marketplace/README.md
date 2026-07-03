@@ -30,3 +30,4 @@
 - 配布 repo は force-push により常に 1 commit のみ保持される。
 - plugin workflow は release tag 単位で実行され、Bitbucket 側の最新 tag と一致する場合はスキップされる。
 - 本 PoC の workflow では `StrictHostKeyChecking=accept-new` を使用している。実運用では Bitbucket の SSH ホストキーを `known_hosts` に事前登録すること。
+- marketplace workflow は、同じ organization 内の public な plugin source repo を想定している。plugin source repo が private な場合、各 GitHub source repo の Secrets に `GH_PAT`（repo スコープ付き PAT）を設定し、marketplace workflow 側で `GH_PAT` を使用する必要がある。未設定の場合はデフォルトの `GITHUB_TOKEN` が使用される。
