@@ -15,11 +15,19 @@ jobs:
         uses: actions/github-script@v7
         with:
           script: |
-            const { data: release } = await github.rest.repos.getLatestRelease({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-            });
-            core.setOutput('tag', release.tag_name);
+            try {
+              const { data: release } = await github.rest.repos.getLatestRelease({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+              });
+              core.setOutput('tag', release.tag_name);
+            } catch (err) {
+              if (err.status === 404) {
+                core.setFailed('No GitHub Release found. Create a release before running this workflow.');
+              } else {
+                core.setFailed(`Failed to fetch latest release: ${err.message}`);
+              }
+            }
 
       - name: Check existing Bitbucket tag
         id: bitbucket
