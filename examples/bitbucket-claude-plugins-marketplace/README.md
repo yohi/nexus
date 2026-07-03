@@ -14,7 +14,7 @@
 2. Bitbucket Cloud 上に配布用 private repo を作成する。
    - `acme-corp/claude-plugins-marketplace.git`
    - `acme-corp/plugin-a-dist.git`
-3. 各 Bitbucket repo の Settings > Access keys に GitHub Actions 用 SSH 公開鍵を登録する。 write access を有効化すること。
+3. 各 Bitbucket repo の Settings > Access keys に GitHub Actions 用 SSH 公開鍵を登録する。
 4. 各 GitHub source repo の Settings > Secrets and variables > Actions に秘密鍵を `BITBUCKET_SSH_KEY` として保存する。
 
 ## 利用者向け手順（Claude Code 上）
