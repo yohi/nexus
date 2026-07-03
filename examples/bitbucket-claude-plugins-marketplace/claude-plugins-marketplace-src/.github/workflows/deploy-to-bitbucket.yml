@@ -9,6 +9,8 @@ permissions:
 jobs:
   deploy:
     runs-on: ubuntu-latest
+    env:
+      BITBUCKET_REPO_URL: ${{ vars.BITBUCKET_REPO_URL || 'git@bitbucket.org:acme-corp/claude-plugins-marketplace.git' }}
     steps:
 
       - name: Get latest marketplace release
@@ -49,7 +51,6 @@ jobs:
             echo "Bitbucket already at ${TAG}. Nothing to do."
           fi
         env:
-          BITBUCKET_REPO_URL: git@bitbucket.org:acme-corp/claude-plugins-marketplace.git
           BITBUCKET_SSH_KEY: ${{ secrets.BITBUCKET_SSH_KEY }}
           RELEASE_TAG: ${{ steps.release.outputs.tag }}
       - name: Checkout
@@ -113,5 +114,4 @@ jobs:
           # PoC 段階では accept-new を使用。実運用では Bitbucket のホストキーを known_hosts に事前登録してください。
           GIT_SSH_COMMAND='ssh -i ~/.ssh/bitbucket -o StrictHostKeyChecking=accept-new' git push --force "${BITBUCKET_REPO_URL}" "${{ steps.release.outputs.tag }}"
         env:
-          BITBUCKET_REPO_URL: git@bitbucket.org:acme-corp/claude-plugins-marketplace.git
           BITBUCKET_SSH_KEY: ${{ secrets.BITBUCKET_SSH_KEY }}
