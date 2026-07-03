@@ -49,6 +49,11 @@ jobs:
             echo "skip=true" >> "$GITHUB_OUTPUT"
             echo "Bitbucket already at ${TAG}. Nothing to do."
           fi
+          if GIT_SSH_COMMAND='ssh -i ~/.ssh/bitbucket -o StrictHostKeyChecking=accept-new' \
+               git ls-remote --tags "${BITBUCKET_REPO_URL}" "refs/tags/${RELEASE_TAG}" >/dev/null 2>&1; then
+            echo "tag_exists=true" >> "$GITHUB_OUTPUT"
+            echo "Tag ${RELEASE_TAG} already exists on Bitbucket. Tag push will be skipped."
+          fi
         env:
           BITBUCKET_SSH_KEY: ${{ secrets.BITBUCKET_SSH_KEY }}
           RELEASE_TAG: ${{ steps.release.outputs.tag }}
@@ -131,6 +136,10 @@ jobs:
           # PoC 段階では accept-new を使用。実運用では Bitbucket のホストキーを known_hosts に事前登録してください。
           GIT_SSH_COMMAND='ssh -i ~/.ssh/bitbucket -o StrictHostKeyChecking=accept-new' git push --force "${BITBUCKET_REPO_URL}" main
           # PoC 段階では accept-new を使用。実運用では Bitbucket のホストキーを known_hosts に事前登録してください。
-          GIT_SSH_COMMAND='ssh -i ~/.ssh/bitbucket -o StrictHostKeyChecking=accept-new' git push --force "${BITBUCKET_REPO_URL}" "${{ steps.release.outputs.tag }}"
+          if [ "${{ steps.bitbucket.outputs.tag_exists }}" = "true" ]; then
+            echo "Skipping tag push because ${{ steps.release.outputs.tag }} already exists on Bitbucket."
+          else
+            GIT_SSH_COMMAND='ssh -i ~/.ssh/bitbucket -o StrictHostKeyChecking=accept-new' git push "${BITBUCKET_REPO_URL}" "${{ steps.release.outputs.tag }}"
+          fi
         env:
           BITBUCKET_SSH_KEY: ${{ secrets.BITBUCKET_SSH_KEY }}
