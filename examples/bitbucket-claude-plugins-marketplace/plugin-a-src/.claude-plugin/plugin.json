@@ -1,0 +1,10 @@
+{
+  "id": "plugin-a",
+  "name": "Plugin A",
+  "version": "0.1.0",
+  "description": "Sample internal plugin for the Bitbucket marketplace PoC.",
+  "entrypoint": "${CLAUDE_PLUGIN_ROOT}/dist/index.js",
+  "scripts": {
+    "setup": "${CLAUDE_PLUGIN_ROOT}/scripts/setup-plugin.sh"
+  }
+}
