@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.23.1](https://github.com/yohi/nexus/compare/v1.23.0...v1.23.1) (2026-07-06)
+
+
+### Bug Fixes
+
+* BitbucketデプロイworkflowでトークンをGIT_ASKPASS経由に変更しURLスキームガードを追加 ([d7c2ab1](https://github.com/yohi/nexus/commit/d7c2ab1ea93ad562b1d3e756f29bbda385279a8a))
+
 ## [1.23.0](https://github.com/yohi/nexus/compare/v1.22.0...v1.23.0) (2026-07-03)
 
 
