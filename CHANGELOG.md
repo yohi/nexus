@@ -1,5 +1,27 @@
 # Changelog
 
+## [1.23.0](https://github.com/yohi/nexus/compare/v1.22.0...v1.23.0) (2026-07-03)
+
+
+### Features
+
+* Bitbucket 社内 Claude Code plugin marketplace PoC ([0312a55](https://github.com/yohi/nexus/commit/0312a55fb4db1dec6eea259489a883385f45dcbd))
+* marketplace source repo のテンプレートを追加 ([0bca0ed](https://github.com/yohi/nexus/commit/0bca0edc9df000a4f0a5f67ed91a06e2e17f169d))
+* plugin A source repo のテンプレートを追加 ([af9817d](https://github.com/yohi/nexus/commit/af9817dee9a5e765c17e267a6c2ffe91edf1cecd))
+* PoC ローカル検証スクリプトを追加 ([95d1b86](https://github.com/yohi/nexus/commit/95d1b8638fbbbf44433d917dc1dfbc82ed88e59e))
+
+
+### Bug Fixes
+
+* **bitbucket-claude-plugins-marketplace:** main script 判定が相対パス実行で壊れていたのを修正 ([c68d574](https://github.com/yohi/nexus/commit/c68d574c5bcc21e9d4c8e5f594cccb3348e5f517))
+* **workflows:** Bitbucket タグの再 push を既存時にスキップ ([faf32af](https://github.com/yohi/nexus/commit/faf32af12d04cb8f6963b13753777649587b02f5))
+* **workflows:** GitHub Release がない場合のエラーを明示化 ([67340a7](https://github.com/yohi/nexus/commit/67340a736c575fae02e7678ed90ff56a4820cdf9))
+
+
+### Reverts
+
+* 混在したコミットを取り消し ([1d2a270](https://github.com/yohi/nexus/commit/1d2a270c87dc1b1ee688125714a553097018d5de))
+
 ## [1.22.0](https://github.com/yohi/nexus/compare/v1.21.0...v1.22.0) (2026-06-22)
 
 
