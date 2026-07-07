@@ -244,7 +244,7 @@ jobs:
           REPO_URL="https://x-token-auth@${BITBUCKET_REPO_URL#https://}"
           TAG=$(git ls-remote --tags "${REPO_URL}" \
             | awk -F'/' '{print $3}' \
-            | grep -v '\^{}' \
+            | { grep -v '\^{}' || true; } \
             | sort -V \
             | tail -n 1)
           echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
