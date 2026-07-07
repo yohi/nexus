@@ -1,7 +1,7 @@
 # Nexus Plugin Bitbucket Source-Mirror Deploy 実装計画
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
-
+>
 > **⚠️ 前提変更（2026-07-07 追記）:** 業務用パッケージ版に追加要件（埋め込み LLM 選択不可 / AWS Bedrock 直接呼び出し / Grafana メトリクス除去）が発生した。詳細は [../specs/2026-07-07-nexus-packaged-plugin-restrictions.md](../specs/2026-07-07-nexus-packaged-plugin-restrictions.md) を参照。本計画は「nexus をそのまま配る」前提で書かれているため、パッケージ版として実行する場合は Task 1（staging から `packages/dashboard` を除外し固定 config を注入）と Prerequisites（AWS 資格情報 / GitHub Actions 変数）の改訂、および前段のコア変更（Bedrock プロバイダ追加・パッケージモード実装）が必要。当該 spec の未確定事項が確定するまで本計画は保留。
 
 **Goal:** nexus プラグイン(`yohi-nexus`)を「ソースミラー」として Bitbucket `y-ohi/nexus` に自動デプロイする GitHub Actions ワークフローを追加し、利用者マシンで `setup-plugin.sh` により `npm install && npm run build` して動作させる。
@@ -232,6 +232,7 @@ jobs:
       - name: Check existing Bitbucket tag
         id: bitbucket
         run: |
+          set -euo pipefail
           if [[ "${BITBUCKET_REPO_URL}" != https://* ]]; then
             echo "BITBUCKET_REPO_URL must start with https://: ${BITBUCKET_REPO_URL}" >&2
             exit 1
@@ -303,6 +304,7 @@ jobs:
       - name: Push to Bitbucket
         if: steps.bitbucket.outputs.skip != 'true'
         run: |
+          set -euo pipefail
           if [[ "${BITBUCKET_REPO_URL}" != https://* ]]; then
             echo "BITBUCKET_REPO_URL must start with https://: ${BITBUCKET_REPO_URL}" >&2
             exit 1
