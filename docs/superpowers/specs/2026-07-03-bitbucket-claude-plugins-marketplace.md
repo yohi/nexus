@@ -118,7 +118,7 @@ GitHub Actions 上で staging ディレクトリを作成し、以下を Bitbuck
 
 1. GitHub リポジトリの最新リリースタグを GitHub API で取得する。
 2. Bitbucket 配布リポジトリの現在のタグを `git ls-remote --tags` で確認する。
-   - 認証は GitHub Secret に保存した API トークンを使い、HTTPS URL（`https://x-token-auth:<TOKEN>@bitbucket.org/...`）で接続する。
+   - 認証は GitHub Secret に保存した API トークンを使い、`~/.netrc`（`chmod 600`、使用後に削除）経由で HTTPS 接続する。トークンをリモート URL やコマンドライン引数には含めない。
    - アノテーテッドタグの peeled ref（`^{}`）は除外する。
    - 取得した最新タグと一致していれば `skip=true` フラグを立て、後続ステップを全てスキップする。
 3. 一致していなければ、該当タグを checkout する。
@@ -156,12 +156,14 @@ jobs:
       - name: Check existing Bitbucket tag
         id: bitbucket
         run: |
-          AUTH_URL="https://x-token-auth:${BITBUCKET_API_TOKEN}@${BITBUCKET_REPO_URL#https://}"
-          TAG=$(git ls-remote --tags "${AUTH_URL}" \
+          printf 'machine bitbucket.org\n  login x-token-auth\n  password %s\n' "${BITBUCKET_API_TOKEN}" > "$HOME/.netrc"
+          chmod 600 "$HOME/.netrc"
+          TAG=$(git ls-remote --tags "${BITBUCKET_REPO_URL}" \
             | awk -F'/' '{print $3}' \
             | grep -v '\^{}' \
             | sort -V \
             | tail -n 1)
+          rm -f "$HOME/.netrc"
           echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
           if [ "${TAG}" = "${RELEASE_TAG}" ]; then
             echo "skip=true" >> "$GITHUB_OUTPUT"
@@ -238,6 +240,8 @@ jobs:
       - name: Push to Bitbucket
         if: steps.bitbucket.outputs.skip != 'true'
         run: |
+          printf 'machine bitbucket.org\n  login x-token-auth\n  password %s\n' "${BITBUCKET_API_TOKEN}" > "$HOME/.netrc"
+          chmod 600 "$HOME/.netrc"
           cd dist-staging
           git init -b main
           git config user.name "github-actions"
@@ -245,9 +249,10 @@ jobs:
           git add .
           git commit -m "deploy ${{ steps.release.outputs.tag }}"
           git tag "${{ steps.release.outputs.tag }}"
-          git remote add bitbucket "https://x-token-auth:${BITBUCKET_API_TOKEN}@${BITBUCKET_REPO_URL#https://}"
+          git remote add bitbucket "${BITBUCKET_REPO_URL}"
           git push --force bitbucket main
           git push --force bitbucket "${{ steps.release.outputs.tag }}"
+          rm -f "$HOME/.netrc"
         env:
           BITBUCKET_REPO_URL: https://bitbucket.org/company/plugin-a-dist.git
           BITBUCKET_API_TOKEN: ${{ secrets.BITBUCKET_API_TOKEN }}
@@ -298,12 +303,14 @@ jobs:
       - name: Check existing Bitbucket tag
         id: bitbucket
         run: |
-          AUTH_URL="https://x-token-auth:${BITBUCKET_API_TOKEN}@${BITBUCKET_REPO_URL#https://}"
-          TAG=$(git ls-remote --tags "${AUTH_URL}" \
+          printf 'machine bitbucket.org\n  login x-token-auth\n  password %s\n' "${BITBUCKET_API_TOKEN}" > "$HOME/.netrc"
+          chmod 600 "$HOME/.netrc"
+          TAG=$(git ls-remote --tags "${BITBUCKET_REPO_URL}" \
             | awk -F'/' '{print $3}' \
             | grep -v '\^{}' \
             | sort -V \
             | tail -n 1)
+          rm -f "$HOME/.netrc"
           echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
           if [ "${TAG}" = "${RELEASE_TAG}" ]; then
             echo "skip=true" >> "$GITHUB_OUTPUT"
@@ -346,6 +353,8 @@ jobs:
       - name: Push to Bitbucket
         if: steps.bitbucket.outputs.skip != 'true'
         run: |
+          printf 'machine bitbucket.org\n  login x-token-auth\n  password %s\n' "${BITBUCKET_API_TOKEN}" > "$HOME/.netrc"
+          chmod 600 "$HOME/.netrc"
           mkdir -p dist-staging/.claude-plugin
           cp .claude-plugin/marketplace.json dist-staging/.claude-plugin/
           cd dist-staging
@@ -355,9 +364,10 @@ jobs:
           git add .
           git commit -m "deploy marketplace ${{ steps.release.outputs.tag }}"
           git tag "${{ steps.release.outputs.tag }}"
-          git remote add bitbucket "https://x-token-auth:${BITBUCKET_API_TOKEN}@${BITBUCKET_REPO_URL#https://}"
+          git remote add bitbucket "${BITBUCKET_REPO_URL}"
           git push --force bitbucket main
           git push --force bitbucket "${{ steps.release.outputs.tag }}"
+          rm -f "$HOME/.netrc"
         env:
           BITBUCKET_REPO_URL: https://bitbucket.org/company/claude-plugins-marketplace.git
           BITBUCKET_API_TOKEN: ${{ secrets.BITBUCKET_API_TOKEN }}
@@ -379,7 +389,7 @@ jobs:
 - **Bitbucket Access Token**（Repository Access Token、HTTPS）を推奨する。
   - Bitbucket の **Repository settings > Security > Access tokens** で `repository:write` スコープの Access Token を発行する。リポジトリ単位で発行されるため、個人の Atlassian アカウントに依存しない。
   - GitHub リポジトリの **Settings > Secrets and variables > Actions** に発行したトークンを `BITBUCKET_API_TOKEN` として保存する。
-  - ワークフローは `https://x-token-auth:<TOKEN>@bitbucket.org/<workspace>/<repo>.git` の形式で HTTPS 認証する（remote 名経由で push し、トークンをログに残さない）。
+  - ワークフローは `~/.netrc`（`machine bitbucket.org` / `login x-token-auth` / `password <TOKEN>`、`chmod 600` で作成し使用後に削除）経由で HTTPS 認証する。トークンをリモート URL やコマンドライン引数には含めず、ログにも残さない。
 - Access Keys（Repository settings > Security > Access keys、SSH）は read-only 専用で push できないため採用しない。個人アカウント単位の **API トークン**（廃止予定の App Password の後継）は複数リポジトリへの広いアクセス権を持ち CI 用途では過剰権限になるため、リポジトリ単位で最小権限を発行できる Access Token を採用する。
 - Bitbucket Cloud は GitHub Actions の OIDC 連携に非対応であり、GitHub Deploy Keys も鍵ペアの手動生成・管理を要するため、鍵管理が不要な Access Token 方式を採用する。
 
