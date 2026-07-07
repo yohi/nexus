@@ -162,7 +162,7 @@
 | 3.2 Bedrock | [src/types/index.ts](../../../src/types/index.ts) | `provider` union に `"bedrock"`、`region?`/`profile?` を追加 |
 | 3.2 Bedrock | [src/config/index.ts](../../../src/config/index.ts) | `isProvider` に `"bedrock"`、`NEXUS_EMBEDDING_REGION`/`_PROFILE` 配線 |
 | 3.2 Bedrock | [src/server/factory.ts](../../../src/server/factory.ts) | switch に `case "bedrock"` |
-| 3.2 Bedrock | [package.json](../../../package.json) | `@aws-sdk/client-bedrock-runtime` 追加 |
+| 3.2 Bedrock | [package.json](../../../package.json) | `@aws-sdk/client-bedrock-runtime` / `@aws-sdk/credential-providers`（任意 profile 用）追加 |
 | 3.1 ロック / モード | `src/config/index.ts` | `packageMode`（`NEXUS_PACKAGE_MODE`）を追加 |
 | 3.1 ロック / モード | `src/server/factory.ts` | `packageMode` 時に provider を `bedrock` へ固定（fail-fast） |
 | 3.1 配布 | `.claude-plugin/plugin.json`（stage 時変換） | `userConfig` 除去・固定 env 注入 |

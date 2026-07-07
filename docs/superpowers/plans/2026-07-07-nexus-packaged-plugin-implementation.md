@@ -427,6 +427,8 @@ export class BedrockEmbeddingProvider extends BaseEmbeddingProvider {
         if (error instanceof DimensionMismatchError) {
           throw error;
         }
+        // Non-retryable errors (e.g. AccessDenied/Validation) must not be retried,
+        // but the pipeline expects RetryExhaustedError to route to DLQ.
         if (error instanceof NonRetryableEmbeddingError) {
           throw new RetryExhaustedError(error.message, 1, { cause: error });
         }
@@ -655,7 +657,7 @@ import { readFileSync, existsSync } from 'node:fs';
 const p = JSON.parse(readFileSync('/tmp/nexus-pkg-stage/.claude-plugin/plugin.json', 'utf8'));
 if (p.userConfig) throw new Error('userConfig should be removed');
 const e = p.mcpServers.nexus.env;
-const expected = { NEXUS_PACKAGE_MODE: '1', NEXUS_EMBEDDING_PROVIDER: 'bedrock', NEXUS_EMBEDDING_DIMENSIONS: '1024', NEXUS_EMBEDDING_REGION: 'ap-northeast-1' };
+const expected = { NEXUS_PACKAGE_MODE: '1', NEXUS_EMBEDDING_PROVIDER: 'bedrock', NEXUS_EMBEDDING_MODEL: 'amazon.titan-embed-text-v2:0', NEXUS_EMBEDDING_DIMENSIONS: '1024', NEXUS_EMBEDDING_REGION: 'ap-northeast-1' };
 for (const [k, v] of Object.entries(expected)) if (e[k] !== v) throw new Error(`env.${k} expected ${v}, got ${e[k]}`);
 if (e.NEXUS_EMBEDDING_BASE_URL || e.NEXUS_EMBEDDING_API_KEY) throw new Error('base_url/api_key env must be absent');
 if (!existsSync('/tmp/nexus-pkg-stage/packages/dashboard/src')) throw new Error('packages/dashboard must be bundled');
