@@ -4,7 +4,7 @@
 
 **Goal:** パッケージ版プラグイン（`yohi-nexus`）向けに、AWS Bedrock 埋め込みプロバイダと単一フラグ `NEXUS_PACKAGE_MODE`（埋め込みハードロック）をコアに追加し、ソースミラー配布時に plugin.json を stage 時変換する。
 
-**Architecture:** 設定駆動の単一コードベース。Bedrock は正規プロバイダとしてコアに追加（原本からも利用可）。`NEXUS_PACKAGE_MODE` は provider を `bedrock` に固定するハードロックのみを担い、メトリクス/TUI には触れない。配布は既存のソースミラー方式に「stage 時 plugin.json 変換」を足すだけ（`packages/dashboard` は同梱維持・ビルド無改修）。
+**Architecture:** 設定駆動の単一コードベース。Bedrock は正規プロバイダとしてコアに追加（原本からも利用可）。`NEXUS_PACKAGE_MODE` は埋め込みを `provider=bedrock` / `model=amazon.titan-embed-text-v2:0` / `dimensions=1024` に固定するハードロックを担い、メトリクス/TUI には触れない。配布は既存のソースミラー方式に「stage 時 plugin.json 変換」を足すだけ（`packages/dashboard` は同梱維持・ビルド無改修）。
 
 **Tech Stack:** TypeScript(strict) + `@aws-sdk/client-bedrock-runtime` / `@aws-sdk/credential-providers`、Vitest、Node.js 24、Bash、GitHub Actions。
 
@@ -89,8 +89,28 @@ describe('bedrock / packageMode config', () => {
     ).toThrow(/bedrock/);
   });
 
-  it('assertPackageModeConstraints passes for bedrock or non-package mode', () => {
-    expect(() => assertPackageModeConstraints({ packageMode: true, embedding: { provider: 'bedrock' } })).not.toThrow();
+  it('assertPackageModeConstraints throws when packageMode model/dimensions deviate', () => {
+    expect(() =>
+      assertPackageModeConstraints({
+        packageMode: true,
+        embedding: { provider: 'bedrock', model: 'wrong-model', dimensions: 1024 },
+      }),
+    ).toThrow(/model/);
+    expect(() =>
+      assertPackageModeConstraints({
+        packageMode: true,
+        embedding: { provider: 'bedrock', model: 'amazon.titan-embed-text-v2:0', dimensions: 512 },
+      }),
+    ).toThrow(/dimensions/);
+  });
+
+  it('assertPackageModeConstraints passes for fixed bedrock config or non-package mode', () => {
+    expect(() =>
+      assertPackageModeConstraints({
+        packageMode: true,
+        embedding: { provider: 'bedrock', model: 'amazon.titan-embed-text-v2:0', dimensions: 1024 },
+      }),
+    ).not.toThrow();
     expect(() => assertPackageModeConstraints({ packageMode: false, embedding: { provider: 'ollama' } })).not.toThrow();
   });
 });
@@ -179,13 +199,25 @@ const asBoolean = (value: string | undefined): boolean | undefined => {
 const validateBoolean = (value: unknown): boolean | undefined =>
   typeof value === 'boolean' ? value : undefined;
 
-/** パッケージモードでは埋め込みプロバイダを bedrock に固定する（それ以外は fail-fast）。 */
+/** パッケージモードでは埋め込みの provider/model/dimensions を固定値にロックする（逸脱時は fail-fast）。 */
 export const assertPackageModeConstraints = (
   config: Pick<Config, 'packageMode' | 'embedding'>,
 ): void => {
-  if (config.packageMode && config.embedding.provider !== 'bedrock') {
+  if (!config.packageMode) return;
+  const { provider, model, dimensions } = config.embedding;
+  if (provider !== 'bedrock') {
     throw new Error(
-      `packageMode requires embedding provider 'bedrock', but got '${config.embedding.provider}'.`,
+      `packageMode requires embedding provider 'bedrock', but got '${provider}'.`,
+    );
+  }
+  if (model !== 'amazon.titan-embed-text-v2:0') {
+    throw new Error(
+      `packageMode locks embedding model to 'amazon.titan-embed-text-v2:0', but got '${model}'.`,
+    );
+  }
+  if (dimensions !== 1024) {
+    throw new Error(
+      `packageMode locks embedding dimensions to 1024, but got ${dimensions}.`,
     );
   }
 };

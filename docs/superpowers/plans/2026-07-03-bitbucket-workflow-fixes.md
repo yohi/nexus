@@ -133,17 +133,24 @@ GIT_MASTER=1 git commit -m "fix(workflows): GitHub Release が存在しない場
 
 **Interfaces:**
 - Consumes: none
-- Produces: Both workflows read `BITBUCKET_REPO_URL` from a job-level `env:` block. Each per-step `env:` block removes the hardcoded URL but keeps `BITBUCKET_SSH_KEY` and any step-local variables. If `vars.BITBUCKET_REPO_URL` is present it wins; otherwise the job-level default is used.
+- Produces: Both workflows read `BITBUCKET_REPO_URL` from a job-level `env:` block set to `${{ vars.BITBUCKET_REPO_URL }}` with **no hardcoded fallback**. A guard step fails the job fast when the variable is unset, preventing accidental pushes to the template's example repository. Each per-step `env:` block removes the hardcoded URL but keeps `BITBUCKET_SSH_KEY` and any step-local variables.
 
 - [ ] **Step 1: Set job-level env in marketplace workflow**
 
-Add a `env:` block directly under `jobs.deploy:` in `claude-plugins-marketplace-src/.github/workflows/deploy-to-bitbucket.yml`:
+Add a job-level `env:` block under `jobs.deploy:` in `claude-plugins-marketplace-src/.github/workflows/deploy-to-bitbucket.yml` **without a hardcoded fallback**, and add a guard step so a missing variable fails fast (never pushes to the template's example repo):
 
 ```yaml
   deploy:
     runs-on: ubuntu-latest
     env:
-      BITBUCKET_REPO_URL: ${{ vars.BITBUCKET_REPO_URL || 'git@bitbucket.org:acme-corp/claude-plugins-marketplace.git' }}
+      BITBUCKET_REPO_URL: ${{ vars.BITBUCKET_REPO_URL }}
+    steps:
+      - name: Require BITBUCKET_REPO_URL
+        run: |
+          if [ -z "${BITBUCKET_REPO_URL}" ]; then
+            echo "::error::vars.BITBUCKET_REPO_URL is not set. Configure it before deploying." >&2
+            exit 1
+          fi
 ```
 
 Remove `BITBUCKET_REPO_URL` from the two per-step `env:` blocks:
@@ -160,7 +167,14 @@ Apply the same pattern to `plugin-a-src/.github/workflows/deploy-to-bitbucket.ym
   deploy:
     runs-on: ubuntu-latest
     env:
-      BITBUCKET_REPO_URL: ${{ vars.BITBUCKET_REPO_URL || 'git@bitbucket.org:acme-corp/plugin-a-dist.git' }}
+      BITBUCKET_REPO_URL: ${{ vars.BITBUCKET_REPO_URL }}
+    steps:
+      - name: Require BITBUCKET_REPO_URL
+        run: |
+          if [ -z "${BITBUCKET_REPO_URL}" ]; then
+            echo "::error::vars.BITBUCKET_REPO_URL is not set. Configure it before deploying." >&2
+            exit 1
+          fi
 ```
 
 Remove `BITBUCKET_REPO_URL` from the two per-step `env:` blocks.
