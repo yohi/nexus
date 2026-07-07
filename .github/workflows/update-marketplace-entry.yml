@@ -1,0 +1,131 @@
+name: Update marketplace entry
+
+on:
+  workflow_dispatch:
+    inputs:
+      plugin_name:
+        description: 'Plugin name (key in marketplace.json)'
+        required: true
+      plugin_description:
+        description: 'Plugin description'
+        required: true
+      bitbucket_url:
+        description: 'Plugin distribution repo URL on Bitbucket (e.g. https://bitbucket.org/y-ohi/nexus.git)'
+        required: true
+      marketplace_repo_url:
+        description: 'Marketplace catalog repo URL on Bitbucket'
+        required: false
+        default: 'https://bitbucket.org/y-ohi/claude-plugins.git'
+
+permissions:
+  contents: read
+
+jobs:
+  update-marketplace:
+    runs-on: ubuntu-slim
+    steps:
+      - name: Validate inputs
+        env:
+          BITBUCKET_URL: ${{ inputs.bitbucket_url }}
+          MARKETPLACE_REPO_URL: ${{ inputs.marketplace_repo_url }}
+        run: |
+          if [[ "${BITBUCKET_URL}" != https://* ]]; then
+            echo "bitbucket_url must start with https://: ${BITBUCKET_URL}" >&2
+            exit 1
+          fi
+          if [[ "${MARKETPLACE_REPO_URL}" != https://* ]]; then
+            echo "marketplace_repo_url must start with https://: ${MARKETPLACE_REPO_URL}" >&2
+            exit 1
+          fi
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Update marketplace.json and push (with retry on conflict)
+        env:
+          BITBUCKET_MARKETPLACE_TOKEN: ${{ secrets.BITBUCKET_MARKETPLACE_TOKEN }}
+          MARKETPLACE_REPO_URL: ${{ inputs.marketplace_repo_url }}
+          PLUGIN_NAME: ${{ inputs.plugin_name }}
+          PLUGIN_DESCRIPTION: ${{ inputs.plugin_description }}
+          PLUGIN_BITBUCKET_URL: ${{ inputs.bitbucket_url }}
+        run: |
+          set -euo pipefail
+
+          if [[ -z "${BITBUCKET_MARKETPLACE_TOKEN:-}" ]]; then
+            echo "BITBUCKET_MARKETPLACE_TOKEN secret is not set." >&2
+            exit 1
+          fi
+
+          ASKPASS_SCRIPT="$(mktemp)"
+          printf '#!/bin/sh\necho "$BITBUCKET_MARKETPLACE_TOKEN"\n' > "$ASKPASS_SCRIPT"
+          chmod +x "$ASKPASS_SCRIPT"
+          export GIT_ASKPASS="$ASKPASS_SCRIPT"
+
+          REPO_URL="https://x-token-auth@${MARKETPLACE_REPO_URL#https://}"
+          WORKDIR="$(mktemp -d)"
+          MAX_RETRIES=5
+
+          UPDATE_SCRIPT="$(mktemp)"
+          cat > "$UPDATE_SCRIPT" <<'NODE_SCRIPT'
+          const fs = require('fs');
+          const path = '.claude-plugin/marketplace.json';
+          let catalog;
+          try {
+            catalog = JSON.parse(fs.readFileSync(path, 'utf8'));
+          } catch {
+            catalog = { name: 'company-internal-plugins', owner: { name: 'Internal Dev Team' }, plugins: [] };
+          }
+          const name = process.env.PLUGIN_NAME;
+          const entry = {
+            name,
+            description: process.env.PLUGIN_DESCRIPTION,
+            source: { source: 'url', url: process.env.PLUGIN_BITBUCKET_URL },
+          };
+          const idx = catalog.plugins.findIndex((p) => p.name === name);
+          if (idx >= 0) {
+            catalog.plugins[idx] = entry;
+          } else {
+            catalog.plugins.push(entry);
+          }
+          fs.mkdirSync('.claude-plugin', { recursive: true });
+          fs.writeFileSync(path, JSON.stringify(catalog, null, 2) + '\n');
+          NODE_SCRIPT
+
+          for attempt in $(seq 1 "$MAX_RETRIES"); do
+            cd "$RUNNER_TEMP"
+            rm -rf "$WORKDIR"
+            git clone "$REPO_URL" "$WORKDIR"
+            cd "$WORKDIR"
+            git config user.name "github-actions"
+            git config user.email "github-actions@users.noreply.github.com"
+
+            node "$UPDATE_SCRIPT"
+
+            node -e "
+              const m = JSON.parse(require('fs').readFileSync('.claude-plugin/marketplace.json'));
+              if (!m.name || !m.plugins) throw new Error('invalid marketplace.json structure');
+              for (const p of m.plugins) {
+                if (!p.name || !p.source?.url) throw new Error('invalid plugin entry: ' + JSON.stringify(p));
+              }
+            "
+
+            git add .claude-plugin/marketplace.json
+            if git diff --cached --quiet; then
+              echo "No changes to commit (entry already up to date)."
+              exit 0
+            fi
+            git commit -m "chore: update ${PLUGIN_NAME} marketplace entry"
+
+            if git push origin HEAD; then
+              echo "Pushed successfully on attempt ${attempt}."
+              exit 0
+            fi
+
+            echo "Push rejected (possible concurrent update). Retrying (${attempt}/${MAX_RETRIES})..."
+            sleep $((RANDOM % 5 + 1))
+          done
+
+          echo "Failed to push after ${MAX_RETRIES} attempts." >&2
+          exit 1
