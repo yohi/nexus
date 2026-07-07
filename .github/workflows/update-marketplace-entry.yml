@@ -25,13 +25,16 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Validate inputs
+        env:
+          BITBUCKET_URL: ${{ inputs.bitbucket_url }}
+          MARKETPLACE_REPO_URL: ${{ inputs.marketplace_repo_url }}
         run: |
-          if [[ "${{ inputs.bitbucket_url }}" != https://* ]]; then
-            echo "bitbucket_url must start with https://: ${{ inputs.bitbucket_url }}" >&2
+          if [[ "${BITBUCKET_URL}" != https://* ]]; then
+            echo "bitbucket_url must start with https://: ${BITBUCKET_URL}" >&2
             exit 1
           fi
-          if [[ "${{ inputs.marketplace_repo_url }}" != https://* ]]; then
-            echo "marketplace_repo_url must start with https://: ${{ inputs.marketplace_repo_url }}" >&2
+          if [[ "${MARKETPLACE_REPO_URL}" != https://* ]]; then
+            echo "marketplace_repo_url must start with https://: ${MARKETPLACE_REPO_URL}" >&2
             exit 1
           fi
 
