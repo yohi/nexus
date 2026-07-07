@@ -222,7 +222,7 @@ To:
             echo "Bitbucket already at ${TAG}. Nothing to do."
           fi
           if GIT_SSH_COMMAND='ssh -i ~/.ssh/bitbucket -o StrictHostKeyChecking=accept-new' \
-               git ls-remote --tags "${BITBUCKET_REPO_URL}" "refs/tags/${RELEASE_TAG}" >/dev/null 2>&1; then
+               git ls-remote --tags --exit-code "${BITBUCKET_REPO_URL}" "refs/tags/${RELEASE_TAG}" >/dev/null 2>&1; then
             echo "tag_exists=true" >> "$GITHUB_OUTPUT"
             echo "Tag ${RELEASE_TAG} already exists on Bitbucket. Tag push will be skipped."
           fi
