@@ -54,7 +54,7 @@ jobs:
             echo "skip=true" >> "$GITHUB_OUTPUT"
             echo "Bitbucket already at ${TAG}. Nothing to do."
           fi
-          if git ls-remote --tags "${REPO_URL}" "refs/tags/${RELEASE_TAG}" >/dev/null 2>&1; then
+          if git ls-remote --tags --exit-code "${REPO_URL}" "refs/tags/${RELEASE_TAG}" >/dev/null 2>&1; then
             echo "tag_exists=true" >> "$GITHUB_OUTPUT"
             echo "Tag ${RELEASE_TAG} already exists on Bitbucket. Tag push will be skipped."
           fi
