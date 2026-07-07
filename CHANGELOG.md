@@ -1,5 +1,19 @@
 # Changelog
 
+## [1.24.0](https://github.com/yohi/nexus/compare/v1.23.1...v1.24.0) (2026-07-07)
+
+
+### Features
+
+* marketplace.json更新用のワンショットGitHub Actionsワークフローを追加 ([14c4571](https://github.com/yohi/nexus/commit/14c45716258b647a19a86b5d499898c338dba9ae))
+* 社内Marketplaceカタログ更新ワークフローの追加とBitbucket認証ガイダンスの修正 ([cfc7797](https://github.com/yohi/nexus/commit/cfc7797fb62e6165457f005b86145fe8b062e135))
+
+
+### Bug Fixes
+
+* BITBUCKET_MARKETPLACE_TOKEN未設定時のエラーを明確化 ([f7c0c0e](https://github.com/yohi/nexus/commit/f7c0c0e5668820caa25c8211771328d30e28356d))
+* workflow inputsのスクリプトインジェクション脆弱性を修正 ([a5f7ae2](https://github.com/yohi/nexus/commit/a5f7ae2b6fa61e1a038e4e061f731532cfdb42b8))
+
 ## [1.23.1](https://github.com/yohi/nexus/compare/v1.23.0...v1.23.1) (2026-07-06)
 
 
