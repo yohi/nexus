@@ -118,7 +118,7 @@ GitHub Actions 上で staging ディレクトリを作成し、以下を Bitbuck
 
 1. GitHub リポジトリの最新リリースタグを GitHub API で取得する。
 2. Bitbucket 配布リポジトリの現在のタグを `git ls-remote --tags` で確認する。
-   - 認証は GitHub Secret に保存した Atlassian アカウントのメールアドレスと API トークンを使い、HTTPS URL（`https://<email>:<TOKEN>@bitbucket.org/...`）で接続する。
+   - 認証は GitHub Secret に保存した API トークンを使い、HTTPS URL（`https://x-token-auth:<TOKEN>@bitbucket.org/...`）で接続する。
    - アノテーテッドタグの peeled ref（`^{}`）は除外する。
    - 取得した最新タグと一致していれば `skip=true` フラグを立て、後続ステップを全てスキップする。
 3. 一致していなければ、該当タグを checkout する。
@@ -156,7 +156,7 @@ jobs:
       - name: Check existing Bitbucket tag
         id: bitbucket
         run: |
-          AUTH_URL="https://${BITBUCKET_ACCOUNT_EMAIL}:${BITBUCKET_API_TOKEN}@${BITBUCKET_REPO_URL#https://}"
+          AUTH_URL="https://x-token-auth:${BITBUCKET_API_TOKEN}@${BITBUCKET_REPO_URL#https://}"
           TAG=$(git ls-remote --tags "${AUTH_URL}" \
             | awk -F'/' '{print $3}' \
             | grep -v '\^{}' \
@@ -169,7 +169,6 @@ jobs:
           fi
         env:
           BITBUCKET_REPO_URL: https://bitbucket.org/company/plugin-a-dist.git
-          BITBUCKET_ACCOUNT_EMAIL: ${{ secrets.BITBUCKET_ACCOUNT_EMAIL }}
           BITBUCKET_API_TOKEN: ${{ secrets.BITBUCKET_API_TOKEN }}
           RELEASE_TAG: ${{ steps.release.outputs.tag }}
 
@@ -246,12 +245,11 @@ jobs:
           git add .
           git commit -m "deploy ${{ steps.release.outputs.tag }}"
           git tag "${{ steps.release.outputs.tag }}"
-          git remote add bitbucket "https://${BITBUCKET_ACCOUNT_EMAIL}:${BITBUCKET_API_TOKEN}@${BITBUCKET_REPO_URL#https://}"
+          git remote add bitbucket "https://x-token-auth:${BITBUCKET_API_TOKEN}@${BITBUCKET_REPO_URL#https://}"
           git push --force bitbucket main
           git push --force bitbucket "${{ steps.release.outputs.tag }}"
         env:
           BITBUCKET_REPO_URL: https://bitbucket.org/company/plugin-a-dist.git
-          BITBUCKET_ACCOUNT_EMAIL: ${{ secrets.BITBUCKET_ACCOUNT_EMAIL }}
           BITBUCKET_API_TOKEN: ${{ secrets.BITBUCKET_API_TOKEN }}
 ```
 
@@ -300,7 +298,7 @@ jobs:
       - name: Check existing Bitbucket tag
         id: bitbucket
         run: |
-          AUTH_URL="https://${BITBUCKET_ACCOUNT_EMAIL}:${BITBUCKET_API_TOKEN}@${BITBUCKET_REPO_URL#https://}"
+          AUTH_URL="https://x-token-auth:${BITBUCKET_API_TOKEN}@${BITBUCKET_REPO_URL#https://}"
           TAG=$(git ls-remote --tags "${AUTH_URL}" \
             | awk -F'/' '{print $3}' \
             | grep -v '\^{}' \
@@ -313,7 +311,6 @@ jobs:
           fi
         env:
           BITBUCKET_REPO_URL: https://bitbucket.org/company/claude-plugins-marketplace.git
-          BITBUCKET_ACCOUNT_EMAIL: ${{ secrets.BITBUCKET_ACCOUNT_EMAIL }}
           BITBUCKET_API_TOKEN: ${{ secrets.BITBUCKET_API_TOKEN }}
           RELEASE_TAG: ${{ steps.release.outputs.tag }}
 
@@ -358,12 +355,11 @@ jobs:
           git add .
           git commit -m "deploy marketplace ${{ steps.release.outputs.tag }}"
           git tag "${{ steps.release.outputs.tag }}"
-          git remote add bitbucket "https://${BITBUCKET_ACCOUNT_EMAIL}:${BITBUCKET_API_TOKEN}@${BITBUCKET_REPO_URL#https://}"
+          git remote add bitbucket "https://x-token-auth:${BITBUCKET_API_TOKEN}@${BITBUCKET_REPO_URL#https://}"
           git push --force bitbucket main
           git push --force bitbucket "${{ steps.release.outputs.tag }}"
         env:
           BITBUCKET_REPO_URL: https://bitbucket.org/company/claude-plugins-marketplace.git
-          BITBUCKET_ACCOUNT_EMAIL: ${{ secrets.BITBUCKET_ACCOUNT_EMAIL }}
           BITBUCKET_API_TOKEN: ${{ secrets.BITBUCKET_API_TOKEN }}
 ```
 
@@ -380,12 +376,12 @@ jobs:
 
 ### 6.1 GitHub Actions → Bitbucket
 
-- **Bitbucket API トークン**（HTTPS）を推奨する。
-  - Atlassian アカウントの **Personal settings > Security > API tokens**（Manage API tokens with scopes）で `read:repository:bitbucket` / `write:repository:bitbucket` スコープの API トークンを発行する。
-  - GitHub リポジトリの **Settings > Secrets and variables > Actions** に、Atlassian アカウントのメールアドレスを `BITBUCKET_ACCOUNT_EMAIL`、発行したトークンを `BITBUCKET_API_TOKEN` として保存する。
-  - ワークフローは `https://<email>:<TOKEN>@bitbucket.org/<workspace>/<repo>.git` の形式で HTTPS 認証する（remote 名経由で push し、トークンをログに残さない）。
-- API トークンは廃止予定の **App Password** の後継であり、既存の App Password 運用は API トークンへ移行する。
-- Bitbucket Cloud は GitHub Actions の OIDC 連携に非対応であり、Access Keys / GitHub Deploy Keys も鍵ペアの手動生成を要するため、鍵管理が不要な API トークン方式を採用する。
+- **Bitbucket Access Token**（Repository Access Token、HTTPS）を推奨する。
+  - Bitbucket の **Repository settings > Security > Access tokens** で `repository:write` スコープの Access Token を発行する。リポジトリ単位で発行されるため、個人の Atlassian アカウントに依存しない。
+  - GitHub リポジトリの **Settings > Secrets and variables > Actions** に発行したトークンを `BITBUCKET_API_TOKEN` として保存する。
+  - ワークフローは `https://x-token-auth:<TOKEN>@bitbucket.org/<workspace>/<repo>.git` の形式で HTTPS 認証する（remote 名経由で push し、トークンをログに残さない）。
+- Access Keys（Repository settings > Security > Access keys、SSH）は read-only 専用で push できないため採用しない。個人アカウント単位の **API トークン**（廃止予定の App Password の後継）は複数リポジトリへの広いアクセス権を持ち CI 用途では過剰権限になるため、リポジトリ単位で最小権限を発行できる Access Token を採用する。
+- Bitbucket Cloud は GitHub Actions の OIDC 連携に非対応であり、GitHub Deploy Keys も鍵ペアの手動生成・管理を要するため、鍵管理が不要な Access Token 方式を採用する。
 
 ### 6.2 利用者 → Bitbucket
 
@@ -409,7 +405,7 @@ jobs:
 ## 9. セキュリティ・運用留意点
 
 - Bitbucket 配布リポジトリは private に設定する。
-- GitHub Actions の secret は最小権限で運用し、Bitbucket API トークンは `read:repository:bitbucket` / `write:repository:bitbucket` スコープに限定して発行する。漏洩に備え、定期的なローテーションと即時失効の運用を徹底する。
+- GitHub Actions の secret は最小権限で運用し、Bitbucket Access Token は `repository:write` スコープに限定して発行する。漏洩に備え、定期的なローテーションと即時失効の運用を徹底する。
 - plugin 内で外部コマンドや MCP server を起動する場合、配布物に不要なファイル（ソースコード、テスト、.env 等）が含まれていないことを staging ルールで徹底する。
 - `claude plugin validate --strict` を plugin ワークフロー内で **ビルド後** に必ず実行し、manifest typo や型ミスをデプロイ前に検出する。
 
