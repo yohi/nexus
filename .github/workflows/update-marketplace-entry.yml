@@ -53,6 +53,11 @@ jobs:
         run: |
           set -euo pipefail
 
+          if [[ -z "${BITBUCKET_MARKETPLACE_TOKEN:-}" ]]; then
+            echo "BITBUCKET_MARKETPLACE_TOKEN secret is not set." >&2
+            exit 1
+          fi
+
           ASKPASS_SCRIPT="$(mktemp)"
           printf '#!/bin/sh\necho "$BITBUCKET_MARKETPLACE_TOKEN"\n' > "$ASKPASS_SCRIPT"
           chmod +x "$ASKPASS_SCRIPT"
