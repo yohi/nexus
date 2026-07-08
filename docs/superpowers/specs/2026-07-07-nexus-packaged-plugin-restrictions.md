@@ -41,7 +41,7 @@
 フォーク・コード複製を避け、**単一コードベース + 設定プロファイル**で原本とパッケージ版を両立する。
 
 - **Bedrock プロバイダをコアに追加**（§3.2）。オリジナルからも利用可能な正規機能とする。
-- **パッケージモードを単一フラグ `NEXUS_PACKAGE_MODE` で表現**（§5.5・§6.2）。このフラグは **埋め込み設定のハードロック**（provider=bedrock 固定・fail-fast）を担う。メトリクス層には触れない（ローカル metrics/TUI は維持）。
+- **パッケージモードを単一フラグ `NEXUS_PACKAGE_MODE` で表現**（§5.5・§6.2）。このフラグは **埋め込み provider のハードロック**（provider=bedrock 固定・fail-fast。model/dimensions/region はロックしない）を担う。メトリクス層には触れない（ローカル metrics/TUI は維持）。
 - **デプロイパイプラインが差分を注入**（§8）: plugin.json の stage 時変換（`userConfig` 除去・固定 env 注入）のみ。`packages/dashboard` は同梱維持・ビルドは無改修。
 
 この方針により、オリジナルは `packageMode=false` で従来どおり（`ollama` + Grafana）動作し、パッケージ版は同一コードから `packageMode=true` の「制限プロファイル」として生成される（DRY / local-first 維持）。
@@ -78,7 +78,7 @@
 ### 5.5 パッケージ性の実現方式
 
 - **単一フラグ `NEXUS_PACKAGE_MODE`**（案②）。plugin.json の固定 env で `1` を注入。
-- このフラグは factory で **埋め込み設定のハードロック**（provider が `bedrock` 以外なら fail-fast）を担う。**メトリクスには触れない**（ローカル metrics/TUI は維持）。
+- このフラグは factory で **埋め込み provider のハードロック**（provider が `bedrock` 以外なら fail-fast）を担う。model/dimensions/region はロックせず §5.3 の deploy 可変値のまま扱う。**メトリクスには触れない**（ローカル metrics/TUI は維持）。
 - 単一コードベース・単一ビルドを維持し、staging をパラメータ化して差分注入する。
 
 ## 6. 設計詳細
@@ -119,7 +119,7 @@
 
 - `Config` に `packageMode: boolean`（env `NEXUS_PACKAGE_MODE`、既定 `false`）を追加。
 - `packageMode=true` 時の factory の振る舞い:
-  - **埋め込みハードロック**: provider を `bedrock` に固定。`bedrock` 以外は即座に fail-fast。
+  - **埋め込み provider のハードロック**: provider を `bedrock` に固定し、`bedrock` 以外は即座に fail-fast。**model / dimensions / region はロック対象外**（§5.3 の deploy 可変値。運用者が GitHub Actions 変数で設定でき、`assertPackageModeConstraints` はこれらを検証しない）。
   - **メトリクス層は不変**: `MetricsCollector`・各プロセス metrics HTTP サーバ・`packages/dashboard`（TUI）はそのまま。NoopMetricsCollector は不要。
   - **外部連携は既定オフ**: Grafana/Prometheus（aggregator 登録）は `aggregatorPort` 未設定で登録されない（必要なら明示スキップのガードを足す程度）。
 - 原本（`packageMode=false`）は完全に従来どおり。
