@@ -116,18 +116,19 @@ GitHub Actions 上で staging ディレクトリを作成し、以下を Bitbuck
 
 動作概要:
 
-1. GitHub リポジトリの最新リリースタグを GitHub API で取得する。
+1. GitHub リポジトリの最新リリースタグを GitHub API で取得する。Release が存在しない場合は `core.setFailed` で明示的に失敗させる。
 2. Bitbucket 配布リポジトリの現在のタグを `git ls-remote --tags` で確認する。
-   - 認証は GitHub Secret に保存した API トークンを使い、`~/.netrc`（`chmod 600`、使用後に削除）経由で HTTPS 接続する。トークンをリモート URL やコマンドライン引数には含めない。
+   - 認証は GitHub Secret に保存した API トークンを使い、`GIT_ASKPASS`（一時スクリプト経由でトークンを渡す）で HTTPS 接続する。トークンをリモート URL やコマンドライン引数には含めない。`BITBUCKET_REPO_URL` が `https://` で始まらない場合は即座に失敗させる。
    - アノテーテッドタグの peeled ref（`^{}`）は除外する。
    - 取得した最新タグと一致していれば `skip=true` フラグを立て、後続ステップを全てスキップする。
+   - デプロイ対象タグが Bitbucket 側に既存であれば `tag_exists=true` を立て、後続のタグ push をスキップする（タグを不変に保つ）。
 3. 一致していなければ、該当タグを checkout する。
 4. `npm ci`、`npm run build`、`npm run test`、`npm run lint` を実行する。
 5. `claude plugin validate` を **ビルド後** に実行する。
 6. staging ディレクトリを作成し、配布物のみコピーする。
    - `scripts/` 内は `plugin.json` から参照されているファイルのみコピーする。
 7. staging 内で `git init -b main` し、1 コミット作成。
-8. Bitbucket 配布リポジトリへ tag 付きで force-push する。
+8. Bitbucket 配布リポジトリへ push する。`main` は force-push で 1 commit を維持し、タグは既存でなければ push する（既存タグは force-push しない）。
 
 ```yaml
 name: Deploy plugin to Bitbucket
@@ -141,36 +142,56 @@ permissions:
 jobs:
   deploy:
     runs-on: ubuntu-latest
+    env:
+      BITBUCKET_REPO_URL: ${{ vars.BITBUCKET_REPO_URL || 'https://bitbucket.org/company/plugin-a-dist.git' }}
     steps:
       - name: Get latest GitHub release
         id: release
         uses: actions/github-script@v7
         with:
           script: |
-            const { data: release } = await github.rest.repos.getLatestRelease({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-            });
-            core.setOutput('tag', release.tag_name);
+            try {
+              const { data: release } = await github.rest.repos.getLatestRelease({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+              });
+              core.setOutput('tag', release.tag_name);
+            } catch (err) {
+              if (err.status === 404) {
+                core.setFailed('No GitHub Release found. Create a release before running this workflow.');
+              } else {
+                core.setFailed(`Failed to fetch latest release: ${err.message}`);
+              }
+            }
 
       - name: Check existing Bitbucket tag
         id: bitbucket
         run: |
-          printf 'machine bitbucket.org\n  login x-token-auth\n  password %s\n' "${BITBUCKET_API_TOKEN}" > "$HOME/.netrc"
-          chmod 600 "$HOME/.netrc"
-          TAG=$(git ls-remote --tags "${BITBUCKET_REPO_URL}" \
-            | awk -F'/' '{print $3}' \
-            | grep -v '\^{}' \
+          if [[ "${BITBUCKET_REPO_URL}" != https://* ]]; then
+            echo "BITBUCKET_REPO_URL must start with https://: ${BITBUCKET_REPO_URL}" >&2
+            exit 1
+          fi
+          ASKPASS_SCRIPT="$(mktemp)"
+          trap 'rm -f "$ASKPASS_SCRIPT"' EXIT
+          printf '#!/bin/sh\necho "$BITBUCKET_API_TOKEN"\n' > "$ASKPASS_SCRIPT"
+          chmod +x "$ASKPASS_SCRIPT"
+          export GIT_ASKPASS="$ASKPASS_SCRIPT"
+          REPO_URL="https://x-token-auth@${BITBUCKET_REPO_URL#https://}"
+          TAG=$(git ls-remote --tags "${REPO_URL}" \
+            | sed 's#^[^[:space:]]*[[:space:]]*refs/tags/##' \
+            | { grep -v '\^{}' || true; } \
             | sort -V \
             | tail -n 1)
-          rm -f "$HOME/.netrc"
           echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
           if [ "${TAG}" = "${RELEASE_TAG}" ]; then
             echo "skip=true" >> "$GITHUB_OUTPUT"
             echo "Bitbucket already at ${TAG}. Nothing to do."
           fi
+          if git ls-remote --tags --exit-code "${REPO_URL}" "refs/tags/${RELEASE_TAG}" >/dev/null 2>&1; then
+            echo "tag_exists=true" >> "$GITHUB_OUTPUT"
+            echo "Tag ${RELEASE_TAG} already exists on Bitbucket. Tag push will be skipped."
+          fi
         env:
-          BITBUCKET_REPO_URL: https://bitbucket.org/company/plugin-a-dist.git
           BITBUCKET_API_TOKEN: ${{ secrets.BITBUCKET_API_TOKEN }}
           RELEASE_TAG: ${{ steps.release.outputs.tag }}
 
@@ -212,7 +233,6 @@ jobs:
           cp .claude-plugin/plugin.json dist-staging/.claude-plugin/
           cp -r dist dist-staging/
 
-          # plugin.json から参照される scripts/ 内のファイルのみコピー
           node <<'NODE'
           const fs = require('fs');
           const plugin = JSON.parse(fs.readFileSync('.claude-plugin/plugin.json', 'utf8'));
@@ -240,8 +260,15 @@ jobs:
       - name: Push to Bitbucket
         if: steps.bitbucket.outputs.skip != 'true'
         run: |
-          printf 'machine bitbucket.org\n  login x-token-auth\n  password %s\n' "${BITBUCKET_API_TOKEN}" > "$HOME/.netrc"
-          chmod 600 "$HOME/.netrc"
+          if [[ "${BITBUCKET_REPO_URL}" != https://* ]]; then
+            echo "BITBUCKET_REPO_URL must start with https://: ${BITBUCKET_REPO_URL}" >&2
+            exit 1
+          fi
+          ASKPASS_SCRIPT="$(mktemp)"
+          trap 'rm -f "$ASKPASS_SCRIPT"' EXIT
+          printf '#!/bin/sh\necho "$BITBUCKET_API_TOKEN"\n' > "$ASKPASS_SCRIPT"
+          chmod +x "$ASKPASS_SCRIPT"
+          export GIT_ASKPASS="$ASKPASS_SCRIPT"
           cd dist-staging
           git init -b main
           git config user.name "github-actions"
@@ -249,12 +276,15 @@ jobs:
           git add .
           git commit -m "deploy ${{ steps.release.outputs.tag }}"
           git tag "${{ steps.release.outputs.tag }}"
-          git remote add bitbucket "${BITBUCKET_REPO_URL}"
+          # トークンは GIT_ASKPASS 経由で渡し、remote URL やコマンド引数には出さない
+          git remote add bitbucket "https://x-token-auth@${BITBUCKET_REPO_URL#https://}"
           git push --force bitbucket main
-          git push --force bitbucket "${{ steps.release.outputs.tag }}"
-          rm -f "$HOME/.netrc"
+          if [ "${{ steps.bitbucket.outputs.tag_exists }}" = "true" ]; then
+            echo "Skipping tag push because ${{ steps.release.outputs.tag }} already exists on Bitbucket."
+          else
+            git push bitbucket "${{ steps.release.outputs.tag }}"
+          fi
         env:
-          BITBUCKET_REPO_URL: https://bitbucket.org/company/plugin-a-dist.git
           BITBUCKET_API_TOKEN: ${{ secrets.BITBUCKET_API_TOKEN }}
 ```
 
@@ -264,14 +294,15 @@ jobs:
 
 動作概要:
 
-1. GitHub リポジトリの最新リリースタグを取得する。
-2. Bitbucket marketplace 配布リポジトリの現在のタグを確認し、一致していれば後続をスキップする。
+1. GitHub リポジトリの最新リリースタグを取得する。Release が存在しない場合は `core.setFailed` で明示的に失敗させる。
+2. Bitbucket marketplace 配布リポジトリの現在のタグを確認し、一致していれば後続をスキップする。認証は `GIT_ASKPASS` 経由の HTTPS（`x-token-auth`）で行う。
    - アノテーテッドタグの peeled ref（`^{}`）は除外する。
-3. `plugin-sources.json` に記載された各 plugin について、GitHub API で最新リリースタグを取得する。
+   - デプロイ対象タグが既存であれば `tag_exists=true` を立て、タグ push をスキップする。
+3. `plugin-sources.json` に記載された各 plugin について、GitHub API で最新リリースタグを取得する。private な plugin source repo に対応するため `secrets.GH_PAT`（未設定時は `github.token`）を使用する。plugin の Release が存在しない場合は当該 plugin 名を明示して失敗させる。
 4. `marketplace.json` 内の各 plugin の `source.ref` を最新タグに更新する。
 5. staging ディレクトリを作成し、`.claude-plugin/marketplace.json` のみコピーする。
 6. staging 内で `git init -b main` し、1 コミット作成。
-7. Bitbucket marketplace 配布リポジトリへ tag 付きで force-push する。
+7. Bitbucket marketplace 配布リポジトリへ push する。`main` は force-push、タグは既存でなければ push する。
 
 ```yaml
 name: Deploy marketplace to Bitbucket
@@ -285,46 +316,68 @@ permissions:
 jobs:
   deploy:
     runs-on: ubuntu-latest
+    env:
+      BITBUCKET_REPO_URL: ${{ vars.BITBUCKET_REPO_URL || 'https://bitbucket.org/company/claude-plugins-marketplace.git' }}
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
 
       - name: Get latest marketplace release
         id: release
         uses: actions/github-script@v7
         with:
           script: |
-            const { data: release } = await github.rest.repos.getLatestRelease({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-            });
-            core.setOutput('tag', release.tag_name);
+            try {
+              const { data: release } = await github.rest.repos.getLatestRelease({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+              });
+              core.setOutput('tag', release.tag_name);
+            } catch (err) {
+              if (err.status === 404) {
+                core.setFailed('No GitHub Release found. Create a release before running this workflow.');
+              } else {
+                core.setFailed(`Failed to fetch latest release: ${err.message}`);
+              }
+            }
 
       - name: Check existing Bitbucket tag
         id: bitbucket
         run: |
-          printf 'machine bitbucket.org\n  login x-token-auth\n  password %s\n' "${BITBUCKET_API_TOKEN}" > "$HOME/.netrc"
-          chmod 600 "$HOME/.netrc"
-          TAG=$(git ls-remote --tags "${BITBUCKET_REPO_URL}" \
-            | awk -F'/' '{print $3}' \
-            | grep -v '\^{}' \
+          if [[ "${BITBUCKET_REPO_URL}" != https://* ]]; then
+            echo "BITBUCKET_REPO_URL must start with https://: ${BITBUCKET_REPO_URL}" >&2
+            exit 1
+          fi
+          ASKPASS_SCRIPT="$(mktemp)"
+          trap 'rm -f "$ASKPASS_SCRIPT"' EXIT
+          printf '#!/bin/sh\necho "$BITBUCKET_API_TOKEN"\n' > "$ASKPASS_SCRIPT"
+          chmod +x "$ASKPASS_SCRIPT"
+          export GIT_ASKPASS="$ASKPASS_SCRIPT"
+          REPO_URL="https://x-token-auth@${BITBUCKET_REPO_URL#https://}"
+          TAG=$(git ls-remote --tags "${REPO_URL}" \
+            | sed 's#^[^[:space:]]*[[:space:]]*refs/tags/##' \
+            | { grep -v '\^{}' || true; } \
             | sort -V \
             | tail -n 1)
-          rm -f "$HOME/.netrc"
           echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
           if [ "${TAG}" = "${RELEASE_TAG}" ]; then
             echo "skip=true" >> "$GITHUB_OUTPUT"
             echo "Bitbucket already at ${TAG}. Nothing to do."
           fi
+          if git ls-remote --tags --exit-code "${REPO_URL}" "refs/tags/${RELEASE_TAG}" >/dev/null 2>&1; then
+            echo "tag_exists=true" >> "$GITHUB_OUTPUT"
+            echo "Tag ${RELEASE_TAG} already exists on Bitbucket. Tag push will be skipped."
+          fi
         env:
-          BITBUCKET_REPO_URL: https://bitbucket.org/company/claude-plugins-marketplace.git
           BITBUCKET_API_TOKEN: ${{ secrets.BITBUCKET_API_TOKEN }}
           RELEASE_TAG: ${{ steps.release.outputs.tag }}
+      - name: Checkout
+        if: steps.bitbucket.outputs.skip != 'true'
+        uses: actions/checkout@v4
 
       - name: Update plugin refs to latest releases
         if: steps.bitbucket.outputs.skip != 'true'
         uses: actions/github-script@v7
         with:
+          github-token: ${{ secrets.GH_PAT || github.token }}
           script: |
             const fs = require('fs');
             const marketplace = JSON.parse(fs.readFileSync('.claude-plugin/marketplace.json', 'utf8'));
@@ -332,19 +385,27 @@ jobs:
             for (const [key, githubRepo] of Object.entries(sources)) {
               if (!marketplace.plugins[key]) continue;
               const [owner, repo] = githubRepo.split('/');
-              const { data: release } = await github.rest.repos.getLatestRelease({ owner, repo });
-              marketplace.plugins[key].source.ref = release.tag_name;
+              try {
+                const { data: release } = await github.rest.repos.getLatestRelease({ owner, repo });
+                marketplace.plugins[key].source.ref = release.tag_name;
+              } catch (err) {
+                if (err.status === 404) {
+                  core.setFailed(`No GitHub Release found for plugin "${key}" (${githubRepo}). Create a release before running this workflow.`);
+                } else {
+                  core.setFailed(`Failed to fetch latest release for plugin "${key}" (${githubRepo}): ${err.message}`);
+                }
+                return;
+              }
             }
             fs.writeFileSync('.claude-plugin/marketplace.json', JSON.stringify(marketplace, null, 2) + '\n');
 
       - name: Validate marketplace manifest
         if: steps.bitbucket.outputs.skip != 'true'
         run: |
-          # marketplace.json の構造を簡易検証
           node -e "JSON.parse(require('fs').readFileSync('.claude-plugin/marketplace.json'))"
-          # 各 plugin エントリに source.repo / source.ref が存在することを確認
           node -e "
             const m = JSON.parse(require('fs').readFileSync('.claude-plugin/marketplace.json'));
+            if (!m.id || !m.name || !m.plugins) throw new Error('missing marketplace metadata');
             for (const [k, p] of Object.entries(m.plugins)) {
               if (!p.source?.repo || !p.source?.ref) throw new Error('missing source for ' + k);
             }
@@ -353,8 +414,15 @@ jobs:
       - name: Push to Bitbucket
         if: steps.bitbucket.outputs.skip != 'true'
         run: |
-          printf 'machine bitbucket.org\n  login x-token-auth\n  password %s\n' "${BITBUCKET_API_TOKEN}" > "$HOME/.netrc"
-          chmod 600 "$HOME/.netrc"
+          if [[ "${BITBUCKET_REPO_URL}" != https://* ]]; then
+            echo "BITBUCKET_REPO_URL must start with https://: ${BITBUCKET_REPO_URL}" >&2
+            exit 1
+          fi
+          ASKPASS_SCRIPT="$(mktemp)"
+          trap 'rm -f "$ASKPASS_SCRIPT"' EXIT
+          printf '#!/bin/sh\necho "$BITBUCKET_API_TOKEN"\n' > "$ASKPASS_SCRIPT"
+          chmod +x "$ASKPASS_SCRIPT"
+          export GIT_ASKPASS="$ASKPASS_SCRIPT"
           mkdir -p dist-staging/.claude-plugin
           cp .claude-plugin/marketplace.json dist-staging/.claude-plugin/
           cd dist-staging
@@ -364,12 +432,15 @@ jobs:
           git add .
           git commit -m "deploy marketplace ${{ steps.release.outputs.tag }}"
           git tag "${{ steps.release.outputs.tag }}"
-          git remote add bitbucket "${BITBUCKET_REPO_URL}"
+          # トークンは GIT_ASKPASS 経由で渡し、remote URL やコマンド引数には出さない
+          git remote add bitbucket "https://x-token-auth@${BITBUCKET_REPO_URL#https://}"
           git push --force bitbucket main
-          git push --force bitbucket "${{ steps.release.outputs.tag }}"
-          rm -f "$HOME/.netrc"
+          if [ "${{ steps.bitbucket.outputs.tag_exists }}" = "true" ]; then
+            echo "Skipping tag push because ${{ steps.release.outputs.tag }} already exists on Bitbucket."
+          else
+            git push bitbucket "${{ steps.release.outputs.tag }}"
+          fi
         env:
-          BITBUCKET_REPO_URL: https://bitbucket.org/company/claude-plugins-marketplace.git
           BITBUCKET_API_TOKEN: ${{ secrets.BITBUCKET_API_TOKEN }}
 ```
 
@@ -389,14 +460,14 @@ jobs:
 - **Bitbucket Access Token**（Repository Access Token、HTTPS）を推奨する。
   - Bitbucket の **Repository settings > Security > Access tokens** で `repository:write` スコープの Access Token を発行する。リポジトリ単位で発行されるため、個人の Atlassian アカウントに依存しない。
   - GitHub リポジトリの **Settings > Secrets and variables > Actions** に発行したトークンを `BITBUCKET_API_TOKEN` として保存する。
-  - ワークフローは `~/.netrc`（`machine bitbucket.org` / `login x-token-auth` / `password <TOKEN>`、`chmod 600` で作成し使用後に削除）経由で HTTPS 認証する。トークンをリモート URL やコマンドライン引数には含めず、ログにも残さない。
+  - ワークフローは `GIT_ASKPASS`（一時スクリプトでトークンを標準出力し `git` の認証プロンプトに渡す方式）経由で HTTPS 認証する。リモート URL は `https://x-token-auth@bitbucket.org/...` の形式を用い、トークンをリモート URL やコマンドライン引数には含めず、ログにも残さない。
 - Access Keys（Repository settings > Security > Access keys、SSH）は read-only 専用で push できないため採用しない。個人アカウント単位の **API トークン**（廃止予定の App Password の後継）は複数リポジトリへの広いアクセス権を持ち CI 用途では過剰権限になるため、リポジトリ単位で最小権限を発行できる Access Token を採用する。
 - Bitbucket Cloud は GitHub Actions の OIDC 連携に非対応であり、GitHub Deploy Keys も鍵ペアの手動生成・管理を要するため、鍵管理が不要な Access Token 方式を採用する。
 
 ### 6.2 利用者 → Bitbucket
 
 - 各社員は Bitbucket Cloud にアクセスできる SSH 鍵をローカルマシンに設定しておく。
-- HTTPS を使う場合は git credential helper に App Password を登録しておく。
+- HTTPS を使う場合は git credential helper に API トークン（廃止予定の App Password の後継）を登録しておく。
 
 ## 7. 利用者向け手順
 
@@ -419,8 +490,6 @@ jobs:
 - plugin 内で外部コマンドや MCP server を起動する場合、配布物に不要なファイル（ソースコード、テスト、.env 等）が含まれていないことを staging ルールで徹底する。
 - `claude plugin validate --strict` を plugin ワークフロー内で **ビルド後** に必ず実行し、manifest typo や型ミスをデプロイ前に検出する。
 
-## 10. 次のステップ
+## 10. 実装状況
 
-1. 本設計をレビュー・承認する。
-2. `writing-plans` スキルを使って実装計画を作成する。
-3. marketplace 用リポジトリと 1〜2 件の plugin 用リポジトリで PoC を実施する。
+本設計は PoC として実装済みであり、テンプレート一式は [`examples/bitbucket-claude-plugins-marketplace/`](../../../examples/bitbucket-claude-plugins-marketplace/) 配下にある（marketplace source / plugin-a source の各テンプレート、`deploy-to-bitbucket.yml`、ローカル検証スクリプト `validate-poc.sh`）。本ドキュメントは実装済みワークフローと整合した設計 SSOT として維持する。
