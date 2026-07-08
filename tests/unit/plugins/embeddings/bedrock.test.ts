@@ -30,7 +30,7 @@ describe('BedrockEmbeddingProvider', () => {
     ]);
     expect(send).toHaveBeenCalledTimes(2);
 
-    const command = send.mock.calls[0][0] as { input: { modelId: string; body: string } };
+    const command = send.mock.calls[0]?.[0] as { input: { modelId: string; body: string } };
     expect(command.input.modelId).toBe('amazon.titan-embed-text-v2:0');
     expect(JSON.parse(command.input.body)).toEqual({ inputText: 'a', dimensions: 2, normalize: true });
   });
