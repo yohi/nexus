@@ -178,8 +178,8 @@ jobs:
           export GIT_ASKPASS="$ASKPASS_SCRIPT"
           REPO_URL="https://x-token-auth@${BITBUCKET_REPO_URL#https://}"
           TAG=$(git ls-remote --tags "${REPO_URL}" \
-            | awk -F'/' '{print $3}' \
-            | grep -v '\^{}' \
+            | sed 's#^[^[:space:]]*[[:space:]]*refs/tags/##' \
+            | { grep -v '\^{}' || true; } \
             | sort -V \
             | tail -n 1)
           echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
@@ -353,8 +353,8 @@ jobs:
           export GIT_ASKPASS="$ASKPASS_SCRIPT"
           REPO_URL="https://x-token-auth@${BITBUCKET_REPO_URL#https://}"
           TAG=$(git ls-remote --tags "${REPO_URL}" \
-            | awk -F'/' '{print $3}' \
-            | grep -v '\^{}' \
+            | sed 's#^[^[:space:]]*[[:space:]]*refs/tags/##' \
+            | { grep -v '\^{}' || true; } \
             | sort -V \
             | tail -n 1)
           echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
