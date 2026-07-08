@@ -172,6 +172,7 @@ jobs:
             exit 1
           fi
           ASKPASS_SCRIPT="$(mktemp)"
+          trap 'rm -f "$ASKPASS_SCRIPT"' EXIT
           printf '#!/bin/sh\necho "$BITBUCKET_API_TOKEN"\n' > "$ASKPASS_SCRIPT"
           chmod +x "$ASKPASS_SCRIPT"
           export GIT_ASKPASS="$ASKPASS_SCRIPT"
@@ -264,6 +265,7 @@ jobs:
             exit 1
           fi
           ASKPASS_SCRIPT="$(mktemp)"
+          trap 'rm -f "$ASKPASS_SCRIPT"' EXIT
           printf '#!/bin/sh\necho "$BITBUCKET_API_TOKEN"\n' > "$ASKPASS_SCRIPT"
           chmod +x "$ASKPASS_SCRIPT"
           export GIT_ASKPASS="$ASKPASS_SCRIPT"
@@ -345,6 +347,7 @@ jobs:
             exit 1
           fi
           ASKPASS_SCRIPT="$(mktemp)"
+          trap 'rm -f "$ASKPASS_SCRIPT"' EXIT
           printf '#!/bin/sh\necho "$BITBUCKET_API_TOKEN"\n' > "$ASKPASS_SCRIPT"
           chmod +x "$ASKPASS_SCRIPT"
           export GIT_ASKPASS="$ASKPASS_SCRIPT"
@@ -416,6 +419,7 @@ jobs:
             exit 1
           fi
           ASKPASS_SCRIPT="$(mktemp)"
+          trap 'rm -f "$ASKPASS_SCRIPT"' EXIT
           printf '#!/bin/sh\necho "$BITBUCKET_API_TOKEN"\n' > "$ASKPASS_SCRIPT"
           chmod +x "$ASKPASS_SCRIPT"
           export GIT_ASKPASS="$ASKPASS_SCRIPT"
