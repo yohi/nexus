@@ -502,6 +502,7 @@ export class NexusServerFactory {
         projectName: config.projectName,
         metricsHooks: metricsCollector,
         aggregatorPort: config.aggregatorPort,
+        packageMode: config.packageMode,
         onClose: async () => {
           await onClose();
           if (drainListener) {
