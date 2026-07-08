@@ -40,6 +40,12 @@
 - [ ] **P4: GitHub Release の存在確認**
   - ワークフローは「最新の GitHub Release tag」を配布単位とする。release-please 運用により Release は既に作成されている(例: `v1.24.0`)。Release が 1 つも無い場合はワークフローが明示的に失敗する。
 
+- [ ] **P5: AWS 資格情報（利用者マシン）**
+  - パッケージ版は AWS Bedrock を直接呼ぶ。利用者マシンに AWS SDK デフォルト認証チェーンで解決可能な資格情報（env の IAM アクセスキー / SSO / 名前付きプロファイル / IAM ロールのいずれか）が必要。詳細は [設計 §5.2](../specs/2026-07-07-nexus-packaged-plugin-restrictions.md)。
+
+- [ ] **P6: GitHub Actions 変数（deploy 可変値）**
+  - `NEXUS_EMBEDDING_REGION`（既定 us-east-1）、任意 `NEXUS_EMBEDDING_PROFILE`、`NEXUS_EMBEDDING_MODEL`・`NEXUS_EMBEDDING_DIMENSIONS`（既定 titan v2 / 1024）を Repository variable として設定し、ワークフローの `stage-plugin-dist.sh` 実行 step に env として渡す（Task 2 参照）。
+
 ---
 
 ## File Structure
@@ -76,7 +82,7 @@
 
 - [ ] **Step 1: スクリプトを作成する**
 
-`scripts/stage-plugin-dist.sh` を以下の内容で新規作成する。
+> ⚠️ **注意: 以下は無変換コピー版（参考実装）であり、パッケージ版配布ではそのまま作成・使用しないこと。** パッケージ版で実際に使うスクリプトの実装は [2026-07-07-nexus-packaged-plugin-implementation.md](2026-07-07-nexus-packaged-plugin-implementation.md) Task 4（plugin.json の stage 時変換つき）を唯一の正とする。本 Step のコードは経緯の記録として残すのみで、そのまま `scripts/stage-plugin-dist.sh` として新規作成しないこと。
 
 ```bash
 #!/bin/bash
@@ -123,6 +129,8 @@ cp LICENSE NOTICE "$STAGING_DIR/"
 
 echo "Staged nexus plugin source mirror into: $STAGING_DIR"
 ```
+
+> ⚠️ **上記コードは参考実装であり、パッケージ版配布では作成しないこと。** パッケージ版のスクリプトは実装計画 [2026-07-07-nexus-packaged-plugin-implementation.md](2026-07-07-nexus-packaged-plugin-implementation.md) Task 4 を参照。
 
 - [ ] **Step 2: 実行権限を付与する**
 
