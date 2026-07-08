@@ -30,4 +30,4 @@
 - 配布 repo は force-push により常に 1 commit のみ保持される。
 - plugin workflow は release tag 単位で実行され、Bitbucket 側の最新 tag と一致する場合はスキップされる。
 - デプロイは `GIT_ASKPASS` 経由の HTTPS（ユーザー名 `x-token-auth`）で Bitbucket に push し、トークンをリモート URL やコマンド引数には含めない。Repository Access Token は `repository:write` の最小スコープで発行し、定期的にローテーションすること（漏洩時は Repository settings > Security > Access tokens から即時失効可能）。
-- marketplace workflow は、同じ organization 内の public な plugin source repo を想定している。plugin source repo が private な場合、各 GitHub source repo の Secrets に `GH_PAT`（repo スコープ付き PAT）を設定し、marketplace workflow 側で `GH_PAT` を使用する必要がある。未設定の場合はデフォルトの `GITHUB_TOKEN` が使用される。
+- marketplace workflow は、同じ organization 内の public な plugin source repo を想定している。plugin source repo が private な場合、marketplace source repo（marketplace workflow を実行するリポジトリ）の Secrets に `GH_PAT`（対象の private plugin source repo を読める repo スコープ付き PAT）を設定する必要がある。`GH_PAT` 未設定の場合はデフォルトの `GITHUB_TOKEN` がフォールバックとして使用されるが、既定トークンは実行リポジトリ内に限定されるため private な他リポジトリは読めず、public plugin source のみで機能する。
