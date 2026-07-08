@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 >
-> **⚠️ 前提変更（2026-07-07 追記）:** 業務用パッケージ版に追加要件（埋め込み LLM 選択不可 / AWS Bedrock 直接呼び出し / Grafana メトリクス除去）が発生した。詳細は [../specs/2026-07-07-nexus-packaged-plugin-restrictions.md](../specs/2026-07-07-nexus-packaged-plugin-restrictions.md) を参照。本計画は「nexus をそのまま配る」前提で書かれているため、パッケージ版として実行する場合は Task 1（staging から `packages/dashboard` を除外し固定 config を注入）と Prerequisites（AWS 資格情報 / GitHub Actions 変数）の改訂、および前段のコア変更（Bedrock プロバイダ追加・パッケージモード実装）が必要。当該 spec の未確定事項が確定するまで本計画は保留。
+> **✅ 前提確定（2026-07-07）:** 業務用パッケージ版の全決定が [../specs/2026-07-07-nexus-packaged-plugin-restrictions.md](../specs/2026-07-07-nexus-packaged-plugin-restrictions.md) で確定した。コア変更（Bedrock プロバイダ・パッケージモード）と plugin.json の stage 時変換は [2026-07-07-nexus-packaged-plugin-implementation.md](2026-07-07-nexus-packaged-plugin-implementation.md) を正とする。本計画はその配布ワークフロー層を担い、次を反映済み: (1) `packages/dashboard` は**同梱維持**（ローカル TUI のため。除外しない）、(2) `scripts/stage-plugin-dist.sh` は実装計画 Task 4（plugin.json 変換つき）を唯一の正とし本計画では別実装を作らない、(3) Task 2 ワークフローは deploy 可変 env（`NEXUS_EMBEDDING_REGION`/`PROFILE`/`MODEL`/`DIMENSIONS`）を stage ステップに渡す。AWS 資格情報 / GitHub Actions 変数は Prerequisites（P5/P6）を参照。
 
 **Goal:** nexus プラグイン(`yohi-nexus`)を「ソースミラー」として Bitbucket `y-ohi/nexus` に自動デプロイする GitHub Actions ワークフローを追加し、利用者マシンで `setup-plugin.sh` により `npm install && npm run build` して動作させる。
 
@@ -15,7 +15,7 @@
 - Node.js `>= 24.0.0`(`package.json` の `engines.node`。ワークフロー・利用者マシン双方に適用)。
 - 認証トークンを remote URL・コマンドライン引数・ログに含めない。`GIT_ASKPASS` 経由でのみ渡す。
 - Bitbucket 配布リポジトリは `git push --force` で常に 1 コミットのクリーン状態を保つ。
-- `.claude-plugin/plugin.json` は編集しない(既存の `mcpServers` / `hooks` / `userConfig` を保持)。
+- `.claude-plugin/plugin.json` はソース側では編集しない。パッケージ版差分は `scripts/stage-plugin-dist.sh` の stage 時変換で注入する（`userConfig` 除去・`mcpServers.nexus.env` を固定値へ置換）。実装は実装計画 [2026-07-07-nexus-packaged-plugin-implementation.md](2026-07-07-nexus-packaged-plugin-implementation.md) Task 4 を正とする。
 - ソースミラーに `scripts/bootstrap.mjs` を **含めない**(`setup-plugin.sh` が `npm install --no-audit --no-fund` + `npm run build` パスを通り、インストール時 lint を避けるため)。
 - ソースミラーに `node_modules/` と `dist/` を **含めない**(自己完結性検証は push 対象とは別の使い捨てディレクトリで行う)。
 - 既存の安全な認証パターン(`.github/workflows/update-marketplace-entry.yml` および `examples/.../plugin-a-src/.github/workflows/deploy-to-bitbucket.yml` の GIT_ASKPASS 方式)に一致させる。
@@ -40,13 +40,19 @@
 - [ ] **P4: GitHub Release の存在確認**
   - ワークフローは「最新の GitHub Release tag」を配布単位とする。release-please 運用により Release は既に作成されている(例: `v1.24.0`)。Release が 1 つも無い場合はワークフローが明示的に失敗する。
 
+- [ ] **P5: AWS 資格情報（利用者マシン）**
+  - パッケージ版は AWS Bedrock を直接呼ぶ。利用者マシンに AWS SDK デフォルト認証チェーンで解決可能な資格情報（env の IAM アクセスキー / SSO / 名前付きプロファイル / IAM ロールのいずれか）が必要。詳細は [設計 §5.2](../specs/2026-07-07-nexus-packaged-plugin-restrictions.md)。
+
+- [ ] **P6: GitHub Actions 変数（deploy 可変値）**
+  - `NEXUS_EMBEDDING_REGION`（既定 us-east-1）、任意 `NEXUS_EMBEDDING_PROFILE`、`NEXUS_EMBEDDING_MODEL`・`NEXUS_EMBEDDING_DIMENSIONS`（既定 titan v2 / 1024）を Repository variable として設定し、ワークフローの `stage-plugin-dist.sh` 実行 step に env として渡す（Task 2 参照）。
+
 ---
 
 ## File Structure
 
 | ファイル | 責務 | 変更 |
 | --- | --- | --- |
-| `scripts/stage-plugin-dist.sh` | ソースミラーのファイル集合を staging ディレクトリへコピーする(唯一の「何を配るか」の定義箇所) | 新規作成 |
+| `scripts/stage-plugin-dist.sh` | ソースミラーのファイル集合を staging へコピー＋plugin.json 変換。実装は実装計画 Task 4 を唯一の正とし本計画では作らない | Plan A Task 4 参照 |
 | `.github/workflows/deploy-plugin-to-bitbucket.yml` | Release tag を Bitbucket 配布リポジトリへソースミラーとして force-push する | 新規作成 |
 | `docs/superpowers/specs/2026-07-03-bitbucket-claude-plugins-marketplace.md` | ネイティブ依存プラグイン向けの「ソースミラー配布」例外を明記(将来の誤適用防止) | §4 に追記 |
 
@@ -55,6 +61,8 @@
 ---
 
 ### Task 1: ソースミラー staging スクリプト
+
+> **⚠️ 一本化（2026-07-07）:** `scripts/stage-plugin-dist.sh` の実装は実装計画 [2026-07-07-nexus-packaged-plugin-implementation.md](2026-07-07-nexus-packaged-plugin-implementation.md) Task 4（plugin.json の stage 時変換つき: `userConfig` 除去・固定 env 注入・`packages/dashboard` 同梱）を**唯一の正**とする。同一ファイルの二重定義を避けるため、以下 Step 1 に残す無変換コピー版（`.claude-plugin/plugin.json` をそのまま `cp`）はパッケージ版では**使わない**（参考として保持）。パッケージ版配布では Plan A Task 4 のスクリプトを Task 2 ワークフローが呼ぶ。
 
 **Files:**
 - Create: `scripts/stage-plugin-dist.sh`
@@ -74,7 +82,7 @@
 
 - [ ] **Step 1: スクリプトを作成する**
 
-`scripts/stage-plugin-dist.sh` を以下の内容で新規作成する。
+> ⚠️ **注意: 以下は無変換コピー版（参考実装）であり、パッケージ版配布ではそのまま作成・使用しないこと。** パッケージ版で実際に使うスクリプトの実装は [2026-07-07-nexus-packaged-plugin-implementation.md](2026-07-07-nexus-packaged-plugin-implementation.md) Task 4（plugin.json の stage 時変換つき）を唯一の正とする。本 Step のコードは経緯の記録として残すのみで、そのまま `scripts/stage-plugin-dist.sh` として新規作成しないこと。
 
 ```bash
 #!/bin/bash
@@ -121,6 +129,8 @@ cp LICENSE NOTICE "$STAGING_DIR/"
 
 echo "Staged nexus plugin source mirror into: $STAGING_DIR"
 ```
+
+> ⚠️ **上記コードは参考実装であり、パッケージ版配布では作成しないこと。** パッケージ版のスクリプトは実装計画 [2026-07-07-nexus-packaged-plugin-implementation.md](2026-07-07-nexus-packaged-plugin-implementation.md) Task 4 を参照。
 
 - [ ] **Step 2: 実行権限を付与する**
 
@@ -286,6 +296,11 @@ jobs:
       - name: Stage plugin source mirror
         if: steps.bitbucket.outputs.skip != 'true'
         run: scripts/stage-plugin-dist.sh dist-staging
+        env:
+          NEXUS_EMBEDDING_REGION: ${{ vars.NEXUS_EMBEDDING_REGION }}
+          NEXUS_EMBEDDING_PROFILE: ${{ vars.NEXUS_EMBEDDING_PROFILE }}
+          NEXUS_EMBEDDING_MODEL: ${{ vars.NEXUS_EMBEDDING_MODEL }}
+          NEXUS_EMBEDDING_DIMENSIONS: ${{ vars.NEXUS_EMBEDDING_DIMENSIONS }}
 
       - name: Verify source mirror builds standalone
         if: steps.bitbucket.outputs.skip != 'true'
