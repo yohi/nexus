@@ -243,8 +243,8 @@ jobs:
           export GIT_ASKPASS="$ASKPASS_SCRIPT"
           REPO_URL="https://x-token-auth@${BITBUCKET_REPO_URL#https://}"
           TAG=$(git ls-remote --tags "${REPO_URL}" \
-            | awk -F'/' '{print $3}' \
-            | grep -v '\^{}' \
+            | sed 's#^[^[:space:]]*[[:space:]]*refs/tags/##' \
+            | { grep -v '\^{}' || true; } \
             | sort -V \
             | tail -n 1)
           echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
@@ -334,9 +334,8 @@ jobs:
 
 - [ ] **Step 2: YAML として妥当か検証する**
 
-Run: `node -e "const fs=require('fs');const s=fs.readFileSync('.github/workflows/deploy-plugin-to-bitbucket.yml','utf8');require('js-yaml')?0:0" 2>/dev/null; python3 -c "import yaml,sys; yaml.safe_load(open('.github/workflows/deploy-plugin-to-bitbucket.yml')); print('YAML-OK')"`
-Expected: `YAML-OK`。
-（`python3` が無い環境では `npx --yes js-yaml .github/workflows/deploy-plugin-to-bitbucket.yml >/dev/null && echo YAML-OK` を使う。）
+Run: `python3 -c "import yaml; yaml.safe_load(open('.github/workflows/deploy-plugin-to-bitbucket.yml')); print('YAML-OK')" 2>/dev/null || { npx --yes js-yaml .github/workflows/deploy-plugin-to-bitbucket.yml >/dev/null && echo YAML-OK; }`
+Expected: `YAML-OK`（`python3` があればそれで、無ければ `js-yaml` フォールバックで検証する）。
 
 - [ ] **Step 3: 埋め込みシェルスクリプトの構文をチェックする**
 
@@ -407,7 +406,7 @@ Expected: 1 ファイルがコミットされる。
 
 - [ ] **D2: marketplace カタログへ登録する**
   - 既存の `Update marketplace entry` ワークフロー(`.github/workflows/update-marketplace-entry.yml`)を `workflow_dispatch` で実行する。
-  - 入力: `plugin_name=yohi-nexus`、`plugin_description=Nexus local code indexing and hybrid search MCP plugin`、`bitbucket_url=https://bitbucket.org/y-ohi/nexus.git`。
+  - 入力: `plugin_name=yohi-nexus`、`plugin_description=Nexus local code indexing and hybrid search MCP plugin`、`bitbucket_url=<Task 2 と同一のリポジトリ URL>`(既定 `https://bitbucket.org/y-ohi/nexus.git`。`vars.BITBUCKET_PLUGIN_REPO_URL` を上書きした場合はその値に合わせる)。
   - 前提: marketplace 用の Secret `BITBUCKET_MARKETPLACE_TOKEN`(こちらは既存ワークフローが要求する別トークン)が設定済みであること。
 
 - [ ] **D3: 利用者側インストールを検証する**
