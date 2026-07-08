@@ -79,6 +79,7 @@ const DEFAULT_CONFIG = (projectRoot: string): Config => ({
   },
   embedding: { ...DEFAULT_EMBEDDING },
   indexing: { ...DEFAULT_INDEXING },
+  packageMode: false,
 });
 
 export const loadConfig = async (options: LoadConfigOptions): Promise<Config> => {
@@ -168,6 +169,10 @@ export const loadConfig = async (options: LoadConfigOptions): Promise<Config> =>
       validatePortNumber(fileConfig.aggregatorPort) ??
       asPortNumber(env.NEXUS_AGGREGATOR_PORT) ??
       undefined,
+    packageMode:
+      asBoolean(env.NEXUS_PACKAGE_MODE) ??
+      validateBoolean(fileConfig.packageMode) ??
+      false,
   };
 
   return projectName === undefined ? merged : { ...merged, projectName };
@@ -230,6 +235,17 @@ const asNonNegativeInt = (value: string | undefined): number | undefined => {
 
 const validateNonNegativeInt = (value: unknown): number | undefined =>
   typeof value === 'number' && Number.isInteger(value) && value >= 0 ? value : undefined;
+
+const asBoolean = (value: string | undefined): boolean | undefined => {
+  if (value === undefined) return undefined;
+  const normalized = value.trim().toLowerCase();
+  if (normalized === '1' || normalized === 'true') return true;
+  if (normalized === '0' || normalized === 'false') return false;
+  return undefined;
+};
+
+const validateBoolean = (value: unknown): boolean | undefined =>
+  typeof value === 'boolean' ? value : undefined;
 
 const asProvider = (value: string | undefined): EmbeddingConfig['provider'] | undefined => {
   if (typeof value !== 'string') return undefined;

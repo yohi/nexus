@@ -429,4 +429,32 @@ describe('loadConfig', () => {
     expect(config.embedding.region).toBe('ap-northeast-1');
     expect(config.embedding.profile).toBe('nexus-sso');
   });
+
+  it('defaults packageMode to false and leaves region/profile undefined', async () => {
+    tempDir = await mkdtemp(path.join(os.tmpdir(), 'nexus-config-'));
+
+    const config = await loadConfig({ projectRoot: tempDir, env: {} });
+
+    expect(config.packageMode).toBe(false);
+    expect(config.embedding.region).toBeUndefined();
+    expect(config.embedding.profile).toBeUndefined();
+  });
+
+  it('parses NEXUS_PACKAGE_MODE=1 as true', async () => {
+    tempDir = await mkdtemp(path.join(os.tmpdir(), 'nexus-config-'));
+
+    const config = await loadConfig({ projectRoot: tempDir, env: { NEXUS_PACKAGE_MODE: '1' } });
+
+    expect(config.packageMode).toBe(true);
+  });
+
+  it('reads packageMode from .nexus.json boolean and ignores invalid env', async () => {
+    tempDir = await mkdtemp(path.join(os.tmpdir(), 'nexus-config-'));
+    await writeFile(path.join(tempDir, '.nexus.json'), JSON.stringify({ packageMode: true }), 'utf8');
+
+    const config = await loadConfig({ projectRoot: tempDir, env: { NEXUS_PACKAGE_MODE: 'maybe' } });
+
+    // Invalid env value is ignored; falls back to the file value.
+    expect(config.packageMode).toBe(true);
+  });
 });
