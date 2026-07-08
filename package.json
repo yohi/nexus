@@ -51,6 +51,8 @@
     "license:notice": "generate-license-file --input package-lock.json --output NOTICE"
   },
   "dependencies": {
+    "@aws-sdk/client-bedrock-runtime": "^3.1081.0",
+    "@aws-sdk/credential-providers": "^3.1081.0",
     "@lancedb/lancedb": "^0.18.2",
     "@modelcontextprotocol/sdk": "^1.18.0",
     "async-mutex": "^0.5.0",
