@@ -15,11 +15,12 @@ const mockState = vi.hoisted<MockState>(() => ({
 
 const mockRegistrationStart = vi.hoisted(() => vi.fn());
 const mockRegistrationStop = vi.hoisted(() => vi.fn());
+const mockMetricsStart = vi.hoisted(() => vi.fn().mockResolvedValue(undefined));
 
 vi.mock('../../../src/observability/metrics-server.js', () => {
   return {
     MetricsHttpServer: vi.fn().mockImplementation(() => ({
-      start: vi.fn().mockResolvedValue(undefined),
+      start: mockMetricsStart,
       stop: vi.fn().mockResolvedValue(undefined),
       getPort: vi.fn(() => mockState.metricsPort),
     })),
@@ -44,6 +45,7 @@ describe('initializeNexusRuntime aggregator registration in package mode', () =>
     mockState.registrationConfigs = [];
     mockRegistrationStart.mockClear();
     mockRegistrationStop.mockClear();
+    mockMetricsStart.mockClear();
   });
 
   afterEach(() => {
@@ -64,6 +66,9 @@ describe('initializeNexusRuntime aggregator registration in package mode', () =>
     expect(mockState.registrationConfigs).toEqual([]);
     expect(mockRegistrationStart).not.toHaveBeenCalled();
     expect(runtime.registrationClient ?? null).toBeNull();
+    // Constraint (c): the local metrics HTTP server must still start in package mode
+    // (only the external aggregator registration is skipped).
+    expect(mockMetricsStart).toHaveBeenCalled();
     await runtime.close();
   });
 
