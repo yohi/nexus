@@ -27,7 +27,7 @@ interface TitanEmbedResponse {
 export class BedrockEmbedError extends Error {
   constructor(
     message: string,
-    public readonly retriable: boolean = true,
+    public readonly retriable: boolean = false,
   ) {
     super(message);
     this.name = 'BedrockEmbedError';
@@ -41,6 +41,7 @@ const NON_RETRIABLE_EXCEPTIONS = new Set([
   'ResourceNotFoundException',
   'ExpiredTokenException',
   'UnrecognizedClientException',
+  'DimensionMismatchError',
 ]);
 
 export type BedrockProviderConfig = Pick<
@@ -104,7 +105,7 @@ export class BedrockEmbeddingProvider extends BaseEmbeddingProvider {
 
   async healthCheck(): Promise<boolean> {
     try {
-      const vector = await this.embedOne('nexus health check');
+      const vector = await this.embedOneWithRetry('nexus health check');
       return Array.isArray(vector) && vector.length === this.dimensions;
     } catch {
       return false;
