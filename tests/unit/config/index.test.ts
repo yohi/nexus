@@ -408,4 +408,25 @@ describe('loadConfig', () => {
       expect(config.embedding.ollamaNumThread).toBe(2);
     },
   );
+
+  it('allows the bedrock provider and wires region/profile', async () => {
+    tempDir = await mkdtemp(path.join(os.tmpdir(), 'nexus-config-'));
+
+    const config = await loadConfig({
+      projectRoot: tempDir,
+      env: {
+        NEXUS_EMBEDDING_PROVIDER: 'bedrock',
+        NEXUS_EMBEDDING_MODEL: 'amazon.titan-embed-text-v2:0',
+        NEXUS_EMBEDDING_DIMENSIONS: '1024',
+        NEXUS_EMBEDDING_REGION: 'ap-northeast-1',
+        NEXUS_EMBEDDING_PROFILE: 'nexus-sso',
+      },
+    });
+
+    expect(config.embedding.provider).toBe('bedrock');
+    expect(config.embedding.model).toBe('amazon.titan-embed-text-v2:0');
+    expect(config.embedding.dimensions).toBe(1024);
+    expect(config.embedding.region).toBe('ap-northeast-1');
+    expect(config.embedding.profile).toBe('nexus-sso');
+  });
 });

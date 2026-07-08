@@ -119,6 +119,8 @@ export const loadConfig = async (options: LoadConfigOptions): Promise<Config> =>
         asPositiveInt(env.NEXUS_EMBEDDING_DIMENSIONS) ?? validatePositiveInt(fileConfig.embedding?.dimensions) ?? defaults.embedding.dimensions,
       baseUrl: asString(env.NEXUS_EMBEDDING_BASE_URL) ?? validateString(fileConfig.embedding?.baseUrl) ?? defaults.embedding.baseUrl,
       apiKey: asString(env.NEXUS_EMBEDDING_API_KEY) ?? validateString(fileConfig.embedding?.apiKey) ?? defaults.embedding.apiKey,
+      region: asString(env.NEXUS_EMBEDDING_REGION) ?? validateString(fileConfig.embedding?.region) ?? defaults.embedding.region,
+      profile: asString(env.NEXUS_EMBEDDING_PROFILE) ?? validateString(fileConfig.embedding?.profile) ?? defaults.embedding.profile,
       maxConcurrency:
         asPositiveInt(env.NEXUS_EMBEDDING_MAX_CONCURRENCY) ??
         validatePositiveInt(fileConfig.embedding?.maxConcurrency) ??
@@ -242,7 +244,7 @@ const validateProvider = (value: unknown): EmbeddingConfig['provider'] | undefin
 };
 
 const isProvider = (value: unknown): value is EmbeddingConfig['provider'] => {
-  return value === 'ollama' || value === 'openai-compat' || value === 'test';
+  return value === 'ollama' || value === 'openai-compat' || value === 'bedrock' || value === 'test';
 };
 
 const asStringList = (value: string | undefined): string[] | undefined => {
