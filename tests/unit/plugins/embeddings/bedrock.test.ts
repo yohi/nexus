@@ -125,6 +125,134 @@ describe('BedrockEmbeddingProvider', () => {
     const provider = new BedrockEmbeddingProvider(mockConfig, { client: { send }, sleep: vi.fn() });
     expect(await provider.healthCheck()).toBe(false);
   });
+
+  it('warns with credential guidance from healthCheck on AccessDeniedException', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const send = vi.fn().mockImplementation(async () => {
+      const err = new Error('not authorized to invoke model');
+      err.name = 'AccessDeniedException';
+      throw err;
+    });
+    const provider = new BedrockEmbeddingProvider(mockConfig, { client: { send }, sleep: vi.fn() });
+
+    expect(await provider.healthCheck()).toBe(false);
+    expect(warnSpy).toHaveBeenCalledWith(
+      expect.stringContaining('AWS認証情報が無効か期限切れの可能性があります'),
+    );
+    expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining("'aws sso login'"));
+    expect(warnSpy).toHaveBeenCalledWith(
+      expect.stringContaining('(AccessDeniedException: not authorized to invoke model)'),
+    );
+    warnSpy.mockRestore();
+  });
+
+  it('warns with credential guidance from healthCheck on ExpiredTokenException', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const send = vi.fn().mockImplementation(async () => {
+      const err = new Error('the security token included in the request is expired');
+      err.name = 'ExpiredTokenException';
+      throw err;
+    });
+    const provider = new BedrockEmbeddingProvider(mockConfig, { client: { send }, sleep: vi.fn() });
+
+    expect(await provider.healthCheck()).toBe(false);
+    expect(warnSpy).toHaveBeenCalledWith(
+      expect.stringContaining('AWS認証情報が無効か期限切れの可能性があります'),
+    );
+    expect(warnSpy).toHaveBeenCalledWith(
+      expect.stringContaining('(ExpiredTokenException: the security token included in the request is expired)'),
+    );
+    warnSpy.mockRestore();
+  });
+
+  it('warns with credential guidance from healthCheck on UnrecognizedClientException', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const send = vi.fn().mockImplementation(async () => {
+      const err = new Error('the security token included in the request is invalid');
+      err.name = 'UnrecognizedClientException';
+      throw err;
+    });
+    const provider = new BedrockEmbeddingProvider(mockConfig, { client: { send }, sleep: vi.fn() });
+
+    expect(await provider.healthCheck()).toBe(false);
+    expect(warnSpy).toHaveBeenCalledWith(
+      expect.stringContaining('AWS認証情報が無効か期限切れの可能性があります'),
+    );
+    expect(warnSpy).toHaveBeenCalledWith(
+      expect.stringContaining('(UnrecognizedClientException: the security token included in the request is invalid)'),
+    );
+    warnSpy.mockRestore();
+  });
+
+  it('warns to enable the model from healthCheck on ResourceNotFoundException', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const send = vi.fn().mockImplementation(async () => {
+      const err = new Error('the requested model is not available');
+      err.name = 'ResourceNotFoundException';
+      throw err;
+    });
+    const provider = new BedrockEmbeddingProvider(mockConfig, { client: { send }, sleep: vi.fn() });
+
+    expect(await provider.healthCheck()).toBe(false);
+    expect(warnSpy).toHaveBeenCalledWith(
+      expect.stringContaining('モデル "amazon.titan-embed-text-v2:0" が有効化されていない可能性があります'),
+    );
+    expect(warnSpy).toHaveBeenCalledWith(
+      expect.stringContaining('AWSコンソールでBedrockのモデルアクセスを有効化してください'),
+    );
+    expect(warnSpy).toHaveBeenCalledWith(
+      expect.stringContaining('(ResourceNotFoundException: the requested model is not available)'),
+    );
+    warnSpy.mockRestore();
+  });
+
+  it('warns about invalid parameters from healthCheck on ValidationException', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const send = vi.fn().mockImplementation(async () => {
+      const err = new Error('malformed input request');
+      err.name = 'ValidationException';
+      throw err;
+    });
+    const provider = new BedrockEmbeddingProvider(mockConfig, { client: { send }, sleep: vi.fn() });
+
+    expect(await provider.healthCheck()).toBe(false);
+    expect(warnSpy).toHaveBeenCalledWith(
+      expect.stringContaining('リクエストパラメータが無効です'),
+    );
+    expect(warnSpy).toHaveBeenCalledWith(
+      expect.stringContaining('model/dimensions/region の設定を確認してください'),
+    );
+    expect(warnSpy).toHaveBeenCalledWith(
+      expect.stringContaining('(ValidationException: malformed input request)'),
+    );
+    warnSpy.mockRestore();
+  });
+
+  it('warns with the raw message from healthCheck on an unclassified error', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const send = vi.fn().mockImplementation(async () => {
+      const err = new Error('connection refused');
+      err.name = 'TimeoutError';
+      throw err;
+    });
+    const provider = new BedrockEmbeddingProvider(mockConfig, { client: { send }, sleep: vi.fn() });
+
+    expect(await provider.healthCheck()).toBe(false);
+    expect(warnSpy).toHaveBeenCalledWith('[Nexus] Bedrock ヘルスチェック失敗: connection refused');
+    warnSpy.mockRestore();
+  });
+
+  it('warns with String(error) from healthCheck when a non-Error value is thrown', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const send = vi.fn().mockImplementation(async () => {
+      throw 'plain string failure';
+    });
+    const provider = new BedrockEmbeddingProvider(mockConfig, { client: { send }, sleep: vi.fn() });
+
+    expect(await provider.healthCheck()).toBe(false);
+    expect(warnSpy).toHaveBeenCalledWith('[Nexus] Bedrock ヘルスチェック失敗: plain string failure');
+    warnSpy.mockRestore();
+  });
 });
 
 describe('BedrockEmbeddingProvider default dependencies', () => {

@@ -121,7 +121,31 @@ export class BedrockEmbeddingProvider extends BaseEmbeddingProvider {
       // inheriting the full embed retry/backoff budget.
       const vector = await this.embedOne('nexus health check');
       return Array.isArray(vector) && vector.length === this.dimensions;
-    } catch {
+    } catch (error) {
+      const name = error instanceof Error ? error.name : '';
+      const message = error instanceof Error ? error.message : String(error);
+      if (
+        name === 'AccessDeniedException' ||
+        name === 'ExpiredTokenException' ||
+        name === 'UnrecognizedClientException'
+      ) {
+        console.warn(
+          `[Nexus] Bedrock ヘルスチェック失敗: AWS認証情報が無効か期限切れの可能性があります。` +
+            `'aws sso login' を実行するか、IAMロール/ポリシーの権限を確認してください。(${name}: ${message})`,
+        );
+      } else if (name === 'ResourceNotFoundException') {
+        console.warn(
+          `[Nexus] Bedrock ヘルスチェック失敗: モデル "${this.config.model}" が有効化されていない可能性があります。` +
+            `AWSコンソールでBedrockのモデルアクセスを有効化してください。(${name}: ${message})`,
+        );
+      } else if (name === 'ValidationException') {
+        console.warn(
+          `[Nexus] Bedrock ヘルスチェック失敗: リクエストパラメータが無効です。` +
+            `model/dimensions/region の設定を確認してください。(${name}: ${message})`,
+        );
+      } else {
+        console.warn(`[Nexus] Bedrock ヘルスチェック失敗: ${message}`);
+      }
       return false;
     }
   }
