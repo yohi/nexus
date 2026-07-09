@@ -198,6 +198,8 @@ export const assertPackageModeConstraints = (
 };
 ```
 
+> **⚠️ 配置改訂（実装時に検出・裏取り済み）:** `assertPackageModeConstraints` は最終的に `src/config/index.ts` ではなく **`src/server/factory.ts`** にモジュールスコープ関数として定義された（`NexusServerFactory` クラス宣言の直前、`config: Config` を受け取る完全型のシグネチャ）。経緯は後発の [2026-07-09-nexus-packaged-plugin-core-changes.md](2026-07-09-nexus-packaged-plugin-core-changes.md) Task 4 を正とする。本 Step 4 の上記コード例（`config/index.ts` に配置し `Pick<EmbeddingConfig, 'provider'>` の部分型を受け取る版）はコードベースには存在しない。Task 3 Step 1 の `import { assertPackageModeConstraints } from "../config/index.js";` も同様に実在しない（下記 Task 3 の注記を参照）。
+
 - [x] **Step 5: テストが通ることを確認**
 
 Run: `npx vitest run tests/unit/config/index.test.ts && npm run lint`
@@ -497,6 +499,8 @@ git commit -m "feat: AWS Bedrock埋め込みプロバイダを追加"
 import { BedrockEmbeddingProvider } from "../plugins/embeddings/bedrock.js";
 import { assertPackageModeConstraints } from "../config/index.js";
 ```
+
+> **⚠️ 実装との不一致（検出・裏取り済み）:** 上記 `import { assertPackageModeConstraints } from "../config/index.js";` は実コードには存在しない。`assertPackageModeConstraints` は `src/server/factory.ts` 自体にモジュールスコープ関数として定義されているため、`config/index.ts` からの import は不要。実際の `factory.ts` は `config/index.js` から `DEFAULT_OLLAMA_NUM_THREAD` のみを import している。配置の正は [2026-07-09-nexus-packaged-plugin-core-changes.md](2026-07-09-nexus-packaged-plugin-core-changes.md) Task 4 Step 3【4 であり、本計画の Step 1【3 のコード例は参考情報として扱う。
 
 - [x] **Step 2: switch に bedrock ケースを追加する**
 

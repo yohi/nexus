@@ -63,7 +63,7 @@
 **Interfaces:**
 - Produces: `EmbeddingConfig.provider` が `'ollama' | 'openai-compat' | 'bedrock' | 'test'` になる。`EmbeddingConfig.region?: string`、`EmbeddingConfig.profile?: string`。`Config.packageMode: boolean`。これらを Task 2/3/4 が参照する。
 
-- [ ] **Step 1: AWS SDK 依存をインストール**
+- [x] **Step 1: AWS SDK 依存をインストール**
 
 Run:
 ```bash
@@ -71,7 +71,7 @@ npm install @aws-sdk/client-bedrock-runtime@3.1081.0 @aws-sdk/credential-provide
 ```
 Expected: `package.json` の `dependencies` に 2 パッケージが追加され、`package-lock.json` が更新される。exit code 0。
 
-- [ ] **Step 2: `package.json` の dependencies を確認**
+- [x] **Step 2: `package.json` の dependencies を確認**
 
 `package.json:53-68` の `dependencies` に以下が含まれること（アルファベット順に配置されるのが望ましい）:
 ```json
@@ -81,7 +81,7 @@ Expected: `package.json` の `dependencies` に 2 パッケージが追加され
 ```
 （既存の `@lancedb/lancedb` 等はそのまま。手動で並べ替える場合は上記の順序。）
 
-- [ ] **Step 3: `EmbeddingConfig` に bedrock / region / profile を追加**
+- [x] **Step 3: `EmbeddingConfig` に bedrock / region / profile を追加**
 
 `src/types/index.ts:207-219` を以下へ変更（`provider` union に `'bedrock'` を追加し、`baseUrl?` の直後に `region?`/`profile?` を追加）:
 ```typescript
@@ -102,7 +102,7 @@ export interface EmbeddingConfig {
 }
 ```
 
-- [ ] **Step 4: `Config` に packageMode を追加**
+- [x] **Step 4: `Config` に packageMode を追加**
 
 `src/types/index.ts:284-293` を以下へ変更（`aggregatorPort?` の直後に `packageMode` を追加）:
 ```typescript
@@ -119,12 +119,12 @@ export interface Config {
 }
 ```
 
-- [ ] **Step 5: 型チェックで既存の未配線箇所を洗い出す**
+- [x] **Step 5: 型チェックで既存の未配線箇所を洗い出す**
 
 Run: `npx tsc -p tsconfig.build.json --noEmit`
 Expected: `Config.packageMode` が必須になったため、`Config` を構築している箇所（`src/config/index.ts` の `loadConfig` 内 `merged`）で "Property 'packageMode' is missing" エラーが出る。これは Task 3 で解消する（このステップでは**エラーが出ることを確認**するだけ）。他に `Config` を直接構築するプロダクションコードが無いことを確認（テストは Task 3/4 で対応）。
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add package.json package-lock.json src/types/index.ts
@@ -152,7 +152,7 @@ git commit -m "feat: add bedrock provider type surface and packageMode config fi
 
   Task 4 が `new BedrockEmbeddingProvider(config.embedding)`（デフォルト依存）で使用する。
 
-- [ ] **Step 1: 失敗するテストを書く**
+- [x] **Step 1: 失敗するテストを書く**
 
 Create `tests/unit/plugins/embeddings/bedrock.test.ts`:
 ```typescript
@@ -266,12 +266,12 @@ describe('BedrockEmbeddingProvider', () => {
 });
 ```
 
-- [ ] **Step 2: テストが失敗することを確認**
+- [x] **Step 2: テストが失敗することを確認**
 
 Run: `npx vitest run tests/unit/plugins/embeddings/bedrock.test.ts`
 Expected: FAIL（`Cannot find module '.../bedrock.js'` もしくは import 解決エラー）。
 
-- [ ] **Step 3: `BedrockEmbeddingProvider` を実装**
+- [x] **Step 3: `BedrockEmbeddingProvider` を実装**
 
 Create `src/plugins/embeddings/bedrock.ts`:
 ```typescript
@@ -475,17 +475,17 @@ export class BedrockEmbeddingProvider extends BaseEmbeddingProvider {
 }
 ```
 
-- [ ] **Step 4: テストが通ることを確認**
+- [x] **Step 4: テストが通ることを確認**
 
 Run: `npx vitest run tests/unit/plugins/embeddings/bedrock.test.ts`
 Expected: PASS（8 tests passed）。
 
-- [ ] **Step 5: 型チェック**
+- [x] **Step 5: 型チェック**
 
 Run: `npx tsc -p tsconfig.build.json --noEmit`
 Expected: Task 1 で予告した `src/config/index.ts` の `packageMode` missing エラー**のみ**が残る（bedrock.ts 由来の型エラーは 0）。bedrock.ts に関するエラーがあれば修正する。
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add src/plugins/embeddings/bedrock.ts tests/unit/plugins/embeddings/bedrock.test.ts
@@ -507,7 +507,7 @@ git commit -m "feat: add AWS Bedrock embedding provider"
 - Consumes: `EmbeddingConfig`/`Config`（Task 1）。
 - Produces: `loadConfig` が `NEXUS_EMBEDDING_PROVIDER=bedrock` を許可し、`config.embedding.region` / `config.embedding.profile` / `config.packageMode` を返す。Task 4 が `config.packageMode` と provider を参照。
 
-- [ ] **Step 1: 失敗するテストを書く**
+- [x] **Step 1: 失敗するテストを書く**
 
 `tests/unit/config/index.test.ts` の末尾（最後の `});` の直前、L410 付近）に以下の describe ブロックを追記:
 ```typescript
@@ -561,12 +561,12 @@ git commit -m "feat: add AWS Bedrock embedding provider"
   });
 ```
 
-- [ ] **Step 2: テストが失敗することを確認**
+- [x] **Step 2: テストが失敗することを確認**
 
 Run: `npx vitest run tests/unit/config/index.test.ts`
 Expected: FAIL（`config.embedding.provider` が `'bedrock'` にならず `'ollama'` にフォールバック、`config.packageMode` が `undefined`、型エラー）。
 
-- [ ] **Step 3: `isProvider` に bedrock を追加**
+- [x] **Step 3: `isProvider` に bedrock を追加**
 
 `src/config/index.ts:244-246` を以下へ変更:
 ```typescript
@@ -575,7 +575,7 @@ const isProvider = (value: unknown): value is EmbeddingConfig['provider'] => {
 };
 ```
 
-- [ ] **Step 4: `asBoolean` / `validateBoolean` ヘルパを追加**
+- [x] **Step 4: `asBoolean` / `validateBoolean` ヘルパを追加**
 
 `src/config/index.ts` の `validateNonNegativeInt`（L229-230）の直後に以下を追加:
 ```typescript
@@ -592,7 +592,7 @@ const validateBoolean = (value: unknown): boolean | undefined =>
   typeof value === 'boolean' ? value : undefined;
 ```
 
-- [ ] **Step 5: embedding ブロックに region/profile を配線**
+- [x] **Step 5: embedding ブロックに region/profile を配線**
 
 `src/config/index.ts:121`（`apiKey:` の行）の直後に以下 2 行を追加:
 ```typescript
@@ -601,7 +601,7 @@ const validateBoolean = (value: unknown): boolean | undefined =>
 ```
 （`defaults.embedding.region` / `.profile` は未定義のため `undefined` になり、未設定時は `undefined` が入る。意図どおり。）
 
-- [ ] **Step 6: merged に packageMode を配線**
+- [x] **Step 6: merged に packageMode を配線**
 
 `src/config/index.ts:165-168`（`aggregatorPort:` の 4 行）の直後、`merged` オブジェクトを閉じる `};`（L169）の直前に以下を追加:
 ```typescript
@@ -611,17 +611,17 @@ const validateBoolean = (value: unknown): boolean | undefined =>
       false,
 ```
 
-- [ ] **Step 7: テストが通ることを確認**
+- [x] **Step 7: テストが通ることを確認**
 
 Run: `npx vitest run tests/unit/config/index.test.ts`
 Expected: PASS（既存テスト＋新規 4 テストが全て通る）。
 
-- [ ] **Step 8: 型チェック**
+- [x] **Step 8: 型チェック**
 
 Run: `npx tsc -p tsconfig.build.json --noEmit`
 Expected: `packageMode` missing エラーが解消。エラー 0 件（Task 4 未着手でも config/types は閉じている）。
 
-- [ ] **Step 9: Commit**
+- [x] **Step 9: Commit**
 
 ```bash
 git add src/config/index.ts tests/unit/config/index.test.ts
@@ -642,7 +642,7 @@ git commit -m "feat: wire bedrock provider, region/profile, and packageMode into
 - Consumes: `BedrockEmbeddingProvider`（Task 2）、`config.packageMode` / `config.embedding.provider`（Task 3）、`Config`（Task 1）。
 - Produces: `export function assertPackageModeConstraints(config: Config): void`（`packageMode && provider!=='bedrock'` で throw）。`setupPluginRegistry` が `provider==='bedrock'` で `BedrockEmbeddingProvider` を登録。
 
-- [ ] **Step 1: 失敗するテストを書く**
+- [x] **Step 1: 失敗するテストを書く**
 
 Create `tests/unit/server/factory.test.ts`:
 ```typescript
@@ -737,19 +737,19 @@ describe('NexusServerFactory.setupPluginRegistry', () => {
 
 > 注（確認済み）: `PluginRegistry` は [src/plugins/registry.ts:107](../../../src/plugins/registry.ts) に存在し、`getActiveEmbeddingProviderName(): string | undefined` は同ファイル L132 で公開されている。import パス `../../../src/plugins/registry.js` はそのまま使用可。
 
-- [ ] **Step 2: テストが失敗することを確認**
+- [x] **Step 2: テストが失敗することを確認**
 
 Run: `npx vitest run tests/unit/server/factory.test.ts`
 Expected: FAIL（`assertPackageModeConstraints` が `factory.ts` から export されていない）。
 
-- [ ] **Step 3: Bedrock provider を import**
+- [x] **Step 3: Bedrock provider を import**
 
 `src/server/factory.ts:23`（`import { OpenAICompatEmbeddingProvider } ...` の行）の直後に追加:
 ```typescript
 import { BedrockEmbeddingProvider } from "../plugins/embeddings/bedrock.js";
 ```
 
-- [ ] **Step 4: `assertPackageModeConstraints` を追加**
+- [x] **Step 4: `assertPackageModeConstraints` を追加**
 
 `src/server/factory.ts` の `export class NexusServerFactory {`（L276）の直前に、module スコープの関数を追加:
 ```typescript
@@ -773,7 +773,7 @@ export function assertPackageModeConstraints(config: Config): void {
 
 ```
 
-- [ ] **Step 5: `setupPluginRegistry` にガードと case bedrock を追加**
+- [x] **Step 5: `setupPluginRegistry` にガードと case bedrock を追加**
 
 `src/server/factory.ts:537-538` の `setupPluginRegistry` 冒頭を以下へ変更（`assertPackageModeConstraints(config);` を最初の行に挿入）:
 ```typescript
@@ -796,17 +796,17 @@ export function assertPackageModeConstraints(config: Config): void {
         );
 ```
 
-- [ ] **Step 6: テストが通ることを確認**
+- [x] **Step 6: テストが通ることを確認**
 
 Run: `npx vitest run tests/unit/server/factory.test.ts`
 Expected: PASS（5 tests passed）。
 
-- [ ] **Step 7: 型チェック**
+- [x] **Step 7: 型チェック**
 
 Run: `npx tsc -p tsconfig.build.json --noEmit`
 Expected: エラー 0 件。
 
-- [ ] **Step 8: Commit**
+- [x] **Step 8: Commit**
 
 ```bash
 git add src/server/factory.ts tests/unit/server/factory.test.ts
@@ -823,22 +823,22 @@ git commit -m "feat: hard-lock provider to bedrock in package mode and wire fact
 **Interfaces:**
 - Consumes: Task 1〜4 の全成果物。
 
-- [ ] **Step 1: 全ユニットテスト**
+- [x] **Step 1: 全ユニットテスト**
 
 Run: `npm test`
 Expected: 全テスト PASS。既存の `ollama` / `openai-compat` / config テストが不変で通ること。新規の bedrock / factory テストが通ること。事前に失敗しているテストがあれば、それが本変更と無関係であることを確認し、コマンドと失敗要約を報告する（マスクしない）。
 
-- [ ] **Step 2: Lint**
+- [x] **Step 2: Lint**
 
 Run: `npm run lint`
 Expected: エラー 0 件。
 
-- [ ] **Step 3: ビルド**
+- [x] **Step 3: ビルド**
 
 Run: `npm run build`
 Expected: exit code 0。`dist/bin/nexus.js` と `dist/dashboard/cli.js` が生成される（dashboard 同梱・無改修を確認）。
 
-- [ ] **Step 4: 原本モードのスモーク（provider スイッチが壊れていないこと）**
+- [x] **Step 4: 原本モードのスモーク（provider スイッチが壊れていないこと）**
 
 Run:
 ```bash
@@ -846,7 +846,7 @@ node -e "import('./dist/config/index.js').then(async (m) => { const c = await m.
 ```
 Expected: `provider= ollama packageMode= false`（原本デフォルト不変）。
 
-- [ ] **Step 5: パッケージモードの fail-fast スモーク（provider 不一致で即エラー）**
+- [x] **Step 5: パッケージモードの fail-fast スモーク（provider 不一致で即エラー）**
 
 Run:
 ```bash
@@ -854,7 +854,7 @@ node -e "import('./dist/server/factory.js').then(async (f) => { const cfg = { pr
 ```
 Expected: `OK fail-fast: NEXUS_PACKAGE_MODE requires embedding.provider="bedrock", ...`
 
-- [ ] **Step 6: 最終コミット（検証で変更が出た場合のみ）**
+- [x] **Step 6: 最終コミット（検証で変更が出た場合のみ）**
 
 検証で追加修正が発生した場合のみ:
 ```bash
@@ -889,6 +889,8 @@ git commit -m "test: verify bedrock provider and package mode end-to-end"
 - **案 B（意図を実現・推奨度高）**: `packageMode` 時に登録をスキップするガードを追加（下記 Task A1）。ただし設計 §5.5/§6.2 の「メトリクス層に触れない」に対し、登録クライアント（`src/observability/`）への最小限の介入が発生する点を承知の上で実施。
 
 > **注**: 本乖離は「メトリクス**収集**層」ではなく「aggregator **登録**（外部連携）」に限定される。案 B でも `MetricsCollector`・metrics HTTP サーバ・TUI は不変で、§5.4「ローカル metrics/TUI は維持」とは両立する。
+>
+> **✅ 決定・実施済み（検出・裏取り済み）:** 本件は **案 B** を採用し、下記 Task A1 の内容で実装・テスト済み。`src/server/index.ts` の `registrationClient = options.packageMode ? null : createRegistrationClient(...)`（L366付近）と `src/server/factory.ts` の `buildNexusRuntime(...)` 呼び出しへの `packageMode: config.packageMode` 伝搬（L505付近）を確認。専用テスト `tests/unit/server/skip-registration-package-mode.test.ts`（2件）が PASS。`MetricsCollector`・metrics HTTP サーバ・`packages/dashboard`（TUI）は不変であり、※5.4の「ローカルmetrics/TUIは維持」と両立している。
 
 ### Task A1（任意・案 B 選択時のみ実施）: packageMode で aggregator 登録をスキップ
 
@@ -900,10 +902,10 @@ git commit -m "test: verify bedrock provider and package mode end-to-end"
 **Interfaces:**
 - Consumes: `Config.packageMode`（Task 1）。
 
-- [ ] **Step 1: 失敗するテストを書く**（`packageMode=true` で `runtime.registrationClient` が `null`/`undefined` になることを検証。既存の `buildNexusRuntime`/`createNexusServer` の初期化フローに沿ったテストを追加。`NexusRuntime.registrationClient` は [factory.ts の NexusRuntime 型](../../../src/server/factory.ts) に既出）
-- [ ] **Step 2: テストが失敗することを確認** — Run: `npx vitest run tests/unit/server/factory.test.ts`
-- [ ] **Step 3: `NexusServerOptions` に `packageMode?: boolean` を追加**（`src/server/index.ts:48-54` の options 型末尾、`aggregatorPort?: number;` の直後）
-- [ ] **Step 4: 登録呼び出しをガード** — `src/server/index.ts:365-370` を以下へ:
+- [x] **Step 1: 失敗するテストを書く**（`packageMode=true` で `runtime.registrationClient` が `null`/`undefined` になることを検証。既存の `buildNexusRuntime`/`createNexusServer` の初期化フローに沿ったテストを追加。`NexusRuntime.registrationClient` は [factory.ts の NexusRuntime 型](../../../src/server/factory.ts) に既出）
+- [x] **Step 2: テストが失敗することを確認** — Run: `npx vitest run tests/unit/server/factory.test.ts`
+- [x] **Step 3: `NexusServerOptions` に `packageMode?: boolean` を追加**（`src/server/index.ts:48-54` の options 型末尾、`aggregatorPort?: number;` の直後）
+- [x] **Step 4: 登録呼び出しをガード** — `src/server/index.ts:365-370` を以下へ:
 ```typescript
           registrationClient = options.packageMode
             ? null
@@ -914,10 +916,33 @@ git commit -m "test: verify bedrock provider and package mode end-to-end"
                 options.projectName,
               );
 ```
-- [ ] **Step 5: factory から packageMode を伝搬** — `src/server/factory.ts` の `buildNexusRuntime({ ... })` 呼び出し（L468-485）に `packageMode: config.packageMode,` を追加
-- [ ] **Step 6: テストが通ることを確認** — Run: `npx vitest run tests/unit/server/factory.test.ts`
-- [ ] **Step 7: 型チェック + lint** — Run: `npx tsc -p tsconfig.build.json --noEmit && npm run lint`
-- [ ] **Step 8: Commit** — `git commit -m "feat: skip aggregator registration in package mode"`
+- [x] **Step 5: factory から packageMode を伝搬** — `src/server/factory.ts` の `buildNexusRuntime({ ... })` 呼び出し（L468-485）に `packageMode: config.packageMode,` を追加
+- [x] **Step 6: テストが通ることを確認** — Run: `npx vitest run tests/unit/server/factory.test.ts`
+- [x] **Step 7: 型チェック + lint** — Run: `npx tsc -p tsconfig.build.json --noEmit && npm run lint`
+- [x] **Step 8: Commit** — `git commit -m "feat: skip aggregator registration in package mode"`
+
+---
+
+## Appendix C: healthCheck 診断メッセージ欠落の修正記録（✅ 実装・テスト済み）
+
+### 検出された乖離
+
+設計書 [§6.4](../specs/2026-07-07-nexus-packaged-plugin-restrictions.md) は「資格情報の欠如/期限切れは `healthCheck` を `false` にし、サポートしやすい明確なメッセージ（`aws sso login` / IAM 権限 / モデル有効化を促す）を出す」と要求している。しかし Task 2 実装時点の `BedrockEmbeddingProvider.healthCheck()` は catch 節が完全な空（`} catch { return false; }`）で、`false` は返すものの診断ログを一切出さず、運用者が失敗原因（認証切れ / モデル未有効化 / パラメータ不正 / ネットワーク）を切り分けられない状態だった。この乖離を本修正で解消する。
+
+### 本修正で追加したメッセージ分岐
+
+`healthCheck()` の catch 節を `} catch (error) {` に変更し、`error.name` を判定して以下を `console.warn`（既存の region フォールバック警告と同じ `[Nexus] ...` 書式）で出力してから `false` を返すインライン分岐を追加した。戻り値は `boolean` のまま、エラーの再スローは行わない（リトライしない単発プローブという既存の設計意図を維持）。
+
+- `AccessDeniedException` / `ExpiredTokenException` / `UnrecognizedClientException` → AWS 認証情報が無効/期限切れの可能性を示し、`aws sso login` の実行と IAM ロール/ポリシー権限の確認を促す。
+- `ResourceNotFoundException` → モデル（`this.config.model`）未有効化の可能性を示し、AWS コンソールでの Bedrock モデルアクセス有効化を促す。
+- `ValidationException` → リクエストパラメータ不正を示し、model/dimensions/region の設定確認を促す。
+- 上記いずれにも該当しない場合（ネットワークエラー等） → `error.message`（非 Error 値は `String(error)`）をそのまま出力。
+
+`embed()` / `embedOneWithRetry()` / `isRetriable()` のリトライ・エラー分類ロジックには一切手を加えていない。汎用エラーラッパー（`mapAwsError` 等）も新設せず、catch 節内へのインライン分岐に限定した。
+
+### 追加したテスト
+
+`tests/unit/plugins/embeddings/bedrock.test.ts` の既存 "returns false from healthCheck when the client throws" テスト直後に、各分岐で `console.warn` が適切な文言で呼ばれることを `vi.spyOn(console, 'warn')` で検証する 7 ケースを追加した（AccessDenied / ExpiredToken / UnrecognizedClient / ResourceNotFound / Validation / 未分類 Error / 非 Error 値）。`npx vitest run tests/unit/plugins/embeddings/bedrock.test.ts` は 17 件（既存 10 + 新規 7）全て PASS。
 
 ---
 
@@ -942,12 +967,12 @@ git commit -m "test: verify bedrock provider and package mode end-to-end"
 - §6.1「契約・配線の変更」: types union+region/profile → Task 1、config isProvider+region/profile → Task 3、factory switch → Task 4、package.json → Task 1 ✅
 - §6.2 packageMode（Config フィールド + factory ハードロック + metrics 不変 + 外部連携既定オフ）→ Task 1（Config）/ Task 3（config 配線）/ Task 4（ハードロック）✅。「外部連携既定オフ」は前提が実コードと乖離 → Appendix A で明示・任意タスク化 ⚠️
 - §6.3 config/env サーフェス → Task 3 ✅（region 既定 `us-east-1` フォールバックは provider 側 `createDefaultDependencies` で実装、§6.4 L147 と整合）
-- §6.4 エラー処理（リトライ/非リトライ分類・healthCheck・region フォールバック警告）→ Task 2 ✅
+- §6.4 エラー処理（リトライ/非リトライ分類・healthCheck・region フォールバック警告）→ Task 2 ✅（healthCheck診断メッセージはAppendix Cで追補）
 - §6.5 テスト（provider ユニット・factory・config・回帰）→ Task 2/3/4/5 ✅。staging テストは Appendix B（スコープ外）
-- §3.3/§5.4 メトリクス（ローカル維持・外部連携除外）→ ローカル metrics/TUI 不変（触れない）✅、外部連携除外は Appendix A ⚠️
+- §3.3/§5.4 メトリクス（ローカル維持・外部連携除外）→ ローカル metrics/TUI 不変（触れない）✅、外部連携除外は Task A1 で実装済み ✅
 
 **2. Placeholder scan:** 全ステップに実コード/実コマンド/期待出力を記載。TBD・「適切に処理」等のプレースホルダ無し ✅。唯一 Task 4 Step 1 の `PluginRegistry` import パスのみ実装時に `grep` 確認する指示付き（`src/plugins/registry.ts` を想定）。
 
 **3. Type consistency:** `BedrockEmbeddingProvider` / `BedrockProviderConfig` / `assertPackageModeConstraints` / `asBoolean` / `validateBoolean` の名称は Task 2/3/4 で一貫。`EmbeddingConfig.provider` union、`Config.packageMode`、`region?`/`profile?` は Task 1 で定義し Task 2/3/4 が同名で参照。`getActiveEmbeddingProviderName()`（[server/index.ts の PluginRegistry 型](../../../src/server/index.ts)）は公開メソッドとして確認済み。
 
-**未解決の意思決定（実行前に確認推奨）:** Appendix A の案 A / 案 B。既定では本体タスク（Task 1〜5）のみ実行し、Task A1 はユーザーが案 B を選択した場合のみ実施する。
+**意思決定の結果（解消済み）:** Appendix A は案 B（意図を実現）を採用。本体タスク（Task 1〜5）と Task A1 は全ステップ実装・テスト済み（`npm test` 該当ファイル群・`tsc --noEmit` で確認）。Appendix C の healthCheck 診断メッセージも実装済み。
