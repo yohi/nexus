@@ -12,6 +12,9 @@ duplicating details here.
 - **Architecture**: single Node.js process combining the MCP server,
   search tools, and a background event-driven indexing pipeline. Read
   [SPEC.md](SPEC.md) before architecture or cross-module changes.
+- **Runtime**: requires Node.js `>=24` (see `engines` in `package.json`).
+  This is an npm workspaces monorepo; `packages/dashboard` is the standalone
+  `@yohi/nexus-dashboard` TUI package.
 - **Configuration**: `.nexus.json` plus environment variables. Read
   [docs/configuration.md](docs/configuration.md) before changing config
   behavior.
@@ -19,6 +22,10 @@ duplicating details here.
   has a mandatory user-choice step; see below.
 - **Observability**: Prometheus metrics, dashboard, and Aggregator details
   live in [docs/observability/README.md](docs/observability/README.md).
+- **Package-mode distribution**: Nexus also ships as a restricted Claude
+  Code plugin (AWS Bedrock-locked, distributed via Bitbucket). Read
+  [docs/distribution.md](docs/distribution.md) before touching packaging,
+  the AWS Bedrock provider, or `NEXUS_PACKAGE_MODE`.
 
 ## Mandatory Setup Protocol
 

@@ -1,0 +1,147 @@
+name: Deploy plugin to Bitbucket
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    env:
+      BITBUCKET_REPO_URL: ${{ vars.BITBUCKET_PLUGIN_REPO_URL || 'https://bitbucket.org/y-ohi/nexus.git' }}
+    steps:
+      - name: Get latest GitHub release
+        id: release
+        uses: actions/github-script@v7
+        with:
+          script: |
+            try {
+              const { data: release } = await github.rest.repos.getLatestRelease({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+              });
+              core.setOutput('tag', release.tag_name);
+            } catch (err) {
+              if (err.status === 404) {
+                core.setFailed('No GitHub Release found. Create a release before running this workflow.');
+              } else {
+                core.setFailed(`Failed to fetch latest release: ${err.message}`);
+              }
+            }
+
+      - name: Check existing Bitbucket tag
+        id: bitbucket
+        run: |
+          set -euo pipefail
+          if [[ "${BITBUCKET_REPO_URL}" != https://* ]]; then
+            echo "BITBUCKET_REPO_URL must start with https://: ${BITBUCKET_REPO_URL}" >&2
+            exit 1
+          fi
+          if [ -z "${BITBUCKET_API_TOKEN}" ]; then
+            echo "BITBUCKET_API_TOKEN not set" >&2
+            exit 1
+          fi
+          ASKPASS_SCRIPT="$(mktemp)"
+          trap 'rm -f "$ASKPASS_SCRIPT"' EXIT
+          printf '#!/bin/sh\necho "$BITBUCKET_API_TOKEN"\n' > "$ASKPASS_SCRIPT"
+          chmod +x "$ASKPASS_SCRIPT"
+          export GIT_ASKPASS="$ASKPASS_SCRIPT"
+          REPO_URL="https://x-token-auth@${BITBUCKET_REPO_URL#https://}"
+          TAG=$(git ls-remote --tags "${REPO_URL}" \
+            | sed 's#^[^[:space:]]*[[:space:]]*refs/tags/##' \
+            | { grep -v '\^{}' || true; } \
+            | sort -V \
+            | tail -n 1)
+          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+          if [ "${TAG}" = "${RELEASE_TAG}" ]; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            echo "Bitbucket already at ${TAG}. Nothing to do."
+          fi
+          if git ls-remote --tags --exit-code "${REPO_URL}" "refs/tags/${RELEASE_TAG}" >/dev/null 2>&1; then
+            echo "tag_exists=true" >> "$GITHUB_OUTPUT"
+            echo "Tag ${RELEASE_TAG} already exists on Bitbucket. Tag push will be skipped."
+          fi
+        env:
+          BITBUCKET_API_TOKEN: ${{ secrets.BITBUCKET_API_TOKEN }}
+          RELEASE_TAG: ${{ steps.release.outputs.tag }}
+
+      - name: Checkout release tag
+        if: steps.bitbucket.outputs.skip != 'true'
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.release.outputs.tag }}
+
+      - name: Setup Node.js
+        if: steps.bitbucket.outputs.skip != 'true'
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: 'npm'
+
+      - name: Install dependencies
+        if: steps.bitbucket.outputs.skip != 'true'
+        run: npm ci
+
+      - name: Lint and test
+        if: steps.bitbucket.outputs.skip != 'true'
+        run: |
+          npm run lint
+          npm run test
+
+      - name: Stage plugin source mirror
+        if: steps.bitbucket.outputs.skip != 'true'
+        run: scripts/stage-plugin-dist.sh dist-staging
+        env:
+          NEXUS_EMBEDDING_REGION: ${{ vars.NEXUS_EMBEDDING_REGION }}
+          NEXUS_EMBEDDING_PROFILE: ${{ vars.NEXUS_EMBEDDING_PROFILE }}
+          NEXUS_EMBEDDING_MODEL: ${{ vars.NEXUS_EMBEDDING_MODEL }}
+          NEXUS_EMBEDDING_DIMENSIONS: ${{ vars.NEXUS_EMBEDDING_DIMENSIONS }}
+
+      - name: Verify source mirror builds standalone
+        if: steps.bitbucket.outputs.skip != 'true'
+        run: |
+          cp -r dist-staging verify-build
+          cd verify-build
+          npm install --no-audit --no-fund
+          npm run build
+          test -f dist/bin/nexus.js
+          echo "Source mirror is self-sufficient."
+
+      - name: Validate plugin manifest
+        if: steps.bitbucket.outputs.skip != 'true'
+        run: npx claude plugin validate ./verify-build --strict
+
+      - name: Push to Bitbucket
+        if: steps.bitbucket.outputs.skip != 'true'
+        run: |
+          set -euo pipefail
+          if [[ "${BITBUCKET_REPO_URL}" != https://* ]]; then
+            echo "BITBUCKET_REPO_URL must start with https://: ${BITBUCKET_REPO_URL}" >&2
+            exit 1
+          fi
+          ASKPASS_SCRIPT="$(mktemp)"
+          trap 'rm -f "$ASKPASS_SCRIPT"' EXIT
+          printf '#!/bin/sh\necho "$BITBUCKET_API_TOKEN"\n' > "$ASKPASS_SCRIPT"
+          chmod +x "$ASKPASS_SCRIPT"
+          export GIT_ASKPASS="$ASKPASS_SCRIPT"
+          cd dist-staging
+          git init -b main
+          git config user.name "github-actions"
+          git config user.email "github-actions@users.noreply.github.com"
+          git add .
+          git commit -m "deploy ${RELEASE_TAG}"
+          git tag "${RELEASE_TAG}"
+          # トークンは GIT_ASKPASS 経由で渡し、remote URL やコマンド引数には出さない
+          git remote add bitbucket "https://x-token-auth@${BITBUCKET_REPO_URL#https://}"
+          git push --force bitbucket main
+          if [ "${TAG_EXISTS}" = "true" ]; then
+            echo "Skipping tag push because ${RELEASE_TAG} already exists on Bitbucket."
+          else
+            git push bitbucket "${RELEASE_TAG}"
+          fi
+        env:
+          BITBUCKET_API_TOKEN: ${{ secrets.BITBUCKET_API_TOKEN }}
+          RELEASE_TAG: ${{ steps.release.outputs.tag }}
+          TAG_EXISTS: ${{ steps.bitbucket.outputs.tag_exists }}
