@@ -63,6 +63,8 @@
 ### Task 1: ソースミラー staging スクリプト
 
 > **⚠️ 一本化（2026-07-07）:** `scripts/stage-plugin-dist.sh` の実装は実装計画 [2026-07-07-nexus-packaged-plugin-implementation.md](2026-07-07-nexus-packaged-plugin-implementation.md) Task 4（plugin.json の stage 時変換つき: `userConfig` 除去・固定 env 注入・`packages/dashboard` 同梱）を**唯一の正**とする。同一ファイルの二重定義を避けるため、以下 Step 1 に残す無変換コピー版（`.claude-plugin/plugin.json` をそのまま `cp`）はパッケージ版では**使わない**（参考として保持）。パッケージ版配布では Plan A Task 4 のスクリプトを Task 2 ワークフローが呼ぶ。
+>
+> **✅ 実装完了（本ブランチ）:** `scripts/stage-plugin-dist.sh` は実装計画 Task 4 の内容で `feature/nexus-packaged-plugin-distribution-pipeline` ブランチ上で新規作成済み（コミット `6678d54`）。ローカル検証（staging生成・plugin.json変換・自己完結ビルド）も完了している。よって以下 Step 1〜6（無変換コピー版の参考実装）はパッケージ版では**実行不要**であり、チェックボックスは意図的に未チェックのまま残す。
 
 **Files:**
 - Create: `scripts/stage-plugin-dist.sh`
@@ -201,7 +203,7 @@ Expected: 1 ファイルがコミットされる。
 - Consumes: `scripts/stage-plugin-dist.sh dist-staging`(Task 1)。Secret `BITBUCKET_API_TOKEN`(Prerequisites P3)。任意の Repository variable `BITBUCKET_PLUGIN_REPO_URL`。
 - Produces: `workflow_dispatch` で起動する `Deploy plugin to Bitbucket` ワークフロー。Bitbucket `y-ohi/nexus` に main ブランチと Release tag を force-push する。
 
-- [ ] **Step 1: ワークフローを作成する**
+- [x] **Step 1: ワークフローを作成する**
 
 `.github/workflows/deploy-plugin-to-bitbucket.yml` を以下の内容で新規作成する。
 
@@ -347,23 +349,23 @@ jobs:
           BITBUCKET_API_TOKEN: ${{ secrets.BITBUCKET_API_TOKEN }}
 ```
 
-- [ ] **Step 2: YAML として妥当か検証する**
+- [x] **Step 2: YAML として妥当か検証する**
 
 Run: `python3 -c "import yaml; yaml.safe_load(open('.github/workflows/deploy-plugin-to-bitbucket.yml')); print('YAML-OK')" 2>/dev/null || { npx --yes js-yaml .github/workflows/deploy-plugin-to-bitbucket.yml >/dev/null && echo YAML-OK; }`
 Expected: `YAML-OK`（`python3` があればそれで、無ければ `js-yaml` フォールバックで検証する）。
 
-- [ ] **Step 3: 埋め込みシェルスクリプトの構文をチェックする**
+- [x] **Step 3: 埋め込みシェルスクリプトの構文をチェックする**
 
 `run: |` ブロック内のスクリプト(Check existing Bitbucket tag / Verify source mirror builds standalone / Push to Bitbucket)を一時ファイルに貼り付け、`bash -n <file>` で構文検証する。
 Run 例: `bash -n /tmp/check-bitbucket.sh`
 Expected: 出力なし・終了コード 0（構文エラーがないこと)。
 
-- [ ] **Step 4: actionlint が利用可能なら実行する（任意）**
+- [x] **Step 4: actionlint が利用可能なら実行する（任意）**
 
 Run: `command -v actionlint >/dev/null && actionlint .github/workflows/deploy-plugin-to-bitbucket.yml || echo "actionlint not installed; skip"`
 Expected: `actionlint` 導入時は指摘なし。未導入時は `actionlint not installed; skip`。
 
-- [ ] **Step 5: コミットする**
+- [x] **Step 5: コミットする**
 
 Run:
 ```bash
@@ -383,7 +385,7 @@ Expected: 1 ファイルがコミットされる。
 - Consumes: なし。
 - Produces: ネイティブ依存プラグイン(nexus 等)は dist-only ではなくソースミラーで配布する、という明文化された例外規定。
 
-- [ ] **Step 1: §4 の「除外するもの」節の直後に例外サブセクションを追記する**
+- [x] **Step 1: §4 の「除外するもの」節の直後に例外サブセクションを追記する**
 
 `docs/superpowers/specs/2026-07-03-bitbucket-claude-plugins-marketplace.md` の「### 除外するもの」リスト末尾の後(「## 5. GitHub Actions ワークフロー」の直前)に、以下を挿入する。
 
@@ -395,12 +397,12 @@ Expected: 1 ファイルがコミットされる。
 この種のプラグイン(例: `yohi-nexus`)は、ビルド可能な最小ソース一式(`package.json`、`package-lock.json`、`tsconfig*.json`、`src/`、ワークスペース、`.claude-plugin/plugin.json`、`scripts/setup-plugin.sh`)を配布し、利用者マシンで Setup フックの `setup-plugin.sh` が `npm install` → `npm run build` を実行する「ソースミラー」方式を採る。実装は `.github/workflows/deploy-plugin-to-bitbucket.yml` および `scripts/stage-plugin-dist.sh` を参照。
 ```
 
-- [ ] **Step 2: markdownlint を確認する（既存基準からの逸脱がないこと）**
+- [x] **Step 2: markdownlint を確認する（既存基準からの逸脱がないこと）**
 
 Run: `npx --yes markdownlint-cli2 "docs/superpowers/specs/2026-07-03-bitbucket-claude-plugins-marketplace.md" 2>&1 | tail -5`
 Expected: 追記行が新規の MD013(行長)警告を増やさない範囲であること。既存同様、日本語散文はソフトラップ方針(`global-rules/MARKDOWN.md`)に従い、追加対応は不要。既存からの増分がある場合は 1 文が長くなりすぎていないか目視確認する。
 
-- [ ] **Step 3: コミットする**
+- [x] **Step 3: コミットする**
 
 Run:
 ```bash
