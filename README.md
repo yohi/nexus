@@ -135,7 +135,10 @@ node dist/bin/nexus.js aggregator --port 9472
 ```
 
 #### systemd による自動起動（デーモン化）設定例
-マシン起動時に集約サーバーが自動起動するようにするには、`/etc/systemd/system/nexus-aggregator.service` を以下の内容で作成します（`User` や `WorkingDirectory` はご利用の環境に合わせて適宜修正してください）。
+
+マシン起動時に集約サーバーが自動起動するようにするには、
+`/etc/systemd/system/nexus-aggregator.service` を以下の内容で作成します。
+`User` や `WorkingDirectory` はご利用の環境に合わせて適宜修正してください。
 
 ```ini
 [Unit]
@@ -144,8 +147,8 @@ After=network.target
 
 [Service]
 Type=simple
-User=y_ohi
-WorkingDirectory=/home/y_ohi/program/nexus
+User=nexus
+WorkingDirectory=/opt/nexus
 ExecStart=/usr/bin/node dist/bin/nexus.js aggregator
 Restart=on-failure
 
@@ -154,6 +157,7 @@ WantedBy=multi-user.target
 ```
 
 サービスファイルを配置後、以下のコマンドで自動起動を有効化・起動します。
+
 ```bash
 sudo systemctl daemon-reload
 sudo systemctl enable nexus-aggregator

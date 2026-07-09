@@ -33,3 +33,6 @@ Thumbs.db
 .nexus/
 .omo/
 .worktrees/
+
+# Local agent settings
+.claude/
