@@ -274,6 +274,24 @@ class EventProcessingManager {
   }
 }
 
+/**
+ * Enforces NEXUS_PACKAGE_MODE constraints. In package mode the embedding
+ * provider is hard-locked to "bedrock"; any other provider fails fast.
+ * model / dimensions / region remain deploy-variable and are NOT validated here.
+ */
+export function assertPackageModeConstraints(config: Config): void {
+  if (!config.packageMode) {
+    return;
+  }
+  if (config.embedding.provider !== "bedrock") {
+    throw new Error(
+      `NEXUS_PACKAGE_MODE requires embedding.provider="bedrock", ` +
+        `but received "${config.embedding.provider}". ` +
+        `The packaged plugin only supports AWS Bedrock embeddings.`,
+    );
+  }
+}
+
 export class NexusServerFactory {
   /**
    * Creates and initializes a NexusRuntime based on the provided configuration.
@@ -536,6 +554,7 @@ export class NexusServerFactory {
 }
 
   private static setupPluginRegistry(config: Config): PluginRegistry {
+    assertPackageModeConstraints(config);
     const registry = new PluginRegistry();
     registry.registerLanguage(new TypeScriptLanguagePlugin());
     registry.registerLanguage(new PythonLanguagePlugin());

@@ -292,6 +292,7 @@ export interface Config {
   indexing: IndexingConfig;
   metricsPort?: number;
   aggregatorPort?: number;
+  packageMode: boolean;
 }
 
 export interface DeadLetterEntry {
