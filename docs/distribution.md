@@ -2,6 +2,19 @@
 
 Nexus は社内 Claude Code plugin marketplace（Bitbucket Cloud）を通じて `yohi-nexus` として配布されます。本ドキュメントは、パッケージ版の配布前提条件（Prerequisites）と配布後の運用手順（Post-Deploy）をまとめたものです。
 
+## TOKEN 対照表
+
+Bitbucket 配布・Marketplace 運用に必要な TOKEN は用途ごとに分かれています。設定前に以下を確認してください。
+
+| 環境変数名 / Secret 名 | 用途 | 発行元 | スコープ | 保存先 | 使用ワークフロー |
+| --- | --- | --- | --- | --- | --- |
+| `BITBUCKET_API_TOKEN` | 配布 repo への force-push（`D1`） | Bitbucket Repository Access Token | `repository:write` | GitHub Actions Secrets（nexus source repo） | `deploy-plugin-to-bitbucket.yml` |
+| `BITBUCKET_MARKETPLACE_TOKEN` | Marketplace カタログ `marketplace.json` 更新 | Bitbucket 個人 / workspace PAT | repo 読み書き相当 | GitHub Actions Secrets（nexus source repo） | `deploy-plugin-to-bitbucket.yml`（自動） / `update-marketplace-entry.yml`（手動） |
+| `GH_PAT` | GitHub 上の **private plugin source repo** を marketplace workflow から読み込む | GitHub PAT | `repo` | GitHub Actions Secrets（marketplace source repo） | `update-marketplace-entry.yml`（PoC 用） |
+
+- `BITBUCKET_API_TOKEN` と `BITBUCKET_MARKETPLACE_TOKEN` は別物です。同じトークンを流用すると権限過大・失効範囲が広がるため避けてください。
+- `GH_PAT` は Bitbucket ではなく GitHub 側のトークンです。plugin source repo が public の場合は不要です（`GITHUB_TOKEN` で十分）。
+
 ## Prerequisites（配布実行前の手動セットアップ）
 
 これらはワークフロー実行前に必要な、Bitbucket / GitHub 側の運用設定です。コード実装は Prerequisites 未完了でも進められますが、**デプロイ実行前に必ず完了させてください**。
@@ -66,12 +79,23 @@ Nexus は社内 Claude Code plugin marketplace（Bitbucket Cloud）を通じて 
 
 - **用途**: ワークフローの `stage-plugin-dist.sh` 実行ステップに env として渡され、パッケージ版の `.claude-plugin/plugin.json` に固定値として注入されます。
 
+### P7: Marketplace カタログ更新のための Secret 登録（推奨）
+
+- **手順**:
+  1. Bitbucket Cloud の marketplace catalog リポジトリ（既定: `y-ohi/claude-plugins`）にアクセス
+  2. 読み書き可能な Personal Access Token（PAT）または Repository Access Token を発行
+  3. GitHub の nexus リポジトリ Secrets に `BITBUCKET_MARKETPLACE_TOKEN` として保存
+
+- **効果**: `Deploy plugin to Bitbucket` ワークフロー実行時に、配布と同時に marketplace カタログが自動更新されます。未設定の場合、配布は成功しますがカタログは更新されないため、利用者は `/plugin install` で検出できません。
+- **オプション**: カタログ repo を変更したい場合は Repository variable `BITBUCKET_MARKETPLACE_REPO_URL` を設定します。未設定時は `https://bitbucket.org/y-ohi/claude-plugins.git` が使用されます。
+
 ---
 
 ## Post-Deploy 運用手順
 
-### D1: デプロイワークフローを手動実行する
+### D1: デプロイワークフローを手動実行する（配布 + カタログ自動更新）
 
+- **前提**: P3 の `BITBUCKET_API_TOKEN` が必須。P7 の `BITBUCKET_MARKETPLACE_TOKEN` を設定しておくと、同時に marketplace カタログも更新されます。
 - **手順**:
   1. GitHub の nexus リポジトリ **Actions** タブを開く
   2. **Deploy plugin to Bitbucket** ワークフローを選択
@@ -81,11 +105,12 @@ Nexus は社内 Claude Code plugin marketplace（Bitbucket Cloud）を通じて 
 - **確認内容**: ワークフロー完了後、以下を確認してください:
   - Bitbucket `y-ohi/nexus` リポジトリが 1 コミットのソースミラー + Release tag になっていること
   - `.gitignore` のみの状態が上書きされていること
+  - `BITBUCKET_MARKETPLACE_TOKEN` を設定している場合は、 marketplace catalog repo の `marketplace.json` に `yohi-nexus` エントリが追加 / 更新されていること
 
-### D2: Marketplace カタログへ登録する
+### D2: Marketplace カタログのみ更新する（オプション / 後追い）
 
-- **前提**: 既存の `Update marketplace entry` ワークフロー（`.github/workflows/update-marketplace-entry.yml`）が設定済みであること。
-
+- **用途**: D1 実行時に `BITBUCKET_MARKETPLACE_TOKEN` が未設定だった場合、または plugin_name / description / bitbucket_url をカスタマイズして手動更新したい場合に使用します。
+- **前提**: 既存の `Update marketplace entry` ワークフロー（`.github/workflows/update-marketplace-entry.yml`）が設定済みであること。`BITBUCKET_MARKETPLACE_TOKEN` が必須。
 - **手順**:
   1. GitHub の nexus リポジトリ **Actions** タブを開く
   2. **Update marketplace entry** ワークフローを選択
@@ -94,8 +119,6 @@ Nexus は社内 Claude Code plugin marketplace（Bitbucket Cloud）を通じて 
      - **plugin_name**: `yohi-nexus`
      - **plugin_description**: `Nexus local code indexing and hybrid search MCP plugin`
      - **bitbucket_url**: D1 で配布したリポジトリ URL（既定 `https://bitbucket.org/y-ohi/nexus.git`。P6 で `BITBUCKET_PLUGIN_REPO_URL` を上書きした場合はその値に合わせる）
-
-- **前提条件**: Marketplace 用の Secret `BITBUCKET_MARKETPLACE_TOKEN` が設定済みであること（P3 の `BITBUCKET_API_TOKEN` とは別のトークン）。
 
 ### D3: 利用者側インストールを検証する
 
@@ -183,6 +206,7 @@ dist/
 | `BITBUCKET_API_TOKEN not set` | P3 の Secret が未設定 | P3 を実行してください |
 | `No releases found` | P4 の Release が存在しない | release-please で Release を作成してください |
 | `Build failed` | ネイティブモジュールのビルド失敗 | ローカルで `npm ci && npm run build` を実行し、エラーを確認してください |
+| 配布後に `/plugin install` で検出されない | `BITBUCKET_MARKETPLACE_TOKEN` 未設定で D1 を実行した | P7 を実行して secret を設定し、D1 を再実行するか D2 を実行してください |
 
 ### 利用者側インストール時のエラー
 

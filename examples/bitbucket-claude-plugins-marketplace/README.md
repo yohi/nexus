@@ -7,6 +7,14 @@
 - `claude-plugins-marketplace-src/`: marketplace source repo 用テンプレート
 - `plugin-a-src/`: plugin source repo 用テンプレート（コピーして `plugin-b-src` などを作成可能）
 
+## TOKEN 対照表
+
+| 環境変数名 / Secret 名 | 用途 | 発行元 | 保存先 | 備考 |
+| --- | --- | --- | --- | --- |
+| `BITBUCKET_API_TOKEN` | plugin 配布 repo への force-push | Bitbucket Repository Access Token（`repository:write`） | 各 plugin source repo の GitHub Actions Secrets | 配布 repo ごとに発行可能 |
+| `BITBUCKET_MARKETPLACE_TOKEN` | marketplace catalog `marketplace.json` 更新 | Bitbucket PAT（カタログ repo 読み書き） | marketplace source repo の GitHub Actions Secrets | API トークンと marketplace 用は分離推奨 |
+| `GH_PAT` | GitHub 上の private plugin source repo 読み込み | GitHub PAT（`repo` スコープ） | marketplace source repo の GitHub Actions Secrets | plugin source が public なら不要 |
+
 ## セットアップ
 
 1. 本テンプレートを GitHub 上の実際の organization にコピーする。
