@@ -108,6 +108,12 @@ GitHub Actions 上で staging ディレクトリを作成し、以下を Bitbuck
 - 過去の git 履歴（`--depth=1` 相当の shallow、force-push 後 1 commit のみ）
 - `plugin-sources.json` など、marketplace 配布時には不要な運用メタデータ
 
+### 例外: ネイティブ依存プラグインの「ソースミラー」配布
+
+`tsc` で非バンドルビルドし、かつネイティブ依存(例: `better-sqlite3`、`@lancedb/lancedb`)を持つプラグインは、上記「dist のみ」ルールを適用できない。ビルド済み `dist/` は実行時に `node_modules` を必要とし、ネイティブバイナリは利用者のプラットフォームで解決する必要があるためである。
+
+この種のプラグイン(例: `yohi-nexus`)は、ビルド可能な最小ソース一式(`package.json`、`package-lock.json`、`tsconfig*.json`、`src/`、ワークスペース、`.claude-plugin/plugin.json`、`scripts/setup-plugin.sh`)を配布し、利用者マシンで Setup フックの `setup-plugin.sh` が `npm install` → `npm run build` を実行する「ソースミラー」方式を採る。実装は `.github/workflows/deploy-plugin-to-bitbucket.yml` および `scripts/stage-plugin-dist.sh` を参照。
+
 ## 5. GitHub Actions ワークフロー
 
 ### 5.1 plugin source repo 用ワークフロー
