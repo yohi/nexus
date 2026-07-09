@@ -111,7 +111,7 @@ jobs:
 
       - name: Validate plugin manifest
         if: steps.bitbucket.outputs.skip != 'true'
-        run: npx claude plugin validate ./verify-build --strict
+        run: npx -y @anthropic-ai/claude-code@2.1.197 plugin validate ./verify-build --strict
 
       - name: Push to Bitbucket
         if: steps.bitbucket.outputs.skip != 'true'
