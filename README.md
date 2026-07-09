@@ -240,6 +240,51 @@ server.listen(3000, '127.0.0.1');
 | `NEXUS_OLLAMA_NUM_THREAD` / `embedding.ollamaNumThread` | `2` | Ollama 埋め込みリクエストのスレッド数 (`1`〜`16`)。無効な値は `2` にフォールバック。 |
 | `NEXUS_PACKAGE_MODE` / `packageMode` | `false` | `true` の場合、`embedding.provider` を `bedrock` にハードロック（fail-fast）。詳細は [docs/configuration.md](docs/configuration.md#package-mode) と [SPEC.md](SPEC.md) を参照 |
 
+### Package Mode（業務配布用）
+
+Nexus は単一コードベース上で、開発者向けのオリジナル動作（`packageMode=false`、デフォルト）と、社内向けに統制されたパッケージ版プラグイン（`packageMode=true`）の両方を提供します。
+
+#### 特徴
+
+- **Embedding プロバイダのロック**: `packageMode=true` の場合、`embedding.provider` は `bedrock`（AWS Bedrock）に自動的にハードロックされます。`bedrock` 以外を指定するとサーバー起動時に fail-fast で例外を投げます。
+- **可変値の許容**: `model` / `dimensions` / `region` はロック対象外で、デプロイ時に運用者が変更できます。
+- **メトリクス層は維持**: ローカルの metrics HTTP サーバーおよび `nexus dashboard`（TUI）は `packageMode` の値に関わらず常に起動します。
+- **外部連携のスキップ**: Grafana/Prometheus 向けの Aggregator への自動登録（Heartbeat）のみ `packageMode=true` でスキップされます。
+
+#### 利用方法
+
+**環境変数で有効化:**
+```bash
+NEXUS_PACKAGE_MODE=1 npx nexus
+```
+
+**`.nexus.json` で設定:**
+```json
+{
+  "packageMode": true,
+  "embedding": {
+    "provider": "bedrock",
+    "model": "amazon.titan-embed-text-v2:0",
+    "dimensions": 1024,
+    "region": "us-east-1"
+  }
+}
+```
+
+#### セットアップ
+
+パッケージ版を利用する場合、以下の前提条件を満たしてください：
+
+1. **AWS Bedrock モデルアクセスの有効化**: AWS コンソール → Bedrock → Model access で「Titan Embed Text v2」を有効化
+2. **AWS 認証情報の設定**: 環境変数、AWS SSO、名前付きプロファイル、IAM ロールのいずれかで認証情報を用意
+3. **GitHub Actions 変数の設定**（配布時）: `NEXUS_EMBEDDING_REGION`、`NEXUS_EMBEDDING_MODEL`、`NEXUS_EMBEDDING_DIMENSIONS` を設定
+
+詳細は [docs/distribution.md](docs/distribution.md) の Prerequisites （P5: AWS 資格情報、P6: GitHub Actions 変数）を参照してください。
+
+#### 配布フロー
+
+Nexus は社内 Claude Code plugin marketplace（Bitbucket Cloud）を通じて `yohi-nexus` として配布されます。配布前提条件と運用手順は [docs/distribution.md](docs/distribution.md) にまとめられています。
+
 ## 🧰 MCP ツール一覧
 
 詳細は [docs/mcp-tools.md](docs/mcp-tools.md) を参照してください。
