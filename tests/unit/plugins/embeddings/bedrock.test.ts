@@ -1,7 +1,27 @@
-import { describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { BedrockEmbeddingProvider } from '../../../../src/plugins/embeddings/bedrock.js';
 import { RetryExhaustedError, DimensionMismatchError } from '../../../../src/types/index.js';
+
+const { bedrockClientMock, fromIniMock } = vi.hoisted(() => ({
+  bedrockClientMock: vi.fn(),
+  fromIniMock: vi.fn(),
+}));
+
+vi.mock('@aws-sdk/client-bedrock-runtime', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@aws-sdk/client-bedrock-runtime')>();
+  return {
+    ...actual,
+    BedrockRuntimeClient: vi.fn().mockImplementation((options: unknown) => {
+      bedrockClientMock(options);
+      return { send: vi.fn() };
+    }),
+  };
+});
+
+vi.mock('@aws-sdk/credential-providers', () => ({
+  fromIni: fromIniMock,
+}));
 
 const encodeBody = (obj: unknown): Uint8Array => new TextEncoder().encode(JSON.stringify(obj));
 
@@ -104,5 +124,43 @@ describe('BedrockEmbeddingProvider', () => {
     const send = vi.fn().mockRejectedValue(new Error('network down'));
     const provider = new BedrockEmbeddingProvider(mockConfig, { client: { send }, sleep: vi.fn() });
     expect(await provider.healthCheck()).toBe(false);
+  });
+});
+
+describe('BedrockEmbeddingProvider default dependencies', () => {
+  beforeEach(() => {
+    bedrockClientMock.mockClear();
+    fromIniMock.mockClear();
+  });
+
+  it('warns and falls back to the default region when region is unset', () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const configWithoutRegion = {
+      model: 'amazon.titan-embed-text-v2:0',
+      dimensions: 2,
+      maxConcurrency: 1,
+      retryCount: 3,
+      retryBaseDelayMs: 10,
+    };
+
+    const provider = new BedrockEmbeddingProvider(configWithoutRegion);
+
+    expect(provider).toBeInstanceOf(BedrockEmbeddingProvider);
+    expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('NEXUS_EMBEDDING_REGION is not set'));
+    expect(bedrockClientMock).toHaveBeenCalledWith(expect.objectContaining({ region: 'us-east-1' }));
+    warnSpy.mockRestore();
+  });
+
+  it('wires the configured profile through fromIni into the client credentials', () => {
+    const sentinelCredentials = { accessKeyId: 'sentinel' };
+    fromIniMock.mockReturnValue(sentinelCredentials);
+
+    const provider = new BedrockEmbeddingProvider({ ...mockConfig, profile: 'nexus-dev' });
+
+    expect(provider).toBeInstanceOf(BedrockEmbeddingProvider);
+    expect(fromIniMock).toHaveBeenCalledWith({ profile: 'nexus-dev' });
+    expect(bedrockClientMock).toHaveBeenCalledWith(
+      expect.objectContaining({ credentials: sentinelCredentials }),
+    );
   });
 });

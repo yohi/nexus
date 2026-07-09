@@ -457,4 +457,30 @@ describe('loadConfig', () => {
     // Invalid env value is ignored; falls back to the file value.
     expect(config.packageMode).toBe(true);
   });
+
+  it('lets an explicit env NEXUS_PACKAGE_MODE=0 override a true .nexus.json packageMode', async () => {
+    tempDir = await mkdtemp(path.join(os.tmpdir(), 'nexus-config-'));
+    await writeFile(path.join(tempDir, '.nexus.json'), JSON.stringify({ packageMode: true }), 'utf8');
+
+    const config = await loadConfig({ projectRoot: tempDir, env: { NEXUS_PACKAGE_MODE: '0' } });
+
+    // Explicit boolean env value takes precedence over the file value, even when falsy.
+    expect(config.packageMode).toBe(false);
+  });
+
+  it.each(['true', 1, 'yes', null])(
+    'falls back to packageMode default for invalid file value %s',
+    async (value) => {
+      tempDir = await mkdtemp(path.join(os.tmpdir(), 'nexus-config-'));
+      await writeFile(
+        path.join(tempDir, '.nexus.json'),
+        JSON.stringify({ packageMode: value }),
+        'utf8',
+      );
+
+      const config = await loadConfig({ projectRoot: tempDir, env: {} });
+
+      expect(config.packageMode).toBe(false);
+    },
+  );
 });

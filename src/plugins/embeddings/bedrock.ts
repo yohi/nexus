@@ -1,12 +1,16 @@
+import { randomInt } from 'node:crypto';
 import pLimit from 'p-limit';
 import { BedrockRuntimeClient, InvokeModelCommand } from '@aws-sdk/client-bedrock-runtime';
 import { fromIni } from '@aws-sdk/credential-providers';
+import { NodeHttpHandler } from '@smithy/node-http-handler';
 
 import type { EmbeddingConfig } from '../../types/index.js';
 import { RetryExhaustedError, DimensionMismatchError } from '../../types/index.js';
 import { BaseEmbeddingProvider } from './base.js';
 
 const DEFAULT_REGION = 'us-east-1';
+
+const DEFAULT_TIMEOUT_MS = 30_000; // 30 seconds
 
 /** Minimal surface of BedrockRuntimeClient we depend on (injectable for tests). */
 export interface BedrockClientLike {
@@ -27,7 +31,7 @@ interface TitanEmbedResponse {
 export class BedrockEmbedError extends Error {
   constructor(
     message: string,
-    public readonly retriable: boolean = true,
+    public readonly retriable: boolean = false,
   ) {
     super(message);
     this.name = 'BedrockEmbedError';
@@ -35,6 +39,8 @@ export class BedrockEmbedError extends Error {
 }
 
 // AWS SDK v3 modeled exception `.name` values that must NOT be retried.
+// DimensionMismatchError is intentionally absent: it is caught by a dedicated
+// branch in embedOneWithRetry and re-thrown before isRetriable is ever reached.
 const NON_RETRIABLE_EXCEPTIONS = new Set([
   'AccessDeniedException',
   'ValidationException',
@@ -45,7 +51,7 @@ const NON_RETRIABLE_EXCEPTIONS = new Set([
 
 export type BedrockProviderConfig = Pick<
   EmbeddingConfig,
-  'model' | 'dimensions' | 'maxConcurrency' | 'retryCount' | 'retryBaseDelayMs' | 'region' | 'profile'
+  'model' | 'dimensions' | 'maxConcurrency' | 'retryCount' | 'retryBaseDelayMs' | 'region' | 'profile' | 'timeoutMs'
 >;
 
 const createDefaultDependencies = (config: BedrockProviderConfig): BedrockDependencies => {
@@ -57,8 +63,15 @@ const createDefaultDependencies = (config: BedrockProviderConfig): BedrockDepend
     );
   }
 
+  const timeoutMs = config.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+  const requestHandler = new NodeHttpHandler({
+    requestTimeout: timeoutMs,
+    connectionTimeout: timeoutMs,
+  });
+
   const runtimeClient = new BedrockRuntimeClient({
     region,
+    requestHandler,
     ...(config.profile ? { credentials: fromIni({ profile: config.profile }) } : {}),
   });
 
@@ -104,6 +117,8 @@ export class BedrockEmbeddingProvider extends BaseEmbeddingProvider {
 
   async healthCheck(): Promise<boolean> {
     try {
+      // Single, no-retry probe: liveness checks must fail fast rather than
+      // inheriting the full embed retry/backoff budget.
       const vector = await this.embedOne('nexus health check');
       return Array.isArray(vector) && vector.length === this.dimensions;
     } catch {
@@ -133,7 +148,13 @@ export class BedrockEmbeddingProvider extends BaseEmbeddingProvider {
         }
 
         attempt += 1;
-        await this.dependencies.sleep(this.config.retryBaseDelayMs * 2 ** (attempt - 1));
+        // Full jitter over the exponential backoff window avoids synchronized
+        // retry bursts (thundering herd) across concurrent embed requests.
+        const backoffMs = this.config.retryBaseDelayMs * 2 ** (attempt - 1);
+        // Sonar (S2245) flags Math.random() unconditionally; use crypto.randomInt
+        // for the jitter draw even though this is not security-sensitive.
+        const jitterMs = backoffMs > 0 ? randomInt(0, Math.ceil(backoffMs)) : 0;
+        await this.dependencies.sleep(jitterMs);
       }
     }
 

@@ -75,6 +75,22 @@ describe('NexusServerFactory.setupPluginRegistry', () => {
     expect(registry.getActiveEmbeddingProviderName()).toBe('bedrock');
   });
 
+  it('registers the bedrock provider when packageMode is true', async () => {
+    tempDir = await mkdtemp(path.join(os.tmpdir(), 'nexus-factory-'));
+    const config = await loadConfig({
+      projectRoot: tempDir,
+      env: {
+        NEXUS_PACKAGE_MODE: '1',
+        NEXUS_EMBEDDING_PROVIDER: 'bedrock',
+        NEXUS_EMBEDDING_DIMENSIONS: '1024',
+        NEXUS_EMBEDDING_REGION: 'us-east-1',
+      },
+    });
+
+    const registry = internals.setupPluginRegistry(config);
+    expect(registry.getActiveEmbeddingProviderName()).toBe('bedrock');
+  });
+
   it('fails fast in packageMode when provider is not bedrock', async () => {
     tempDir = await mkdtemp(path.join(os.tmpdir(), 'nexus-factory-'));
     const config = await loadConfig({
