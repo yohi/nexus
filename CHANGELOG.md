@@ -1,5 +1,34 @@
 # Changelog
 
+## [1.25.0](https://github.com/yohi/nexus/compare/v1.24.0...v1.25.0) (2026-07-09)
+
+
+### Features
+
+* **config:** Config に packageMode(NEXUS_PACKAGE_MODE) を追加 ([e573d83](https://github.com/yohi/nexus/commit/e573d839ab4d43c92d67d6fe162a122b644487b1))
+* **config:** NEXUS_PACKAGE_MODEでproviderをbedrockへハードロック (2/3) ([b32a7a0](https://github.com/yohi/nexus/commit/b32a7a0c04367fc43251c0190ac345e81711cb88))
+* **embeddings:** AWS Bedrock埋め込みプロバイダを追加 ([e5de90c](https://github.com/yohi/nexus/commit/e5de90ce44bc43b69f025c98cd5ad58e9a7d5645))
+* **embeddings:** AWS Bedrock埋め込みプロバイダを追加 (1/3) ([65ca697](https://github.com/yohi/nexus/commit/65ca69773599673929608e7290fbc2de84e84ce4))
+* **embeddings:** Bedrockプロバイダをconfig/factoryに配線 ([ad726d7](https://github.com/yohi/nexus/commit/ad726d70c9ad5faff28171a1d62f5f9423753602))
+* **embeddings:** packageMode時にproviderをbedrockへハードロック ([ffd4543](https://github.com/yohi/nexus/commit/ffd454316f87abe4d77672019be19f8f8293bb74))
+* nexusプラグインをBitbucketへソースミラー配布するworkflowを追加 ([76ce423](https://github.com/yohi/nexus/commit/76ce423e85a1c98219392e0249117745bd06fd7a))
+* **observability:** パッケージモード時にaggregator登録をスキップ ([7d32afa](https://github.com/yohi/nexus/commit/7d32afa0ed675b8fe104c8b7990b2f17f16aa11b))
+* **observability:** パッケージモード時にaggregator登録をスキップ (3/3) ([bffdae4](https://github.com/yohi/nexus/commit/bffdae44b5f873e02ffe4444dd1e2460d59cb21d))
+* パッケージ版配布用ソースミラーstagingスクリプトを追加 ([6678d54](https://github.com/yohi/nexus/commit/6678d54d32ba3cb3d85b17046b432a249ef2c9a8))
+
+
+### Bug Fixes
+
+* **bitbucket-marketplace:** ASKPASS一時スクリプトを trap EXIT で確実に削除 ([a876ae8](https://github.com/yohi/nexus/commit/a876ae87ecd372cfd63e89c01c1b636c04f3c261))
+* **bitbucket-marketplace:** タグ抽出をsed化しスラッシュ入りタグと空結果での中断を修正 ([c6e9d1a](https://github.com/yohi/nexus/commit/c6e9d1a47cbfc0213eda2ccd7e446191e83130a9))
+* **embeddings:** Bedrockプロバイダのヘルスチェック・タイムアウト・リトライ挙動を改善 ([e3b2743](https://github.com/yohi/nexus/commit/e3b274394126a04ce06ca2bc93e696c5de8ed977))
+* **embeddings:** Bedrockプロバイダのリトライ判定を安全側に修正 ([ccf2489](https://github.com/yohi/nexus/commit/ccf24899748801773ced1eab748443ce8e26a33b))
+* **embeddings:** Bedrockヘルスチェック失敗時に原因別の診断メッセージを出力する ([5dc865c](https://github.com/yohi/nexus/commit/5dc865c0f76dd8b990cae0faec6e380fc512e5f3))
+* **embeddings:** リトライjitterのMath.random()をcrypto.randomIntに置換 ([44ebdcb](https://github.com/yohi/nexus/commit/44ebdcb4f35e14cd7b4f3b0c06484336361a75c5))
+* **workflows:** Bitbucketタグ存在判定を git ls-remote --exit-code で行う ([5103f1c](https://github.com/yohi/nexus/commit/5103f1c8a6a79346a9f64ba0284a88475f30395b))
+* **workflows:** Bitbucketデプロイの式展開を安全化しトークン未設定を検知する ([b0a662f](https://github.com/yohi/nexus/commit/b0a662f295f3903783d540b7b2fc31c06154aceb))
+* **workflows:** GIT_ASKPASSの一時スクリプトをEXIT時に確実に削除する ([053363f](https://github.com/yohi/nexus/commit/053363fb9740fbb5b607069bb32dd529a1f05169))
+
 ## [1.24.0](https://github.com/yohi/nexus/compare/v1.23.1...v1.24.0) (2026-07-07)
 
 
