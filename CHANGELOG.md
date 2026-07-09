@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.26.0](https://github.com/yohi/nexus/compare/v1.25.0...v1.26.0) (2026-07-09)
+
+
+### Features
+
+* Bitbucket配布とMarketplaceカタログ登録を1つのワークフローに統合 ([e3d6e37](https://github.com/yohi/nexus/commit/e3d6e3735d1da414cd2beff6839b2d3c425508ca))
+* Bitbucket配布とMarketplaceカタログ登録を1つのワークフローに統合 ([19340c0](https://github.com/yohi/nexus/commit/19340c0ca51d219f0fa48f616f69a8d895ce8b0e))
+
 ## [1.25.0](https://github.com/yohi/nexus/compare/v1.24.0...v1.25.0) (2026-07-09)
 
 
