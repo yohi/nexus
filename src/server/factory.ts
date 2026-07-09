@@ -21,6 +21,7 @@ import { GoLanguagePlugin } from "../plugins/languages/go.js";
 import { OllamaEmbeddingProvider } from "../plugins/embeddings/ollama.js";
 import { InstrumentedEmbeddingProvider } from "../plugins/embeddings/instrumented.js";
 import { OpenAICompatEmbeddingProvider } from "../plugins/embeddings/openai-compat.js";
+import { BedrockEmbeddingProvider } from "../plugins/embeddings/bedrock.js";
 import { SqliteMetadataStore } from "../storage/metadata-store.js";
 import { LanceVectorStore } from "../storage/vector-store.js";
 import { RipgrepEngine } from "../search/grep.js";
@@ -552,6 +553,9 @@ export class NexusServerFactory {
       }
       case "openai-compat":
         provider = new OpenAICompatEmbeddingProvider(config.embedding);
+        break;
+      case "bedrock":
+        provider = new BedrockEmbeddingProvider(config.embedding);
         break;
       case "test":
         throw new Error(

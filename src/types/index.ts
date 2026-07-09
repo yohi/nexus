@@ -205,11 +205,13 @@ export interface IGrepEngine {
 }
 
 export interface EmbeddingConfig {
-  provider: 'ollama' | 'openai-compat' | 'test';
+  provider: 'ollama' | 'openai-compat' | 'bedrock' | 'test';
   model: string;
   dimensions: number;
   baseUrl?: string;
   apiKey?: string;
+  region?: string;
+  profile?: string;
   maxConcurrency: number;
   batchSize: number;
   retryCount: number;
