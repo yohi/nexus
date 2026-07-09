@@ -1,5 +1,15 @@
 # Changelog
 
+## [1.26.1](https://github.com/yohi/nexus/compare/v1.26.0...v1.26.1) (2026-07-09)
+
+
+### Bug Fixes
+
+* Claude Code CLI パッケージ名を修正し、plugin manifest に author を追加 ([8e4193d](https://github.com/yohi/nexus/commit/8e4193ddd69a123d3706eee6a1b76f9518f5a6cd))
+* **plugin:** プラグインマニフェストにauthorを追加 ([9bf9f42](https://github.com/yohi/nexus/commit/9bf9f42685463d826fede8ec6583cf3245d3cb70))
+* **workflows:** Claude Code CLIのバージョンをstableに固定 ([ed0d955](https://github.com/yohi/nexus/commit/ed0d955eb4bac017a4ed09d8bbba3f9437750730))
+* **workflows:** Claude Code CLIのパッケージ名を修正 ([745aa55](https://github.com/yohi/nexus/commit/745aa55e0887fc54b54ec4f7ecb78cfc5569cfbd))
+
 ## [1.26.0](https://github.com/yohi/nexus/compare/v1.25.0...v1.26.0) (2026-07-09)
 
 
