@@ -1,3 +1,4 @@
+import { randomInt } from 'node:crypto';
 import pLimit from 'p-limit';
 import { BedrockRuntimeClient, InvokeModelCommand } from '@aws-sdk/client-bedrock-runtime';
 import { fromIni } from '@aws-sdk/credential-providers';
@@ -150,7 +151,10 @@ export class BedrockEmbeddingProvider extends BaseEmbeddingProvider {
         // Full jitter over the exponential backoff window avoids synchronized
         // retry bursts (thundering herd) across concurrent embed requests.
         const backoffMs = this.config.retryBaseDelayMs * 2 ** (attempt - 1);
-        await this.dependencies.sleep(Math.random() * backoffMs);
+        // Sonar (S2245) flags Math.random() unconditionally; use crypto.randomInt
+        // for the jitter draw even though this is not security-sensitive.
+        const jitterMs = backoffMs > 0 ? randomInt(0, Math.ceil(backoffMs)) : 0;
+        await this.dependencies.sleep(jitterMs);
       }
     }
 
