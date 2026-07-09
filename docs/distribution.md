@@ -180,7 +180,7 @@ dist/
 
 | エラー | 原因 | 対応 |
 | --- | --- | --- |
-| `BITBUCKET_API_TOKEN not found` | P3 の Secret が未設定 | P3 を実行してください |
+| `BITBUCKET_API_TOKEN not set` | P3 の Secret が未設定 | P3 を実行してください |
 | `No releases found` | P4 の Release が存在しない | release-please で Release を作成してください |
 | `Build failed` | ネイティブモジュールのビルド失敗 | ローカルで `npm ci && npm run build` を実行し、エラーを確認してください |
 

@@ -39,6 +39,10 @@ jobs:
             echo "BITBUCKET_REPO_URL must start with https://: ${BITBUCKET_REPO_URL}" >&2
             exit 1
           fi
+          if [ -z "${BITBUCKET_API_TOKEN}" ]; then
+            echo "BITBUCKET_API_TOKEN not set" >&2
+            exit 1
+          fi
           ASKPASS_SCRIPT="$(mktemp)"
           trap 'rm -f "$ASKPASS_SCRIPT"' EXIT
           printf '#!/bin/sh\necho "$BITBUCKET_API_TOKEN"\n' > "$ASKPASS_SCRIPT"
@@ -127,15 +131,17 @@ jobs:
           git config user.name "github-actions"
           git config user.email "github-actions@users.noreply.github.com"
           git add .
-          git commit -m "deploy ${{ steps.release.outputs.tag }}"
-          git tag "${{ steps.release.outputs.tag }}"
+          git commit -m "deploy ${RELEASE_TAG}"
+          git tag "${RELEASE_TAG}"
           # トークンは GIT_ASKPASS 経由で渡し、remote URL やコマンド引数には出さない
           git remote add bitbucket "https://x-token-auth@${BITBUCKET_REPO_URL#https://}"
           git push --force bitbucket main
-          if [ "${{ steps.bitbucket.outputs.tag_exists }}" = "true" ]; then
-            echo "Skipping tag push because ${{ steps.release.outputs.tag }} already exists on Bitbucket."
+          if [ "${TAG_EXISTS}" = "true" ]; then
+            echo "Skipping tag push because ${RELEASE_TAG} already exists on Bitbucket."
           else
-            git push bitbucket "${{ steps.release.outputs.tag }}"
+            git push bitbucket "${RELEASE_TAG}"
           fi
         env:
           BITBUCKET_API_TOKEN: ${{ secrets.BITBUCKET_API_TOKEN }}
+          RELEASE_TAG: ${{ steps.release.outputs.tag }}
+          TAG_EXISTS: ${{ steps.bitbucket.outputs.tag_exists }}
