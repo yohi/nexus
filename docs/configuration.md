@@ -78,17 +78,25 @@ Dashboard CLI では `--aggregator-port` が `aggregatorPort` と `NEXUS_AGGREGA
 
 | Field                        | Type                              | Default                  | Environment Variable                  | Description                                                                                        |
 | ---------------------------- | --------------------------------- | ------------------------ | ------------------------------------- | -------------------------------------------------------------------------------------------------- |
-| `embedding.provider`         | `ollama \| openai-compat \| test` | `ollama`                 | `NEXUS_EMBEDDING_PROVIDER`            | 有効化する embedding backend                                                                       |
+| `embedding.provider`         | `ollama \| openai-compat \| bedrock \| test` | `ollama`                 | `NEXUS_EMBEDDING_PROVIDER`            | 有効化する embedding backend。`bedrock` は AWS Bedrock Runtime (`InvokeModelCommand`) を直接呼び出します                    |
 | `embedding.model`            | string                            | `nomic-embed-text`       | `NEXUS_EMBEDDING_MODEL`               | embedding provider へ渡す model 名                                                                 |
 | `embedding.dimensions`       | positive integer                  | `768`                    | `NEXUS_EMBEDDING_DIMENSIONS`          | 期待する embedding 次元数                                                                          |
 | `embedding.baseUrl`          | string                            | `http://127.0.0.1:11434` | `NEXUS_EMBEDDING_BASE_URL`            | HTTP ベース provider の base URL                                                                   |
 | `embedding.apiKey`           | string                            | unset                    | `NEXUS_EMBEDDING_API_KEY`             | 認証が必要な provider 用の任意 API key                                                             |
+| `embedding.region`           | string                            | unset（フォールバック `us-east-1`） | `NEXUS_EMBEDDING_REGION`              | `bedrock` provider 用の AWS リージョン。未設定時はプロバイダ側で `us-east-1` にフォールバックし警告ログを出力します             |
+| `embedding.profile`          | string                            | unset                     | `NEXUS_EMBEDDING_PROFILE`             | `bedrock` provider が `fromIni({ profile })` で名前付き AWS プロファイルの認証情報を使う場合に指定する任意項目                 |
 | `embedding.maxConcurrency`   | positive integer                  | `1`                      | `NEXUS_EMBEDDING_MAX_CONCURRENCY`     | 並列 embedding request の上限                                                                      |
 | `embedding.batchSize`        | positive integer                  | `4`                      | `NEXUS_EMBEDDING_BATCH_SIZE`          | 1 回の embed batch に含める chunk 数                                                               |
 | `embedding.retryCount`       | non-negative integer              | `3`                      | `NEXUS_EMBEDDING_RETRY_COUNT`         | 一時的失敗に対する retry 回数                                                                      |
 | `embedding.retryBaseDelayMs` | positive integer                  | `250`                    | `NEXUS_EMBEDDING_RETRY_BASE_DELAY_MS` | retry backoff の基準待機時間（ミリ秒）                                                             |
 | `embedding.timeoutMs`        | positive integer                  | `120000`                 | `NEXUS_EMBEDDING_TIMEOUT_MS`          | embedding HTTP リクエスト 1 回あたりのタイムアウト（ミリ秒）                                       |
 | `embedding.ollamaNumThread`  | integer `1`〜`16`                 | `2`                      | `NEXUS_OLLAMA_NUM_THREAD`             | Ollama `/api/embed` リクエストに渡す `options.num_thread`。無効な値は `2` にフォールバックします。 |
+
+## Package Mode
+
+| Field | Type | Default | Environment Variable | Description |
+| --- | --- | --- | --- | --- |
+| `packageMode` | boolean | `false` | `NEXUS_PACKAGE_MODE` | `true` の場合、`embedding.provider` を `bedrock` にハードロックします（`bedrock` 以外を指定するとサーバー起動時に fail-fast で例外を投げます）。`model` / `dimensions` / `region` はロック対象外で、デプロイ時に変更可能です。ローカル metrics HTTP サーバーおよび `nexus dashboard`（TUI）は維持されますが、Grafana/Prometheus 向け Aggregator への自動登録（Heartbeat）はスキップされます。 |
 
 ## Indexing
 
@@ -103,6 +111,7 @@ Dashboard CLI では `--aggregator-port` が `aggregatorPort` と `NEXUS_AGGREGA
 - `retryCount` は `0` を許容しますが、その他の数値項目は `0` より大きい必要があります。
 - `embedding.ollamaNumThread` は `1` から `16` までの整数のみを受け付け、`0`、負数、小数、文字列、`16` を超える値はデフォルト `2` にフォールバックします。
 - 未対応の `embedding.provider` は無視され、設定ファイルまたはデフォルト値へフォールバックします。
+- `NEXUS_PACKAGE_MODE` は `1`/`true`/`0`/`false`（大文字小文字を区別しない）のみを受け付け、その他の値は無視されて `.nexus.json` の設定またはデフォルト `false` にフォールバックします。
 
 ## パフォーマンスチューニング: CPU-only Ollama 環境
 
