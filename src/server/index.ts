@@ -41,6 +41,7 @@ export interface NexusServerOptions {
   runReindex: (options?: ReindexOptions) => Promise<IndexEvent[]>;
   loadFileContent: (filePath: string) => Promise<string>;
   metricsHooks?: MetricsHooks;
+  packageMode?: boolean;
 }
 
 export interface NexusRuntimeOptions extends NexusServerOptions {
@@ -362,12 +363,14 @@ export const buildNexusRuntime = (
           });
           const resolvedPort = metricsServer.getPort();
           await syncMetricsPortFile(options.storageDir, resolvedPort);
-          registrationClient = createRegistrationClient(
-            options.aggregatorPort ?? 9470,
-            resolvedPort,
-            options.projectRoot,
-            options.projectName,
-          );
+          registrationClient = options.packageMode
+            ? null
+            : createRegistrationClient(
+                options.aggregatorPort ?? 9470,
+                resolvedPort,
+                options.projectRoot,
+                options.projectName,
+              );
         }
       } catch (error) {
         await options.pipeline.stop().catch((stopError: unknown) => {
