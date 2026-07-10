@@ -67,20 +67,24 @@ jobs:
           BITBUCKET_API_TOKEN: ${{ secrets.BITBUCKET_API_TOKEN }}
           RELEASE_TAG: ${{ steps.release.outputs.tag }}
 
-      # marketplace更新スクリプトはリリースタグ側にまだ存在しない場合があるため
-      # (このPRで追加されたばかりのファイルが未リリースの場合)、
-      # デフォルトブランチから別パスに退避してチェックアウトしておく。
-      - name: Checkout scripts (default branch)
-        if: steps.bitbucket.outputs.skip != 'true'
-        uses: actions/checkout@v4
-        with:
-          path: .github-scripts
-
       - name: Checkout release tag
         if: steps.bitbucket.outputs.skip != 'true'
         uses: actions/checkout@v4
         with:
           ref: ${{ steps.release.outputs.tag }}
+
+      # marketplace更新スクリプトはリリースタグ側にまだ存在しない場合があるため
+      # (このPRで追加されたばかりのファイルが未リリースの場合)、
+      # デフォルトブランチから別パスに退避してチェックアウトしておく。
+      # 注意: actions/checkout@v4 は path 未指定時にワークスペースの内容を
+      # 削除してから新規チェックアウトするため、このステップは必ず
+      # 「Checkout release tag」より後に実行すること
+      # （順序が逆だと .github-scripts がまるごと削除される）。
+      - name: Checkout scripts (default branch)
+        if: steps.bitbucket.outputs.skip != 'true'
+        uses: actions/checkout@v4
+        with:
+          path: .github-scripts
 
       - name: Setup Node.js
         if: steps.bitbucket.outputs.skip != 'true'
