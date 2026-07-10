@@ -88,8 +88,9 @@ Bitbucket 配布・Marketplace 運用に必要な TOKEN は用途ごとに分か
 
 - **効果**: `Deploy plugin to Bitbucket` ワークフロー実行時に、配布と同時に marketplace カタログが自動更新されます。未設定の場合、配布は成功しますがカタログは更新されないため、利用者は `/plugin install` で検出できません。
 - **必須**（`BITBUCKET_MARKETPLACE_TOKEN` を設定する場合）: カタログ repo の Repository variable `BITBUCKET_MARKETPLACE_REPOSITORY_NAME`（例: `claude-plugins`。workspaceは P3 の `BITBUCKET_WORKSPACE_NAME` と共通）を設定してください。
+- **必須**（`BITBUCKET_MARKETPLACE_TOKEN` を設定する場合）: P3 で設定した Repository variable `BITBUCKET_PLUGIN_REPOSITORY_NAME`（配布対象 plugin のリポジトリ名）も、このカタログ更新スクリプトの必須入力です。P7 の設定のみでは不十分なため、P3 が未完了の場合はカタログ更新ステップが fail-fast します。
 - **必須**（`BITBUCKET_MARKETPLACE_TOKEN` を設定する場合）: marketplace エントリの `name` / `description` にはハードコードの既定値がありません。Repository variable `PLUGIN_NAME` / `PLUGIN_DESCRIPTION` を必ず設定してください。
-- **以上の Repository variable（`BITBUCKET_WORKSPACE_NAME` / `BITBUCKET_MARKETPLACE_REPOSITORY_NAME` / `PLUGIN_NAME` / `PLUGIN_DESCRIPTION`）のいずれが未設定の場合、カタログ更新ステップは失敗します**（`scripts/update-marketplace-catalog.sh` の必須チェッカで fail-fast）。D1(自動更新)と D2(手動更新)は同じ Repository variable を参照するため、値をここで一元管理すれば両ワークフローの結果が食い違うことはありません（カタログ更新処理は `scripts/update-marketplace-catalog.sh` + `scripts/marketplace-update-entry.mjs` に共通化されています）。
+- **以上の Repository variable（`BITBUCKET_WORKSPACE_NAME` / `BITBUCKET_MARKETPLACE_REPOSITORY_NAME` / `BITBUCKET_PLUGIN_REPOSITORY_NAME` / `PLUGIN_NAME` / `PLUGIN_DESCRIPTION`）のいずれが未設定の場合、カタログ更新ステップは失敗します**（`scripts/update-marketplace-catalog.sh` の必須チェッカで fail-fast）。D1(自動更新)と D2(手動更新)は同じ Repository variable を参照するため、値をここで一元管理すれば両ワークフローの結果が食い違うことはありません（カタログ更新処理は `scripts/update-marketplace-catalog.sh` + `scripts/marketplace-update-entry.mjs` に共通化されています）。
 
 ---
 
@@ -107,7 +108,7 @@ Bitbucket 配布・Marketplace 運用に必要な TOKEN は用途ごとに分か
 - **確認内容**: ワークフロー完了後、以下を確認してください:
   - Bitbucket `y-ohi/nexus` リポジトリが 1 コミットのソースミラー + Release tag になっていること
   - `.gitignore` のみの状態が上書きされていること
-  - `BITBUCKET_MARKETPLACE_TOKEN` を設定している場合は、 marketplace catalog repo の `marketplace.json` に `yohi-nexus` エントリが追加 / 更新され、`source.ref` が最新の Release tag に pin されていること
+  - `BITBUCKET_MARKETPLACE_TOKEN` を設定している場合は、 marketplace catalog repo の `.claude-plugin/marketplace.json` に `yohi-nexus` エントリが追加 / 更新され、`source.ref` が最新の Release tag に pin されていること
 
 ### D2: Marketplace カタログのみ更新する（オプション / 後追い）
 
@@ -124,6 +125,7 @@ Bitbucket 配布・Marketplace 運用に必要な TOKEN は用途ごとに分か
      - **plugin_description**: 説明文
      - **workspace_name**: 対象 plugin の Bitbucket workspace 名
      - **plugin_repository_name**: 対象 plugin の配布リポジトリ名
+     - **marketplace_repository_name**: marketplace カタログのリポジトリ名（例: `claude-plugins`）
      - **plugin_ref**（任意）: pin したい Git tag/branch（例: `v1.24.0`）。省略時は `source.ref` を付与しない（unpinned）
 
 ### D3: 利用者側インストールを検証する
