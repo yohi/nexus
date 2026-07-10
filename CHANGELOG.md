@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.26.3](https://github.com/yohi/nexus/compare/v1.26.2...v1.26.3) (2026-07-10)
+
+
+### Bug Fixes
+
+* **workflows:** Bitbucketデプロイのcheckout順序を修正し.github-scriptsの削除を防止 ([f2137c4](https://github.com/yohi/nexus/commit/f2137c4d7450460db6306dca4842bb871c10d41a))
+* **workflows:** Bitbucketデプロイのcheckout順序を修正し.github-scriptsの削除を防止 ([6e00fca](https://github.com/yohi/nexus/commit/6e00fca8a20779e17e8d80c669817361222a3dc5))
+
 ## [1.26.2](https://github.com/yohi/nexus/compare/v1.26.1...v1.26.2) (2026-07-10)
 
 
