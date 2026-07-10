@@ -48,6 +48,10 @@ export GIT_ASKPASS="$ASKPASS_SCRIPT"
 REPO_URL="https://x-token-auth@${MARKETPLACE_REPO_URL#https://}"
 WORKDIR="${BASE_TMP}/marketplace-repo"
 MAX_RETRIES="${MAX_RETRIES:-5}"
+if ! [[ "$MAX_RETRIES" =~ ^[1-9][0-9]*$ ]]; then
+  echo "Invalid MAX_RETRIES: '${MAX_RETRIES}' (must be a positive integer)" >&2
+  exit 1
+fi
 
 for attempt in $(seq 1 "$MAX_RETRIES"); do
   cd "$BASE_TMP"
