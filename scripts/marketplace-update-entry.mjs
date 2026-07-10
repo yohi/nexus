@@ -30,8 +30,30 @@ const ref = process.env.PLUGIN_REF || undefined;
 let catalog;
 try {
   catalog = JSON.parse(readFileSync(CATALOG_PATH, 'utf8'));
-} catch {
-  catalog = { name: 'company-internal-plugins', owner: { name: 'Internal Dev Team' }, plugins: [] };
+} catch (err) {
+  if (err.code === 'ENOENT') {
+    catalog = { name: 'company-internal-plugins', owner: { name: 'Internal Dev Team' }, plugins: [] };
+  } else {
+    throw err;
+  }
+}
+
+// Validate the catalog shape before mutating it below, so a corrupt existing
+// file fails fast with a clear error instead of throwing a raw TypeError
+// deep inside the upsert logic.
+if (typeof catalog !== 'object' || catalog === null || Array.isArray(catalog)) {
+  throw new Error('invalid marketplace.json structure: catalog must be an object');
+}
+if (!catalog.name) {
+  throw new Error('invalid marketplace.json structure: missing catalog.name');
+}
+if (!Array.isArray(catalog.plugins)) {
+  throw new Error('invalid marketplace.json structure: catalog.plugins must be an array');
+}
+for (const p of catalog.plugins) {
+  if (typeof p !== 'object' || p === null || !p.name || !p.source?.url) {
+    throw new Error(`invalid plugin entry: ${JSON.stringify(p)}`);
+  }
 }
 
 const source = { source: 'url', url: bitbucketUrl };
@@ -46,17 +68,6 @@ if (idx >= 0) {
   catalog.plugins[idx] = entry;
 } else {
   catalog.plugins.push(entry);
-}
-
-// Validate the resulting catalog shape before writing it back, so a corrupt
-// existing file or a bug here fails fast instead of pushing bad data.
-if (!catalog.name || !Array.isArray(catalog.plugins)) {
-  throw new Error('invalid marketplace.json structure after update');
-}
-for (const p of catalog.plugins) {
-  if (!p.name || !p.source?.url) {
-    throw new Error(`invalid plugin entry: ${JSON.stringify(p)}`);
-  }
 }
 
 mkdirSync('.claude-plugin', { recursive: true });
