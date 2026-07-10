@@ -67,6 +67,15 @@ jobs:
           BITBUCKET_API_TOKEN: ${{ secrets.BITBUCKET_API_TOKEN }}
           RELEASE_TAG: ${{ steps.release.outputs.tag }}
 
+      # marketplace更新スクリプトはリリースタグ側にまだ存在しない場合があるため
+      # (このPRで追加されたばかりのファイルが未リリースの場合)、
+      # デフォルトブランチから別パスに退避してチェックアウトしておく。
+      - name: Checkout scripts (default branch)
+        if: steps.bitbucket.outputs.skip != 'true'
+        uses: actions/checkout@v4
+        with:
+          path: .github-scripts
+
       - name: Checkout release tag
         if: steps.bitbucket.outputs.skip != 'true'
         uses: actions/checkout@v4
@@ -160,4 +169,4 @@ jobs:
             echo "Set the secret and re-run this workflow, or run the 'Update marketplace entry' workflow manually."
             exit 0
           fi
-          scripts/update-marketplace-catalog.sh
+          .github-scripts/scripts/update-marketplace-catalog.sh
