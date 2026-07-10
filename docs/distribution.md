@@ -21,7 +21,7 @@ Bitbucket 配布・Marketplace 運用に必要な TOKEN は用途ごとに分か
 
 ### P1: Bitbucket 配布リポジトリの確認
 
-- **対象**: `https://bitbucket.org/y-ohi/nexus`（private）
+- **対象**: `https://bitbucket.org/{workspace}/{repository}`（private、例: `y-ohi/nexus`。P3で設定する `BITBUCKET_WORKSPACE_NAME` / `BITBUCKET_PLUGIN_REPOSITORY_NAME` の値に合わせる）
 - **現在の状態**: `.gitignore` のみ存在
 - **確認内容**: リポジトリが存在すること。初回 force-push で既存内容は上書きされるため、現在の `.gitignore` のみの状態は問題ありません。
 
@@ -46,7 +46,7 @@ Bitbucket 配布・Marketplace 運用に必要な TOKEN は用途ごとに分か
   5. **Secret**: P2 で生成したトークンをペースト
   6. **Add secret** をクリック
 
-- **オプション**: 配布先を変更したい場合は、同じセクションで Repository variable `BITBUCKET_PLUGIN_REPO_URL` を設定します。未設定時はワークフローのデフォルト `https://bitbucket.org/y-ohi/nexus.git` が使用されます。
+- **必須**: 同じセクションで Repository variable `BITBUCKET_WORKSPACE_NAME`（例: `y-ohi`）と `BITBUCKET_PLUGIN_REPOSITORY_NAME`（例: `nexus`）を設定します。ハードコードの既定値はありません。**どちらかでも未設定の場合、配布ワークフローは fail-fast します**（URLは `https://bitbucket.org/${BITBUCKET_WORKSPACE_NAME}/${BITBUCKET_PLUGIN_REPOSITORY_NAME}.git` の形で自動構築されます）。
 
 ### P4: GitHub Release の存在確認
 
@@ -87,7 +87,9 @@ Bitbucket 配布・Marketplace 運用に必要な TOKEN は用途ごとに分か
   3. GitHub の nexus リポジトリ Secrets に `BITBUCKET_MARKETPLACE_TOKEN` として保存
 
 - **効果**: `Deploy plugin to Bitbucket` ワークフロー実行時に、配布と同時に marketplace カタログが自動更新されます。未設定の場合、配布は成功しますがカタログは更新されないため、利用者は `/plugin install` で検出できません。
-- **オプション**: カタログ repo を変更したい場合は Repository variable `BITBUCKET_MARKETPLACE_REPO_URL` を設定します。未設定時は `https://bitbucket.org/y-ohi/claude-plugins.git` が使用されます。
+- **必須**（`BITBUCKET_MARKETPLACE_TOKEN` を設定する場合）: カタログ repo の Repository variable `BITBUCKET_MARKETPLACE_REPOSITORY_NAME`（例: `claude-plugins`。workspaceは P3 の `BITBUCKET_WORKSPACE_NAME` と共通）を設定してください。
+- **必須**（`BITBUCKET_MARKETPLACE_TOKEN` を設定する場合）: marketplace エントリの `name` / `description` にはハードコードの既定値がありません。Repository variable `PLUGIN_NAME` / `PLUGIN_DESCRIPTION` を必ず設定してください。
+- **以上の Repository variable（`BITBUCKET_WORKSPACE_NAME` / `BITBUCKET_MARKETPLACE_REPOSITORY_NAME` / `PLUGIN_NAME` / `PLUGIN_DESCRIPTION`）のいずれが未設定の場合、カタログ更新ステップは失敗します**（`scripts/update-marketplace-catalog.sh` の必須チェッカで fail-fast）。D1(自動更新)と D2(手動更新)は同じ Repository variable を参照するため、値をここで一元管理すれば両ワークフローの結果が食い違うことはありません（カタログ更新処理は `scripts/update-marketplace-catalog.sh` + `scripts/marketplace-update-entry.mjs` に共通化されています）。
 
 ---
 
@@ -105,20 +107,24 @@ Bitbucket 配布・Marketplace 運用に必要な TOKEN は用途ごとに分か
 - **確認内容**: ワークフロー完了後、以下を確認してください:
   - Bitbucket `y-ohi/nexus` リポジトリが 1 コミットのソースミラー + Release tag になっていること
   - `.gitignore` のみの状態が上書きされていること
-  - `BITBUCKET_MARKETPLACE_TOKEN` を設定している場合は、 marketplace catalog repo の `marketplace.json` に `yohi-nexus` エントリが追加 / 更新されていること
+  - `BITBUCKET_MARKETPLACE_TOKEN` を設定している場合は、 marketplace catalog repo の `marketplace.json` に `yohi-nexus` エントリが追加 / 更新され、`source.ref` が最新の Release tag に pin されていること
 
 ### D2: Marketplace カタログのみ更新する（オプション / 後追い）
 
-- **用途**: D1 実行時に `BITBUCKET_MARKETPLACE_TOKEN` が未設定だった場合、または plugin_name / description / bitbucket_url をカスタマイズして手動更新したい場合に使用します。
+- **用途**: D1 実行時に `BITBUCKET_MARKETPLACE_TOKEN` が未設定だった場合のリカバリ、または別の plugin をカタログに一時登録したい場合などに使用します。
 - **前提**: 既存の `Update marketplace entry` ワークフロー（`.github/workflows/update-marketplace-entry.yml`）が設定済みであること。`BITBUCKET_MARKETPLACE_TOKEN` が必須。
+- **入力はすべて任意**: `plugin_name` / `plugin_description` / `workspace_name` / `plugin_repository_name` / `marketplace_repository_name` を省略した場合、D1 と共通の Repository variable（`PLUGIN_NAME` / `PLUGIN_DESCRIPTION` / `BITBUCKET_WORKSPACE_NAME` / `BITBUCKET_PLUGIN_REPOSITORY_NAME` / `BITBUCKET_MARKETPLACE_REPOSITORY_NAME`、P7参照）から自動で値を取得します。そのため通常は **何も入力しなくても D1 と完全に同じエントリが作成/更新されます**（名前不一致による重複エントリ事故を防ぐため、手動実行時も基本は入力を省略することを推奨）。**上記 Repository variable のいずれかが未設定の場合は、入力でカバーしない限りカタログ更新は失敗します**。
 - **手順**:
   1. GitHub の nexus リポジトリ **Actions** タブを開く
   2. **Update marketplace entry** ワークフローを選択
   3. **Run workflow** をクリック
-  4. 以下の入力を指定:
-     - **plugin_name**: `yohi-nexus`
-     - **plugin_description**: `Nexus local code indexing and hybrid search MCP plugin`
-     - **bitbucket_url**: D1 で配布したリポジトリ URL（既定 `https://bitbucket.org/y-ohi/nexus.git`。P6 で `BITBUCKET_PLUGIN_REPO_URL` を上書きした場合はその値に合わせる）
+  4. 通常は全入力を空のまま **Run workflow** で実行（D1 と同じ `yohi-nexus` エントリが更新されます）
+  5. 別の plugin を登録したい場合のみ、以下を上書き:
+     - **plugin_name**: カタログ上のキー名（kebab-case）
+     - **plugin_description**: 説明文
+     - **workspace_name**: 対象 plugin の Bitbucket workspace 名
+     - **plugin_repository_name**: 対象 plugin の配布リポジトリ名
+     - **plugin_ref**（任意）: pin したい Git tag/branch（例: `v1.24.0`）。省略時は `source.ref` を付与しない（unpinned）
 
 ### D3: 利用者側インストールを検証する
 
