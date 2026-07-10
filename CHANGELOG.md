@@ -1,5 +1,15 @@
 # Changelog
 
+## [1.26.2](https://github.com/yohi/nexus/compare/v1.26.1...v1.26.2) (2026-07-10)
+
+
+### Bug Fixes
+
+* marketplace-update-entry.mjsのカタログ検証とエラーハンドリングを強化 ([6ad7763](https://github.com/yohi/nexus/commit/6ad7763bdb73feb362c39307ecc64bc16e0a6546))
+* update-marketplace-catalog.shでMAX_RETRIESを正整数にバリデーション ([d6f4e1b](https://github.com/yohi/nexus/commit/d6f4e1b969cacecb1e96976fb3006252a8ccae29))
+* **workflows:** update-marketplace-entry.ymlのNode.jsバージョンを24に統一 ([3039ceb](https://github.com/yohi/nexus/commit/3039ceba0aa03206fe9f97b877153a685a0b3922))
+* **workflows:** リリースタグに新スクリプトが未収録の期間でも動作するよう修正 ([e814964](https://github.com/yohi/nexus/commit/e81496453ed8d059e7e61f6d3021f6018a2173ad))
+
 ## [1.26.1](https://github.com/yohi/nexus/compare/v1.26.0...v1.26.1) (2026-07-09)
 
 
