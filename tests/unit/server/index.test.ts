@@ -111,7 +111,7 @@ describe('NexusServer helpers', () => {
   });
 
   describe('initializeNexusRuntime shutdown', () => {
-    it('throws AggregateError if both watcher and server fail to close', async () => {
+    it('throws when watcher fails to close', async () => {
       const mockOptions = createMockNexusRuntimeOptions({
         watcher: {
           start: async () => {},
@@ -133,7 +133,6 @@ describe('NexusServer helpers', () => {
       } catch (error) {
         expect(error).toBeInstanceOf(Error);
       }
-    });
     });
   });
 
@@ -216,3 +215,4 @@ describe('NexusServer helpers', () => {
     });
   });
 
+});
