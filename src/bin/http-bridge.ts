@@ -141,7 +141,7 @@ export async function runHttpBridge(options: HttpBridgeOptions): Promise<void> {
 
 export interface BridgeCliResult {
   readonly help: boolean;
-  readonly url: URL;
+  readonly url: string | undefined;
 }
 
 export function parseBridgeArgs(
@@ -159,7 +159,7 @@ export function parseBridgeArgs(
 
   return {
     help: values.help === true,
-    url: resolveBridgeUrl(values.url, env.NEXUS_BRIDGE_URL),
+    url: values.url ?? env.NEXUS_BRIDGE_URL,
   };
 }
 
@@ -167,7 +167,7 @@ export async function main(): Promise<void> {
   const { help, url } = parseBridgeArgs(process.argv.slice(2), process.env);
 
   if (help) {
-    console.log(
+    console.error(
       `Nexus HTTP Bridge - stdio to Streamable HTTP MCP bridge\n\n` +
         `Usage:\n` +
         `  nexus http-bridge [options]\n\n` +
@@ -181,7 +181,7 @@ export async function main(): Promise<void> {
   }
 
   await runHttpBridge({
-    url,
+    url: resolveBridgeUrl(url, undefined),
     input: process.stdin,
     output: process.stdout,
     errorOutput: process.stderr,

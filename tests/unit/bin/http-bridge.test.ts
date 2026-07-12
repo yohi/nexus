@@ -297,7 +297,7 @@ describe("http bridge", () => {
       );
 
       expect(result.help).toBe(false);
-      expect(result.url.href).toBe("http://127.0.0.1:4100/mcp");
+      expect(result.url).toBe("http://127.0.0.1:4100/mcp");
     });
 
     it("uses the environment URL when no CLI URL is supplied", () => {
@@ -306,20 +306,29 @@ describe("http bridge", () => {
       });
 
       expect(result.help).toBe(true);
-      expect(result.url.href).toBe("http://127.0.0.1:4200/mcp");
+      expect(result.url).toBe("http://127.0.0.1:4200/mcp");
     });
 
     it("uses the default URL when neither CLI nor environment URL is supplied", () => {
       const result = parseBridgeArgs([], {});
 
       expect(result.help).toBe(false);
-      expect(result.url.href).toBe("http://127.0.0.1:3001/");
+      expect(result.url).toBeUndefined();
     });
 
     it("rejects unknown options under strict parsing", () => {
       expect(() =>
         parseBridgeArgs(["--unknown"], { NEXUS_BRIDGE_URL: undefined }),
       ).toThrow();
+    });
+
+    it("skips URL validation when --help is requested with an invalid URL", () => {
+      const result = parseBridgeArgs(["--help", "--url", "not a URL"], {
+        NEXUS_BRIDGE_URL: "also not a URL",
+      });
+
+      expect(result.help).toBe(true);
+      expect(result.url).toBe("not a URL");
     });
   });
 });
