@@ -120,7 +120,7 @@ describe('initializeNexusRuntime', () => {
 
     // Should not throw
     const runtime = await initializeNexusRuntime({ ...options, watcher } as unknown as NexusRuntimeOptions);
-    expect(runtime.server).toBeDefined();
+    expect(runtime.createServer).toBeDefined();
 
     await runtime.close();
   });

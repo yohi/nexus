@@ -9,6 +9,8 @@ export interface StreamableHttpHandlerOptions {
   createServer: () => McpServer;
   sessionIdleTimeoutMs?: number;
   sessionCleanupIntervalMs?: number;
+  onSessionOpen?: (sessionId: string) => void;
+  onSessionClose?: (sessionId: string) => void;
 }
 
 export class HttpError extends Error {
@@ -33,6 +35,8 @@ export const createStreamableHttpHandler = ({
   createServer,
   sessionIdleTimeoutMs = 30 * 60 * 1000,
   sessionCleanupIntervalMs = 5 * 60 * 1000,
+  onSessionOpen,
+  onSessionClose,
 }: StreamableHttpHandlerOptions) => {
   const sessions = new Map<string, SessionEntry>();
 
@@ -53,7 +57,9 @@ export const createStreamableHttpHandler = ({
     entry.closed = true;
     sessions.delete(sessionId);
     await safeClose(entry.server, sessionId);
+    onSessionClose?.(sessionId);
   };
+
 
   const interval = setInterval(() => {
     const now = Date.now();
@@ -127,6 +133,7 @@ export const createStreamableHttpHandler = ({
             if (sessionEntry) {
               sessions.set(createdSessionId, sessionEntry);
             }
+            onSessionOpen?.(createdSessionId);
           },
         });
 
@@ -141,6 +148,7 @@ export const createStreamableHttpHandler = ({
             const activeId = transport.sessionId;
             if (activeId) {
               sessions.delete(activeId);
+              onSessionClose?.(activeId);
             }
             void safeClose(finalEntry.server, activeId);
           }
@@ -163,6 +171,7 @@ export const createStreamableHttpHandler = ({
           const activeId = entry.transport.sessionId;
           if (activeId) {
             sessions.delete(activeId);
+            onSessionClose?.(activeId);
           }
           await safeClose(entry.server, activeId);
         }

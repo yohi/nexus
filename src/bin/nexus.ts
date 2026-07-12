@@ -3,6 +3,7 @@ import { createServer, type Server } from "node:http";
 import path from "node:path";
 import { parseArgs } from "node:util";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
+import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { unlinkSync } from "node:fs";
 
 import { loadConfig } from "../config/index.js";
@@ -110,7 +111,7 @@ async function main() {
     }
 
     const mcpHandler = createStreamableHttpHandler({
-      createServer: () => runtime.server,
+      createServer: () => runtime.createServer(),
     });
 
     const restHandler = createRestApiHandler({
@@ -166,11 +167,10 @@ async function main() {
 
   // Default: stdio MCP transport
   const transport = new StdioServerTransport();
-  await runtime.server.connect(transport);
+  const stdioServer = runtime.createServer();
+  await stdioServer.connect(transport);
 
-  console.error(`\ud83d\udd17 Nexus MCP server running on stdio (root: ${root})`);
-
-  setupSignalHandlers(runtime, config.storage.rootDir, exitCleanup);
+  setupSignalHandlers(runtime, config.storage.rootDir, exitCleanup, undefined, stdioServer);
 
   // Heavy initialization (SQLite/LanceDB open, file watcher full scan,
   // metrics server bind) runs after the MCP transport is connected to avoid
@@ -212,12 +212,12 @@ function handleFatalError(message: string, error: unknown): never {
   console.error("\n   For more details, check the indexer log in your storage directory (default: .nexus/indexer.log).\n");
   process.exit(1);
 }
-
 function setupSignalHandlers(
   runtime: NexusRuntime,
   storageDir: string,
   exitCleanup: () => void,
-  httpServer?: Server
+  httpServer?: Server,
+  mcpServer?: McpServer,
 ): void {
   let isShuttingDown = false;
 
@@ -226,6 +226,9 @@ function setupSignalHandlers(
     isShuttingDown = true;
 
     const cleanup = async () => {
+      if (mcpServer) {
+        await mcpServer.close();
+      }
       if (httpServer) {
         await new Promise<void>((resolve) => {
           httpServer.close(() => resolve());
@@ -234,7 +237,6 @@ function setupSignalHandlers(
       await runtime.close();
       await releaseProcessLock(storageDir);
     };
-
     cleanup()
       .then(() => {
         // Deregister the exit handler before process.exit(0) so the PID file

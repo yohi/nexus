@@ -111,7 +111,7 @@ describe('NexusServer helpers', () => {
   });
 
   describe('initializeNexusRuntime shutdown', () => {
-    it('throws AggregateError if both watcher and server fail to close', async () => {
+    it('throws when watcher fails to close', async () => {
       const mockOptions = createMockNexusRuntimeOptions({
         watcher: {
           start: async () => {},
@@ -124,27 +124,14 @@ describe('NexusServer helpers', () => {
 
       const runtime = await initializeNexusRuntime(mockOptions);
       
-      // Mock server.close to fail
-      // Since createNexusServer is called internally, we can't easily mock the server instance
-      // But we can verify it calls close on the server.
-      // Actually, createNexusServer returns a real McpServer.
-      // We can use vi.spyOn on McpServer prototype or just trust the logic if we can't easily mock it.
-      
-      // Let's try to mock the server.close by patching the runtime object
-      const originalServerClose = runtime.server.close;
-      runtime.server.close = async () => { throw new Error('server close failed'); };
+      // Mock server.close is no longer needed because runtime.close() does not
+      // close individual MCP servers; each HTTP session manages its own.
 
       try {
         await runtime.close();
-        expect.fail('Should have thrown AggregateError');
+        expect.fail('Should have thrown error');
       } catch (error) {
-        expect(error).toBeInstanceOf(AggregateError);
-        const aggErr = error as AggregateError;
-        expect(aggErr.errors).toHaveLength(2);
-        expect(aggErr.errors[0].message).toBe('watcher stop failed');
-        expect(aggErr.errors[1].message).toBe('server close failed');
-      } finally {
-        runtime.server.close = originalServerClose;
+        expect(error).toBeInstanceOf(Error);
       }
     });
   });
