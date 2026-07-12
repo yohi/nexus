@@ -100,6 +100,26 @@ When using **Nexus MCP** tools for codebase exploration and semantic search, adh
 }
 ```
 
+#### 🌉 HTTP Bridge 経由で接続する場合
+
+複数のクライアントや stdio-only の MCP クライアント（OpenCode など）から、すでに起動している Nexus HTTP サーバーに接続するには、`nexus http-bridge` を使います。Bridge は stdio 上の JSON-RPC を Streamable HTTP エンドポイントに転送します。
+
+```json
+{
+  "mcpServers": {
+    "nexus": {
+      "command": "nexus",
+      "args": ["http-bridge"],
+      "env": {
+        "NEXUS_BRIDGE_URL": "http://127.0.0.1:3001"
+      }
+    }
+  }
+}
+```
+
+詳細は [docs/mcp-tools.md](docs/mcp-tools.md) を参照してください。
+
 </details>
 
 ## 📖 使い方
