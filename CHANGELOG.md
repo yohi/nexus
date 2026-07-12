@@ -1,5 +1,21 @@
 # Changelog
 
+## [1.27.0](https://github.com/yohi/nexus/compare/v1.26.3...v1.27.0) (2026-07-12)
+
+
+### Features
+
+* http-bridgeサブコマンドを追加 ([926d02b](https://github.com/yohi/nexus/commit/926d02b7ff183b9caf15d72ff426423e54c24f7b))
+* HTTPブリッジのコア処理を追加 ([caa7d44](https://github.com/yohi/nexus/commit/caa7d44fadadc2d1db8f73a3b232f1fb199f2caf))
+* nexus http-bridge サブコマンドを追加 ([4c83b5f](https://github.com/yohi/nexus/commit/4c83b5fb2c82f62e0fa2400dc28c101508501e80))
+
+
+### Bug Fixes
+
+* **http-bridge:** --help の診断出力を stderr へ変更し、--help 時の URL 検証を遅延 ([57901f1](https://github.com/yohi/nexus/commit/57901f1a30a61b36d99d87d2aff74d17ed4f93ad))
+* **http-bridge:** 出力ストリームの EPIPE エラーを吸収 ([6bdf93d](https://github.com/yohi/nexus/commit/6bdf93dfc70e8179ace749baa64762e76356e845))
+* **nexus:** HTTP bridge 読み込み検証の例外を TypeError に変更 ([dbdae2e](https://github.com/yohi/nexus/commit/dbdae2eb5e8c591a3cc06c14aa70a24e68ea17b7))
+
 ## [1.26.3](https://github.com/yohi/nexus/compare/v1.26.2...v1.26.3) (2026-07-10)
 
 
