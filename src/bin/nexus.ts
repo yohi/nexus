@@ -30,7 +30,8 @@ async function main() {
       `Usage:\n` +
       `  nexus [options]\n` +
       `  nexus dashboard\n` +
-      `  nexus aggregator\n\n` +
+      `  nexus aggregator\n` +
+      `  nexus http-bridge [--url <url>]\n\n` +
       `Options:\n` +
       `  --project-root <path>  Path to the project root directory\n` +
       `  --port <number>        Start HTTP server (with MCP + REST API) on the given port\n` +
@@ -251,7 +252,23 @@ function setupSignalHandlers(
   process.once("SIGTERM", handleShutdown);
 }
 
-if (process.argv[2] === "aggregator") {
+if (process.argv[2] === "http-bridge") {
+  // Remove "http-bridge" from argv so the bridge's parseArgs doesn't complain.
+  process.argv.splice(2, 1);
+
+  try {
+    interface HttpBridgeModule {
+      main?: () => Promise<void>;
+    }
+    const module = (await import(new URL("./http-bridge.js", import.meta.url).href)) as HttpBridgeModule;
+    if (typeof module.main !== "function") {
+      throw new Error("HTTP bridge module did not export a main() function");
+    }
+    await module.main();
+  } catch (error) {
+    handleFatalError("Failed to start HTTP bridge", error);
+  }
+} else if (process.argv[2] === "aggregator") {
   // Remove "aggregator" from argv so parseArgs doesn't complain.
   process.argv.splice(2, 1);
 
