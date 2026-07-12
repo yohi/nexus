@@ -12,12 +12,14 @@ import type { NexusRuntime } from "../server/index.js";
 import { createStreamableHttpHandler } from "../server/transport.js";
 import { createRestApiHandler } from "../server/rest-api.js";
 import { acquireProcessLock, releaseProcessLock, LOCK_FILENAME } from "../server/process-lock.js";
+import type { ManagedHttpServer } from "../server/managed-http-server.js";
 
 async function main() {
   const { values } = parseArgs({
     options: {
       "project-root": { type: "string" },
       "port": { type: "string" },
+      "managed": { type: "boolean" },
       "reindex": { type: "boolean" },
       "full": { type: "boolean" },
       "help": { type: "boolean", short: "h" },
@@ -105,9 +107,36 @@ async function main() {
 
   if (values["port"]) {
     const port = Number(values["port"]);
-    if (Number.isNaN(port) || port <= 0 || port > 65535) {
+    const isManaged = values["managed"] === true;
+    if (Number.isNaN(port) || port < 0 || port > 65535 || (port === 0 && !isManaged)) {
       console.error(`\u274c Invalid port: ${values["port"]}`);
       process.exit(1);
+    }
+
+    if (isManaged) {
+      const { startManagedHttpServer } = await import("../server/managed-http-server.js");
+      const managed = await startManagedHttpServer({
+        instanceId: `managed-${process.pid}-${Date.now()}`,
+        projectRoot: root,
+        storageDir: config.storage.rootDir,
+        runtime,
+        port,
+        idleShutdownMs: 0,
+        exitOnShutdown: true,
+      });
+
+      console.error(
+        `\ud83d\ude80 Nexus managed HTTP server running on ${managed.url.toString()} (root: ${root})`
+      );
+      console.error(`   MCP:    POST / (Streamable HTTP)`);
+
+      setupSignalHandlers(runtime, config.storage.rootDir, exitCleanup, undefined, undefined, managed);
+
+      runtime.initialize().catch((error) => {
+        handleFatalError("Nexus background initialization failed", error);
+      });
+
+      return;
     }
 
     const mcpHandler = createStreamableHttpHandler({
@@ -218,6 +247,7 @@ function setupSignalHandlers(
   exitCleanup: () => void,
   httpServer?: Server,
   mcpServer?: McpServer,
+  managedServer?: ManagedHttpServer,
 ): void {
   let isShuttingDown = false;
 
@@ -228,6 +258,10 @@ function setupSignalHandlers(
     const cleanup = async () => {
       if (mcpServer) {
         await mcpServer.close();
+      }
+      if (managedServer) {
+        await managedServer.close();
+        return;
       }
       if (httpServer) {
         await new Promise<void>((resolve) => {
