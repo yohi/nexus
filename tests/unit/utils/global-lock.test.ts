@@ -61,4 +61,18 @@ describe('global-lock', () => {
       await rm(storageDir, { force: true, recursive: true });
     }
   });
+
+  it('derives different startup locks for different storage directories', async () => {
+    const storageDir1 = await mkdtemp(join(tmpdir(), 'nexus-global-lock-1-'));
+    const storageDir2 = await mkdtemp(join(tmpdir(), 'nexus-global-lock-2-'));
+
+    try {
+      const lock1 = await projectStartupLockName(storageDir1);
+      const lock2 = await projectStartupLockName(storageDir2);
+      expect(lock1).not.toBe(lock2);
+    } finally {
+      await rm(storageDir1, { force: true, recursive: true });
+      await rm(storageDir2, { force: true, recursive: true });
+    }
+  });
 });

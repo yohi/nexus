@@ -43,6 +43,11 @@ describe('project-endpoint', () => {
     await expect(pending).resolves.toEqual(endpoint);
   });
 
+  it('returns undefined if the timeout expires before the endpoint is written', async () => {
+    const result = await waitForProjectEndpoint(storageDir, { timeoutMs: 50 });
+    expect(result).toBeUndefined();
+  });
+
   it('rejects a NaN timeout before reading an existing endpoint', async () => {
     await writeProjectEndpoint(storageDir, endpoint);
 

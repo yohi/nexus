@@ -9,6 +9,12 @@ export const GLOBAL_LOCK_RETRIES = 10;
 export const GLOBAL_LOCK_RETRY_MIN_TIMEOUT_MS = 100;
 export const GLOBAL_LOCK_RETRY_MAX_TIMEOUT_MS = 1000;
 
+/**
+ * Derives a startup lock name based on the canonical path of the storage directory.
+ * Note that the storage directory must already exist; otherwise, `realpath` will throw an ENOENT error.
+ *
+ * @param storageDir The path to the storage directory.
+ */
 export const projectStartupLockName = async (storageDir: string): Promise<string> => {
   const canonicalStorageDir = await realpath(storageDir);
   return `project-start-${createHash('sha256').update(canonicalStorageDir).digest('hex')}`;

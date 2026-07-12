@@ -31,7 +31,12 @@ export async function writeProjectEndpoint(
   const target = join(storageDir, PROJECT_ENDPOINT_FILENAME);
   const temporary = `${target}.${randomUUID()}.tmp`;
   await writeFile(temporary, `${JSON.stringify(endpoint)}\n`, { mode: 0o600 });
-  await rename(temporary, target);
+  try {
+    await rename(temporary, target);
+  } catch (error) {
+    await unlink(temporary).catch(() => {});
+    throw error;
+  }
 }
 
 export async function readProjectEndpoint(storageDir: string): Promise<ProjectEndpoint | undefined> {
