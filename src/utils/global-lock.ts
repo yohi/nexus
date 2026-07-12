@@ -1,12 +1,19 @@
+import { createHash } from 'node:crypto';
+import { realpath, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { writeFile } from 'node:fs/promises';
 import lockfile from 'proper-lockfile';
 
 export const GLOBAL_LOCK_STALE_MS = 60_000;
 export const GLOBAL_LOCK_RETRIES = 10;
 export const GLOBAL_LOCK_RETRY_MIN_TIMEOUT_MS = 100;
 export const GLOBAL_LOCK_RETRY_MAX_TIMEOUT_MS = 1000;
+
+export const projectStartupLockName = async (storageDir: string): Promise<string> => {
+  const canonicalStorageDir = await realpath(storageDir);
+  return `project-start-${createHash('sha256').update(canonicalStorageDir).digest('hex')}`;
+};
+
 const GLOBAL_LOCK_ERROR_MESSAGE = (name: string): string =>
   `Nexus global resource "${name}" is already in use by another process.`;
 
