@@ -4,6 +4,7 @@ import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
+import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 
 import { createNexusServer } from '../../src/server/index.js';
 import { createStreamableHttpHandler } from '../../src/server/transport.js';
@@ -36,6 +37,7 @@ describe('Nexus MCP server integration', () => {
   let httpServer: ReturnType<typeof createServer>;
   let baseUrl: string;
   let clients: Client[] = [];
+  let createTestServer: () => McpServer;
 
   beforeEach(async () => {
     clients = [];
@@ -75,7 +77,7 @@ describe('Nexus MCP server integration', () => {
 
     const sanitizer = await PathSanitizer.create(process.cwd());
 
-    const createTestServer = () =>
+    createTestServer = () =>
       createNexusServer({
         projectRoot: process.cwd(),
         sanitizer,
@@ -175,5 +177,43 @@ describe('Nexus MCP server integration', () => {
 
     expect(firstTools.tools).toHaveLength(6);
     expect(secondTools.tools).toHaveLength(6);
+  });
+
+  it('creates a distinct MCP server for each HTTP client while sharing tool dependencies', async () => {
+    const created: McpServer[] = [];
+    const handler = createStreamableHttpHandler({
+      createServer: () => {
+        const server = createTestServer();
+        created.push(server);
+        return server;
+      },
+    });
+
+    const connectClient = async () => {
+      const client = new Client({ name: 'test-client', version: '1.0.0' });
+      clients.push(client);
+      const serverInstance = createServer((req, res) => {
+        void handler(req, res);
+      });
+      await new Promise<void>((resolve) => {
+        serverInstance.listen(0, '127.0.0.1', () => resolve());
+      });
+      const address = serverInstance.address();
+      if (address === null || typeof address === 'string') {
+        throw new Error('failed to bind test server');
+      }
+      const url = `http://127.0.0.1:${address.port}/mcp`;
+      const transport = new StreamableHTTPClientTransport(new URL(url));
+      await client.connect(transport);
+      return { client, serverInstance };
+    };
+
+    const [first, second] = await Promise.all([connectClient(), connectClient()]);
+
+    expect(created).toHaveLength(2);
+    expect(created[0]).not.toBe(created[1]);
+
+    await new Promise<void>((resolve) => first.serverInstance.close(() => resolve()));
+    await new Promise<void>((resolve) => second.serverInstance.close(() => resolve()));
   });
 });

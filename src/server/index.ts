@@ -55,7 +55,7 @@ export interface NexusRuntimeOptions extends NexusServerOptions {
 }
 
 export interface NexusRuntime {
-  server: McpServer;
+  createServer(): McpServer;
   orchestrator: SearchOrchestrator;
   sanitizer: PathSanitizer;
   initialize(): Promise<void>;
@@ -319,7 +319,6 @@ export const createNexusServer = (
 export const buildNexusRuntime = (
   options: NexusRuntimeOptions,
 ): NexusRuntime => {
-  const server = createNexusServer(options, () => initialize());
   let metricsServer: MetricsHttpServer | null = null;
   let initPromise: Promise<void> | null = null;
   let registrationClient: RegistrationClient | null = null;
@@ -446,11 +445,6 @@ export const buildNexusRuntime = (
       shutdownErrors.push(error);
     }
 
-    try {
-      await server.close();
-    } catch (error) {
-      shutdownErrors.push(error);
-    }
 
     if (shutdownErrors.length === 1) {
       throw shutdownErrors[0];
@@ -467,8 +461,10 @@ export const buildNexusRuntime = (
     await options.runReindex({ fullScan: fullRebuild });
   };
 
+  const createServer = (): McpServer => createNexusServer(options, () => initialize());
+
   return {
-    server,
+    createServer,
     orchestrator: options.orchestrator,
     sanitizer: options.sanitizer,
     initialize,

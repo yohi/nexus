@@ -110,7 +110,7 @@ async function main() {
     }
 
     const mcpHandler = createStreamableHttpHandler({
-      createServer: () => runtime.server,
+      createServer: () => runtime.createServer(),
     });
 
     const restHandler = createRestApiHandler({
@@ -166,7 +166,15 @@ async function main() {
 
   // Default: stdio MCP transport
   const transport = new StdioServerTransport();
-  await runtime.server.connect(transport);
+  const stdioServer = runtime.createServer();
+  await stdioServer.connect(transport);
+
+  console.error(`\u{1F517} Nexus MCP server running on stdio (root: ${root})`);
+
+
+
+
+
 
   console.error(`\ud83d\udd17 Nexus MCP server running on stdio (root: ${root})`);
 
