@@ -262,7 +262,7 @@ if (process.argv[2] === "http-bridge") {
     }
     const module = (await import(new URL("./http-bridge.js", import.meta.url).href)) as HttpBridgeModule;
     if (typeof module.main !== "function") {
-      throw new Error("HTTP bridge module did not export a main() function");
+      throw new TypeError("HTTP bridge module did not export a main() function");
     }
     await module.main();
   } catch (error) {
