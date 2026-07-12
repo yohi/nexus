@@ -42,6 +42,17 @@ function writeDiagnostic(errorOutput: Writable, message: string): void {
   errorOutput.write(`${message}\n`);
 }
 
+function absorbEpipe(stream: Writable): void {
+  stream.on("error", function handleStreamError(error: unknown) {
+    if (error instanceof Error && (error as NodeJS.ErrnoException).code === "EPIPE") {
+      return;
+    }
+
+    stream.removeListener("error", handleStreamError);
+    stream.emit("error", error);
+  });
+}
+
 function parseJsonRpcLine(line: string, errorOutput: Writable): JSONRPCMessage | undefined {
   let parsed: unknown;
 
@@ -71,6 +82,8 @@ export async function runHttpBridge(options: HttpBridgeOptions): Promise<void> {
   let initializeRequestId: string | number | undefined;
   let transportClosed = false;
   let shutdownPromise: Promise<void> | undefined;
+  absorbEpipe(options.output);
+  absorbEpipe(options.errorOutput);
 
   const shutdown = (): Promise<void> => {
     if (shutdownPromise === undefined) {
