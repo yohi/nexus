@@ -86,17 +86,15 @@ export async function runHttpBridge(options: HttpBridgeOptions): Promise<void> {
   absorbEpipe(options.errorOutput);
 
   const shutdown = (): Promise<void> => {
-    if (shutdownPromise === undefined) {
-      shutdownPromise = (async () => {
-        lines.close();
-        process.removeListener("SIGINT", handleSignal);
-        process.removeListener("SIGTERM", handleSignal);
+    shutdownPromise ??= (async () => {
+      lines.close();
+      process.removeListener("SIGINT", handleSignal);
+      process.removeListener("SIGTERM", handleSignal);
 
-        if (!transportClosed) {
-          await transport.close();
-        }
-      })();
-    }
+      if (!transportClosed) {
+        await transport.close();
+      }
+    })();
 
     return shutdownPromise;
   };
