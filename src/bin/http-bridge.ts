@@ -1,7 +1,9 @@
 import { createInterface } from "node:readline";
 import { spawn } from "node:child_process";
+import { existsSync } from "node:fs";
 import path from "node:path";
 import { parseArgs } from "node:util";
+import { fileURLToPath } from "node:url";
 import type { Readable, Writable } from "node:stream";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
@@ -34,18 +36,34 @@ export function resolveBridgeUrl(
   try {
     return new URL(cliUrl ?? envUrl ?? DEFAULT_BRIDGE_URL);
   } catch (error) {
-    if (
-      typeof error === "object" &&
-      error !== null &&
-      typeof (error as Error).message === "string" &&
-      ((error as Error).constructor.name === "TypeError" ||
-        (error as Error).message.startsWith("Invalid URL"))
-    ) {
-      throw new InvalidBridgeUrlError(error as TypeError);
+    if (error instanceof TypeError) {
+      throw new InvalidBridgeUrlError(error);
     }
 
     throw error;
   }
+}
+export function resolveNexusExecutable(httpBridgeUrl: string | URL): string {
+  const httpBridgePath = fileURLToPath(httpBridgeUrl);
+  const httpBridgeDir = path.dirname(httpBridgePath);
+  const httpBridgeName = path.basename(httpBridgePath);
+
+  // When running from source (e.g. tsx src/bin/http-bridge.ts), prefer the
+  // TypeScript entry. When running from the compiled distribution, prefer the
+  // compiled JavaScript entry. Fall back to argv[1] only when neither exists.
+  if (httpBridgeName.endsWith(".ts")) {
+    const tsCandidate = path.join(httpBridgeDir, "nexus.ts");
+    if (existsSync(tsCandidate)) {
+      return tsCandidate;
+    }
+  }
+
+  const jsCandidate = path.join(httpBridgeDir, "nexus.js");
+  if (existsSync(jsCandidate)) {
+    return jsCandidate;
+  }
+
+  return process.argv[1] ?? "nexus";
 }
 
 function writeDiagnostic(errorOutput: Writable, message: string): void {
@@ -258,7 +276,7 @@ export async function main(): Promise<void> {
       const options: ProjectConnectorOptions = {
         projectRoot,
         storageDir: resolvedConfig.storage.rootDir,
-        childExecutable: process.argv[1] ?? "nexus",
+        childExecutable: resolveNexusExecutable(import.meta.url),
         env,
         spawn,
         fetch: globalThis.fetch,

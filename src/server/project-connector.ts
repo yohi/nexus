@@ -93,10 +93,11 @@ async function validateEndpoint(
   }
 
   if (endpoint.projectRoot !== projectRoot) {
-    throw new Error(
-      `Project endpoint descriptor has a mismatched projectRoot: expected ${projectRoot}, got ${endpoint.projectRoot}`,
-    );
+    // Treat a projectRoot mismatch as an invalid descriptor so callers do not
+    // have to silence unexpected errors with `.catch(() => undefined)`.
+    return undefined;
   }
+
 
   let parsedUrl: URL;
   try {
@@ -127,7 +128,7 @@ async function waitForHealthyEndpoint(
 
   while (true) {
     const endpoint = await readProjectEndpoint(storageDir);
-    const validated = await validateEndpoint(endpoint, projectRoot, fetchImpl).catch(() => undefined);
+    const validated = await validateEndpoint(endpoint, projectRoot, fetchImpl);
     if (validated !== undefined) {
       return validated;
     }
@@ -148,9 +149,7 @@ export async function ensureProjectEndpoint(options: ProjectConnectorOptions): P
   const pollIntervalMs = validateTimeout(options.pollIntervalMs, 'pollIntervalMs');
 
   const initialEndpoint = await readProjectEndpoint(options.storageDir);
-  const validated = await validateEndpoint(initialEndpoint, options.projectRoot, options.fetch).catch(
-    () => undefined,
-  );
+  const validated = await validateEndpoint(initialEndpoint, options.projectRoot, options.fetch);
   if (validated !== undefined) {
     return new URL(validated.url);
   }
@@ -191,7 +190,7 @@ export async function ensureProjectEndpoint(options: ProjectConnectorOptions): P
       await readProjectEndpoint(options.storageDir),
       options.projectRoot,
       options.fetch,
-    ).catch(() => undefined);
+    );
     if (winnerEndpoint !== undefined) {
       succeeded = true;
       return new URL(winnerEndpoint.url);
@@ -227,9 +226,7 @@ export async function ensureProjectEndpoint(options: ProjectConnectorOptions): P
     if (spawned && !succeeded) {
       const finalEndpoint = await readProjectEndpoint(options.storageDir);
       if (finalEndpoint !== undefined) {
-        const stillHealthy = await validateEndpoint(finalEndpoint, options.projectRoot, options.fetch).catch(
-          () => undefined,
-        );
+        const stillHealthy = await validateEndpoint(finalEndpoint, options.projectRoot, options.fetch);
         if (stillHealthy === undefined) {
           await removeProjectEndpointIfMatching(options.storageDir, finalEndpoint).catch(() => {});
         }

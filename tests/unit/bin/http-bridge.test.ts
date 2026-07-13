@@ -1,8 +1,12 @@
 import { PassThrough, Readable } from "node:stream";
 import { EventEmitter } from "node:events";
+import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
+import { pathToFileURL } from "node:url";
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import type { JSONRPCMessage } from "@modelcontextprotocol/sdk/types.js";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
   DEFAULT_BRIDGE_URL,
@@ -10,6 +14,7 @@ import {
   type HttpBridgeOptions,
   parseBridgeArgs,
   resolveBridgeUrl,
+  resolveNexusExecutable,
   runBridgeCli,
   runHttpBridgeWithSignalSource,
 } from "../../../src/bin/http-bridge.js";
@@ -131,6 +136,69 @@ describe("http bridge", () => {
 
     it("rejects an invalid bridge URL", () => {
       expect(() => resolveBridgeUrl("not a URL", undefined)).toThrow(/Invalid bridge URL/);
+    });
+  });
+  describe("resolveNexusExecutable", () => {
+    let tempDir: string;
+
+    beforeEach(async () => {
+      tempDir = await mkdtemp(join(tmpdir(), "nexus-exec-"));
+    });
+
+    afterEach(async () => {
+      await rm(tempDir, { force: true, recursive: true });
+    });
+
+    it("prefers the TypeScript entry when the bridge is a .ts file", async () => {
+      const bridgeDir = join(tempDir, "src", "bin");
+      await mkdir(bridgeDir, { recursive: true });
+      await writeFile(join(bridgeDir, "http-bridge.ts"), "");
+      await writeFile(join(bridgeDir, "nexus.ts"), "");
+
+      const exec = resolveNexusExecutable(pathToFileURL(join(bridgeDir, "http-bridge.ts")).toString());
+      expect(exec).toBe(join(bridgeDir, "nexus.ts"));
+    });
+
+    it("prefers the JavaScript entry when the bridge is a .js file", async () => {
+      const bridgeDir = join(tempDir, "dist", "bin");
+      await mkdir(bridgeDir, { recursive: true });
+      await writeFile(join(bridgeDir, "http-bridge.js"), "");
+      await writeFile(join(bridgeDir, "nexus.js"), "");
+
+      const exec = resolveNexusExecutable(pathToFileURL(join(bridgeDir, "http-bridge.js")).toString());
+      expect(exec).toBe(join(bridgeDir, "nexus.js"));
+    });
+
+    it("prefers the JavaScript entry when the bridge is a .ts file but no sibling nexus.ts exists", async () => {
+      const bridgeDir = join(tempDir, "mixed", "bin");
+      await mkdir(bridgeDir, { recursive: true });
+      await writeFile(join(bridgeDir, "http-bridge.ts"), "");
+      await writeFile(join(bridgeDir, "nexus.js"), "");
+
+      const exec = resolveNexusExecutable(pathToFileURL(join(bridgeDir, "http-bridge.ts")).toString());
+      expect(exec).toBe(join(bridgeDir, "nexus.js"));
+    });
+
+    it("falls back to argv[1] when no sibling nexus entry exists", async () => {
+      const argvSpy = vi.spyOn(process, "argv", "get").mockReturnValue(["/entry", "/fallback/nexus"]);
+      const bridgeDir = join(tempDir, "nowhere", "bin");
+      await mkdir(bridgeDir, { recursive: true });
+      await writeFile(join(bridgeDir, "http-bridge.js"), "");
+
+      const exec = resolveNexusExecutable(pathToFileURL(join(bridgeDir, "http-bridge.js")).toString());
+      expect(exec).toBe("/fallback/nexus");
+      argvSpy.mockRestore();
+    });
+
+    it("falls back to the nexus command name when argv[1] is unavailable", async () => {
+      const argvSpy = vi.spyOn(process, "argv", "get").mockReturnValue(["/entry"]);
+      const bridgeDir = join(tempDir, "nowhere2", "bin");
+      await mkdir(bridgeDir, { recursive: true });
+      await writeFile(join(bridgeDir, "http-bridge.js"), "");
+
+      const exec = resolveNexusExecutable(pathToFileURL(join(bridgeDir, "http-bridge.js")).toString());
+      expect(exec).toBe("nexus");
+      argvSpy.mockRestore();
     });
   });
 
