@@ -45,7 +45,19 @@ async function connectClient(url: URL): Promise<string> {
 }
 
 async function connectAndCloseClient(url: URL): Promise<void> {
-  await connectClient(url);
+  const sessionId = await connectClient(url);
+  // Explicitly terminate the MCP session the same way src/server/transport.ts
+  // handles it: a DELETE carrying the mcp-session-id header is routed to the
+  // StreamableHTTPServerTransport, which tears the session down and returns 200.
+  // This synchronously fires the onSessionClose callback wired up in
+  // managed-http-server.ts, rather than waiting for sessionIdleTimeoutMs to fire.
+  const closeRes = await fetch(url.toString(), {
+    method: 'DELETE',
+    headers: {
+      'mcp-session-id': sessionId,
+    },
+  });
+  expect(closeRes.status).toBe(200);
 }
 
 describe('managed-http-server', () => {
@@ -83,9 +95,13 @@ describe('managed-http-server', () => {
   it('closes the runtime and removes the descriptor after the final session closes', async () => {
     const server = await startManagedHttpServer({
       ...options,
-      idleShutdownMs: 0,
-      sessionIdleTimeoutMs: 50,
-      sessionCleanupIntervalMs: 25,
+      // The explicit DELETE in connectAndCloseClient fires onSessionClose
+      // synchronously, which schedules auto-shutdown after idleShutdownMs. A
+      // small non-zero grace lets the DELETE's 200 response flush before
+      // close() calls httpServer.closeAllConnections(); idleShutdownMs: 0 races
+      // the teardown against the in-flight DELETE response and resets it.
+      // Shutdown is thus driven by the explicit close, not sessionIdleTimeoutMs.
+      idleShutdownMs: 50,
     });
     await connectAndCloseClient(server.url);
 
