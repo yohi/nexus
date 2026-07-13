@@ -7,6 +7,7 @@ import {
   PROJECT_ENDPOINT_FILENAME,
   readProjectEndpoint,
   removeProjectEndpoint,
+  removeProjectEndpointIfMatching,
   waitForProjectEndpoint,
   writeProjectEndpoint,
 } from '../../../src/server/project-endpoint.js';
@@ -80,5 +81,24 @@ describe('project-endpoint', () => {
     await removeProjectEndpoint(storageDir);
     await expect(readProjectEndpoint(storageDir)).resolves.toBeUndefined();
     await expect(removeProjectEndpoint(storageDir)).resolves.toBeUndefined();
+  });
+
+  it('removes a descriptor only when it still matches the expected contents', async () => {
+    await writeProjectEndpoint(storageDir, endpoint);
+
+    await removeProjectEndpointIfMatching(storageDir, endpoint);
+    await expect(readProjectEndpoint(storageDir)).resolves.toBeUndefined();
+  });
+
+  it('skips removal when the stored descriptor has changed', async () => {
+    await writeProjectEndpoint(storageDir, endpoint);
+
+    const newerEndpoint = { ...endpoint, instanceId: 'instance-b' };
+    await removeProjectEndpointIfMatching(storageDir, newerEndpoint);
+    await expect(readProjectEndpoint(storageDir)).resolves.toEqual(endpoint);
+  });
+
+  it('treats a missing descriptor as already removed in compare-and-delete', async () => {
+    await expect(removeProjectEndpointIfMatching(storageDir, endpoint)).resolves.toBeUndefined();
   });
 });

@@ -78,6 +78,46 @@ export async function removeProjectEndpoint(storageDir: string): Promise<void> {
   }
 }
 
+export async function removeProjectEndpointIfMatching(
+  storageDir: string,
+  expected: ProjectEndpoint,
+): Promise<void> {
+  const target = join(storageDir, PROJECT_ENDPOINT_FILENAME);
+
+  try {
+    const content = await readFile(target, 'utf8');
+    let rawEndpoint: unknown;
+    try {
+      rawEndpoint = JSON.parse(content);
+    } catch {
+      return;
+    }
+    const result = projectEndpointSchema.safeParse(rawEndpoint);
+    if (
+      !result.success ||
+      result.data.instanceId !== expected.instanceId ||
+      result.data.pid !== expected.pid ||
+      result.data.projectRoot !== expected.projectRoot ||
+      result.data.url !== expected.url
+    ) {
+      return;
+    }
+  } catch (error: unknown) {
+    if (isMissingFileError(error)) {
+      return;
+    }
+    throw error;
+  }
+
+  try {
+    await unlink(target);
+  } catch (error: unknown) {
+    if (!isMissingFileError(error)) {
+      throw error;
+    }
+  }
+}
+
 export async function waitForProjectEndpoint(
   storageDir: string,
   options: { readonly timeoutMs: number },
