@@ -4,9 +4,11 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { randomUUID } from 'node:crypto';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
-import { startManagedHttpServer, type ManagedHttpServerOptions } from '../../../src/server/managed-http-server.js';
-import { readProjectEndpoint, removeProjectEndpoint } from '../../../src/server/project-endpoint.js';
+import { startManagedHttpServer, type ManagedHttpServer, type ManagedHttpServerOptions } from '../../../src/server/managed-http-server.js';
+import { readProjectEndpoint } from '../../../src/server/project-endpoint.js';
 import type { NexusRuntime } from '../../../src/server/index.js';
+
+const trackedServers: ManagedHttpServer[] = [];
 
 function createMockRuntime(): NexusRuntime {
   return {
@@ -18,6 +20,17 @@ function createMockRuntime(): NexusRuntime {
     reindex: async () => {},
     registrationClient: null,
   };
+}
+
+async function trackServer(options: ManagedHttpServerOptions): Promise<ManagedHttpServer> {
+  const server = await startManagedHttpServer(options);
+  trackedServers.push(server);
+  return server;
+}
+
+async function closeTrackedServers(): Promise<void> {
+  await Promise.all(trackedServers.map((server) => server.close().catch(() => {})));
+  trackedServers.length = 0;
 }
 
 async function connectClient(url: URL): Promise<string> {
@@ -77,23 +90,22 @@ describe('managed-http-server', () => {
   });
 
   afterEach(async () => {
+    await closeTrackedServers();
     await rm(storageDir, { force: true, recursive: true });
   });
 
   it('writes the resolved loopback endpoint after listening', async () => {
-    const server = await startManagedHttpServer(options);
+    const server = await trackServer(options);
 
     await expect(readProjectEndpoint(storageDir)).resolves.toMatchObject({
       pid: process.pid,
       projectRoot,
       url: server.url.toString(),
     });
-
-    await server.close();
   });
 
   it('closes the runtime and removes the descriptor after the final session closes', async () => {
-    const server = await startManagedHttpServer({
+    const server = await trackServer({
       ...options,
       // The explicit DELETE in connectAndCloseClient fires onSessionClose
       // synchronously, which schedules auto-shutdown after idleShutdownMs. A
@@ -110,21 +122,19 @@ describe('managed-http-server', () => {
   });
 
   it('returns health with instanceId and projectRoot', async () => {
-    const server = await startManagedHttpServer(options);
+    const server = await trackServer(options);
 
-    const res = await fetch(`${server.url.toString()}health`);
+    const res = await fetch(new URL('/health', server.url).toString());
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body).toEqual({
       instanceId: options.instanceId,
       projectRoot,
     });
-
-    await server.close();
   });
 
   it('does not auto-shutdown while sessions are active', async () => {
-    const server = await startManagedHttpServer({
+    const server = await trackServer({
       ...options,
       idleShutdownMs: 50,
       sessionIdleTimeoutMs: 5000,
@@ -136,9 +146,44 @@ describe('managed-http-server', () => {
     await new Promise((resolve) => { setTimeout(resolve, 150); });
 
     // Server should still be up because we have an active session
-    const health = await fetch(`${server.url.toString()}health`);
+    const health = await fetch(new URL('/health', server.url).toString());
     expect(health.status).toBe(200);
 
-    await server.close();
+    await fetch(server.url.toString(), {
+      method: 'DELETE',
+      headers: { 'mcp-session-id': sessionId },
+    });
+  });
+
+  it('shuts down after startupGraceMs when no client connects', async () => {
+    const server = await trackServer({
+      ...options,
+      startupGraceMs: 50,
+      exitOnShutdown: false,
+    });
+
+    await server.closed;
+    await expect(readProjectEndpoint(storageDir)).resolves.toBeUndefined();
+  });
+
+  it('cancels startupGraceMs when a client connects', async () => {
+    const server = await trackServer({
+      ...options,
+      startupGraceMs: 50,
+      idleShutdownMs: 5000,
+    });
+
+    const sessionId = await connectClient(server.url);
+
+    // Wait long enough that the 50ms startup grace would fire if not cancelled.
+    await new Promise((resolve) => { setTimeout(resolve, 150); });
+
+    const health = await fetch(new URL('/health', server.url).toString());
+    expect(health.status).toBe(200);
+
+    await fetch(server.url.toString(), {
+      method: 'DELETE',
+      headers: { 'mcp-session-id': sessionId },
+    });
   });
 });
