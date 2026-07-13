@@ -1,8 +1,12 @@
-import { acquireGlobalLock, projectStartupLockName } from '../utils/global-lock.js';
+import {
+  acquireGlobalLock,
+  GlobalLockHeldError,
+  projectStartupLockName,
+} from '../utils/global-lock.js';
 
 import {
   readProjectEndpoint,
-  removeProjectEndpoint,
+  removeProjectEndpointIfMatching,
   type ProjectEndpoint,
 } from './project-endpoint.js';
 import { isProcessAlive } from './process-lock.js';
@@ -51,7 +55,7 @@ async function fetchHealth(
 ): Promise<ProjectEndpoint | undefined> {
   let response: Response;
   try {
-    response = await fetchImpl(`${endpoint.url}/health`);
+    response = await fetchImpl(new URL('/health', endpoint.url).toString());
   } catch {
     return undefined;
   }
@@ -152,7 +156,9 @@ export async function ensureProjectEndpoint(options: ProjectConnectorOptions): P
   }
 
   // Descriptor was invalid; remove it so we do not reuse a stale record.
-  await removeProjectEndpoint(options.storageDir).catch(() => {});
+  if (initialEndpoint !== undefined) {
+    await removeProjectEndpointIfMatching(options.storageDir, initialEndpoint).catch(() => {});
+  }
 
   const lockName = await projectStartupLockName(options.storageDir);
 
@@ -162,7 +168,10 @@ export async function ensureProjectEndpoint(options: ProjectConnectorOptions): P
   try {
     try {
       lockHandle = await acquireGlobalLock(lockName);
-    } catch {
+    } catch (error) {
+      if (!(error instanceof GlobalLockHeldError)) {
+        throw error;
+      }
       // Another connector is starting the managed server for this project.
       // Wait for it to publish a healthy descriptor instead of spawning.
       const winnerEndpoint = await waitForHealthyEndpoint(
@@ -189,9 +198,8 @@ export async function ensureProjectEndpoint(options: ProjectConnectorOptions): P
     }
 
     const child = options.spawn(
-      process.execPath,
+      options.childExecutable,
       [
-        options.childExecutable,
         '--project-root',
         options.projectRoot,
         '--port',
@@ -218,11 +226,13 @@ export async function ensureProjectEndpoint(options: ProjectConnectorOptions): P
     // stale descriptor left by a crashed or slow-starting child.
     if (spawned && !succeeded) {
       const finalEndpoint = await readProjectEndpoint(options.storageDir);
-      const stillHealthy = await validateEndpoint(finalEndpoint, options.projectRoot, options.fetch).catch(
-        () => undefined,
-      );
-      if (stillHealthy === undefined) {
-        await removeProjectEndpoint(options.storageDir).catch(() => {});
+      if (finalEndpoint !== undefined) {
+        const stillHealthy = await validateEndpoint(finalEndpoint, options.projectRoot, options.fetch).catch(
+          () => undefined,
+        );
+        if (stillHealthy === undefined) {
+          await removeProjectEndpointIfMatching(options.storageDir, finalEndpoint).catch(() => {});
+        }
       }
     }
   }

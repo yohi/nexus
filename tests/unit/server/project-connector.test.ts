@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, rm, writeFile, chmod } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { randomUUID } from 'node:crypto';
@@ -293,15 +293,14 @@ describe('project-connector', () => {
     expect(harness.spawnImpl).not.toHaveBeenCalled();
   });
 
-  it('spawns the current executable with managed mode arguments', async () => {
+  it('spawns the provided child executable with managed mode arguments', async () => {
     const harness = createHarness();
     const instanceId = `instance-${randomUUID()}`;
     const port = 43129;
 
     harness.spawnImpl.mockImplementation((exec: string, args: readonly string[], options: object) => {
-      expect(exec).toBe(process.execPath);
+      expect(exec).toBe('/test/nexus.js');
       expect(args).toEqual([
-        '/test/nexus.js',
         '--project-root',
         projectRoot,
         '--port',
@@ -335,5 +334,31 @@ describe('project-connector', () => {
     };
 
     await ensureProjectEndpoint(options);
+  });
+
+  it('rethrows filesystem errors from the startup lock acquisition', async () => {
+    const harness = createHarness();
+
+    const options: ProjectConnectorOptions = {
+      projectRoot,
+      storageDir,
+      childExecutable: '/not-used',
+      env: {},
+      spawn: harness.spawnImpl,
+      fetch: harness.fetchImpl,
+      startupTimeoutMs: 150,
+      pollIntervalMs: 25,
+    };
+
+    // Make the storage directory unreadable so lock acquisition fails with
+    // a filesystem error rather than ELOCKED.
+    await chmod(storageDir, 0o000);
+
+    try {
+      await expect(ensureProjectEndpoint(options)).rejects.toThrow();
+      expect(harness.spawnImpl).not.toHaveBeenCalled();
+    } finally {
+      await chmod(storageDir, 0o755);
+    }
   });
 });
