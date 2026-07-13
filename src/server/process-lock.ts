@@ -84,7 +84,7 @@ export async function releaseProcessLock(storageDir: string): Promise<void> {
   await safeUnlink(path.join(storageDir, LOCK_FILENAME));
 }
 
-function isProcessAlive(pid: number): boolean {
+export function isProcessAlive(pid: number): boolean {
   try {
     // Sending signal 0 does not actually deliver a signal; it only checks
     // if the process exists and we have permission to signal it.
