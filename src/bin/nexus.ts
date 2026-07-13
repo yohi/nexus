@@ -12,12 +12,15 @@ import type { NexusRuntime } from "../server/index.js";
 import { createStreamableHttpHandler } from "../server/transport.js";
 import { createRestApiHandler } from "../server/rest-api.js";
 import { acquireProcessLock, releaseProcessLock, LOCK_FILENAME } from "../server/process-lock.js";
+import type { ManagedHttpServer } from "../server/managed-http-server.js";
 
 async function main() {
   const { values } = parseArgs({
     options: {
       "project-root": { type: "string" },
       "port": { type: "string" },
+      "managed": { type: "boolean" },
+      "idle-shutdown-ms": { type: "string" },
       "reindex": { type: "boolean" },
       "full": { type: "boolean" },
       "help": { type: "boolean", short: "h" },
@@ -36,6 +39,8 @@ async function main() {
       `Options:\n` +
       `  --project-root <path>  Path to the project root directory\n` +
       `  --port <number>        Start HTTP server (with MCP + REST API) on the given port\n` +
+      `  --managed              Run as a managed HTTP server (requires --port; use --port 0 for an ephemeral port)\n` +
+      `  --idle-shutdown-ms <ms> Idle timeout in milliseconds before a --managed server auto-shuts down when idle (env: NEXUS_IDLE_SHUTDOWN_MS, default: 0)\n` +
       `  --reindex              Run indexing and exit\n` +
       `  --full                 Run a full clean reindexing (can be used with --reindex)\n` +
       `  -h, --help             Show help`
@@ -45,6 +50,11 @@ async function main() {
 
   if (values["full"] && !values["reindex"]) {
     console.warn(`\u26a0\ufe0f  Warning: --full has no effect without --reindex.`);
+  }
+
+  if (values["managed"] && !values["port"]) {
+    console.error(`\u274c --managed requires --port (use --port 0 for an ephemeral port)`);
+    process.exit(1);
   }
 
   const rawProjectRoot = (
@@ -105,9 +115,43 @@ async function main() {
 
   if (values["port"]) {
     const port = Number(values["port"]);
-    if (Number.isNaN(port) || port <= 0 || port > 65535) {
+    const isManaged = values["managed"] === true;
+    if (Number.isNaN(port) || port < 0 || port > 65535 || (port === 0 && !isManaged)) {
       console.error(`\u274c Invalid port: ${values["port"]}`);
       process.exit(1);
+    }
+
+    if (isManaged) {
+      const idleShutdownMsRaw =
+        values["idle-shutdown-ms"] ?? process.env.NEXUS_IDLE_SHUTDOWN_MS ?? "0";
+      const idleShutdownMs = Number(idleShutdownMsRaw);
+      if (!Number.isFinite(idleShutdownMs) || idleShutdownMs < 0) {
+        console.error(`\u274c Invalid idle-shutdown-ms: ${idleShutdownMsRaw}`);
+        process.exit(1);
+      }
+      const { startManagedHttpServer } = await import("../server/managed-http-server.js");
+      const managed = await startManagedHttpServer({
+        instanceId: `managed-${process.pid}-${Date.now()}`,
+        projectRoot: root,
+        storageDir: config.storage.rootDir,
+        runtime,
+        port,
+        idleShutdownMs,
+        exitOnShutdown: true,
+      });
+
+      console.error(
+        `\ud83d\ude80 Nexus managed HTTP server running on ${managed.url.toString()} (root: ${root})`
+      );
+      console.error(`   MCP:    POST / (Streamable HTTP)`);
+
+      setupSignalHandlers(runtime, config.storage.rootDir, exitCleanup, undefined, undefined, managed);
+
+      runtime.initialize().catch((error) => {
+        handleFatalError("Nexus background initialization failed", error);
+      });
+
+      return;
     }
 
     const mcpHandler = createStreamableHttpHandler({
@@ -218,6 +262,7 @@ function setupSignalHandlers(
   exitCleanup: () => void,
   httpServer?: Server,
   mcpServer?: McpServer,
+  managedServer?: ManagedHttpServer,
 ): void {
   let isShuttingDown = false;
 
@@ -228,6 +273,15 @@ function setupSignalHandlers(
     const cleanup = async () => {
       if (mcpServer) {
         await mcpServer.close();
+      }
+      if (managedServer) {
+        // managedServer.close() calls process.exit(0) synchronously when
+        // exitOnShutdown is set, firing Node's synchronous "exit" event.
+        // Remove exitCleanup first so the still-registered listener does not
+        // attempt a redundant unlink of the already-released PID lock file.
+        process.removeListener("exit", exitCleanup);
+        await managedServer.close();
+        return;
       }
       if (httpServer) {
         await new Promise<void>((resolve) => {
