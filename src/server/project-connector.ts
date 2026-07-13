@@ -1,5 +1,5 @@
-import { loadConfig } from '../config/index.js';
 import { acquireGlobalLock, projectStartupLockName } from '../utils/global-lock.js';
+
 import {
   readProjectEndpoint,
   removeProjectEndpoint,
@@ -154,12 +154,11 @@ export async function ensureProjectEndpoint(options: ProjectConnectorOptions): P
   // Descriptor was invalid; remove it so we do not reuse a stale record.
   await removeProjectEndpoint(options.storageDir).catch(() => {});
 
-  const config = await loadConfig({ projectRoot: options.projectRoot, env: options.env });
-  const lockName = await projectStartupLockName(config.storage.rootDir);
+  const lockName = await projectStartupLockName(options.storageDir);
 
   let lockHandle: Awaited<ReturnType<typeof acquireGlobalLock>> | undefined;
   let spawned = false;
-
+  let succeeded = false;
   try {
     try {
       lockHandle = await acquireGlobalLock(lockName);
@@ -173,6 +172,7 @@ export async function ensureProjectEndpoint(options: ProjectConnectorOptions): P
         startupTimeoutMs,
         pollIntervalMs,
       );
+      succeeded = true;
       return new URL(winnerEndpoint.url);
     }
 
@@ -184,6 +184,7 @@ export async function ensureProjectEndpoint(options: ProjectConnectorOptions): P
       options.fetch,
     ).catch(() => undefined);
     if (winnerEndpoint !== undefined) {
+      succeeded = true;
       return new URL(winnerEndpoint.url);
     }
 
@@ -209,12 +210,13 @@ export async function ensureProjectEndpoint(options: ProjectConnectorOptions): P
       startupTimeoutMs,
       pollIntervalMs,
     );
+    succeeded = true;
     return new URL(managedEndpoint.url);
   } finally {
     await lockHandle?.release().catch(() => {});
     // If we spawned a child but never saw a healthy descriptor, clean up the
     // stale descriptor left by a crashed or slow-starting child.
-    if (spawned) {
+    if (spawned && !succeeded) {
       const finalEndpoint = await readProjectEndpoint(options.storageDir);
       const stillHealthy = await validateEndpoint(finalEndpoint, options.projectRoot, options.fetch).catch(
         () => undefined,
