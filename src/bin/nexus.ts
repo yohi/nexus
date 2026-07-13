@@ -20,6 +20,7 @@ async function main() {
       "project-root": { type: "string" },
       "port": { type: "string" },
       "managed": { type: "boolean" },
+      "idle-shutdown-ms": { type: "string" },
       "reindex": { type: "boolean" },
       "full": { type: "boolean" },
       "help": { type: "boolean", short: "h" },
@@ -38,6 +39,8 @@ async function main() {
       `Options:\n` +
       `  --project-root <path>  Path to the project root directory\n` +
       `  --port <number>        Start HTTP server (with MCP + REST API) on the given port\n` +
+      `  --managed              Run as a managed HTTP server (requires --port; use --port 0 for an ephemeral port)\n` +
+      `  --idle-shutdown-ms <ms> Idle timeout in milliseconds before a --managed server auto-shuts down when idle (env: NEXUS_IDLE_SHUTDOWN_MS, default: 0)\n` +
       `  --reindex              Run indexing and exit\n` +
       `  --full                 Run a full clean reindexing (can be used with --reindex)\n` +
       `  -h, --help             Show help`
@@ -47,6 +50,11 @@ async function main() {
 
   if (values["full"] && !values["reindex"]) {
     console.warn(`\u26a0\ufe0f  Warning: --full has no effect without --reindex.`);
+  }
+
+  if (values["managed"] && !values["port"]) {
+    console.error(`\u274c --managed requires --port (use --port 0 for an ephemeral port)`);
+    process.exit(1);
   }
 
   const rawProjectRoot = (
@@ -114,6 +122,13 @@ async function main() {
     }
 
     if (isManaged) {
+      const idleShutdownMsRaw =
+        values["idle-shutdown-ms"] ?? process.env.NEXUS_IDLE_SHUTDOWN_MS ?? "0";
+      const idleShutdownMs = Number(idleShutdownMsRaw);
+      if (!Number.isFinite(idleShutdownMs) || idleShutdownMs < 0) {
+        console.error(`\u274c Invalid idle-shutdown-ms: ${idleShutdownMsRaw}`);
+        process.exit(1);
+      }
       const { startManagedHttpServer } = await import("../server/managed-http-server.js");
       const managed = await startManagedHttpServer({
         instanceId: `managed-${process.pid}-${Date.now()}`,
@@ -121,7 +136,7 @@ async function main() {
         storageDir: config.storage.rootDir,
         runtime,
         port,
-        idleShutdownMs: 0,
+        idleShutdownMs,
         exitOnShutdown: true,
       });
 
@@ -260,6 +275,11 @@ function setupSignalHandlers(
         await mcpServer.close();
       }
       if (managedServer) {
+        // managedServer.close() calls process.exit(0) synchronously when
+        // exitOnShutdown is set, firing Node's synchronous "exit" event.
+        // Remove exitCleanup first so the still-registered listener does not
+        // attempt a redundant unlink of the already-released PID lock file.
+        process.removeListener("exit", exitCleanup);
         await managedServer.close();
         return;
       }
