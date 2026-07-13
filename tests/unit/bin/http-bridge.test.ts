@@ -1,4 +1,5 @@
 import { PassThrough, Readable } from "node:stream";
+import { EventEmitter } from "node:events";
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import type { JSONRPCMessage } from "@modelcontextprotocol/sdk/types.js";
 import { describe, expect, it, vi } from "vitest";
@@ -10,7 +11,7 @@ import {
   parseBridgeArgs,
   resolveBridgeUrl,
   runBridgeCli,
-  runHttpBridge,
+  runHttpBridgeWithSignalSource,
 } from "../../../src/bin/http-bridge.js";
 
 class FakeTransport implements Transport {
@@ -89,18 +90,19 @@ function collectOutput(): { readonly stream: PassThrough; readonly text: () => s
   return { stream, text: () => chunks.join("") };
 }
 
-function createBridgeHarness(input: Readable, transport: FakeTransport) {
+function createBridgeHarness(input: Readable, transport: FakeTransport, signalSource?: EventEmitter) {
   const output = collectOutput();
   const errorOutput = collectOutput();
-  const options: HttpBridgeOptions = {
+  const options = {
     url: new URL(DEFAULT_BRIDGE_URL),
     input,
     output: output.stream,
     errorOutput: errorOutput.stream,
     createTransport: () => transport,
+    signalSource: signalSource ?? new EventEmitter(),
   };
 
-  return { errorOutput, options, output };
+  return { errorOutput, options, output, signalSource: options.signalSource };
 }
 
 describe("http bridge", () => {
@@ -137,7 +139,7 @@ describe("http bridge", () => {
       const transport = new FakeTransport();
       const harness = createBridgeHarness(Readable.from([]), transport);
 
-      await runHttpBridge(harness.options);
+      await runHttpBridgeWithSignalSource(harness.options);
 
       expect(transport.callbacksInstalledAtStart).toBe(true);
     });
@@ -156,7 +158,7 @@ describe("http bridge", () => {
         transport,
       );
 
-      await runHttpBridge(harness.options);
+      await runHttpBridgeWithSignalSource(harness.options);
 
       expect(transport.sent).toEqual([first, second]);
       expect(harness.output.text()).toBe(
@@ -173,7 +175,7 @@ describe("http bridge", () => {
         transport,
       );
 
-      await runHttpBridge(harness.options);
+      await runHttpBridgeWithSignalSource(harness.options);
 
       expect(transport.sent).toEqual([request]);
       expect(harness.output.text()).toBe("");
@@ -192,7 +194,7 @@ describe("http bridge", () => {
         transport,
       );
 
-      await runHttpBridge(harness.options);
+      await runHttpBridgeWithSignalSource(harness.options);
 
       expect(transport.sent).toEqual([request]);
       expect(harness.output.text()).toBe("");
@@ -212,7 +214,7 @@ describe("http bridge", () => {
       };
       const harness = createBridgeHarness(Readable.from([`${JSON.stringify(request)}\n`]), transport);
 
-      await runHttpBridge(harness.options);
+      await runHttpBridgeWithSignalSource(harness.options);
 
       expect(transport.protocolVersion).toBe("2025-03-26");
     });
@@ -221,7 +223,7 @@ describe("http bridge", () => {
       const transport = new FakeTransport();
       const harness = createBridgeHarness(Readable.from([]), transport);
 
-      await runHttpBridge(harness.options);
+      await runHttpBridgeWithSignalSource(harness.options);
 
       expect(transport.closeCalls).toBe(1);
     });
@@ -231,13 +233,13 @@ describe("http bridge", () => {
       async (signal) => {
         const input = new PassThrough();
         const transport = new FakeTransport();
-        transport.onStart = () => {
-          process.emit(signal);
-          process.emit(signal);
-        };
         const harness = createBridgeHarness(input, transport);
+        transport.onStart = () => {
+          harness.signalSource.emit(signal);
+          harness.signalSource.emit(signal);
+        };
 
-        await runHttpBridge(harness.options);
+        await runHttpBridgeWithSignalSource(harness.options);
 
         expect(transport.closeCalls).toBe(1);
       },
@@ -248,7 +250,7 @@ describe("http bridge", () => {
       transport.startError = new Error("connection failed");
       const harness = createBridgeHarness(Readable.from([]), transport);
 
-      await expect(runHttpBridge(harness.options)).rejects.toThrow("connection failed");
+      await expect(runHttpBridgeWithSignalSource(harness.options)).rejects.toThrow("connection failed");
       expect(transport.closeCalls).toBe(1);
     });
 
@@ -262,7 +264,7 @@ describe("http bridge", () => {
         transport,
       );
 
-      await expect(runHttpBridge(harness.options)).rejects.toThrow("request failed");
+      await expect(runHttpBridgeWithSignalSource(harness.options)).rejects.toThrow("request failed");
       expect(transport.sent).toEqual([first]);
       expect(transport.closeCalls).toBe(1);
     });
@@ -272,7 +274,7 @@ describe("http bridge", () => {
       transport.closeError = new Error("close failed");
       const harness = createBridgeHarness(Readable.from([]), transport);
 
-      await expect(runHttpBridge(harness.options)).rejects.toThrow("close failed");
+      await expect(runHttpBridgeWithSignalSource(harness.options)).rejects.toThrow("close failed");
       expect(transport.closeCalls).toBe(1);
     });
 
@@ -283,7 +285,7 @@ describe("http bridge", () => {
       };
       const harness = createBridgeHarness(Readable.from([]), transport);
 
-      await runHttpBridge(harness.options);
+      await runHttpBridgeWithSignalSource(harness.options);
 
       expect(harness.errorOutput.text()).toContain("network disconnected");
       expect(harness.output.text()).toBe("");
