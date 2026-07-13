@@ -23,6 +23,14 @@ export const projectStartupLockName = async (storageDir: string): Promise<string
 const GLOBAL_LOCK_ERROR_MESSAGE = (name: string): string =>
   `Nexus global resource "${name}" is already in use by another process.`;
 
+export class GlobalLockHeldError extends Error {
+  override readonly name = 'GlobalLockHeldError';
+
+  constructor(public readonly lockName: string) {
+    super(GLOBAL_LOCK_ERROR_MESSAGE(lockName));
+  }
+}
+
 export interface GlobalLockHandle {
   release: () => Promise<void>;
 }
@@ -50,7 +58,7 @@ export const acquireGlobalLock = async (name: string): Promise<GlobalLockHandle>
     return { release };
   } catch (error: unknown) {
     if (isLockHeldError(error)) {
-      throw new Error(GLOBAL_LOCK_ERROR_MESSAGE(name));
+      throw new GlobalLockHeldError(name);
     }
     throw error;
   }

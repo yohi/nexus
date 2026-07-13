@@ -154,6 +154,9 @@ describe('NexusServer helpers', () => {
         start: vi.fn(),
         stop: vi.fn().mockImplementation(() => stopDeferred.promise),
         reconcileOnStartup: vi.fn().mockResolvedValue({}),
+        reindex: vi.fn().mockResolvedValue({ status: 'success' as const, processed: 0, skipped: 0 }),
+        getSkippedFiles: vi.fn().mockReturnValue(new Map()),
+        getProgress: vi.fn().mockReturnValue({ status: 'idle' as const, processed: 0, total: 0 }),
       };
       const mockWatcher = {
         start: vi.fn().mockRejectedValue(new Error('init failure')),

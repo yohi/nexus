@@ -137,6 +137,7 @@ async function main() {
         runtime,
         port,
         idleShutdownMs,
+        startupGraceMs: 30_000,
         exitOnShutdown: true,
       });
 

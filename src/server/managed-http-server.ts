@@ -46,6 +46,10 @@ export async function startManagedHttpServer(
     sessionCleanupIntervalMs: options.sessionCleanupIntervalMs,
     onSessionOpen: () => {
       activeSessions += 1;
+      if (startupGraceTimer) {
+        clearTimeout(startupGraceTimer);
+        startupGraceTimer = undefined;
+      }
       if (shutdownTimer) {
         clearTimeout(shutdownTimer);
         shutdownTimer = undefined;
@@ -113,7 +117,7 @@ export async function startManagedHttpServer(
     }
   };
 
-  return new Promise<ManagedHttpServer>((resolve, reject) => {
+  const listenPromise = new Promise<URL>((resolve, reject) => {
     httpServer.listen(options.port ?? 0, '127.0.0.1', () => {
       const address = httpServer.address();
       if (!address || typeof address !== 'object') {
@@ -121,39 +125,42 @@ export async function startManagedHttpServer(
         return;
       }
 
-      const url = new URL(`http://127.0.0.1:${address.port}`);
-
-      writeProjectEndpoint(options.storageDir, {
-        instanceId: options.instanceId,
-        pid: process.pid,
-        projectRoot: options.projectRoot,
-        url: url.toString(),
-      })
-        .then(() => {
-          if (options.startupGraceMs !== undefined) {
-            startupGraceTimer = setTimeout(() => {
-              if (activeSessions === 0) {
-                void close();
-              }
-            }, options.startupGraceMs);
-          }
-
-          resolve({
-            url,
-            instanceId: options.instanceId,
-            closed,
-            close,
-          });
-        })
-        .catch((error) => {
-          httpServer.close(() => {
-            reject(error instanceof Error ? error : new Error(String(error)));
-          });
-        });
+      resolve(new URL(`http://127.0.0.1:${address.port}`));
     });
 
     httpServer.on('error', (error) => {
       reject(error instanceof Error ? error : new Error(String(error)));
     });
   });
+
+  try {
+    const url = await listenPromise;
+
+    await writeProjectEndpoint(options.storageDir, {
+      instanceId: options.instanceId,
+      pid: process.pid,
+      projectRoot: options.projectRoot,
+      url: url.toString(),
+    });
+
+    if (options.startupGraceMs !== undefined) {
+      startupGraceTimer = setTimeout(() => {
+        if (activeSessions === 0) {
+          void close();
+        }
+      }, options.startupGraceMs);
+    }
+
+    return {
+      url,
+      instanceId: options.instanceId,
+      closed,
+      close,
+    };
+  } catch (error) {
+    await new Promise<void>((resolve) => {
+      httpServer.close(() => resolve());
+    });
+    throw error instanceof Error ? error : new Error(String(error));
+  }
 }

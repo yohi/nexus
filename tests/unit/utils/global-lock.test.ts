@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import {
   acquireGlobalLock,
+  GlobalLockHeldError,
   GLOBAL_LOCK_RETRIES,
   GLOBAL_LOCK_RETRY_MAX_TIMEOUT_MS,
   GLOBAL_LOCK_RETRY_MIN_TIMEOUT_MS,
@@ -19,11 +20,12 @@ describe('global-lock', () => {
     await lock.release();
   });
 
-  it('throws when another instance holds the same global lock', async () => {
+  it('throws a GlobalLockHeldError when another instance holds the same global lock', async () => {
     const name = `test-${randomUUID()}`;
     const lock = await acquireGlobalLock(name);
     try {
-      await expect(acquireGlobalLock(name)).rejects.toThrow('already in use');
+      await expect(acquireGlobalLock(name)).rejects.toThrow(GlobalLockHeldError);
+      await expect(acquireGlobalLock(name)).rejects.toMatchObject({ lockName: name });
     } finally {
       await lock.release();
     }

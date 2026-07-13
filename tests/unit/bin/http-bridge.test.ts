@@ -1,14 +1,22 @@
 import { PassThrough, Readable } from "node:stream";
+import { EventEmitter } from "node:events";
+import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
+import { pathToFileURL } from "node:url";
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import type { JSONRPCMessage } from "@modelcontextprotocol/sdk/types.js";
-import { describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
   DEFAULT_BRIDGE_URL,
+  type BridgeCliDependencies,
   type HttpBridgeOptions,
   parseBridgeArgs,
   resolveBridgeUrl,
-  runHttpBridge,
+  resolveNexusExecutable,
+  runBridgeCli,
+  runHttpBridgeWithSignalSource,
 } from "../../../src/bin/http-bridge.js";
 
 class FakeTransport implements Transport {
@@ -87,18 +95,19 @@ function collectOutput(): { readonly stream: PassThrough; readonly text: () => s
   return { stream, text: () => chunks.join("") };
 }
 
-function createBridgeHarness(input: Readable, transport: FakeTransport) {
+function createBridgeHarness(input: Readable, transport: FakeTransport, signalSource?: EventEmitter) {
   const output = collectOutput();
   const errorOutput = collectOutput();
-  const options: HttpBridgeOptions = {
+  const options = {
     url: new URL(DEFAULT_BRIDGE_URL),
     input,
     output: output.stream,
     errorOutput: errorOutput.stream,
     createTransport: () => transport,
+    signalSource: signalSource ?? new EventEmitter(),
   };
 
-  return { errorOutput, options, output };
+  return { errorOutput, options, output, signalSource: options.signalSource };
 }
 
 describe("http bridge", () => {
@@ -126,9 +135,70 @@ describe("http bridge", () => {
     });
 
     it("rejects an invalid bridge URL", () => {
-      expect(() => resolveBridgeUrl("not a URL", undefined)).toThrow(
-        /Invalid bridge URL/,
-      );
+      expect(() => resolveBridgeUrl("not a URL", undefined)).toThrow(/Invalid bridge URL/);
+    });
+  });
+  describe("resolveNexusExecutable", () => {
+    let tempDir: string;
+
+    beforeEach(async () => {
+      tempDir = await mkdtemp(join(tmpdir(), "nexus-exec-"));
+    });
+
+    afterEach(async () => {
+      await rm(tempDir, { force: true, recursive: true });
+    });
+
+    it("prefers the TypeScript entry when the bridge is a .ts file", async () => {
+      const bridgeDir = join(tempDir, "src", "bin");
+      await mkdir(bridgeDir, { recursive: true });
+      await writeFile(join(bridgeDir, "http-bridge.ts"), "");
+      await writeFile(join(bridgeDir, "nexus.ts"), "");
+
+      const exec = resolveNexusExecutable(pathToFileURL(join(bridgeDir, "http-bridge.ts")).toString());
+      expect(exec).toBe(join(bridgeDir, "nexus.ts"));
+    });
+
+    it("prefers the JavaScript entry when the bridge is a .js file", async () => {
+      const bridgeDir = join(tempDir, "dist", "bin");
+      await mkdir(bridgeDir, { recursive: true });
+      await writeFile(join(bridgeDir, "http-bridge.js"), "");
+      await writeFile(join(bridgeDir, "nexus.js"), "");
+
+      const exec = resolveNexusExecutable(pathToFileURL(join(bridgeDir, "http-bridge.js")).toString());
+      expect(exec).toBe(join(bridgeDir, "nexus.js"));
+    });
+
+    it("prefers the JavaScript entry when the bridge is a .ts file but no sibling nexus.ts exists", async () => {
+      const bridgeDir = join(tempDir, "mixed", "bin");
+      await mkdir(bridgeDir, { recursive: true });
+      await writeFile(join(bridgeDir, "http-bridge.ts"), "");
+      await writeFile(join(bridgeDir, "nexus.js"), "");
+
+      const exec = resolveNexusExecutable(pathToFileURL(join(bridgeDir, "http-bridge.ts")).toString());
+      expect(exec).toBe(join(bridgeDir, "nexus.js"));
+    });
+
+    it("falls back to argv[1] when no sibling nexus entry exists", async () => {
+      const argvSpy = vi.spyOn(process, "argv", "get").mockReturnValue(["/entry", "/fallback/nexus"]);
+      const bridgeDir = join(tempDir, "nowhere", "bin");
+      await mkdir(bridgeDir, { recursive: true });
+      await writeFile(join(bridgeDir, "http-bridge.js"), "");
+
+      const exec = resolveNexusExecutable(pathToFileURL(join(bridgeDir, "http-bridge.js")).toString());
+      expect(exec).toBe("/fallback/nexus");
+      argvSpy.mockRestore();
+    });
+
+    it("falls back to the nexus command name when argv[1] is unavailable", async () => {
+      const argvSpy = vi.spyOn(process, "argv", "get").mockReturnValue(["/entry"]);
+      const bridgeDir = join(tempDir, "nowhere2", "bin");
+      await mkdir(bridgeDir, { recursive: true });
+      await writeFile(join(bridgeDir, "http-bridge.js"), "");
+
+      const exec = resolveNexusExecutable(pathToFileURL(join(bridgeDir, "http-bridge.js")).toString());
+      expect(exec).toBe("nexus");
+      argvSpy.mockRestore();
     });
   });
 
@@ -137,7 +207,7 @@ describe("http bridge", () => {
       const transport = new FakeTransport();
       const harness = createBridgeHarness(Readable.from([]), transport);
 
-      await runHttpBridge(harness.options);
+      await runHttpBridgeWithSignalSource(harness.options);
 
       expect(transport.callbacksInstalledAtStart).toBe(true);
     });
@@ -156,7 +226,7 @@ describe("http bridge", () => {
         transport,
       );
 
-      await runHttpBridge(harness.options);
+      await runHttpBridgeWithSignalSource(harness.options);
 
       expect(transport.sent).toEqual([first, second]);
       expect(harness.output.text()).toBe(
@@ -173,7 +243,7 @@ describe("http bridge", () => {
         transport,
       );
 
-      await runHttpBridge(harness.options);
+      await runHttpBridgeWithSignalSource(harness.options);
 
       expect(transport.sent).toEqual([request]);
       expect(harness.output.text()).toBe("");
@@ -192,7 +262,7 @@ describe("http bridge", () => {
         transport,
       );
 
-      await runHttpBridge(harness.options);
+      await runHttpBridgeWithSignalSource(harness.options);
 
       expect(transport.sent).toEqual([request]);
       expect(harness.output.text()).toBe("");
@@ -212,7 +282,7 @@ describe("http bridge", () => {
       };
       const harness = createBridgeHarness(Readable.from([`${JSON.stringify(request)}\n`]), transport);
 
-      await runHttpBridge(harness.options);
+      await runHttpBridgeWithSignalSource(harness.options);
 
       expect(transport.protocolVersion).toBe("2025-03-26");
     });
@@ -221,7 +291,7 @@ describe("http bridge", () => {
       const transport = new FakeTransport();
       const harness = createBridgeHarness(Readable.from([]), transport);
 
-      await runHttpBridge(harness.options);
+      await runHttpBridgeWithSignalSource(harness.options);
 
       expect(transport.closeCalls).toBe(1);
     });
@@ -231,13 +301,13 @@ describe("http bridge", () => {
       async (signal) => {
         const input = new PassThrough();
         const transport = new FakeTransport();
-        transport.onStart = () => {
-          process.emit(signal);
-          process.emit(signal);
-        };
         const harness = createBridgeHarness(input, transport);
+        transport.onStart = () => {
+          harness.signalSource.emit(signal);
+          harness.signalSource.emit(signal);
+        };
 
-        await runHttpBridge(harness.options);
+        await runHttpBridgeWithSignalSource(harness.options);
 
         expect(transport.closeCalls).toBe(1);
       },
@@ -248,7 +318,7 @@ describe("http bridge", () => {
       transport.startError = new Error("connection failed");
       const harness = createBridgeHarness(Readable.from([]), transport);
 
-      await expect(runHttpBridge(harness.options)).rejects.toThrow("connection failed");
+      await expect(runHttpBridgeWithSignalSource(harness.options)).rejects.toThrow("connection failed");
       expect(transport.closeCalls).toBe(1);
     });
 
@@ -262,7 +332,7 @@ describe("http bridge", () => {
         transport,
       );
 
-      await expect(runHttpBridge(harness.options)).rejects.toThrow("request failed");
+      await expect(runHttpBridgeWithSignalSource(harness.options)).rejects.toThrow("request failed");
       expect(transport.sent).toEqual([first]);
       expect(transport.closeCalls).toBe(1);
     });
@@ -272,7 +342,7 @@ describe("http bridge", () => {
       transport.closeError = new Error("close failed");
       const harness = createBridgeHarness(Readable.from([]), transport);
 
-      await expect(runHttpBridge(harness.options)).rejects.toThrow("close failed");
+      await expect(runHttpBridgeWithSignalSource(harness.options)).rejects.toThrow("close failed");
       expect(transport.closeCalls).toBe(1);
     });
 
@@ -283,12 +353,13 @@ describe("http bridge", () => {
       };
       const harness = createBridgeHarness(Readable.from([]), transport);
 
-      await runHttpBridge(harness.options);
+      await runHttpBridgeWithSignalSource(harness.options);
 
       expect(harness.errorOutput.text()).toContain("network disconnected");
       expect(harness.output.text()).toBe("");
     });
   });
+
   describe("parseBridgeArgs", () => {
     it("uses the CLI URL over the environment URL", () => {
       const result = parseBridgeArgs(
@@ -316,6 +387,21 @@ describe("http bridge", () => {
       expect(result.url).toBeUndefined();
     });
 
+    it("resolves the project root from CLI and environment", () => {
+      const cwdSpy = vi.spyOn(process, "cwd").mockReturnValue("/cwd");
+
+      const resultCli = parseBridgeArgs(["--project-root", "/cli"], {});
+      expect(resultCli.projectRoot).toBe("/cli");
+
+      const resultEnv = parseBridgeArgs([], { NEXUS_PROJECT_ROOT: "/env" });
+      expect(resultEnv.projectRoot).toBe("/env");
+
+      const resultDefault = parseBridgeArgs([], {});
+      expect(resultDefault.projectRoot).toBe("/cwd");
+
+      cwdSpy.mockRestore();
+    });
+
     it("rejects unknown options under strict parsing", () => {
       expect(() =>
         parseBridgeArgs(["--unknown"], { NEXUS_BRIDGE_URL: undefined }),
@@ -329,6 +415,145 @@ describe("http bridge", () => {
 
       expect(result.help).toBe(true);
       expect(result.url).toBe("not a URL");
+    });
+  });
+
+  describe("runBridgeCli", () => {
+    it("uses project auto-discovery only when neither URL override is supplied", async () => {
+      const ensureProjectEndpoint = vi.fn<(_options: { readonly projectRoot: string; readonly env: NodeJS.ProcessEnv }) => Promise<URL>>();
+      const runHttpBridge = vi.fn<(_options: HttpBridgeOptions) => Promise<void>>();
+      const bridgeStreams = {
+        input: new PassThrough(),
+        output: new PassThrough(),
+        errorOutput: new PassThrough(),
+      };
+      const dependencies: BridgeCliDependencies = {
+        ensureProjectEndpoint,
+        runHttpBridge,
+        bridgeStreams,
+      };
+
+      ensureProjectEndpoint.mockResolvedValue(new URL("http://127.0.0.1:44444"));
+
+      await runBridgeCli([], {}, dependencies);
+
+      expect(ensureProjectEndpoint).toHaveBeenCalledOnce();
+      expect(runHttpBridge).toHaveBeenCalledOnce();
+      expect(runHttpBridge.mock.calls[0]?.[0].url.href).toBe("http://127.0.0.1:44444/");
+    });
+
+    it("uses the CLI URL override and skips auto-discovery", async () => {
+      const ensureProjectEndpoint = vi.fn<(_options: { readonly projectRoot: string; readonly env: NodeJS.ProcessEnv }) => Promise<URL>>();
+      const runHttpBridge = vi.fn<(_options: HttpBridgeOptions) => Promise<void>>();
+      const bridgeStreams = {
+        input: new PassThrough(),
+        output: new PassThrough(),
+        errorOutput: new PassThrough(),
+      };
+      const dependencies: BridgeCliDependencies = {
+        ensureProjectEndpoint,
+        runHttpBridge,
+        bridgeStreams,
+      };
+
+      await runBridgeCli(["--url", "http://127.0.0.1:55555"], {}, dependencies);
+
+      expect(ensureProjectEndpoint).not.toHaveBeenCalled();
+      expect(runHttpBridge).toHaveBeenCalledOnce();
+      expect(runHttpBridge.mock.calls[0]?.[0].url.href).toBe("http://127.0.0.1:55555/");
+    });
+
+    it("uses the environment URL override and skips auto-discovery", async () => {
+      const ensureProjectEndpoint = vi.fn<(_options: { readonly projectRoot: string; readonly env: NodeJS.ProcessEnv }) => Promise<URL>>();
+      const runHttpBridge = vi.fn<(_options: HttpBridgeOptions) => Promise<void>>();
+      const bridgeStreams = {
+        input: new PassThrough(),
+        output: new PassThrough(),
+        errorOutput: new PassThrough(),
+      };
+      const dependencies: BridgeCliDependencies = {
+        ensureProjectEndpoint,
+        runHttpBridge,
+        bridgeStreams,
+      };
+
+      await runBridgeCli([], { NEXUS_BRIDGE_URL: "http://127.0.0.1:3006" }, dependencies);
+
+      expect(ensureProjectEndpoint).not.toHaveBeenCalled();
+      expect(runHttpBridge).toHaveBeenCalledOnce();
+      expect(runHttpBridge.mock.calls[0]?.[0].url.href).toBe("http://127.0.0.1:3006/");
+    });
+
+    it("prefers the CLI URL over the environment URL for manual override", async () => {
+      const ensureProjectEndpoint = vi.fn<(_options: { readonly projectRoot: string; readonly env: NodeJS.ProcessEnv }) => Promise<URL>>();
+      const runHttpBridge = vi.fn<(_options: HttpBridgeOptions) => Promise<void>>();
+      const bridgeStreams = {
+        input: new PassThrough(),
+        output: new PassThrough(),
+        errorOutput: new PassThrough(),
+      };
+      const dependencies: BridgeCliDependencies = {
+        ensureProjectEndpoint,
+        runHttpBridge,
+        bridgeStreams,
+      };
+
+      await runBridgeCli(
+        ["--url", "http://127.0.0.1:3007"],
+        { NEXUS_BRIDGE_URL: "http://127.0.0.1:3008" },
+        dependencies,
+      );
+
+      expect(ensureProjectEndpoint).not.toHaveBeenCalled();
+      expect(runHttpBridge.mock.calls[0]?.[0].url.href).toBe("http://127.0.0.1:3007/");
+    });
+
+    it("passes the project root and environment to auto-discovery", async () => {
+      const ensureProjectEndpoint = vi.fn<(_options: { readonly projectRoot: string; readonly env: NodeJS.ProcessEnv }) => Promise<URL>>();
+      const runHttpBridge = vi.fn<(_options: HttpBridgeOptions) => Promise<void>>();
+      const bridgeStreams = {
+        input: new PassThrough(),
+        output: new PassThrough(),
+        errorOutput: new PassThrough(),
+      };
+      const dependencies: BridgeCliDependencies = {
+        ensureProjectEndpoint,
+        runHttpBridge,
+        bridgeStreams,
+      };
+
+      ensureProjectEndpoint.mockResolvedValue(new URL("http://127.0.0.1:44444"));
+
+      await runBridgeCli(["--project-root", "/my/project"], { NEXUS_FOO: "bar" }, dependencies);
+
+      expect(ensureProjectEndpoint).toHaveBeenCalledWith({
+        projectRoot: "/my/project",
+        env: { NEXUS_FOO: "bar" },
+      });
+    });
+
+    it("writes help to stderr and does not start the bridge", async () => {
+      const ensureProjectEndpoint = vi.fn<(_options: { readonly projectRoot: string; readonly env: NodeJS.ProcessEnv }) => Promise<URL>>();
+      const runHttpBridge = vi.fn<(_options: HttpBridgeOptions) => Promise<void>>();
+      const errorOutput = new PassThrough();
+      const chunks: Buffer[] = [];
+      errorOutput.on("data", (chunk: Buffer) => chunks.push(chunk));
+      const bridgeStreams = {
+        input: new PassThrough(),
+        output: new PassThrough(),
+        errorOutput,
+      };
+      const dependencies: BridgeCliDependencies = {
+        ensureProjectEndpoint,
+        runHttpBridge,
+        bridgeStreams,
+      };
+
+      await runBridgeCli(["--help"], {}, dependencies);
+
+      expect(ensureProjectEndpoint).not.toHaveBeenCalled();
+      expect(runHttpBridge).not.toHaveBeenCalled();
+      expect(Buffer.concat(chunks).toString("utf8")).toContain("Nexus HTTP Bridge");
     });
   });
 });
