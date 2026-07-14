@@ -120,6 +120,40 @@ describe('project-connector', () => {
     expect(spawnCount).toBe(1);
   });
 
+  it('creates a missing storage directory before acquiring the startup lock', async () => {
+    await rm(storageDir, { force: true, recursive: true });
+    const harness = createHarness();
+    const instanceId = `instance-${randomUUID()}`;
+    const port = 43125;
+    harness.spawnImpl.mockImplementation((_exec: string, _args: readonly string[], _options: object) => {
+      setTimeout(() => {
+        void writeProjectEndpoint(storageDir, healthyEndpoint(instanceId, port));
+      }, 25);
+      return createFakeChildProcess();
+    });
+    harness.fetchImpl.mockImplementation(async (url: string) => {
+      const endpoint = await readProjectEndpoint(storageDir);
+      if (endpoint !== undefined && url === new URL('/health', endpoint.url).toString()) {
+        return new Response(JSON.stringify({ instanceId: endpoint.instanceId, projectRoot }), { status: 200 });
+      }
+      return new Response('not found', { status: 404 });
+    });
+
+    const url = await ensureProjectEndpoint({
+      projectRoot,
+      storageDir,
+      childExecutable: process.execPath,
+      env: {},
+      spawn: harness.spawnImpl,
+      fetch: harness.fetchImpl,
+      startupTimeoutMs: 2_000,
+      pollIntervalMs: 25,
+    });
+
+    expect(url.port).toBe(String(port));
+    expect(harness.spawnImpl).toHaveBeenCalledOnce();
+  });
+
   it('reuses the endpoint published by an actual managed child process', async () => {
     const childScript = join(projectRoot, 'managed-child.mjs');
     await writeFile(
@@ -227,6 +261,47 @@ describe('project-connector', () => {
     expect(url.port).toBe(String(port));
     expect(harness.spawnImpl).toHaveBeenCalledTimes(1);
     expect(await readProjectEndpoint(storageDir)).toMatchObject({ instanceId });
+  });
+
+  it('rejects a localhost descriptor and spawns a loopback-managed child', async () => {
+    const endpoint: ProjectEndpoint = {
+      instanceId: 'instance-localhost',
+      pid: process.pid,
+      projectRoot,
+      url: 'http://localhost:43127',
+    };
+    await writeProjectEndpoint(storageDir, endpoint);
+
+    const harness = createHarness();
+    const instanceId = `instance-${randomUUID()}`;
+    const port = 43130;
+    harness.spawnImpl.mockImplementation((_exec: string, _args: readonly string[], _options: object) => {
+      setTimeout(() => {
+        void writeProjectEndpoint(storageDir, healthyEndpoint(instanceId, port));
+      }, 25);
+      return createFakeChildProcess();
+    });
+    harness.fetchImpl.mockImplementation(async (url: string) => {
+      const current = await readProjectEndpoint(storageDir);
+      if (current !== undefined && url === new URL('/health', current.url).toString()) {
+        return new Response(JSON.stringify({ instanceId: current.instanceId, projectRoot }), { status: 200 });
+      }
+      return new Response('not found', { status: 404 });
+    });
+
+    const url = await ensureProjectEndpoint({
+      projectRoot,
+      storageDir,
+      childExecutable: process.execPath,
+      env: {},
+      spawn: harness.spawnImpl,
+      fetch: harness.fetchImpl,
+      startupTimeoutMs: 2000,
+      pollIntervalMs: 25,
+    });
+
+    expect(url.port).toBe(String(port));
+    expect(harness.spawnImpl).toHaveBeenCalledOnce();
   });
 
   it('throws when no healthy endpoint appears within the startup timeout', async () => {
