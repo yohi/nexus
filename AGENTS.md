@@ -56,8 +56,10 @@ devcontainer.
 
 ## Development Rules
 
-- Use TypeScript with strict types. Do not add `as any`, `@ts-ignore`, or
-  `@ts-expect-error` to bypass errors.
+- Use TypeScript with strict types. `npm run lint` already fails the build on
+  `any` and bare `@ts-ignore`, so rely on it rather than self-policing syntax.
+  The one thing lint allows that we don't: never add `@ts-expect-error`, even
+  with a description, to bypass a type error — fix the underlying type.
 - Preserve local-first behavior. Do not introduce external data transmission
   unless the user explicitly asks for it and docs/configuration are updated.
 - Do not commit machine-specific absolute paths, credentials, tokens, or
