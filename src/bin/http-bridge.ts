@@ -135,6 +135,14 @@ export async function runHttpBridgeWithSignalSource(
       options.signalSource.removeListener("SIGTERM", handleSignal);
 
       if (!transportClosed) {
+        if (
+          typeof transport === "object" &&
+          transport !== null &&
+          "terminateSession" in transport &&
+          typeof (transport as { terminateSession?: () => Promise<void> }).terminateSession === "function"
+        ) {
+          await (transport as { terminateSession: () => Promise<void> }).terminateSession().catch(() => undefined);
+        }
         await transport.close();
       }
     })();

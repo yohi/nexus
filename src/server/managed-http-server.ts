@@ -76,6 +76,18 @@ export async function startManagedHttpServer(
       return;
     }
 
+    if (req.method === 'GET' && req.url === '/') {
+      res.statusCode = 405;
+      res.setHeader('Content-Type', 'application/json');
+      res.setHeader('Allow', 'POST, DELETE');
+      res.end(JSON.stringify({
+        jsonrpc: '2.0',
+        error: { code: -32000, message: 'Method not allowed.' },
+        id: null,
+      }));
+      return;
+    }
+
     mcpHandler(req, res).catch((error: unknown) => {
       console.error('[MCP Handler Unhandled Error]', error);
       if (!res.headersSent) {
