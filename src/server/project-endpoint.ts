@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { readFile, rename, unlink, writeFile } from "node:fs/promises";
+import { readFile, rename, stat, unlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { z } from "zod";
 
@@ -84,6 +84,8 @@ export async function removeProjectEndpointIfMatching(
 ): Promise<void> {
   const target = join(storageDir, PROJECT_ENDPOINT_FILENAME);
 
+  let observedInode: number;
+  let observedDevice: number;
   try {
     const content = await readFile(target, 'utf8');
     let rawEndpoint: unknown;
@@ -102,6 +104,13 @@ export async function removeProjectEndpointIfMatching(
     ) {
       return;
     }
+
+    // Record which directory entry we validated so we can detect (below)
+    // whether another process replaced it with a fresh descriptor before
+    // we get to unlink().
+    const stats = await stat(target);
+    observedInode = stats.ino;
+    observedDevice = stats.dev;
   } catch (error: unknown) {
     if (isMissingFileError(error)) {
       return;
@@ -110,6 +119,15 @@ export async function removeProjectEndpointIfMatching(
   }
 
   try {
+    // Re-validate the directory entry immediately before deleting. If a
+    // different process published a new descriptor (via writeProjectEndpoint's
+    // rename) after we read and validated the content above, the target path
+    // now resolves to a different inode and must not be removed, even though
+    // its content happened to satisfy the checks above at read time.
+    const currentStats = await stat(target);
+    if (currentStats.ino !== observedInode || currentStats.dev !== observedDevice) {
+      return;
+    }
     await unlink(target);
   } catch (error: unknown) {
     if (!isMissingFileError(error)) {
