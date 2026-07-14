@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { readFile, rename, stat, unlink, writeFile } from "node:fs/promises";
+import { open, readFile, rename, stat, unlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { z } from "zod";
 
@@ -87,30 +87,34 @@ export async function removeProjectEndpointIfMatching(
   let observedInode: number;
   let observedDevice: number;
   try {
-    const content = await readFile(target, 'utf8');
-    let rawEndpoint: unknown;
+    const handle = await open(target, "r");
     try {
-      rawEndpoint = JSON.parse(content);
-    } catch {
-      return;
-    }
-    const result = projectEndpointSchema.safeParse(rawEndpoint);
-    if (
-      !result.success ||
-      result.data.instanceId !== expected.instanceId ||
-      result.data.pid !== expected.pid ||
-      result.data.projectRoot !== expected.projectRoot ||
-      result.data.url !== expected.url
-    ) {
-      return;
-    }
+      const content = await handle.readFile("utf8");
+      let rawEndpoint: unknown;
+      try {
+        rawEndpoint = JSON.parse(content);
+      } catch {
+        return;
+      }
+      const result = projectEndpointSchema.safeParse(rawEndpoint);
+      if (
+        !result.success ||
+        result.data.instanceId !== expected.instanceId ||
+        result.data.pid !== expected.pid ||
+        result.data.projectRoot !== expected.projectRoot ||
+        result.data.url !== expected.url
+      ) {
+        return;
+      }
 
-    // Record which directory entry we validated so we can detect (below)
-    // whether another process replaced it with a fresh descriptor before
-    // we get to unlink().
-    const stats = await stat(target);
-    observedInode = stats.ino;
-    observedDevice = stats.dev;
+      // Record which file we validated so we can detect (below) whether
+      // another process replaced it with a fresh descriptor before unlink().
+      const stats = await handle.stat();
+      observedInode = stats.ino;
+      observedDevice = stats.dev;
+    } finally {
+      await handle.close();
+    }
   } catch (error: unknown) {
     if (isMissingFileError(error)) {
       return;
