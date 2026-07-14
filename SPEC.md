@@ -59,9 +59,9 @@ stdio 接続のみに対応した MCP クライアント（OpenCode など）か
 └──────────────────┘           └──────────────────┘           └──────────────────┘
 ```
 
-Bridge はデフォルトで自動的にプロジェクト専用のループバック HTTP サーバーを発見または起動します。既存の HTTP サーバーが `endpoint.json` 記述子で健全性を示していればそれを再利用し、なければ `nexus --port 0 --managed` を detached な子プロセスとして起動します。デフォルトの自動動作は、`--url` 引数または `NEXUS_BRIDGE_URL` 環境変数で外部サービスへ明示的に中継する際にのみ上書きされます。
+Bridge はデフォルトで自動的にプロジェクト専用のループバック HTTP サーバーを発見または起動します。既存の HTTP サーバーが `endpoint.json` 記述子で健全性を示していればそれを再利用し、なければ `nexus --port 0 --managed` を detached な子プロセスとして起動します。auto-discovery と auto-launch の descriptor 検証は loopback 専用です。明示 URL モード（`--url` 引数または `NEXUS_BRIDGE_URL` 環境変数）はこの制限の例外で、外部サービスへ接続できます。このモードでは自動起動と descriptor 検証を行いません。
 
-自動管理プロセスの descriptor は `<storage.rootDir>/endpoint.json` に一時ファイルへの書き込み後 `rename` する原子的操作で永続化され、`instanceId`（起動ごとのランダム UUID）、`pid`、`projectRoot`、`url` を含みます。コネクターは、descriptor の `projectRoot` が要求元と一致し、`url` が `127.0.0.1`（ループバック）を指し、記録された `pid` が生存し、`GET /health` が同一 `instanceId`/`projectRoot` を返す、という条件をすべて満たした場合のみ健全と判定します。いずれかを満たさない descriptor は削除され、再起動候補として扱われます。起動が競合した場合、`project-start-<hash>` ロック（§7.3）を取得できなかった側は新規プロセスを起動せず、既存の健全なプロセスを停止・削除することもありません。取得できなかった側は、ロック獲得側が公開する descriptor をポーリングで待ち受け、健全と判定できた時点で同じ URL に接続します。本機能はループバックのみを対象とし、ネットワーク公開・外部ホストからの接続・systemd 等の外部プロセス管理には依存しません。
+自動管理プロセスの descriptor は `<storage.rootDir>/endpoint.json` に一時ファイルへの書き込み後 `rename` する原子的操作で永続化され、`instanceId`（起動ごとのランダム UUID）、`pid`、`projectRoot`、`url` を含みます。managed server の descriptor 検証と health 検証は loopback 専用で、コネクターは、descriptor の `projectRoot` が要求元と一致し、`url` が `127.0.0.1`（ループバック）を指し、記録された `pid` が生存し、`GET /health` が同一 `instanceId`/`projectRoot` を返す、という条件をすべて満たした場合のみ健全と判定します。いずれかを満たさない descriptor は削除され、再起動候補として扱われます。起動が競合した場合、`project-start-<hash>` ロック（§7.3）を取得できなかった側は新規プロセスを起動せず、既存の健全なプロセスを停止・削除することもありません。取得できなかった側は、ロック獲得側が公開する descriptor をポーリングで待ち受け、健全と判定できた時点で同じ URL に接続します。本機能はループバックのみを対象とし、ネットワーク公開・外部ホストからの接続・systemd 等の外部プロセス管理には依存しません。明示 URL モードではこの descriptor/health 検証を行いません。
 
 同一プロジェクトに対して複数の MCP クライアントが同時に接続できます。各クライアントは独立した MCP サーバー/transport インスタンスを持ちますが、SQLite・LanceDB・File Watcher などのランタイムリソースは 1 つの managed HTTP サーバープロセスだけが所有し、全クライアントで共有します。
 

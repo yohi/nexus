@@ -221,7 +221,7 @@ nexus http-bridge
 
 同じプロジェクトに対しては常に 1 つの Nexus HTTP サーバーが共有されます。初回の Bridge 接続時にまだ HTTP サーバーが起動していなければ、OS 割当のループバックポートで自動起動します。全 MCP クライアントが切断すると、HTTP サーバーは自動的に停止し、プロジェクトの `endpoint.json` 記述子も削除されます。
 
-managed server の descriptor は `<storage.rootDir>/endpoint.json` に保存され、`instanceId`（起動ごとのランダム UUID）、`pid`、`projectRoot`、`url` を含みます。コネクターは、descriptor の `projectRoot` 一致、`url` が `127.0.0.1`（ループバック）であること、`pid` の生存、`GET /health` が同一 `instanceId`/`projectRoot` を返すこと、というすべての条件で健全性を判定し、いずれかを満たさない場合は descriptor を削除して再起動候補とします。起動が競合した場合、グローバル起動ロックを取得できなかった側のコネクターは新規プロセスを起動せず、取得側が公開する descriptor をポーリングで待ち受けて同じ URL に接続します。`127.0.0.1` 以外を指す URL は健全とは判定されないため、本機能はループバックのみを対象とし、ネットワーク公開や systemd 等の外部プロセス管理には依存しません。
+managed server の descriptor は `<storage.rootDir>/endpoint.json` に保存され、`instanceId`（起動ごとのランダム UUID）、`pid`、`projectRoot`、`url` を含みます。managed server の descriptor health check は `127.0.0.1` のみを受け付ける loopback-only 制限です。コネクターは、descriptor の `projectRoot` 一致、`url` が `127.0.0.1`（ループバック）であること、`pid` の生存、`GET /health` が同一 `instanceId`/`projectRoot` を返すこと、というすべての条件で健全性を判定し、いずれかを満たさない場合は descriptor を削除して再起動候補とします。起動が競合した場合、グローバル起動ロックを取得できなかった側のコネクターは新規プロセスを起動せず、取得側が公開する descriptor をポーリングで待ち受けて同じ URL に接続します。`127.0.0.1` 以外を指す URL は健全とは判定されないため、本機能はループバックのみを対象とし、ネットワーク公開や systemd 等の外部プロセス管理には依存しません。
 
 同一プロジェクトに対して複数の MCP クライアントが同時に接続できます。各クライアントは独立した MCP セッションを持ちますが、SQLite・LanceDB・File Watcher は 1 つの managed server プロセスに集約されます。アクティブなクライアントが 0 になると、managed server は runtime を閉じて descriptor とプロセスロックを削除し終了します（`--idle-shutdown-ms` / `NEXUS_IDLE_SHUTDOWN_MS` で遅延を調整可能、デフォルト `0`）。起動後 30 秒以内にクライアントが 1 つも接続しない場合も同様に自動終了します。
 
@@ -237,7 +237,7 @@ nexus http-bridge --project-root /path/to/project
 
 ### URL の指定方法
 
-明示的に外部サービスへ中継したい場合は、`--url` 引数または `NEXUS_BRIDGE_URL` 環境変数で上書きできます。
+明示的 URL モード（`--url` 引数または `NEXUS_BRIDGE_URL` 環境変数）は、外部サービスへ接続できる例外です。このモードでは自動起動と descriptor 検証をスキップし、指定した URL にのみ接続します。
 
 ```text
 --url > NEXUS_BRIDGE_URL

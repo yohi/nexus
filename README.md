@@ -105,7 +105,7 @@ When using **Nexus MCP** tools for codebase exploration and semantic search, adh
 
 stdio-only の MCP クライアント（OpenCode など）から使う場合は、`nexus http-bridge` を使います。Bridge は stdio 上の JSON-RPC を Nexus の Streamable HTTP エンドポイントに転送します。
 
-引数なしで実行すると、プロジェクトごとに 1 つの loopback HTTP Nexus プロセスを自動的に発見または起動し（`.nexus/endpoint.json` で管理）、最後の MCP クライアントが切断すると自動的に停止します。ポート番号や URL を手動で管理する必要はありません。
+引数なしで実行すると、プロジェクトごとに 1 つの loopback HTTP Nexus プロセスを自動的に発見または起動し、最後の MCP クライアントが切断すると自動的に停止します。descriptor は `<storage.rootDir>/endpoint.json` に保存され、デフォルトは `.nexus/endpoint.json` です。`NEXUS_STORAGE_ROOT_DIR` または `.nexus.json` の `storage.rootDir` で保存先を変更できます。ポート番号や URL を手動で管理する必要はありません。
 
 同一プロジェクトに対して複数の MCP クライアント（複数のエディタウィンドウやエージェントなど）が同時に接続でき、それぞれ独立した MCP セッションを持ちながら同じインデックス（SQLite/LanceDB）や File Watcher を共有します。
 
