@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { randomUUID } from 'node:crypto';
 import { spawn, type ChildProcess } from 'node:child_process';
+import { EventEmitter } from 'node:events';
 
 import {
   ensureProjectEndpoint,
@@ -20,9 +21,13 @@ interface FakeChildProcess extends ChildProcess {
 }
 
 function createFakeChildProcess(): FakeChildProcess {
-  return {
+  // A real EventEmitter so production code can safely register `error`/`exit`
+  // listeners on it (mirrors the real ChildProcess API), while still letting
+  // tests that never emit those events behave exactly as before.
+  const emitter = new EventEmitter();
+  return Object.assign(emitter, {
     unref: vi.fn(),
-  } as unknown as FakeChildProcess;
+  }) as unknown as FakeChildProcess;
 }
 
 function createHarness() {
@@ -30,6 +35,12 @@ function createHarness() {
   const spawnImpl = vi.fn<(_exec: string, _args: readonly string[], _options: object) => ChildProcess>();
 
   return { fetchImpl, spawnImpl };
+}
+
+async function waitForSpawnCall(spawnImpl: ReturnType<typeof createHarness>['spawnImpl']): Promise<void> {
+  while (spawnImpl.mock.calls.length === 0) {
+    await new Promise<void>((resolve) => { setTimeout(resolve, 5); });
+  }
 }
 
 describe('project-connector', () => {
@@ -75,7 +86,10 @@ describe('project-connector', () => {
 
     expect(url.href).toBe(`${endpoint.url}/`);
     expect(harness.spawnImpl).not.toHaveBeenCalled();
-    expect(harness.fetchImpl).toHaveBeenCalledWith(new URL('/health', endpoint.url).toString());
+    expect(harness.fetchImpl).toHaveBeenCalledWith(
+      new URL('/health', endpoint.url).toString(),
+      expect.objectContaining({ signal: expect.anything() }),
+    );
   });
 
   it('spawns once when two connectors race without an endpoint', async () => {
@@ -325,6 +339,65 @@ describe('project-connector', () => {
     );
   });
 
+  it('rejects immediately when the spawned child reports an error instead of waiting for the startup timeout', async () => {
+    const harness = createHarness();
+    let fakeChild: FakeChildProcess | undefined;
+    harness.spawnImpl.mockImplementation(() => {
+      fakeChild = createFakeChildProcess();
+      return fakeChild;
+    });
+    harness.fetchImpl.mockResolvedValue(new Response('not found', { status: 404 }));
+
+    const options: ProjectConnectorOptions = {
+      projectRoot,
+      storageDir,
+      childExecutable: '/does/not/exist',
+      env: {},
+      spawn: harness.spawnImpl,
+      fetch: harness.fetchImpl,
+      // Much longer than the spawn failure below, so a passing test proves
+      // the rejection came from the child's `error` event rather than from
+      // the startup timeout elapsing.
+      startupTimeoutMs: 60_000,
+      pollIntervalMs: 25,
+    };
+
+    const pending = ensureProjectEndpoint(options);
+    await waitForSpawnCall(harness.spawnImpl);
+    fakeChild!.emit('error', Object.assign(new Error('spawn ENOENT'), { code: 'ENOENT' }));
+
+    await expect(pending).rejects.toThrow('spawn ENOENT');
+  });
+
+  it('rejects immediately when the spawned child exits before publishing a healthy endpoint', async () => {
+    const harness = createHarness();
+    let fakeChild: FakeChildProcess | undefined;
+    harness.spawnImpl.mockImplementation(() => {
+      fakeChild = createFakeChildProcess();
+      return fakeChild;
+    });
+    harness.fetchImpl.mockResolvedValue(new Response('not found', { status: 404 }));
+
+    const options: ProjectConnectorOptions = {
+      projectRoot,
+      storageDir,
+      childExecutable: process.execPath,
+      env: {},
+      spawn: harness.spawnImpl,
+      fetch: harness.fetchImpl,
+      startupTimeoutMs: 60_000,
+      pollIntervalMs: 25,
+    };
+
+    const pending = ensureProjectEndpoint(options);
+    await waitForSpawnCall(harness.spawnImpl);
+    fakeChild!.emit('exit', 1, null);
+
+    await expect(pending).rejects.toThrow(
+      'Managed nexus child exited before publishing a healthy endpoint (code=1, signal=null)',
+    );
+  });
+
   it('spawns a new child when the descriptor projectRoot does not match', async () => {
     const endpoint: ProjectEndpoint = {
       instanceId: 'instance-root-mismatch',
@@ -477,28 +550,43 @@ describe('project-connector', () => {
   });
 
   it('rethrows filesystem errors from the startup lock acquisition', async () => {
-    const harness = createHarness();
+    // Simulate a filesystem error surfacing from the startup lock
+    // acquisition path (e.g. a permission-denied realpath() or lockfile
+    // write) deterministically, via a scoped module mock, rather than
+    // relying on chmod(storageDir, 0o000). chmod-based permission denial
+    // does not reliably fail when tests run as root (common in CI
+    // containers) or on Windows, which made this test flaky.
+    vi.resetModules();
+    const fsError = Object.assign(new Error('Simulated filesystem failure'), { code: 'EACCES' });
 
-    const options: ProjectConnectorOptions = {
-      projectRoot,
-      storageDir,
-      childExecutable: '/not-used',
-      env: {},
-      spawn: harness.spawnImpl,
-      fetch: harness.fetchImpl,
-      startupTimeoutMs: 150,
-      pollIntervalMs: 25,
-    };
-
-    // Make the storage directory unreadable so lock acquisition fails with
-    // a filesystem error rather than ELOCKED.
-    await chmod(storageDir, 0o000);
+    vi.doMock('../../../src/utils/global-lock.js', () => ({
+      acquireGlobalLock: vi.fn().mockRejectedValue(fsError),
+      GlobalLockHeldError: class GlobalLockHeldError extends Error {},
+      projectStartupLockName: vi.fn().mockResolvedValue('mocked-lock-name'),
+    }));
 
     try {
-      await expect(ensureProjectEndpoint(options)).rejects.toThrow();
+      const { ensureProjectEndpoint: isolatedEnsureProjectEndpoint } = await import(
+        '../../../src/server/project-connector.js'
+      );
+
+      const harness = createHarness();
+      const options: ProjectConnectorOptions = {
+        projectRoot,
+        storageDir,
+        childExecutable: '/not-used',
+        env: {},
+        spawn: harness.spawnImpl,
+        fetch: harness.fetchImpl,
+        startupTimeoutMs: 150,
+        pollIntervalMs: 25,
+      };
+
+      await expect(isolatedEnsureProjectEndpoint(options)).rejects.toBe(fsError);
       expect(harness.spawnImpl).not.toHaveBeenCalled();
     } finally {
-      await chmod(storageDir, 0o755);
+      vi.doUnmock('../../../src/utils/global-lock.js');
+      vi.resetModules();
     }
   });
 });

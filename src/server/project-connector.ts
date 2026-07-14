@@ -22,13 +22,21 @@ export interface SpawnFn {
 }
 
 export interface FetchFn {
-  (url: string): Promise<Response>;
+  (url: string, init?: { readonly signal?: AbortSignal }): Promise<Response>;
 }
 
 export interface ProjectConnectorOptions {
   readonly projectRoot: string;
   readonly storageDir: string;
   readonly childExecutable: string;
+  /**
+   * Extra arguments spawned immediately before the standard managed-mode
+   * arguments (`--project-root`, `--port`, `--managed`). Used to route the
+   * spawn through a runtime/loader (e.g. `process.execPath` plus its
+   * `execArgv`) when `childExecutable` is not directly executable, such as
+   * a TypeScript source entry when running from a source checkout.
+   */
+  readonly childArgs?: readonly string[];
   readonly env: NodeJS.ProcessEnv;
   readonly spawn: SpawnFn;
   readonly fetch: FetchFn;
@@ -53,41 +61,49 @@ async function fetchHealth(
   endpoint: ProjectEndpoint,
   projectRoot: string,
   fetchImpl: FetchFn,
+  timeoutMs: number,
 ): Promise<ProjectEndpoint | undefined> {
-  let response: Response;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    response = await fetchImpl(new URL('/health', endpoint.url).toString());
-  } catch {
-    return undefined;
-  }
+    let response: Response;
+    try {
+      response = await fetchImpl(new URL('/health', endpoint.url).toString(), { signal: controller.signal });
+    } catch {
+      return undefined;
+    }
 
-  if (!response.ok) {
-    return undefined;
-  }
+    if (!response.ok) {
+      return undefined;
+    }
 
-  let body: unknown;
-  try {
-    body = await response.json();
-  } catch {
-    return undefined;
-  }
+    let body: unknown;
+    try {
+      body = await response.json();
+    } catch {
+      return undefined;
+    }
 
-  if (
-    typeof body !== 'object' ||
-    body === null ||
-    (body as Record<string, unknown>).instanceId !== endpoint.instanceId ||
-    (body as Record<string, unknown>).projectRoot !== projectRoot
-  ) {
-    return undefined;
-  }
+    if (
+      typeof body !== 'object' ||
+      body === null ||
+      (body as Record<string, unknown>).instanceId !== endpoint.instanceId ||
+      (body as Record<string, unknown>).projectRoot !== projectRoot
+    ) {
+      return undefined;
+    }
 
-  return endpoint;
+    return endpoint;
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 async function validateEndpoint(
   endpoint: ProjectEndpoint | undefined,
   projectRoot: string,
   fetchImpl: FetchFn,
+  timeoutMs: number,
 ): Promise<ProjectEndpoint | undefined> {
   if (endpoint === undefined) {
     return undefined;
@@ -115,7 +131,7 @@ async function validateEndpoint(
     return undefined;
   }
 
-  return fetchHealth(endpoint, projectRoot, fetchImpl);
+  return fetchHealth(endpoint, projectRoot, fetchImpl, timeoutMs);
 }
 
 async function waitForHealthyEndpoint(
@@ -128,19 +144,24 @@ async function waitForHealthyEndpoint(
   const deadline = Date.now() + timeoutMs;
 
   while (true) {
-    const endpoint = await readProjectEndpoint(storageDir);
-    const validated = await validateEndpoint(endpoint, projectRoot, fetchImpl);
-    if (validated !== undefined) {
-      return validated;
-    }
-
     const remainingMs = deadline - Date.now();
     if (remainingMs <= 0) {
       throw new Error('Timed out waiting for a healthy project endpoint');
     }
 
+    const endpoint = await readProjectEndpoint(storageDir);
+    const validated = await validateEndpoint(endpoint, projectRoot, fetchImpl, remainingMs);
+    if (validated !== undefined) {
+      return validated;
+    }
+
+    const remainingAfterCheck = deadline - Date.now();
+    if (remainingAfterCheck <= 0) {
+      throw new Error('Timed out waiting for a healthy project endpoint');
+    }
+
     await new Promise<void>((resolve) => {
-      setTimeout(resolve, Math.min(pollIntervalMs, remainingMs));
+      setTimeout(resolve, Math.min(pollIntervalMs, remainingAfterCheck));
     });
   }
 }
@@ -151,7 +172,7 @@ export async function ensureProjectEndpoint(options: ProjectConnectorOptions): P
   await mkdir(options.storageDir, { recursive: true });
 
   const initialEndpoint = await readProjectEndpoint(options.storageDir);
-  const validated = await validateEndpoint(initialEndpoint, options.projectRoot, options.fetch);
+  const validated = await validateEndpoint(initialEndpoint, options.projectRoot, options.fetch, startupTimeoutMs);
   if (validated !== undefined) {
     return new URL(validated.url);
   }
@@ -192,6 +213,7 @@ export async function ensureProjectEndpoint(options: ProjectConnectorOptions): P
       await readProjectEndpoint(options.storageDir),
       options.projectRoot,
       options.fetch,
+      startupTimeoutMs,
     );
     if (winnerEndpoint !== undefined) {
       succeeded = true;
@@ -201,6 +223,7 @@ export async function ensureProjectEndpoint(options: ProjectConnectorOptions): P
     const child = options.spawn(
       options.childExecutable,
       [
+        ...(options.childArgs ?? []),
         '--project-root',
         options.projectRoot,
         '--port',
@@ -209,18 +232,48 @@ export async function ensureProjectEndpoint(options: ProjectConnectorOptions): P
       ],
       { detached: true, env: options.env, stdio: 'ignore' },
     );
-    child.unref();
     spawned = true;
 
-    const managedEndpoint = await waitForHealthyEndpoint(
-      options.storageDir,
-      options.projectRoot,
-      options.fetch,
-      startupTimeoutMs,
-      pollIntervalMs,
-    );
-    succeeded = true;
-    return new URL(managedEndpoint.url);
+    // Race the health-check poll against the child's own error/exit events.
+    // Without this, a spawn failure (e.g. ENOENT) or a child that crashes
+    // immediately would otherwise be masked: waitForHealthyEndpoint() would
+    // just keep polling until startupTimeoutMs elapses and report a generic
+    // timeout instead of the real failure.
+    let rejectChildFailure: (reason: unknown) => void = () => {};
+    const childFailure = new Promise<never>((_, reject) => {
+      rejectChildFailure = reject;
+    });
+    const onChildError = (error: Error): void => {
+      rejectChildFailure(error);
+    };
+    const onChildExit = (code: number | null, signal: NodeJS.Signals | null): void => {
+      rejectChildFailure(
+        new Error(
+          `Managed nexus child exited before publishing a healthy endpoint (code=${code ?? 'null'}, signal=${signal ?? 'null'})`,
+        ),
+      );
+    };
+    child.once('error', onChildError);
+    child.once('exit', onChildExit);
+    child.unref();
+
+    try {
+      const managedEndpoint = await Promise.race([
+        waitForHealthyEndpoint(
+          options.storageDir,
+          options.projectRoot,
+          options.fetch,
+          startupTimeoutMs,
+          pollIntervalMs,
+        ),
+        childFailure,
+      ]);
+      succeeded = true;
+      return new URL(managedEndpoint.url);
+    } finally {
+      child.removeListener('error', onChildError);
+      child.removeListener('exit', onChildExit);
+    }
   } finally {
     await lockHandle?.release().catch(() => {});
     // If we spawned a child but never saw a healthy descriptor, clean up the
@@ -228,7 +281,7 @@ export async function ensureProjectEndpoint(options: ProjectConnectorOptions): P
     if (spawned && !succeeded) {
       const finalEndpoint = await readProjectEndpoint(options.storageDir);
       if (finalEndpoint !== undefined) {
-        const stillHealthy = await validateEndpoint(finalEndpoint, options.projectRoot, options.fetch);
+        const stillHealthy = await validateEndpoint(finalEndpoint, options.projectRoot, options.fetch, startupTimeoutMs);
         if (stillHealthy === undefined) {
           await removeProjectEndpointIfMatching(options.storageDir, finalEndpoint).catch(() => {});
         }
