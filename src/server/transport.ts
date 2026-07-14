@@ -72,6 +72,65 @@ export const createStreamableHttpHandler = ({
     onSessionClose?.(sessionId);
   };
 
+  const createSessionEntry = (
+    body: unknown,
+  ): { readonly entry: SessionEntry; readonly isNewSession: true } | undefined => {
+    if (!isInitializeRequest(body)) {
+      return undefined;
+    }
+
+    const server = createServer();
+    const sessionEntryRef: { current?: SessionEntry } = {};
+    const transport = new StreamableHTTPServerTransport({
+      sessionIdGenerator: () => {
+        const id = randomUUID();
+        if (sessionEntryRef.current) {
+          sessions.set(id, sessionEntryRef.current);
+        }
+        return id;
+      },
+      onsessioninitialized: (createdSessionId) => {
+        if (sessionEntryRef.current) {
+          sessions.set(createdSessionId, sessionEntryRef.current);
+        }
+        onSessionOpen?.(createdSessionId);
+      },
+    });
+
+    const entry: SessionEntry = {
+      server,
+      transport,
+      lastActivity: Date.now(),
+      inFlightRequests: 0,
+      closed: false,
+    };
+    sessionEntryRef.current = entry;
+
+    transport.onclose = () => {
+      if (!entry.closed) {
+        entry.closed = true;
+        const activeId = transport.sessionId;
+        if (activeId) {
+          sessions.delete(activeId);
+          onSessionClose?.(activeId);
+        }
+        void safeClose(entry.server, activeId);
+      }
+    };
+
+    return { entry, isNewSession: true };
+  };
+
+  const cleanupFailedNewSession = async (entry: SessionEntry, error: unknown): Promise<never> => {
+    entry.closed = true;
+    const activeId = entry.transport.sessionId;
+    if (activeId) {
+      sessions.delete(activeId);
+      onSessionClose?.(activeId);
+    }
+    await safeClose(entry.server, activeId);
+    throw error;
+  };
 
   const interval = setInterval(() => {
     const now = Date.now();
@@ -103,7 +162,6 @@ export const createStreamableHttpHandler = ({
     try {
       let entry = sessionId ? sessions.get(sessionId) : undefined;
       let isNewSession = false;
-      let sessionEntry: SessionEntry | undefined;
 
       if (entry) {
         if (entry.closed) {
@@ -115,56 +173,15 @@ export const createStreamableHttpHandler = ({
           entry.lastActivity = Date.now();
         }
       } else {
-        if (!isInitializeRequest(body)) {
+        const createdSession = createSessionEntry(body);
+        if (!createdSession) {
           res.statusCode = 400;
           res.setHeader('content-type', 'application/json');
           res.end(JSON.stringify({ jsonrpc: '2.0', error: { code: -32000, message: 'invalid session' }, id: null }));
           return;
         }
 
-        const server = createServer();
-        isNewSession = true;
-
-        sessionEntry = {
-          server,
-          transport: null as unknown as StreamableHTTPServerTransport,
-          lastActivity: Date.now(),
-          inFlightRequests: 0,
-          closed: false,
-        };
-
-        const transport = new StreamableHTTPServerTransport({
-          sessionIdGenerator: () => {
-            const id = randomUUID();
-            if (sessionEntry) {
-              sessions.set(id, sessionEntry);
-            }
-            return id;
-          },
-          onsessioninitialized: (createdSessionId) => {
-            if (sessionEntry) {
-              sessions.set(createdSessionId, sessionEntry);
-            }
-            onSessionOpen?.(createdSessionId);
-          },
-        });
-
-        sessionEntry.transport = transport;
-        entry = sessionEntry;
-
-        const finalEntry = sessionEntry;
-
-        transport.onclose = () => {
-          if (!finalEntry.closed) {
-            finalEntry.closed = true;
-            const activeId = transport.sessionId;
-            if (activeId) {
-              sessions.delete(activeId);
-              onSessionClose?.(activeId);
-            }
-            void safeClose(finalEntry.server, activeId);
-          }
-        };
+        ({ entry, isNewSession } = createdSession);
       }
 
       if (!entry) {
@@ -179,13 +196,7 @@ export const createStreamableHttpHandler = ({
         await entry.transport.handleRequest(req, res, body);
       } catch (error) {
         if (isNewSession && !entry.closed) {
-          entry.closed = true;
-          const activeId = entry.transport.sessionId;
-          if (activeId) {
-            sessions.delete(activeId);
-            onSessionClose?.(activeId);
-          }
-          await safeClose(entry.server, activeId);
+          await cleanupFailedNewSession(entry, error);
         }
         throw error;
       } finally {
