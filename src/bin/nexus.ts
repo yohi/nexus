@@ -10,10 +10,14 @@ import { unlinkSync } from "node:fs";
 import { loadConfig } from "../config/index.js";
 import { NexusServerFactory } from "../server/factory.js";
 import type { NexusRuntime } from "../server/index.js";
-import { createStreamableHttpHandler } from "../server/transport.js";
+import {
+  createStreamableHttpHandler,
+  type StreamableHttpHandler,
+} from "../server/transport.js";
 import { createRestApiHandler } from "../server/rest-api.js";
 import { acquireProcessLock, releaseProcessLock, LOCK_FILENAME } from "../server/process-lock.js";
 import type { ManagedHttpServer } from "../server/managed-http-server.js";
+import type { Config } from "../types/index.js";
 
 async function main() {
   const { values } = parseArgs({
@@ -95,21 +99,8 @@ async function main() {
   process.on("exit", exitCleanup);
 
   if (values["reindex"]) {
-    const runtime = await NexusServerFactory.createRuntime(config);
-    let exitCode = 0;
-    try {
-      console.log(`Starting indexing...`);
-      await runtime.reindex(!!values["full"]);
-      console.log(`Indexing completed successfully.`);
-    } catch (error) {
-      console.error(`Indexing failed:`, error);
-      exitCode = 1;
-    } finally {
-      await runtime.close();
-      await releaseProcessLock(config.storage.rootDir);
-      process.removeListener("exit", exitCleanup);
-    }
-    process.exit(exitCode);
+    await startReindexMode({ config, exitCleanup, full: !!values["full"] });
+    return;
   }
 
   const runtime = await NexusServerFactory.createRuntime(config);
@@ -123,94 +114,180 @@ async function main() {
     }
 
     if (isManaged) {
-      const idleShutdownMsRaw =
-        values["idle-shutdown-ms"] ?? process.env.NEXUS_IDLE_SHUTDOWN_MS ?? "0";
-      const idleShutdownMs = Number(idleShutdownMsRaw);
-      if (!Number.isFinite(idleShutdownMs) || idleShutdownMs < 0) {
-        console.error(`\u274c Invalid idle-shutdown-ms: ${idleShutdownMsRaw}`);
-        process.exit(1);
-      }
-      const { startManagedHttpServer } = await import("../server/managed-http-server.js");
-      const managed = await startManagedHttpServer({
-        instanceId: randomUUID(),
-        projectRoot: root,
-        storageDir: config.storage.rootDir,
-        runtime,
+      await startManagedMode({
+        config,
+        exitCleanup,
+        idleShutdownMsRaw:
+          values["idle-shutdown-ms"] ?? process.env.NEXUS_IDLE_SHUTDOWN_MS ?? "0",
         port,
-        idleShutdownMs,
-        startupGraceMs: 30_000,
-        exitOnShutdown: true,
+        root,
+        runtime,
       });
-
-      console.error(
-        `\ud83d\ude80 Nexus managed HTTP server running on ${managed.url.toString()} (root: ${root})`
-      );
-      console.error(`   MCP:    POST / (Streamable HTTP)`);
-
-      setupSignalHandlers(runtime, config.storage.rootDir, exitCleanup, undefined, undefined, managed);
-
-      runtime.initialize().catch((error) => {
-        handleFatalError("Nexus background initialization failed", error);
-      });
-
       return;
     }
 
-    const mcpHandler = createStreamableHttpHandler({
-      createServer: () => runtime.createServer(),
-    });
+    startHttpMode({ config, exitCleanup, port, root, runtime });
+    return;
+  }
 
-    const restHandler = createRestApiHandler({
-      orchestrator: runtime.orchestrator,
-      sanitizer: runtime.sanitizer,
-      projectRoot: config.projectRoot,
-    });
+  await startStdioMode({ config, exitCleanup, root, runtime });
+}
 
-    const server = createServer((req, res) => {
-      const url = new URL(req.url ?? "/", `http://${req.headers.host ?? "localhost"}`);
-      const pathname = url.pathname;
+interface ReindexModeOptions {
+  readonly config: Config;
+  readonly exitCleanup: () => void;
+  readonly full: boolean;
+}
 
-      // REST API endpoints
-      if (req.method === "POST" && pathname === "/api/search") {
-        restHandler(req, res).catch((error: unknown) => {
-          console.error("[REST API Unhandled Error]", error);
-          if (!res.headersSent) {
-            res.statusCode = 500;
-            res.setHeader("Content-Type", "application/json");
-            res.end(JSON.stringify({ error: "Internal server error" }));
-          }
-        });
-        return;
-      }
+interface RuntimeModeOptions {
+  readonly config: Config;
+  readonly exitCleanup: () => void;
+  readonly root: string;
+  readonly runtime: NexusRuntime;
+}
 
-      // Everything else goes to MCP over HTTP
-      mcpHandler(req, res).catch((error: unknown) => {
-        console.error("[MCP Handler Unhandled Error]", error);
+interface ManagedModeOptions extends RuntimeModeOptions {
+  readonly idleShutdownMsRaw: string | boolean;
+  readonly port: number;
+}
+
+interface HttpModeOptions extends RuntimeModeOptions {
+  readonly port: number;
+}
+
+async function startReindexMode({
+  config,
+  exitCleanup,
+  full,
+}: ReindexModeOptions): Promise<void> {
+  const runtime = await NexusServerFactory.createRuntime(config);
+  let exitCode = 0;
+  try {
+    console.log(`Starting indexing...`);
+    await runtime.reindex(full);
+    console.log(`Indexing completed successfully.`);
+  } catch (error) {
+    console.error(`Indexing failed:`, error);
+    exitCode = 1;
+  } finally {
+    await runtime.close();
+    await releaseProcessLock(config.storage.rootDir);
+    process.removeListener("exit", exitCleanup);
+  }
+  process.exit(exitCode);
+}
+
+async function startManagedMode({
+  config,
+  exitCleanup,
+  idleShutdownMsRaw,
+  port,
+  root,
+  runtime,
+}: ManagedModeOptions): Promise<void> {
+  const idleShutdownMs = Number(idleShutdownMsRaw);
+  if (!Number.isFinite(idleShutdownMs) || idleShutdownMs < 0) {
+    console.error(`\u274c Invalid idle-shutdown-ms: ${idleShutdownMsRaw}`);
+    process.exit(1);
+  }
+  const { startManagedHttpServer } = await import("../server/managed-http-server.js");
+  const managed = await startManagedHttpServer({
+    instanceId: randomUUID(),
+    projectRoot: root,
+    storageDir: config.storage.rootDir,
+    runtime,
+    port,
+    idleShutdownMs,
+    startupGraceMs: 30_000,
+    exitOnShutdown: true,
+  });
+
+  console.error(
+    `\ud83d\ude80 Nexus managed HTTP server running on ${managed.url.toString()} (root: ${root})`
+  );
+  console.error(`   MCP:    POST / (Streamable HTTP)`);
+
+  setupSignalHandlers(runtime, config.storage.rootDir, exitCleanup, undefined, undefined, managed);
+
+  runtime.initialize().catch((error) => {
+    handleFatalError("Nexus background initialization failed", error);
+  });
+}
+
+function startHttpMode({
+  config,
+  exitCleanup,
+  port,
+  root,
+  runtime,
+}: HttpModeOptions): void {
+  const mcpHandler = createStreamableHttpHandler({
+    createServer: () => runtime.createServer(),
+  });
+
+  const restHandler = createRestApiHandler({
+    orchestrator: runtime.orchestrator,
+    sanitizer: runtime.sanitizer,
+    projectRoot: config.projectRoot,
+  });
+
+  const server = createServer((req, res) => {
+    const url = new URL(req.url ?? "/", `http://${req.headers.host ?? "localhost"}`);
+    const pathname = url.pathname;
+
+    // REST API endpoints
+    if (req.method === "POST" && pathname === "/api/search") {
+      restHandler(req, res).catch((error: unknown) => {
+        console.error("[REST API Unhandled Error]", error);
         if (!res.headersSent) {
           res.statusCode = 500;
           res.setHeader("Content-Type", "application/json");
           res.end(JSON.stringify({ error: "Internal server error" }));
         }
       });
+      return;
+    }
+
+    // Everything else goes to MCP over HTTP
+    mcpHandler(req, res).catch((error: unknown) => {
+      console.error("[MCP Handler Unhandled Error]", error);
+      if (!res.headersSent) {
+        res.statusCode = 500;
+        res.setHeader("Content-Type", "application/json");
+        res.end(JSON.stringify({ error: "Internal server error" }));
+      }
     });
+  });
 
-    server.listen(port, "127.0.0.1", () => {
-      console.error(
-        `\ud83d\ude80 Nexus HTTP server running on http://127.0.0.1:${port} (root: ${root})`
-      );
-      console.error(`   MCP:    POST / (Streamable HTTP)`);
-      console.error(`   Search: POST /api/search`);
-    });
+  server.listen(port, "127.0.0.1", () => {
+    console.error(
+      `\ud83d\ude80 Nexus HTTP server running on http://127.0.0.1:${port} (root: ${root})`
+    );
+    console.error(`   MCP:    POST / (Streamable HTTP)`);
+    console.error(`   Search: POST /api/search`);
+  });
 
-    setupSignalHandlers(runtime, config.storage.rootDir, exitCleanup, server);
+  setupSignalHandlers(
+    runtime,
+    config.storage.rootDir,
+    exitCleanup,
+    server,
+    undefined,
+    undefined,
+    mcpHandler,
+  );
 
-    runtime.initialize().catch((error) => {
-      handleFatalError("Nexus background initialization failed", error);
-    });
+  runtime.initialize().catch((error) => {
+    handleFatalError("Nexus background initialization failed", error);
+  });
+}
 
-    return;
-  }
-
+async function startStdioMode({
+  config,
+  exitCleanup,
+  root,
+  runtime,
+}: RuntimeModeOptions): Promise<void> {
   // Default: stdio MCP transport
   const transport = new StdioServerTransport();
   const stdioServer = runtime.createServer();
@@ -267,6 +344,7 @@ function setupSignalHandlers(
   httpServer?: Server,
   mcpServer?: McpServer,
   managedServer?: ManagedHttpServer,
+  mcpHandler?: StreamableHttpHandler,
 ): void {
   let isShuttingDown = false;
 
@@ -292,6 +370,7 @@ function setupSignalHandlers(
         await new Promise<void>((resolve) => {
           httpServer.close(() => resolve());
         });
+        await mcpHandler?.dispose();
       }
       await runtime.close();
       await releaseProcessLock(storageDir);
@@ -439,4 +518,3 @@ if (process.argv[2] === "http-bridge") {
     handleFatalError("Fatal error starting Nexus", error);
   });
 }
-
