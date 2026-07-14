@@ -64,18 +64,22 @@ const sendRequest = async (
       const lines = output.split('\n');
       output = lines.pop() ?? '';
       for (const line of lines) {
+        if (line.trim() === '') continue;
         try {
           const message: unknown = JSON.parse(line);
           if (
             typeof message === 'object' &&
             message !== null &&
             'id' in message &&
-            message.id === responseId &&
-            'result' in message
+            message.id === responseId
           ) {
             bridge.stdout.off('data', onData);
             bridge.stderr.off('data', onError);
-            resolve();
+            if ('result' in message) {
+              resolve();
+            } else {
+              reject(new Error(`JSON-RPC error response: ${JSON.stringify(message)}`));
+            }
             return;
           }
         } catch (error) {
