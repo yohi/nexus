@@ -79,6 +79,7 @@ export async function startManagedHttpServer(
     if (req.method === 'GET' && req.url === '/') {
       res.statusCode = 405;
       res.setHeader('Content-Type', 'application/json');
+      res.setHeader('Allow', 'POST, DELETE');
       res.end(JSON.stringify({
         jsonrpc: '2.0',
         error: { code: -32000, message: 'Method not allowed.' },
