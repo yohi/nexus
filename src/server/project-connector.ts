@@ -13,17 +13,13 @@ import { isProcessAlive } from './process-lock.js';
 import type { ChildProcess } from 'node:child_process';
 import { mkdir } from 'node:fs/promises';
 
-export interface SpawnFn {
-  (
-    command: string,
-    args: readonly string[],
-    options: { readonly detached: true; readonly env: NodeJS.ProcessEnv; readonly stdio: 'ignore' },
-  ): ChildProcess;
-}
+export type SpawnFn = (
+  command: string,
+  args: readonly string[],
+  options: { readonly detached: true; readonly env: NodeJS.ProcessEnv; readonly stdio: 'ignore' },
+) => ChildProcess;
 
-export interface FetchFn {
-  (url: string, init?: { readonly signal?: AbortSignal }): Promise<Response>;
-}
+export type FetchFn = (url: string, init?: { readonly signal?: AbortSignal }) => Promise<Response>;
 
 export interface ProjectConnectorOptions {
   readonly projectRoot: string;
@@ -47,9 +43,9 @@ export interface ProjectConnectorOptions {
 const DEFAULT_STARTUP_TIMEOUT_MS = 30_000;
 const DEFAULT_POLL_INTERVAL_MS = 100;
 
-function validateTimeout(value: number | undefined, name: string): number {
+function validateTimeout(value: number | undefined, name: string, fallback: number): number {
   if (value === undefined) {
-    return name === 'startupTimeoutMs' ? DEFAULT_STARTUP_TIMEOUT_MS : DEFAULT_POLL_INTERVAL_MS;
+    return fallback;
   }
   if (!Number.isFinite(value) || value <= 0) {
     throw new RangeError(`${name} must be a finite, positive number`);
@@ -167,8 +163,12 @@ async function waitForHealthyEndpoint(
 }
 
 export async function ensureProjectEndpoint(options: ProjectConnectorOptions): Promise<URL> {
-  const startupTimeoutMs = validateTimeout(options.startupTimeoutMs, 'startupTimeoutMs');
-  const pollIntervalMs = validateTimeout(options.pollIntervalMs, 'pollIntervalMs');
+  const startupTimeoutMs = validateTimeout(
+    options.startupTimeoutMs,
+    'startupTimeoutMs',
+    DEFAULT_STARTUP_TIMEOUT_MS,
+  );
+  const pollIntervalMs = validateTimeout(options.pollIntervalMs, 'pollIntervalMs', DEFAULT_POLL_INTERVAL_MS);
   await mkdir(options.storageDir, { recursive: true });
 
   const initialEndpoint = await readProjectEndpoint(options.storageDir);
@@ -281,7 +281,7 @@ export async function ensureProjectEndpoint(options: ProjectConnectorOptions): P
     if (spawned && !succeeded) {
       const finalEndpoint = await readProjectEndpoint(options.storageDir);
       if (finalEndpoint !== undefined) {
-        const stillHealthy = await validateEndpoint(finalEndpoint, options.projectRoot, options.fetch, startupTimeoutMs);
+        const stillHealthy = await validateEndpoint(finalEndpoint, options.projectRoot, options.fetch, pollIntervalMs);
         if (stillHealthy === undefined) {
           await removeProjectEndpointIfMatching(options.storageDir, finalEndpoint).catch(() => {});
         }
