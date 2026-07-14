@@ -1,5 +1,48 @@
 # Changelog
 
+## [1.28.0](https://github.com/yohi/nexus/compare/v1.27.0...v1.28.0) (2026-07-14)
+
+
+### Features
+
+* **bin:** http-bridgeにプロジェクト自動発見とDI可能なCLI実行部を追加 ([1c521a0](https://github.com/yohi/nexus/commit/1c521a06033dd177e2df1cfd3079d6ad51cd63f6))
+* **server:** descriptor の compare-and-delete 削除を追加 ([fda0c23](https://github.com/yohi/nexus/commit/fda0c23a9594a67a67c7c4462ad297259ac0244f))
+* **server:** managed HTTPサーバーの自動発見・起動を行うproject-connectorを追加 ([be516cb](https://github.com/yohi/nexus/commit/be516cb68c32e75d223806e08d3996b58fc4a086))
+* Task3（managed HTTP server lifecycle）を実装 ([f0a9cab](https://github.com/yohi/nexus/commit/f0a9cabfd17ad39f26a16a612a022d98ff752429))
+* Task3（managed HTTP server lifecycle）を実装 ([ecc3c78](https://github.com/yohi/nexus/commit/ecc3c78eb28b547658391d91dbb0e9e192479e73))
+* Task4（http-bridgeのプロジェクト自動接続）を実装 ([ead2550](https://github.com/yohi/nexus/commit/ead2550fe94515270738d8c09a43f00cbaf7262b))
+* **utils:** グローバルロック保持エラーを GlobalLockHeldError で識別可能にする ([a6fb897](https://github.com/yohi/nexus/commit/a6fb8970246ee5e30942878d175eee082092b1d1))
+* プロジェクトエンドポイントの管理機能および起動時ロックの追加 ([0c23faf](https://github.com/yohi/nexus/commit/0c23faf81d19ada657499fffbbd0c6e984486516))
+* プロジェクトエンドポイントの管理機能および起動時ロックの追加 ([8837936](https://github.com/yohi/nexus/commit/883793602de798b9e851eb2c1a7766958dd4d1c6))
+* プロジェクトエンドポイントの管理機能および起動時ロックの追加 ([5fa4d5e](https://github.com/yohi/nexus/commit/5fa4d5e20e95a63b96b74329b847e6149bd3bcd6))
+
+
+### Bug Fixes
+
+* 405 Method Not Allowed レスポンスに Allow ヘッダーを追加 ([0c0ede2](https://github.com/yohi/nexus/commit/0c0ede2e2064adfc5309c54a3a7fb9dc16967558))
+* **auto-connector:** managed終了時にプロセスロックを確実に解放 ([e41777d](https://github.com/yohi/nexus/commit/e41777da825977f2b45e03b60a38adbcfeb1f7ad))
+* **auto-connector:** managed終了時の所有権を保護 ([c78c998](https://github.com/yohi/nexus/commit/c78c998002d122df3610884d76376cfab9c94442))
+* **auto-connector:** managed終了時の所有権を保護 ([680ff2f](https://github.com/yohi/nexus/commit/680ff2f48dda2178e26b9266b4da3f620c1a603e))
+* **auto-connector:** 起動時のendpoint検証を強化 ([678b95d](https://github.com/yohi/nexus/commit/678b95d883f46d16509c3eeabf7995d05c1b17ab))
+* **bin:** http-bridge から managed server 起動時に .ts エントリを直接 spawn しないよう修正 ([de2db35](https://github.com/yohi/nexus/commit/de2db3540f45f4f879e3902a464b3dec7ee3cf5b))
+* **bin:** managed HTTPモードのCLI引数処理と終了処理を修正 ([8454fad](https://github.com/yohi/nexus/commit/8454fad3b8f044627e66be1fa247b58ffc0a6502))
+* **http-bridge:** シャットダウン時にterminateSessionを呼び出し、managed serverの即時停止をトリガー ([3506059](https://github.com/yohi/nexus/commit/350605961d49ee5d208d19a61bdc401215ebed79))
+* idleShutdownMs=0 の即座シャットダウン、stdio 起動ログ、http-bridge の自己参照防止 ([acd81f5](https://github.com/yohi/nexus/commit/acd81f5bf927c7ac94dcbd5ae6593c74c572a131))
+* **managed-http-server:** GET / に対して405を返し、Streamable HTTP SDKのSSEフォールバックを有効化 ([155a5c4](https://github.com/yohi/nexus/commit/155a5c46d1ba8454d4fb4b36daf3b618f3cb3dcd))
+* **server,utils:** コードレビュー指摘事項(Issue 1〜4)の修正 ([2d77dc2](https://github.com/yohi/nexus/commit/2d77dc2f359648903ef43ffbfe4b040d845adcbf))
+* **server:** connector 失敗時の cleanup health check timeout を pollIntervalMs に短縮し型定義を整理 ([c7b04b5](https://github.com/yohi/nexus/commit/c7b04b5f57e56113a78bfc2149dac6592580e3af))
+* **server:** descriptor削除時のTOCTOU競合を軽減 ([3a13f7f](https://github.com/yohi/nexus/commit/3a13f7f8ebca0d3fce847aba5e7ad6f758273f09))
+* **server:** endpoint descriptor を同一ファイルハンドルで検証して TOCTOU を軽減 ([4140a88](https://github.com/yohi/nexus/commit/4140a88669e0b8c6df716982b6bb97a920da9482))
+* **server:** managed HTTP サーバーの startupGraceMs を有効化し起動猶予タイマーをキャンセル可能にする ([c4d648c](https://github.com/yohi/nexus/commit/c4d648cd10995de4cecff817a0c80f86fa4f2136))
+* **server:** managed server の終了処理を runtime.close() 失敗時も確実に完了 ([f057514](https://github.com/yohi/nexus/commit/f0575145c40c67b06cb0316b965947ecf5dfcb6a))
+* **server:** managed子プロセスの起動失敗検知とヘルスチェックのタイムアウト制御を追加 ([4ba4847](https://github.com/yohi/nexus/commit/4ba484744bca3210c7448401e10db1b36222099d))
+* **server:** StreamableHttpHandler に dispose を追加してリソースリークを解消 ([913b62f](https://github.com/yohi/nexus/commit/913b62fb0d29e4382f066b1c7fe41214cd914d30))
+* **server:** ロック取得エラー判別を厳密にし、子プロセス起動を注入値を使うよう修正 ([19a49cc](https://github.com/yohi/nexus/commit/19a49ccca3f3c6f11c311cc6596961f8bc86d9be))
+* **server:** 成功パスでのendpoint誤削除を防ぎ、storageDirを重複解決しないよう修正 ([bdc7359](https://github.com/yohi/nexus/commit/bdc7359a6ec5829b99d6a6d5fc24e923bdb66d45))
+* stdio MCPサーバーのシャットダウン漏れとテスト構造の修復 ([be7f34d](https://github.com/yohi/nexus/commit/be7f34ded45b7abcd4d68db9b46815816bbd0163))
+* terminateSession() の失敗時も transport.close() が呼ばれるよう修正 ([e906423](https://github.com/yohi/nexus/commit/e9064234e7ae44307ac9806e32249ebc43542ca1))
+* コードレビュー指摘事項の修正 ([af8515a](https://github.com/yohi/nexus/commit/af8515a2726d408bd7f34fb4d2dbfa3de3127dde))
+
 ## [1.27.0](https://github.com/yohi/nexus/compare/v1.26.3...v1.27.0) (2026-07-12)
 
 
