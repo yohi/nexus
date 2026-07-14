@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -119,6 +119,39 @@ describe('managed-http-server', () => {
 
     await server.closed;
     await expect(readProjectEndpoint(storageDir)).resolves.toBeUndefined();
+  });
+
+  it('completes shutdown when runtime close rejects', async () => {
+    const runtime = createMockRuntime();
+    runtime.close = async () => {
+      throw new Error('runtime close failed');
+    };
+    const unhandledRejections: unknown[] = [];
+    const onUnhandledRejection = (reason: unknown): void => {
+      unhandledRejections.push(reason);
+    };
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
+    process.on('unhandledRejection', onUnhandledRejection);
+
+    try {
+      const server = await trackServer({
+        ...options,
+        runtime,
+        exitOnShutdown: false,
+      });
+      await expect(readProjectEndpoint(storageDir)).resolves.toMatchObject({
+        instanceId: options.instanceId,
+      });
+
+      await expect(server.close()).resolves.toBeUndefined();
+      await expect(server.closed).resolves.toBeUndefined();
+      await expect(readProjectEndpoint(storageDir)).resolves.toBeUndefined();
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(unhandledRejections).toEqual([]);
+    } finally {
+      process.off('unhandledRejection', onUnhandledRejection);
+      consoleError.mockRestore();
+    }
   });
 
   it('preserves a descriptor published by a replacement instance during shutdown', async () => {

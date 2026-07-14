@@ -121,7 +121,9 @@ export async function startManagedHttpServer(
     });
     await mcpHandler.dispose();
 
-    await options.runtime.close();
+    await options.runtime.close().catch((error: unknown) => {
+      console.error('[Runtime Close Error]', error);
+    });
     if (endpoint) {
       await removeProjectEndpointIfMatching(options.storageDir, endpoint);
     }
