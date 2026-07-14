@@ -209,29 +209,24 @@ indexing pipeline を通じて manual reindex を実行します。
 
 ## stdio-only クライアント向け HTTP Bridge
 
-stdio 接続のみに対応した MCP クライアント（OpenCode など）から、常駐している Nexus HTTP サーバーに接続するには、`nexus http-bridge` を中継として使います。Bridge は独立したローカルプロセスとして起動し、標準入出力の JSON-RPC を Nexus の Streamable HTTP エンドポイントに転送します。
+stdio 接続のみに対応した MCP クライアント（OpenCode など）から、Nexus HTTP サーバーに接続するには、`nexus http-bridge` を中継として使います。Bridge は独立したローカルプロセスとして起動し、標準入出力の JSON-RPC を Nexus の Streamable HTTP エンドポイントに転送します。
 
 ### 使い方
 
-1 つのプロジェクトに対して、常に 1 つの Nexus HTTP サーバーを起動します。
-
-```bash
-# ターミナル 1: 対象プロジェクトで HTTP サーバーを常駐させる
-nexus --port 3001 --project-root /path/to/project
-```
-
-stdio-only の MCP クライアント設定では、以下のように bridge プロセスを起動します。
+基本的な接続は引数なしで実行できます。
 
 ```bash
 nexus http-bridge
 ```
 
+同じプロジェクトに対しては常に 1 つの Nexus HTTP サーバーが共有されます。初回の Bridge 接続時にまだ HTTP サーバーが起動していなければ、OS 割当のループバックポートで自動起動します。全 MCP クライアントが切断すると、HTTP サーバーは自動的に停止し、プロジェクトの `endpoint.json` 記述子も削除されます。
+
 ### URL の指定方法
 
-デフォルトは `http://127.0.0.1:3001` です。優先順位は以下の通りです。
+明示的に外部サービスへ中継したい場合は、`--url` 引数または `NEXUS_BRIDGE_URL` 環境変数で上書きできます。
 
 ```text
---url > NEXUS_BRIDGE_URL > http://127.0.0.1:3001
+--url > NEXUS_BRIDGE_URL
 ```
 
 ```bash
@@ -249,13 +244,10 @@ nexus http-bridge --url http://127.0.0.1:4000/mcp
   "mcpServers": {
     "nexus": {
       "command": "nexus",
-      "args": ["http-bridge"],
-      "env": {
-        "NEXUS_BRIDGE_URL": "http://127.0.0.1:3001"
-      }
+      "args": ["http-bridge"]
     }
   }
 }
 ```
 
-> **注意**: Bridge 自体は Nexus サーバーを起動しません。先に `nexus --port` などで HTTP サーバーを起動しておく必要があります。Bridge の診断メッセージはすべて stderr に出力されるため、stdout は MCP クライアントとのプロトコル通信に専有されます。
+> **注意**: 引数なしの Bridge は必要に応じて Nexus HTTP サーバーを自動起動・停止します。Bridge の診断メッセージはすべて stderr に出力されるため、stdout は MCP クライアントとのプロトコル通信に専有されます。
