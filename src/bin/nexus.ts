@@ -216,6 +216,8 @@ async function main() {
   const stdioServer = runtime.createServer();
   await stdioServer.connect(transport);
 
+  console.error(`\u{1F517} Nexus MCP server running on stdio (root: ${root})`);
+
   setupSignalHandlers(runtime, config.storage.rootDir, exitCleanup, undefined, stdioServer);
 
   // Heavy initialization (SQLite/LanceDB open, file watcher full scan,

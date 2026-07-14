@@ -50,7 +50,8 @@ export function resolveNexusExecutable(httpBridgeUrl: string | URL): string {
 
   // When running from source (e.g. tsx src/bin/http-bridge.ts), prefer the
   // TypeScript entry. When running from the compiled distribution, prefer the
-  // compiled JavaScript entry. Fall back to argv[1] only when neither exists.
+  // compiled JavaScript entry. If neither exists, the installation is missing
+  // the main nexus executable and we throw rather than silently spawn ourselves.
   if (httpBridgeName.endsWith(".ts")) {
     const tsCandidate = path.join(httpBridgeDir, "nexus.ts");
     if (existsSync(tsCandidate)) {
@@ -63,7 +64,7 @@ export function resolveNexusExecutable(httpBridgeUrl: string | URL): string {
     return jsCandidate;
   }
 
-  return process.argv[1] ?? "nexus";
+  throw new Error("Could not locate nexus executable (nexus.ts or nexus.js)");
 }
 
 function writeDiagnostic(errorOutput: Writable, message: string): void {

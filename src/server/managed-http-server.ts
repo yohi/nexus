@@ -59,7 +59,7 @@ export async function startManagedHttpServer(
     },
     onSessionClose: () => {
       activeSessions = Math.max(0, activeSessions - 1);
-      if (activeSessions === 0 && !isClosing && options.idleShutdownMs !== undefined) {
+      if (activeSessions === 0 && !isClosing && options.idleShutdownMs !== undefined && options.idleShutdownMs > 0) {
         shutdownTimer = setTimeout(() => {
           void close();
         }, options.idleShutdownMs);

@@ -179,26 +179,14 @@ describe("http bridge", () => {
       expect(exec).toBe(join(bridgeDir, "nexus.js"));
     });
 
-    it("falls back to argv[1] when no sibling nexus entry exists", async () => {
-      const argvSpy = vi.spyOn(process, "argv", "get").mockReturnValue(["/entry", "/fallback/nexus"]);
+    it("throws when no sibling nexus entry exists", async () => {
       const bridgeDir = join(tempDir, "nowhere", "bin");
       await mkdir(bridgeDir, { recursive: true });
       await writeFile(join(bridgeDir, "http-bridge.js"), "");
 
-      const exec = resolveNexusExecutable(pathToFileURL(join(bridgeDir, "http-bridge.js")).toString());
-      expect(exec).toBe("/fallback/nexus");
-      argvSpy.mockRestore();
-    });
-
-    it("falls back to the nexus command name when argv[1] is unavailable", async () => {
-      const argvSpy = vi.spyOn(process, "argv", "get").mockReturnValue(["/entry"]);
-      const bridgeDir = join(tempDir, "nowhere2", "bin");
-      await mkdir(bridgeDir, { recursive: true });
-      await writeFile(join(bridgeDir, "http-bridge.js"), "");
-
-      const exec = resolveNexusExecutable(pathToFileURL(join(bridgeDir, "http-bridge.js")).toString());
-      expect(exec).toBe("nexus");
-      argvSpy.mockRestore();
+      expect(() => resolveNexusExecutable(pathToFileURL(join(bridgeDir, "http-bridge.js")).toString())).toThrow(
+        /Could not locate nexus executable/,
+      );
     });
   });
 
