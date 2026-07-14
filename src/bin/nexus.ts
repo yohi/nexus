@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { createServer, type Server } from "node:http";
+import { randomUUID } from "node:crypto";
 import path from "node:path";
 import { parseArgs } from "node:util";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
@@ -131,7 +132,7 @@ async function main() {
       }
       const { startManagedHttpServer } = await import("../server/managed-http-server.js");
       const managed = await startManagedHttpServer({
-        instanceId: `managed-${process.pid}-${Date.now()}`,
+        instanceId: randomUUID(),
         projectRoot: root,
         storageDir: config.storage.rootDir,
         runtime,
@@ -276,10 +277,11 @@ function setupSignalHandlers(
         await mcpServer.close();
       }
       if (managedServer) {
-        // managedServer.close() calls process.exit(0) synchronously when
-        // exitOnShutdown is set, firing Node's synchronous "exit" event.
+        // managedServer.close() releases the process lock (nexus.pid) via
+        // releaseProcessLock() and then calls process.exit(0) synchronously
+        // when exitOnShutdown is set, firing Node's synchronous "exit" event.
         // Remove exitCleanup first so the still-registered listener does not
-        // attempt a redundant unlink of the already-released PID lock file.
+        // attempt a redundant (no-op) unlink of the already-released PID lock file.
         process.removeListener("exit", exitCleanup);
         await managedServer.close();
         return;

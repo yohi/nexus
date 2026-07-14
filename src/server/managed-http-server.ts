@@ -3,7 +3,8 @@ import { releaseProcessLock } from './process-lock.js';
 import { createStreamableHttpHandler } from './transport.js';
 import {
   writeProjectEndpoint,
-  removeProjectEndpoint,
+  removeProjectEndpointIfMatching,
+  type ProjectEndpoint,
 } from './project-endpoint.js';
 import type { NexusRuntime } from './index.js';
 
@@ -34,6 +35,7 @@ export async function startManagedHttpServer(
   let shutdownTimer: NodeJS.Timeout | undefined;
   let startupGraceTimer: NodeJS.Timeout | undefined;
   let isClosing = false;
+  let endpoint: ProjectEndpoint | undefined;
 
   let resolveClosed: () => void;
   const closed = new Promise<void>((resolve) => {
@@ -119,9 +121,16 @@ export async function startManagedHttpServer(
     });
 
     await options.runtime.close();
-    await removeProjectEndpoint(options.storageDir);
-    await releaseProcessLock(options.storageDir).catch(() => {});
+    if (endpoint) {
+      await removeProjectEndpointIfMatching(options.storageDir, endpoint);
+    }
 
+    // Release the process-level single-instance lock (nexus.pid) before any
+    // process.exit() call below. process.exit() terminates synchronously and
+    // would otherwise skip this cleanup entirely, leaving a stale lock file
+    // behind (design requirement: descriptor AND process lock must both be
+    // removed on shutdown).
+    await releaseProcessLock(options.storageDir).catch(() => {});
     resolveClosed();
 
     if (options.exitOnShutdown) {
@@ -148,12 +157,13 @@ export async function startManagedHttpServer(
   try {
     const url = await listenPromise;
 
-    await writeProjectEndpoint(options.storageDir, {
+    endpoint = {
       instanceId: options.instanceId,
       pid: process.pid,
       projectRoot: options.projectRoot,
       url: url.toString(),
-    });
+    };
+    await writeProjectEndpoint(options.storageDir, endpoint);
 
     if (options.startupGraceMs !== undefined) {
       startupGraceTimer = setTimeout(() => {

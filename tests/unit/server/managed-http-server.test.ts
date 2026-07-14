@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { randomUUID } from 'node:crypto';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { startManagedHttpServer, type ManagedHttpServer, type ManagedHttpServerOptions } from '../../../src/server/managed-http-server.js';
-import { readProjectEndpoint } from '../../../src/server/project-endpoint.js';
+import { readProjectEndpoint, writeProjectEndpoint } from '../../../src/server/project-endpoint.js';
 import type { NexusRuntime } from '../../../src/server/index.js';
 
 const trackedServers: ManagedHttpServer[] = [];
@@ -121,6 +121,22 @@ describe('managed-http-server', () => {
     await expect(readProjectEndpoint(storageDir)).resolves.toBeUndefined();
   });
 
+  it('preserves a descriptor published by a replacement instance during shutdown', async () => {
+    const server = await trackServer(options);
+    const replacement = {
+      instanceId: `replacement-${randomUUID()}`,
+      pid: process.pid + 1,
+      projectRoot,
+      url: 'http://127.0.0.1:43124',
+    };
+
+    await writeProjectEndpoint(storageDir, replacement);
+
+    await server.close();
+
+    await expect(readProjectEndpoint(storageDir)).resolves.toEqual(replacement);
+  });
+
   it('returns health with instanceId and projectRoot', async () => {
     const server = await trackServer(options);
 
@@ -169,14 +185,13 @@ describe('managed-http-server', () => {
   it('cancels startupGraceMs when a client connects', async () => {
     const server = await trackServer({
       ...options,
-      startupGraceMs: 50,
+      startupGraceMs: 1_000,
       idleShutdownMs: 5000,
     });
 
     const sessionId = await connectClient(server.url);
 
-    // Wait long enough that the 50ms startup grace would fire if not cancelled.
-    await new Promise((resolve) => { setTimeout(resolve, 150); });
+    await new Promise((resolve) => { setTimeout(resolve, 1_200); });
 
     const health = await fetch(new URL('/health', server.url).toString());
     expect(health.status).toBe(200);

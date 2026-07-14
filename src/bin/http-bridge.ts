@@ -254,7 +254,8 @@ export async function runBridgeCli(
         `Usage:\n` +
         `  nexus http-bridge [options]\n\n` +
         `Options:\n` +
-        `  --url <url>          Nexus Streamable HTTP endpoint (default: ${DEFAULT_BRIDGE_URL})\n` +
+        `  --url <url>          Use an explicit Nexus Streamable HTTP endpoint\n` +
+        `                       Auto-discovers or starts the project-local managed endpoint when omitted\n` +
         `  --project-root <path>  Project root directory for auto-managed server discovery\n` +
         `  -h, --help           Show help\n\n` +
         `Environment:\n` +

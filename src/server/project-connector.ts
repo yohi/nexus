@@ -11,6 +11,7 @@ import {
 } from './project-endpoint.js';
 import { isProcessAlive } from './process-lock.js';
 import type { ChildProcess } from 'node:child_process';
+import { mkdir } from 'node:fs/promises';
 
 export interface SpawnFn {
   (
@@ -106,7 +107,7 @@ async function validateEndpoint(
     return undefined;
   }
 
-  if (parsedUrl.hostname !== '127.0.0.1' && parsedUrl.hostname !== 'localhost') {
+  if (parsedUrl.hostname !== '127.0.0.1') {
     return undefined;
   }
 
@@ -147,6 +148,7 @@ async function waitForHealthyEndpoint(
 export async function ensureProjectEndpoint(options: ProjectConnectorOptions): Promise<URL> {
   const startupTimeoutMs = validateTimeout(options.startupTimeoutMs, 'startupTimeoutMs');
   const pollIntervalMs = validateTimeout(options.pollIntervalMs, 'pollIntervalMs');
+  await mkdir(options.storageDir, { recursive: true });
 
   const initialEndpoint = await readProjectEndpoint(options.storageDir);
   const validated = await validateEndpoint(initialEndpoint, options.projectRoot, options.fetch);
