@@ -1,9 +1,15 @@
 import { createInterface } from "node:readline";
+import { spawn } from "node:child_process";
+import { existsSync } from "node:fs";
+import path from "node:path";
 import { parseArgs } from "node:util";
+import { fileURLToPath } from "node:url";
 import type { Readable, Writable } from "node:stream";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import { JSONRPCMessageSchema, type JSONRPCMessage } from "@modelcontextprotocol/sdk/types.js";
+
+import { ensureProjectEndpoint, type ProjectConnectorOptions } from "../server/project-connector.js";
 
 export const DEFAULT_BRIDGE_URL = "http://127.0.0.1:3001";
 
@@ -36,6 +42,29 @@ export function resolveBridgeUrl(
 
     throw error;
   }
+}
+export function resolveNexusExecutable(httpBridgeUrl: string | URL): string {
+  const httpBridgePath = fileURLToPath(httpBridgeUrl);
+  const httpBridgeDir = path.dirname(httpBridgePath);
+  const httpBridgeName = path.basename(httpBridgePath);
+
+  // When running from source (e.g. tsx src/bin/http-bridge.ts), prefer the
+  // TypeScript entry. When running from the compiled distribution, prefer the
+  // compiled JavaScript entry. If neither exists, the installation is missing
+  // the main nexus executable and we throw rather than silently spawn ourselves.
+  if (httpBridgeName.endsWith(".ts")) {
+    const tsCandidate = path.join(httpBridgeDir, "nexus.ts");
+    if (existsSync(tsCandidate)) {
+      return tsCandidate;
+    }
+  }
+
+  const jsCandidate = path.join(httpBridgeDir, "nexus.js");
+  if (existsSync(jsCandidate)) {
+    return jsCandidate;
+  }
+
+  throw new Error("Could not locate nexus executable (nexus.ts or nexus.js)");
 }
 
 function writeDiagnostic(errorOutput: Writable, message: string): void {
@@ -76,7 +105,22 @@ function parseJsonRpcLine(line: string, errorOutput: Writable): JSONRPCMessage |
   return result.data;
 }
 
-export async function runHttpBridge(options: HttpBridgeOptions): Promise<void> {
+export async function runHttpBridge(
+  options: HttpBridgeOptions,
+): Promise<void> {
+  await runHttpBridgeWithSignalSource({
+    ...options,
+    signalSource: process,
+  });
+}
+
+interface RunHttpBridgeWithSignalSourceOptions extends HttpBridgeOptions {
+  readonly signalSource: NodeJS.EventEmitter;
+}
+
+export async function runHttpBridgeWithSignalSource(
+  options: RunHttpBridgeWithSignalSourceOptions,
+): Promise<void> {
   const transport = options.createTransport(options.url);
   const lines = createInterface({ input: options.input, crlfDelay: Infinity });
   let initializeRequestId: string | number | undefined;
@@ -88,10 +132,18 @@ export async function runHttpBridge(options: HttpBridgeOptions): Promise<void> {
   const shutdown = (): Promise<void> => {
     shutdownPromise ??= (async () => {
       lines.close();
-      process.removeListener("SIGINT", handleSignal);
-      process.removeListener("SIGTERM", handleSignal);
+      options.signalSource.removeListener("SIGINT", handleSignal);
+      options.signalSource.removeListener("SIGTERM", handleSignal);
 
       if (!transportClosed) {
+        if (
+          typeof transport === "object" &&
+          transport !== null &&
+          "terminateSession" in transport &&
+          typeof (transport as { terminateSession?: () => Promise<void> }).terminateSession === "function"
+        ) {
+          await (transport as { terminateSession: () => Promise<void> }).terminateSession().catch(() => undefined);
+        }
         await transport.close();
       }
     })();
@@ -121,8 +173,8 @@ export async function runHttpBridge(options: HttpBridgeOptions): Promise<void> {
     lines.close();
   };
 
-  process.once("SIGINT", handleSignal);
-  process.once("SIGTERM", handleSignal);
+  options.signalSource.once("SIGINT", handleSignal);
+  options.signalSource.once("SIGTERM", handleSignal);
 
   try {
     await transport.start();
@@ -153,6 +205,7 @@ export async function runHttpBridge(options: HttpBridgeOptions): Promise<void> {
 export interface BridgeCliResult {
   readonly help: boolean;
   readonly url: string | undefined;
+  readonly projectRoot: string;
 }
 
 export function parseBridgeArgs(
@@ -163,39 +216,98 @@ export function parseBridgeArgs(
     args: argv,
     options: {
       url: { type: "string" },
+      "project-root": { type: "string" },
       help: { type: "boolean", short: "h" },
     },
     strict: true,
   });
 
+  const rawProjectRoot = ((values["project-root"] as string) ?? env.NEXUS_PROJECT_ROOT ?? "").trim();
+  const projectRoot = rawProjectRoot ? path.resolve(rawProjectRoot) : process.cwd();
+
   return {
     help: values.help === true,
     url: values.url ?? env.NEXUS_BRIDGE_URL,
+    projectRoot,
   };
 }
 
-export async function main(): Promise<void> {
-  const { help, url } = parseBridgeArgs(process.argv.slice(2), process.env);
+export interface BridgeCliDependencies {
+  readonly ensureProjectEndpoint: (options: { readonly projectRoot: string; readonly env: NodeJS.ProcessEnv }) => Promise<URL>;
+  readonly runHttpBridge: typeof runHttpBridge;
+  readonly bridgeStreams: {
+    readonly input: Readable;
+    readonly output: Writable;
+    readonly errorOutput: Writable;
+  };
+}
 
-  if (help) {
-    console.error(
+export async function runBridgeCli(
+  argv: string[],
+  env: NodeJS.ProcessEnv,
+  dependencies: BridgeCliDependencies,
+): Promise<void> {
+  const parsed = parseBridgeArgs(argv, env);
+
+  if (parsed.help) {
+    dependencies.bridgeStreams.errorOutput.write(
       `Nexus HTTP Bridge - stdio to Streamable HTTP MCP bridge\n\n` +
         `Usage:\n` +
         `  nexus http-bridge [options]\n\n` +
         `Options:\n` +
-        `  --url <url>  Nexus Streamable HTTP endpoint (default: ${DEFAULT_BRIDGE_URL})\n` +
-        `  -h, --help   Show help\n\n` +
+        `  --url <url>          Use an explicit Nexus Streamable HTTP endpoint\n` +
+        `                       Auto-discovers or starts the project-local managed endpoint when omitted\n` +
+        `  --project-root <path>  Project root directory for auto-managed server discovery\n` +
+        `  -h, --help           Show help\n\n` +
         `Environment:\n` +
-        `  NEXUS_BRIDGE_URL  Fallback URL if --url is not provided`,
+        `  NEXUS_BRIDGE_URL    Fallback URL if --url is not provided\n` +
+        `  NEXUS_PROJECT_ROOT    Fallback project root if --project-root is not provided\n` +
+        `\n`
     );
     return;
   }
 
-  await runHttpBridge({
-    url: resolveBridgeUrl(url, undefined),
-    input: process.stdin,
-    output: process.stdout,
-    errorOutput: process.stderr,
+  const url =
+    parsed.url === undefined
+      ? await dependencies.ensureProjectEndpoint({ projectRoot: parsed.projectRoot, env })
+      : resolveBridgeUrl(parsed.url, undefined);
+
+  await dependencies.runHttpBridge({
+    ...dependencies.bridgeStreams,
+    url,
     createTransport: (transportUrl) => new StreamableHTTPClientTransport(transportUrl),
+  });
+}
+export async function main(): Promise<void> {
+  await runBridgeCli(process.argv.slice(2), process.env, {
+    ensureProjectEndpoint: async ({ projectRoot, env }) => {
+      const { loadConfig } = await import("../config/index.js");
+      const resolvedConfig = await loadConfig({ projectRoot, env });
+      const resolvedExecutable = resolveNexusExecutable(import.meta.url);
+      // A source checkout resolves to the sibling `nexus.ts`, which has no
+      // execute permission and (even if it did) cannot be exec'd directly by
+      // the OS: Node cannot resolve this project's `.js`-suffixed relative
+      // imports against `.ts` files without a loader such as tsx. Route
+      // through the current Node binary, replaying whatever loader flags
+      // (`process.execArgv`) are already registered for this process, so
+      // both the compiled `.js` entry and the TypeScript source entry can be
+      // spawned the same way this process itself was launched.
+      const options: ProjectConnectorOptions = {
+        projectRoot,
+        storageDir: resolvedConfig.storage.rootDir,
+        childExecutable: process.execPath,
+        childArgs: [...process.execArgv, resolvedExecutable],
+        env,
+        spawn,
+        fetch: globalThis.fetch,
+      };
+      return ensureProjectEndpoint(options);
+    },
+    runHttpBridge,
+    bridgeStreams: {
+      input: process.stdin,
+      output: process.stdout,
+      errorOutput: process.stderr,
+    },
   });
 }

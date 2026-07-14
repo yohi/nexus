@@ -9,6 +9,20 @@ export interface StreamableHttpHandlerOptions {
   createServer: () => McpServer;
   sessionIdleTimeoutMs?: number;
   sessionCleanupIntervalMs?: number;
+  onSessionOpen?: (sessionId: string) => void;
+  onSessionClose?: (sessionId: string) => void;
+}
+
+export interface StreamableHttpHandler {
+  (req: IncomingMessage, res: ServerResponse): Promise<void>;
+  /**
+   * Clears the idle-session cleanup interval and closes any remaining
+   * sessions. Callers that own this handler's lifecycle (e.g. an HTTP
+   * server wrapper) MUST call this during shutdown; otherwise the
+   * interval and any open MCP server sessions leak for the life of the
+   * process, which matters most when `exitOnShutdown: false`.
+   */
+  dispose(): Promise<void>;
 }
 
 export class HttpError extends Error {
@@ -33,7 +47,9 @@ export const createStreamableHttpHandler = ({
   createServer,
   sessionIdleTimeoutMs = 30 * 60 * 1000,
   sessionCleanupIntervalMs = 5 * 60 * 1000,
-}: StreamableHttpHandlerOptions) => {
+  onSessionOpen,
+  onSessionClose,
+}: StreamableHttpHandlerOptions): StreamableHttpHandler => {
   const sessions = new Map<string, SessionEntry>();
 
   const safeClose = async (server: McpServer, sessionId?: string): Promise<void> => {
@@ -53,6 +69,67 @@ export const createStreamableHttpHandler = ({
     entry.closed = true;
     sessions.delete(sessionId);
     await safeClose(entry.server, sessionId);
+    onSessionClose?.(sessionId);
+  };
+
+  const createSessionEntry = (
+    body: unknown,
+  ): { readonly entry: SessionEntry; readonly isNewSession: true } | undefined => {
+    if (!isInitializeRequest(body)) {
+      return undefined;
+    }
+
+    const server = createServer();
+    const sessionEntryRef: { current?: SessionEntry } = {};
+    const transport = new StreamableHTTPServerTransport({
+      sessionIdGenerator: () => {
+        const id = randomUUID();
+        if (sessionEntryRef.current) {
+          sessions.set(id, sessionEntryRef.current);
+        }
+        return id;
+      },
+      onsessioninitialized: (createdSessionId) => {
+        if (sessionEntryRef.current) {
+          sessions.set(createdSessionId, sessionEntryRef.current);
+        }
+        onSessionOpen?.(createdSessionId);
+      },
+    });
+
+    const entry: SessionEntry = {
+      server,
+      transport,
+      lastActivity: Date.now(),
+      inFlightRequests: 0,
+      closed: false,
+    };
+    sessionEntryRef.current = entry;
+
+    transport.onclose = () => {
+      if (!entry.closed) {
+        entry.closed = true;
+        const activeId = transport.sessionId;
+        if (activeId) {
+          sessions.delete(activeId);
+          onSessionClose?.(activeId);
+        }
+        void safeClose(entry.server, activeId);
+      }
+    };
+
+    return { entry, isNewSession: true };
+  };
+
+  const cleanupFailedNewSession = async (entry: SessionEntry, error: unknown): Promise<never> => {
+    entry.closed = true;
+    const activeId = entry.transport.sessionId;
+    if (activeId) {
+      sessions.delete(activeId);
+      onSessionClose?.(activeId);
+    }
+    await safeClose(entry.server, activeId);
+    throw error;
   };
 
   const interval = setInterval(() => {
@@ -66,7 +143,7 @@ export const createStreamableHttpHandler = ({
 
   interval.unref();
 
-  return async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
+  const handleRequest = async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
     const sessionIdHeader = req.headers['mcp-session-id'];
     const sessionId = Array.isArray(sessionIdHeader) ? sessionIdHeader[0] : sessionIdHeader;
 
@@ -85,7 +162,6 @@ export const createStreamableHttpHandler = ({
     try {
       let entry = sessionId ? sessions.get(sessionId) : undefined;
       let isNewSession = false;
-      let sessionEntry: SessionEntry | undefined;
 
       if (entry) {
         if (entry.closed) {
@@ -97,54 +173,15 @@ export const createStreamableHttpHandler = ({
           entry.lastActivity = Date.now();
         }
       } else {
-        if (!isInitializeRequest(body)) {
+        const createdSession = createSessionEntry(body);
+        if (!createdSession) {
           res.statusCode = 400;
           res.setHeader('content-type', 'application/json');
           res.end(JSON.stringify({ jsonrpc: '2.0', error: { code: -32000, message: 'invalid session' }, id: null }));
           return;
         }
 
-        const server = createServer();
-        isNewSession = true;
-
-        sessionEntry = {
-          server,
-          transport: null as unknown as StreamableHTTPServerTransport,
-          lastActivity: Date.now(),
-          inFlightRequests: 0,
-          closed: false,
-        };
-
-        const transport = new StreamableHTTPServerTransport({
-          sessionIdGenerator: () => {
-            const id = randomUUID();
-            if (sessionEntry) {
-              sessions.set(id, sessionEntry);
-            }
-            return id;
-          },
-          onsessioninitialized: (createdSessionId) => {
-            if (sessionEntry) {
-              sessions.set(createdSessionId, sessionEntry);
-            }
-          },
-        });
-
-        sessionEntry.transport = transport;
-        entry = sessionEntry;
-
-        const finalEntry = sessionEntry;
-
-        transport.onclose = () => {
-          if (!finalEntry.closed) {
-            finalEntry.closed = true;
-            const activeId = transport.sessionId;
-            if (activeId) {
-              sessions.delete(activeId);
-            }
-            void safeClose(finalEntry.server, activeId);
-          }
-        };
+        ({ entry, isNewSession } = createdSession);
       }
 
       if (!entry) {
@@ -159,12 +196,7 @@ export const createStreamableHttpHandler = ({
         await entry.transport.handleRequest(req, res, body);
       } catch (error) {
         if (isNewSession && !entry.closed) {
-          entry.closed = true;
-          const activeId = entry.transport.sessionId;
-          if (activeId) {
-            sessions.delete(activeId);
-          }
-          await safeClose(entry.server, activeId);
+          await cleanupFailedNewSession(entry, error);
         }
         throw error;
       } finally {
@@ -194,6 +226,17 @@ export const createStreamableHttpHandler = ({
       );
     }
   };
+
+  const handler: StreamableHttpHandler = Object.assign(handleRequest, {
+    dispose: async (): Promise<void> => {
+      clearInterval(interval);
+      await Promise.all(
+        Array.from(sessions.entries()).map(([sessionId, entry]) => closeEntry(sessionId, entry)),
+      );
+    },
+  });
+
+  return handler;
 };
 
 const MAX_BODY_SIZE = 1 * 1024 * 1024; // 1 MB

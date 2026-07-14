@@ -44,6 +44,7 @@
     "build": "tsc -p tsconfig.build.json && shx chmod +x dist/bin/nexus.js dist/bin/dashboard.js dist/bin/aggregator.js && npm run build -w packages/dashboard && shx mkdir -p dist/dashboard && shx cp packages/dashboard/dist/cli.js dist/dashboard/cli.js",
     "lint": "eslint src/**/*.ts vitest.config.ts",
     "test": "vitest run --passWithNoTests",
+    "test:e2e": "npm run build && NEXUS_E2E=1 vitest run",
     "test:bench": "vitest bench tests/benchmarks/**/*.bench.ts",
     "doctor": "node scripts/doctor.mjs",
     "license:check": "node scripts/license-check.mjs",
