@@ -3,7 +3,8 @@ import { releaseProcessLock } from './process-lock.js';
 import { createStreamableHttpHandler } from './transport.js';
 import {
   writeProjectEndpoint,
-  removeProjectEndpoint,
+  removeProjectEndpointIfMatching,
+  type ProjectEndpoint,
 } from './project-endpoint.js';
 import type { NexusRuntime } from './index.js';
 
@@ -34,6 +35,7 @@ export async function startManagedHttpServer(
   let shutdownTimer: NodeJS.Timeout | undefined;
   let startupGraceTimer: NodeJS.Timeout | undefined;
   let isClosing = false;
+  let endpoint: ProjectEndpoint | undefined;
 
   let resolveClosed: () => void;
   const closed = new Promise<void>((resolve) => {
@@ -119,14 +121,17 @@ export async function startManagedHttpServer(
     });
 
     await options.runtime.close();
-    await removeProjectEndpoint(options.storageDir);
-    await releaseProcessLock(options.storageDir).catch(() => {});
-
-    resolveClosed();
+    if (endpoint) {
+      await removeProjectEndpointIfMatching(options.storageDir, endpoint);
+    }
 
     if (options.exitOnShutdown) {
+      resolveClosed();
       process.exit(0);
     }
+
+    await releaseProcessLock(options.storageDir).catch(() => {});
+    resolveClosed();
   };
 
   const listenPromise = new Promise<URL>((resolve, reject) => {
@@ -148,12 +153,13 @@ export async function startManagedHttpServer(
   try {
     const url = await listenPromise;
 
-    await writeProjectEndpoint(options.storageDir, {
+    endpoint = {
       instanceId: options.instanceId,
       pid: process.pid,
       projectRoot: options.projectRoot,
       url: url.toString(),
-    });
+    };
+    await writeProjectEndpoint(options.storageDir, endpoint);
 
     if (options.startupGraceMs !== undefined) {
       startupGraceTimer = setTimeout(() => {

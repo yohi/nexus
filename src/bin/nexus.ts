@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { createServer, type Server } from "node:http";
+import { randomUUID } from "node:crypto";
 import path from "node:path";
 import { parseArgs } from "node:util";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
@@ -131,7 +132,7 @@ async function main() {
       }
       const { startManagedHttpServer } = await import("../server/managed-http-server.js");
       const managed = await startManagedHttpServer({
-        instanceId: `managed-${process.pid}-${Date.now()}`,
+        instanceId: randomUUID(),
         projectRoot: root,
         storageDir: config.storage.rootDir,
         runtime,

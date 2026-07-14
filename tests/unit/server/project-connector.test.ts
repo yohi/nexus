@@ -3,7 +3,7 @@ import { mkdtemp, mkdir, rm, writeFile, chmod } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { randomUUID } from 'node:crypto';
-import type { ChildProcess } from 'node:child_process';
+import { spawn, type ChildProcess } from 'node:child_process';
 
 import {
   ensureProjectEndpoint,
@@ -118,6 +118,71 @@ describe('project-connector', () => {
 
     expect(first.href).toBe(second.href);
     expect(spawnCount).toBe(1);
+  });
+
+  it('reuses the endpoint published by an actual managed child process', async () => {
+    const childScript = join(projectRoot, 'managed-child.mjs');
+    await writeFile(
+      childScript,
+      [
+        `#!${process.execPath}`,
+        "import { createServer } from 'node:http';",
+        "import { writeFile } from 'node:fs/promises';",
+        "import { join } from 'node:path';",
+        "const rootIndex = process.argv.indexOf('--project-root');",
+        "const projectRoot = process.argv[rootIndex + 1];",
+        "const storageDir = process.env.NEXUS_TEST_STORAGE_DIR;",
+        "if (projectRoot === undefined || storageDir === undefined) process.exit(1);",
+        "const server = createServer((request, response) => {",
+        "  if (request.url === '/health') {",
+        "    response.end(JSON.stringify({ instanceId: 'child-instance', projectRoot }));",
+        "    return;",
+        "  }",
+        "  response.statusCode = 404;",
+        "  response.end();",
+        "});",
+        "server.listen(0, '127.0.0.1', async () => {",
+        "  const address = server.address();",
+        "  if (address === null || typeof address === 'string') process.exit(1);",
+        "  await writeFile(join(storageDir, 'endpoint.json'), JSON.stringify({",
+        "    instanceId: 'child-instance', pid: process.pid, projectRoot,",
+        "    url: `http://127.0.0.1:${address.port}`",
+        "  }));",
+        "});",
+      ].join('\n'),
+    );
+    await chmod(childScript, 0o755);
+
+    let child: ChildProcess | undefined;
+    const spawnChild = (...args: Parameters<typeof spawn>): ChildProcess => {
+      child = spawn(...args);
+      return child;
+    };
+    const options: ProjectConnectorOptions = {
+      projectRoot,
+      storageDir,
+      childExecutable: childScript,
+      env: { NEXUS_TEST_STORAGE_DIR: storageDir },
+      spawn: spawnChild,
+      fetch: globalThis.fetch,
+      startupTimeoutMs: 2_000,
+      pollIntervalMs: 25,
+    };
+
+    try {
+      const [first, second] = await Promise.all([
+        ensureProjectEndpoint(options),
+        ensureProjectEndpoint(options),
+      ]);
+
+      expect(first.href).toBe(second.href);
+      expect(await readProjectEndpoint(storageDir)).toMatchObject({
+        instanceId: 'child-instance',
+        projectRoot,
+      });
+    } finally {
+      child?.kill();
+    }
   });
 
   it('removes a stale descriptor whose health check fails and spawns a new child', async () => {

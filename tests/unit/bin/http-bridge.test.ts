@@ -554,6 +554,12 @@ describe("http bridge", () => {
       expect(ensureProjectEndpoint).not.toHaveBeenCalled();
       expect(runHttpBridge).not.toHaveBeenCalled();
       expect(Buffer.concat(chunks).toString("utf8")).toContain("Nexus HTTP Bridge");
+      expect(Buffer.concat(chunks).toString("utf8")).toContain(
+        "Auto-discovers or starts the project-local managed endpoint",
+      );
+      expect(Buffer.concat(chunks).toString("utf8")).not.toContain(
+        "default: http://127.0.0.1:3001",
+      );
     });
   });
 });
