@@ -24,8 +24,9 @@ describe('global-lock', () => {
     const name = `test-${randomUUID()}`;
     const lock = await acquireGlobalLock(name);
     try {
-      await expect(acquireGlobalLock(name)).rejects.toThrow(GlobalLockHeldError);
-      await expect(acquireGlobalLock(name)).rejects.toMatchObject({ lockName: name });
+      const error = await acquireGlobalLock(name).catch((caught) => caught);
+      expect(error).toBeInstanceOf(GlobalLockHeldError);
+      expect((error as GlobalLockHeldError).lockName).toBe(name);
     } finally {
       await lock.release();
     }
