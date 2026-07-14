@@ -119,6 +119,7 @@ export async function startManagedHttpServer(
     await new Promise<void>((resolve) => {
       httpServer.close(() => resolve());
     });
+    await mcpHandler.dispose();
 
     await options.runtime.close();
     if (endpoint) {

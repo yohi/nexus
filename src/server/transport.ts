@@ -13,6 +13,18 @@ export interface StreamableHttpHandlerOptions {
   onSessionClose?: (sessionId: string) => void;
 }
 
+export interface StreamableHttpHandler {
+  (req: IncomingMessage, res: ServerResponse): Promise<void>;
+  /**
+   * Clears the idle-session cleanup interval and closes any remaining
+   * sessions. Callers that own this handler's lifecycle (e.g. an HTTP
+   * server wrapper) MUST call this during shutdown; otherwise the
+   * interval and any open MCP server sessions leak for the life of the
+   * process, which matters most when `exitOnShutdown: false`.
+   */
+  dispose(): Promise<void>;
+}
+
 export class HttpError extends Error {
   constructor(
     public readonly statusCode: number,
@@ -37,7 +49,7 @@ export const createStreamableHttpHandler = ({
   sessionCleanupIntervalMs = 5 * 60 * 1000,
   onSessionOpen,
   onSessionClose,
-}: StreamableHttpHandlerOptions) => {
+}: StreamableHttpHandlerOptions): StreamableHttpHandler => {
   const sessions = new Map<string, SessionEntry>();
 
   const safeClose = async (server: McpServer, sessionId?: string): Promise<void> => {
@@ -72,7 +84,7 @@ export const createStreamableHttpHandler = ({
 
   interval.unref();
 
-  return async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
+  const handleRequest = async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
     const sessionIdHeader = req.headers['mcp-session-id'];
     const sessionId = Array.isArray(sessionIdHeader) ? sessionIdHeader[0] : sessionIdHeader;
 
@@ -203,6 +215,17 @@ export const createStreamableHttpHandler = ({
       );
     }
   };
+
+  const handler: StreamableHttpHandler = Object.assign(handleRequest, {
+    dispose: async (): Promise<void> => {
+      clearInterval(interval);
+      await Promise.all(
+        Array.from(sessions.entries()).map(([sessionId, entry]) => closeEntry(sessionId, entry)),
+      );
+    },
+  });
+
+  return handler;
 };
 
 const MAX_BODY_SIZE = 1 * 1024 * 1024; // 1 MB
