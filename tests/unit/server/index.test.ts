@@ -127,12 +127,7 @@ describe('NexusServer helpers', () => {
       // Mock server.close is no longer needed because runtime.close() does not
       // close individual MCP servers; each HTTP session manages its own.
 
-      try {
-        await runtime.close();
-        expect.fail('Should have thrown error');
-      } catch (error) {
-        expect(error).toBeInstanceOf(Error);
-      }
+      await expect(runtime.close()).rejects.toBeInstanceOf(Error);
     });
   });
 
