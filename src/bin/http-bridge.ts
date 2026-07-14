@@ -282,10 +282,20 @@ export async function main(): Promise<void> {
     ensureProjectEndpoint: async ({ projectRoot, env }) => {
       const { loadConfig } = await import("../config/index.js");
       const resolvedConfig = await loadConfig({ projectRoot, env });
+      const resolvedExecutable = resolveNexusExecutable(import.meta.url);
+      // A source checkout resolves to the sibling `nexus.ts`, which has no
+      // execute permission and (even if it did) cannot be exec'd directly by
+      // the OS: Node cannot resolve this project's `.js`-suffixed relative
+      // imports against `.ts` files without a loader such as tsx. Route
+      // through the current Node binary, replaying whatever loader flags
+      // (`process.execArgv`) are already registered for this process, so
+      // both the compiled `.js` entry and the TypeScript source entry can be
+      // spawned the same way this process itself was launched.
       const options: ProjectConnectorOptions = {
         projectRoot,
         storageDir: resolvedConfig.storage.rootDir,
-        childExecutable: resolveNexusExecutable(import.meta.url),
+        childExecutable: process.execPath,
+        childArgs: [...process.execArgv, resolvedExecutable],
         env,
         spawn,
         fetch: globalThis.fetch,
