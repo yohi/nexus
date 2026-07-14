@@ -277,10 +277,11 @@ function setupSignalHandlers(
         await mcpServer.close();
       }
       if (managedServer) {
-        // managedServer.close() calls process.exit(0) synchronously when
-        // exitOnShutdown is set, firing Node's synchronous "exit" event.
+        // managedServer.close() releases the process lock (nexus.pid) via
+        // releaseProcessLock() and then calls process.exit(0) synchronously
+        // when exitOnShutdown is set, firing Node's synchronous "exit" event.
         // Remove exitCleanup first so the still-registered listener does not
-        // attempt a redundant unlink of the already-released PID lock file.
+        // attempt a redundant (no-op) unlink of the already-released PID lock file.
         process.removeListener("exit", exitCleanup);
         await managedServer.close();
         return;

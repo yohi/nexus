@@ -1,12 +1,13 @@
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { once } from 'node:events';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { access, mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { readProjectEndpoint } from '../../src/server/project-endpoint.js';
+import { LOCK_FILENAME } from '../../src/server/process-lock.js';
 
 const cliPath = join(process.cwd(), 'dist', 'bin', 'nexus.js');
 const initializeRequest = JSON.stringify({
@@ -28,6 +29,7 @@ const toolsListRequest = JSON.stringify({
 
 const bridges: ChildProcessWithoutNullStreams[] = [];
 const projectRoots: string[] = [];
+const managedProcesses: ChildProcessWithoutNullStreams[] = [];
 
 const waitFor = async <T>(predicate: () => Promise<T | undefined>, timeoutMs: number): Promise<T> => {
   const deadline = Date.now() + timeoutMs;
@@ -106,6 +108,15 @@ describe('project auto-connector CLI', () => {
     await Promise.all(projectRoots.splice(0).map(async (projectRoot) => rm(projectRoot, { force: true, recursive: true })));
   });
 
+  afterEach(async () => {
+    for (const managed of managedProcesses.splice(0)) {
+      if (managed.exitCode === null) {
+        managed.kill();
+        await once(managed, 'exit');
+      }
+    }
+  });
+
   it('shares one managed endpoint and removes it after both bridge clients disconnect', async () => {
     const projectRoot = await mkdtemp(join(tmpdir(), 'nexus-auto-connector-e2e-'));
     projectRoots.push(projectRoot);
@@ -136,5 +147,38 @@ describe('project auto-connector CLI', () => {
       const current = await readProjectEndpoint(storageDir);
       return current === undefined ? true : undefined;
     }, 5_000);
+  });
+
+  it('releases both the endpoint descriptor and the process lock when a managed server receives SIGTERM', async () => {
+    const projectRoot = await mkdtemp(join(tmpdir(), 'nexus-auto-connector-e2e-'));
+    projectRoots.push(projectRoot);
+    const storageDir = join(projectRoot, '.nexus');
+    const lockPath = join(storageDir, LOCK_FILENAME);
+
+    const managed = spawn(
+      process.execPath,
+      [cliPath, '--project-root', projectRoot, '--port', '0', '--managed'],
+      { stdio: ['ignore', 'pipe', 'pipe'] },
+    );
+    managedProcesses.push(managed);
+
+    const endpoint = await waitFor(async () => readProjectEndpoint(storageDir), 10_000);
+    expect(endpoint.pid).toBe(managed.pid);
+
+    await waitFor(
+      async () => access(lockPath).then(() => true as const, () => undefined),
+      5_000,
+    );
+
+    managed.kill('SIGTERM');
+    const [exitCode] = await once(managed, 'exit');
+    expect(exitCode).toBe(0);
+
+    // Regression guard: the managed server must release nexus.pid (via
+    // releaseProcessLock) *and* remove endpoint.json before it exits, even
+    // though it shuts down through process.exit(0) (exitOnShutdown: true).
+    // See src/server/managed-http-server.ts close().
+    await expect(access(lockPath)).rejects.toThrow();
+    await expect(readProjectEndpoint(storageDir)).resolves.toBeUndefined();
   });
 });

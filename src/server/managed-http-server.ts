@@ -125,13 +125,17 @@ export async function startManagedHttpServer(
       await removeProjectEndpointIfMatching(options.storageDir, endpoint);
     }
 
-    if (options.exitOnShutdown) {
-      resolveClosed();
-      process.exit(0);
-    }
-
+    // Release the process-level single-instance lock (nexus.pid) before any
+    // process.exit() call below. process.exit() terminates synchronously and
+    // would otherwise skip this cleanup entirely, leaving a stale lock file
+    // behind (design requirement: descriptor AND process lock must both be
+    // removed on shutdown).
     await releaseProcessLock(options.storageDir).catch(() => {});
     resolveClosed();
+
+    if (options.exitOnShutdown) {
+      process.exit(0);
+    }
   };
 
   const listenPromise = new Promise<URL>((resolve, reject) => {
