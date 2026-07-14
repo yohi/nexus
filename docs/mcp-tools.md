@@ -229,7 +229,7 @@ managed server の descriptor は `<storage.rootDir>/endpoint.json` に保存さ
 
 ### プロジェクトルートの指定
 
-managed server の descriptor 保存先やロック名はプロジェクトルートから導出されます。カレントディレクトリ以外を対象にする場合は `--project-root <path>` 引数または `NEXUS_PROJECT_ROOT` 環境変数を指定してください。
+managed server の descriptor 保存先やロック名は `storage.rootDir`（既定では `<projectRoot>/.nexus`）から導出されます。`.nexus.json` などでカスタムの保存先を設定している場合は、その値が使用されます。カレントディレクトリ以外のプロジェクトルートを対象にする場合は `--project-root <path>` 引数または `NEXUS_PROJECT_ROOT` 環境変数を指定してください。
 
 ```bash
 nexus http-bridge --project-root /path/to/project
