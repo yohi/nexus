@@ -141,7 +141,7 @@ export async function runHttpBridgeWithSignalSource(
           "terminateSession" in transport &&
           typeof (transport as { terminateSession?: () => Promise<void> }).terminateSession === "function"
         ) {
-          await (transport as { terminateSession: () => Promise<void> }).terminateSession();
+          await (transport as { terminateSession: () => Promise<void> }).terminateSession().catch(() => undefined);
         }
         await transport.close();
       }
