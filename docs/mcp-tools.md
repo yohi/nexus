@@ -208,7 +208,6 @@ indexing pipeline を通じて manual reindex を実行します。
 - `1 MB` を超える request body は HTTP transport 層で reject されます。
 
 ## stdio-only クライアント向け HTTP Bridge
-## stdio-only クライアント向け HTTP Bridge
 
 stdio 接続のみに対応した MCP クライアント（OpenCode など）から、Nexus HTTP サーバーに接続するには、`nexus http-bridge` を中継として使います。Bridge は独立したローカルプロセスとして起動し、標準入出力の JSON-RPC を Nexus の Streamable HTTP エンドポイントに転送します。
 
