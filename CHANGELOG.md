@@ -1,5 +1,16 @@
 # Changelog
 
+## [1.28.1](https://github.com/yohi/nexus/compare/v1.28.0...v1.28.1) (2026-07-15)
+
+
+### Bug Fixes
+
+* HTTP bridge で子プロセスの終了理由が表示されるようにする ([e00c3f9](https://github.com/yohi/nexus/commit/e00c3f9262399df14dfacf336eafbd5659d9edfb))
+* HTTP bridge で子プロセスの終了理由が表示されるようにする ([09ed908](https://github.com/yohi/nexus/commit/09ed908a75d18473de48684e4fa62876bc929f08))
+* **server:** detached 子プロセスの stdio を完全に切り離し診断を別経路化 ([7ace595](https://github.com/yohi/nexus/commit/7ace595129ebc188e767487cf38174dfe3e157f2))
+* **server:** 子プロセスの終了診断を close イベントまで待って取得する ([5d0aeb4](https://github.com/yohi/nexus/commit/5d0aeb485e5a98866561ee556c0f8c2248f2725e))
+* **server:** 起動ログ読み取り失敗時に close ハンドラから例外が漏れないようにする ([cb43719](https://github.com/yohi/nexus/commit/cb43719db07705ddd94723cb5ef4c0704ccec1f6))
+
 ## [1.28.0](https://github.com/yohi/nexus/compare/v1.27.0...v1.28.0) (2026-07-14)
 
 
