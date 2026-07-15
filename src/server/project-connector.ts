@@ -10,13 +10,13 @@ import {
   type ProjectEndpoint,
 } from './project-endpoint.js';
 import { isProcessAlive } from './process-lock.js';
-import type { ChildProcess } from 'node:child_process';
+import type { ChildProcess, StdioOptions } from 'node:child_process';
 import { mkdir } from 'node:fs/promises';
 
 export type SpawnFn = (
   command: string,
   args: readonly string[],
-  options: { readonly detached: true; readonly env: NodeJS.ProcessEnv; readonly stdio: 'ignore' },
+  options: { readonly detached: true; readonly env: NodeJS.ProcessEnv; readonly stdio: StdioOptions },
 ) => ChildProcess;
 
 export type FetchFn = (url: string, init?: { readonly signal?: AbortSignal }) => Promise<Response>;
@@ -230,9 +230,30 @@ export async function ensureProjectEndpoint(options: ProjectConnectorOptions): P
         '0',
         '--managed',
       ],
-      { detached: true, env: options.env, stdio: 'ignore' },
+      { detached: true, env: options.env, stdio: ['ignore', 'pipe', 'pipe'] as const },
     );
     spawned = true;
+
+    // Capture the child's stdout/stderr so spawn failures are not masked by
+    // the generic timeout message. The streams are drained into buffers and
+    // included in the rejection if the child exits before publishing a healthy
+    // endpoint.
+    let stdoutBuffer = '';
+    let stderrBuffer = '';
+    const childStdout = child.stdout;
+    const childStderr = child.stderr;
+    const onStdoutData = (chunk: Buffer | string): void => {
+      stdoutBuffer += chunk.toString();
+    };
+    const onStderrData = (chunk: Buffer | string): void => {
+      stderrBuffer += chunk.toString();
+    };
+    const removeOutputListeners = (): void => {
+      childStdout?.removeListener('data', onStdoutData);
+      childStderr?.removeListener('data', onStderrData);
+    };
+    childStdout?.on('data', onStdoutData);
+    childStderr?.on('data', onStderrData);
 
     // Race the health-check poll against the child's own error/exit events.
     // Without this, a spawn failure (e.g. ENOENT) or a child that crashes
@@ -247,9 +268,13 @@ export async function ensureProjectEndpoint(options: ProjectConnectorOptions): P
       rejectChildFailure(error);
     };
     const onChildExit = (code: number | null, signal: NodeJS.Signals | null): void => {
+      removeOutputListeners();
+      const outputPreview = (stderrBuffer || stdoutBuffer)
+        ? `\n\nChild output:\n${stderrBuffer || stdoutBuffer}`.trimEnd()
+        : '';
       rejectChildFailure(
         new Error(
-          `Managed nexus child exited before publishing a healthy endpoint (code=${code ?? 'null'}, signal=${signal ?? 'null'})`,
+          `Managed nexus child exited before publishing a healthy endpoint (code=${code ?? 'null'}, signal=${signal ?? 'null'})${outputPreview}`,
         ),
       );
     };
@@ -270,10 +295,11 @@ export async function ensureProjectEndpoint(options: ProjectConnectorOptions): P
       ]);
       succeeded = true;
       return new URL(managedEndpoint.url);
-    } finally {
-      child.removeListener('error', onChildError);
-      child.removeListener('exit', onChildExit);
-    }
+} finally {
+child.removeListener('error', onChildError);
+child.removeListener('exit', onChildExit);
+removeOutputListeners();
+}
   } finally {
     await lockHandle?.release().catch(() => {});
     // If we spawned a child but never saw a healthy descriptor, clean up the

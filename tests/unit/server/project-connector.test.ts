@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import { randomUUID } from 'node:crypto';
 import { spawn, type ChildProcess } from 'node:child_process';
 import { EventEmitter } from 'node:events';
+import { PassThrough, Readable } from 'node:stream';
 
 import {
   ensureProjectEndpoint,
@@ -18,16 +19,20 @@ import {
 
 interface FakeChildProcess extends ChildProcess {
   unref: ReturnType<typeof vi.fn>;
+  stdout: Readable | null;
+  stderr: Readable | null;
 }
 
 function createFakeChildProcess(): FakeChildProcess {
   // A real EventEmitter so production code can safely register `error`/`exit`
   // listeners on it (mirrors the real ChildProcess API), while still letting
   // tests that never emit those events behave exactly as before.
-  const emitter = new EventEmitter();
-  return Object.assign(emitter, {
-    unref: vi.fn(),
-  }) as unknown as FakeChildProcess;
+const emitter = new EventEmitter();
+return Object.assign(emitter, {
+unref: vi.fn(),
+stdout: null,
+stderr: null,
+}) as unknown as FakeChildProcess;
 }
 
 function createHarness() {
@@ -398,6 +403,41 @@ describe('project-connector', () => {
     );
   });
 
+  it('includes captured child output when the child exits before publishing a healthy endpoint', async () => {
+    const harness = createHarness();
+    const stdout = new PassThrough();
+    const stderr = new PassThrough();
+    let fakeChild: FakeChildProcess | undefined;
+    harness.spawnImpl.mockImplementation(() => {
+      fakeChild = createFakeChildProcess();
+      fakeChild.stdout = stdout as unknown as typeof fakeChild.stdout;
+      fakeChild.stderr = stderr as unknown as typeof fakeChild.stderr;
+      return fakeChild;
+    });
+    harness.fetchImpl.mockResolvedValue(new Response('not found', { status: 404 }));
+
+    const options: ProjectConnectorOptions = {
+      projectRoot,
+      storageDir,
+      childExecutable: process.execPath,
+      env: {},
+      spawn: harness.spawnImpl,
+      fetch: harness.fetchImpl,
+      startupTimeoutMs: 60_000,
+      pollIntervalMs: 25,
+    };
+
+    const pending = ensureProjectEndpoint(options);
+    await waitForSpawnCall(harness.spawnImpl);
+    stderr.write('already running\n');
+    stdout.write('ignored stdout\n');
+    fakeChild!.emit('exit', 1, null);
+
+    await expect(pending).rejects.toThrow(
+      'Managed nexus child exited before publishing a healthy endpoint (code=1, signal=null)\n\nChild output:\nalready running',
+    );
+  });
+
   it('spawns a new child when the descriptor projectRoot does not match', async () => {
     const endpoint: ProjectEndpoint = {
       instanceId: 'instance-root-mismatch',
@@ -520,7 +560,7 @@ describe('project-connector', () => {
         '0',
         '--managed',
       ]);
-      expect(options).toMatchObject({ detached: true, stdio: 'ignore' });
+      expect(options).toMatchObject({ detached: true, stdio: ['ignore', 'pipe', 'pipe'] });
       setTimeout(() => {
         void writeProjectEndpoint(storageDir, healthyEndpoint(instanceId, port));
       }, 25);
