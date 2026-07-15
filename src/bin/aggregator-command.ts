@@ -3,6 +3,7 @@ import path from "node:path";
 import { parseArgs } from "node:util";
 
 import { loadConfig } from "../config/index.js";
+import { handleFatalError } from "./fatal-error.js";
 
 const DEFAULT_AGGREGATOR_PORT = 9470;
 
@@ -150,29 +151,3 @@ export async function main(args: string[] = process.argv.slice(2)): Promise<void
   }
 }
 
-function handleFatalError(message: string, error: unknown): never {
-  console.error(`\n❌ ${message}:`);
-  console.error(error);
-
-  console.error("\n🔍 Troubleshooting Info:");
-  console.error(`   Node.js:  ${process.version}`);
-  console.error(`   Platform: ${process.platform} (${process.arch})`);
-
-  if (typeof error === "object" && error !== null) {
-    const err = error as Record<string, unknown> & { code?: string; path?: string; message?: string; stack?: string };
-
-    if (err.code === "ENOENT") {
-      console.error(`   Diagnosis: A required file or directory was not found: ${err.path ?? "unknown path"}`);
-      console.error("   Action:    Ensure the path is correct and accessible. Check if --project-root is set correctly.");
-    } else if (err.code === "EACCES" || err.code === "EPERM") {
-      console.error(`   Diagnosis: Permission denied at ${err.path ?? "unknown path"}`);
-      console.error("   Action:    Check filesystem permissions for the storage and project directories.");
-    } else if (err.message?.includes("better-sqlite3") || err.stack?.includes("better-sqlite3")) {
-      console.error("   Diagnosis: better-sqlite3 failed to load. This usually means a native module mismatch.");
-      console.error("   Action:    Try 'npm rebuild better-sqlite3' or ensure you are using a supported Node.js version.");
-    }
-  }
-
-  console.error("\n   For more details, check the indexer log in your storage directory (default: .nexus/indexer.log).\n");
-  process.exit(1);
-}
