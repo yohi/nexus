@@ -28,6 +28,7 @@ describe("aggregator command", () => {
     const dependencies: AggregatorCliDependencies = {
       createAggregator: vi.fn(),
       errorOutput: new PassThrough(),
+      exit: vi.fn(),
       loadConfig: vi.fn(),
       output: output.stream,
       signalSource: process,

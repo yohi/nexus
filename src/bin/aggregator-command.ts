@@ -21,6 +21,7 @@ interface AggregatorServer {
 export interface AggregatorCliDependencies {
   readonly createAggregator: () => Promise<AggregatorServer>;
   readonly errorOutput: Writable;
+  readonly exit: (code: number) => void;
   readonly loadConfig: (options: {
     readonly projectRoot: string;
     readonly env: NodeJS.ProcessEnv;
@@ -117,7 +118,7 @@ export async function runAggregatorCli(
   const handleShutdown = (): void => {
     aggregator.stop()
       .then(() => {
-        process.exit(0);
+        dependencies.exit(0);
       })
       .catch((error: unknown) => {
         handleFatalError("Failed to stop aggregator", error);
@@ -142,6 +143,7 @@ export async function main(args: string[] = process.argv.slice(2)): Promise<void
         return new module.AggregatorServer();
       },
       errorOutput: process.stderr,
+      exit: process.exit.bind(process),
       loadConfig,
       output: process.stdout,
       signalSource: process,
