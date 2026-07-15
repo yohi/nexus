@@ -5,7 +5,7 @@ import path from "node:path";
 import { parseArgs } from "node:util";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { unlinkSync } from "node:fs";
+import { unlinkSync, appendFileSync } from "node:fs";
 
 import { loadConfig } from "../config/index.js";
 import { NexusServerFactory } from "../server/factory.js";
@@ -28,6 +28,8 @@ async function main() {
       "idle-shutdown-ms": { type: "string" },
       "reindex": { type: "boolean" },
       "full": { type: "boolean" },
+      "startup-stdout-log": { type: "string" },
+      "startup-stderr-log": { type: "string" },
       "help": { type: "boolean", short: "h" },
     },
     strict: false,
@@ -46,6 +48,8 @@ async function main() {
       `  --port <number>        Start HTTP server (with MCP + REST API) on the given port\n` +
       `  --managed              Run as a managed HTTP server (requires --port; use --port 0 for an ephemeral port)\n` +
       `  --idle-shutdown-ms <ms> Idle timeout in milliseconds before a --managed server auto-shuts down when idle (env: NEXUS_IDLE_SHUTDOWN_MS, default: 0)\n` +
+      `  --startup-stdout-log <path> Redirect managed child stdout to a file (env: NEXUS_STARTUP_STDOUT_LOG)\n` +
+      `  --startup-stderr-log <path> Redirect managed child stderr to a file (env: NEXUS_STARTUP_STDERR_LOG)\n` +
       `  --reindex              Run indexing and exit\n` +
       `  --full                 Run a full clean reindexing (can be used with --reindex)\n` +
       `  -h, --help             Show help`
@@ -122,7 +126,10 @@ async function main() {
         port,
         root,
         runtime,
+        startupStdoutLog: values["startup-stdout-log"] as string | undefined,
+        startupStderrLog: values["startup-stderr-log"] as string | undefined,
       });
+
       return;
     }
 
@@ -149,6 +156,8 @@ interface RuntimeModeOptions {
 interface ManagedModeOptions extends RuntimeModeOptions {
   readonly idleShutdownMsRaw: string | boolean;
   readonly port: number;
+  readonly startupStdoutLog: string | undefined;
+  readonly startupStderrLog: string | undefined;
 }
 
 interface HttpModeOptions extends RuntimeModeOptions {
@@ -184,12 +193,25 @@ async function startManagedMode({
   port,
   root,
   runtime,
+  startupStdoutLog,
+  startupStderrLog,
 }: ManagedModeOptions): Promise<void> {
+  const stdoutLogPath = startupStdoutLog ?? process.env.NEXUS_STARTUP_STDOUT_LOG;
+  const stderrLogPath = startupStderrLog ?? process.env.NEXUS_STARTUP_STDERR_LOG;
+  if (stdoutLogPath !== undefined) {
+    redirectStream(process.stdout, stdoutLogPath);
+  }
+  if (stderrLogPath !== undefined) {
+    redirectStream(process.stderr, stderrLogPath);
+  }
+
   const idleShutdownMs = Number(idleShutdownMsRaw);
+
   if (!Number.isFinite(idleShutdownMs) || idleShutdownMs < 0) {
     console.error(`\u274c Invalid idle-shutdown-ms: ${idleShutdownMsRaw}`);
     process.exit(1);
   }
+
   const { startManagedHttpServer } = await import("../server/managed-http-server.js");
   const managed = await startManagedHttpServer({
     instanceId: randomUUID(),
@@ -212,6 +234,26 @@ async function startManagedMode({
   runtime.initialize().catch((error) => {
     handleFatalError("Nexus background initialization failed", error);
   });
+}
+function redirectStream(source: NodeJS.WriteStream, logPath: string): void {
+  const originalWrite = source.write.bind(source);
+  source.write = (
+    chunk: unknown,
+    encodingOrCallback?: BufferEncoding | ((error: Error | null | undefined) => void),
+    callback?: (error: Error | null | undefined) => void,
+  ): boolean => {
+    const resolvedEncoding = typeof encodingOrCallback === "string" ? encodingOrCallback : "utf8";
+    const resolvedCallback = typeof encodingOrCallback === "function" ? encodingOrCallback : callback;
+    // Write synchronously so diagnostics survive an immediate process.exit()
+    // call (e.g. after a fatal console.error). An async WriteStream's queued
+    // write would otherwise be dropped when the process exits before it flushes.
+    try {
+      appendFileSync(logPath, chunk as string | Uint8Array, typeof chunk === "string" ? resolvedEncoding : undefined);
+    } catch {
+      // Best-effort diagnostics only; never let a logging failure crash startup.
+    }
+    return originalWrite(chunk as string | Buffer, resolvedEncoding, resolvedCallback);
+  };
 }
 
 function startHttpMode({

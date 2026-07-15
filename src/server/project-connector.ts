@@ -11,7 +11,10 @@ import {
 } from './project-endpoint.js';
 import { isProcessAlive } from './process-lock.js';
 import type { ChildProcess, StdioOptions } from 'node:child_process';
-import { mkdir } from 'node:fs/promises';
+import { mkdir, unlink } from 'node:fs/promises';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { randomUUID } from 'node:crypto';
 
 export type SpawnFn = (
   command: string,
@@ -42,6 +45,9 @@ export interface ProjectConnectorOptions {
 
 const DEFAULT_STARTUP_TIMEOUT_MS = 30_000;
 const DEFAULT_POLL_INTERVAL_MS = 100;
+const MAX_STARTUP_LOG_BYTES = 64 * 1024;
+const STARTUP_STDOUT_LOG_NAME = 'startup-stdout.log';
+const STARTUP_STDERR_LOG_NAME = 'startup-stderr.log';
 
 function validateTimeout(value: number | undefined, name: string, fallback: number): number {
   if (value === undefined) {
@@ -51,6 +57,45 @@ function validateTimeout(value: number | undefined, name: string, fallback: numb
     throw new RangeError(`${name} must be a finite, positive number`);
   }
   return value;
+}
+
+function tailBytes(text: string, maxBytes: number): string {
+  const encoder = new TextEncoder();
+  let totalBytes = 0;
+  let startIndex = text.length;
+  for (let i = text.length - 1; i >= 0; i -= 1) {
+    const charBytes = encoder.encode(text[i] as string).length;
+    if (totalBytes + charBytes > maxBytes) {
+      break;
+    }
+    totalBytes += charBytes;
+    startIndex = i;
+  }
+  return text.slice(startIndex);
+}
+
+async function cleanupStartupLog(path: string | undefined): Promise<void> {
+  if (path === undefined) {
+    return;
+  }
+  try {
+    await unlink(path);
+  } catch (error) {
+    const err = error as NodeJS.ErrnoException;
+    if (err.code !== 'ENOENT') {
+      throw error;
+    }
+  }
+}
+
+function buildOutputPreview(stdoutLog: string, stderrLog: string): string {
+  const stdoutSection = stdoutLog
+    ? `\n\nChild stdout:\n${stdoutLog.trimEnd()}`
+    : '';
+  const stderrSection = stderrLog
+    ? `\n\nChild stderr:\n${stderrLog.trimEnd()}`
+    : '';
+  return `${stderrSection}${stdoutSection}`;
 }
 
 async function fetchHealth(
@@ -110,7 +155,6 @@ async function validateEndpoint(
     // have to silence unexpected errors with `.catch(() => undefined)`.
     return undefined;
   }
-
 
   let parsedUrl: URL;
   try {
@@ -220,6 +264,13 @@ export async function ensureProjectEndpoint(options: ProjectConnectorOptions): P
       return new URL(winnerEndpoint.url);
     }
 
+    // Prepare startup log files so the detached child can write diagnostics
+    // over a path that survives the bridge process exiting. Pipes would keep the
+    // child coupled to the bridge's lifetime, so stdio is fully detached below
+    // and the child receives log paths via environment variables instead.
+    const startupStdoutLog = join(options.storageDir, `${randomUUID()}-${STARTUP_STDOUT_LOG_NAME}`);
+    const startupStderrLog = join(options.storageDir, `${randomUUID()}-${STARTUP_STDERR_LOG_NAME}`);
+
     const child = options.spawn(
       options.childExecutable,
       [
@@ -230,30 +281,17 @@ export async function ensureProjectEndpoint(options: ProjectConnectorOptions): P
         '0',
         '--managed',
       ],
-      { detached: true, env: options.env, stdio: ['ignore', 'pipe', 'pipe'] as const },
+      {
+        detached: true,
+        env: {
+          ...options.env,
+          NEXUS_STARTUP_STDOUT_LOG: startupStdoutLog,
+          NEXUS_STARTUP_STDERR_LOG: startupStderrLog,
+        },
+        stdio: ['ignore', 'ignore', 'ignore'] as const,
+      },
     );
     spawned = true;
-
-    // Capture the child's stdout/stderr so spawn failures are not masked by
-    // the generic timeout message. The streams are drained into buffers and
-    // included in the rejection if the child exits before publishing a healthy
-    // endpoint.
-    let stdoutBuffer = '';
-    let stderrBuffer = '';
-    const childStdout = child.stdout;
-    const childStderr = child.stderr;
-    const onStdoutData = (chunk: Buffer | string): void => {
-      stdoutBuffer += chunk.toString();
-    };
-    const onStderrData = (chunk: Buffer | string): void => {
-      stderrBuffer += chunk.toString();
-    };
-    const removeOutputListeners = (): void => {
-      childStdout?.removeListener('data', onStdoutData);
-      childStderr?.removeListener('data', onStderrData);
-    };
-    childStdout?.on('data', onStdoutData);
-    childStderr?.on('data', onStderrData);
 
     // Race the health-check poll against the child's own error/close events.
     // Without this, a spawn failure (e.g. ENOENT) or a child that crashes
@@ -261,29 +299,50 @@ export async function ensureProjectEndpoint(options: ProjectConnectorOptions): P
     // just keep polling until startupTimeoutMs elapses and report a generic
     // timeout instead of the real failure.
     //
-    // We listen to 'close' rather than 'exit' so any remaining stdio data has
-    // already been drained into the buffers before we snapshot them. 'exit' can
-    // fire while the stdout/stderr pipes still hold pending chunks, which would
-    // cause us to drop the child's final diagnostics.
+    // Diagnostics are not captured from stdio pipes (stdio is detached so the
+    // child can outlive the bridge). Instead, the child writes startup output
+    // to per-stream log files and we read the trailing 64 KiB when reporting a
+    // startup failure.
     let rejectChildFailure: (reason: unknown) => void = () => {};
     const childFailure = new Promise<never>((_, reject) => {
       rejectChildFailure = reject;
     });
+    function buildFailureError(code: number | null, signal: NodeJS.Signals | null): Error {
+      let stdoutLog = '';
+      let stderrLog = '';
+      try {
+        stdoutLog = readFileSync(startupStdoutLog, 'utf8');
+      } catch (error) {
+        const err = error as NodeJS.ErrnoException;
+        if (err.code !== 'ENOENT') {
+          throw error;
+        }
+      }
+      try {
+        stderrLog = readFileSync(startupStderrLog, 'utf8');
+      } catch (error) {
+        const err = error as NodeJS.ErrnoException;
+        if (err.code !== 'ENOENT') {
+          throw error;
+        }
+      }
+      const outputPreview = buildOutputPreview(
+        tailBytes(stdoutLog, MAX_STARTUP_LOG_BYTES),
+        tailBytes(stderrLog, MAX_STARTUP_LOG_BYTES),
+      );
+      return new Error(
+        `Managed nexus child exited before publishing a healthy endpoint (code=${code ?? 'null'}, signal=${signal ?? 'null'})${outputPreview}`,
+      );
+    }
+
     const onChildError = (error: Error): void => {
-      removeOutputListeners();
       rejectChildFailure(error);
     };
+
     const onChildClose = (code: number | null, signal: NodeJS.Signals | null): void => {
-      removeOutputListeners();
-      const outputPreview = (stderrBuffer || stdoutBuffer)
-        ? `\n\nChild output:\n${stderrBuffer || stdoutBuffer}`.trimEnd()
-        : '';
-      rejectChildFailure(
-        new Error(
-          `Managed nexus child exited before publishing a healthy endpoint (code=${code ?? 'null'}, signal=${signal ?? 'null'})${outputPreview}`,
-        ),
-      );
+      rejectChildFailure(buildFailureError(code, signal));
     };
+
     child.once('error', onChildError);
     child.once('close', onChildClose);
     child.unref();
@@ -304,8 +363,14 @@ export async function ensureProjectEndpoint(options: ProjectConnectorOptions): P
     } finally {
       child.removeListener('error', onChildError);
       child.removeListener('close', onChildClose);
-      removeOutputListeners();
+      if (succeeded) {
+        await Promise.all([
+          cleanupStartupLog(startupStdoutLog),
+          cleanupStartupLog(startupStderrLog),
+        ]);
+      }
     }
+
   } finally {
     await lockHandle?.release().catch(() => {});
     // If we spawned a child but never saw a healthy descriptor, clean up the

@@ -30,6 +30,7 @@ const toolsListRequest = JSON.stringify({
 const bridges: ChildProcessWithoutNullStreams[] = [];
 const projectRoots: string[] = [];
 const managedProcesses: ChildProcessWithoutNullStreams[] = [];
+const detachedManagedPids: number[] = [];
 
 const waitFor = async <T>(predicate: () => Promise<T | undefined>, timeoutMs: number): Promise<T> => {
   const deadline = Date.now() + timeoutMs;
@@ -121,6 +122,27 @@ describe('project auto-connector CLI', () => {
     }
   });
 
+  afterEach(async () => {
+    // Detached managed children spawned indirectly through the bridge (via
+    // ensureProjectEndpoint) have no local ChildProcess handle, so they must
+    // be reaped by pid instead of through the `managedProcesses` array above.
+    for (const pid of detachedManagedPids.splice(0)) {
+      try {
+        process.kill(pid, 'SIGTERM');
+      } catch {
+        continue;
+      }
+      await waitFor(async () => {
+        try {
+          process.kill(pid, 0);
+          return undefined;
+        } catch {
+          return true as const;
+        }
+      }, 5_000).catch(() => {});
+    }
+  });
+
   it('shares one managed endpoint and removes it after both bridge clients disconnect', async () => {
     const projectRoot = await mkdtemp(join(tmpdir(), 'nexus-auto-connector-e2e-'));
     projectRoots.push(projectRoot);
@@ -182,7 +204,42 @@ describe('project auto-connector CLI', () => {
     // releaseProcessLock) *and* remove endpoint.json before it exits, even
     // though it shuts down through process.exit(0) (exitOnShutdown: true).
     // See src/server/managed-http-server.ts close().
-    await expect(access(lockPath)).rejects.toThrow();
-    await expect(readProjectEndpoint(storageDir)).resolves.toBeUndefined();
+await expect(access(lockPath)).rejects.toThrow();
+await expect(readProjectEndpoint(storageDir)).resolves.toBeUndefined();
   });
+
+  it('keeps the detached managed child running after the spawning bridge process receives SIGTERM', async () => {
+    // Regression guard for the http-bridge/project-connector detached child
+    // contract: project-connector.ts spawns the managed nexus server with
+    // `detached: true, stdio: ['ignore', 'ignore', 'ignore']` specifically so
+    // it can outlive the bridge process that spawned it (e.g. the bridge's
+    // stdio-based MCP transport disconnecting, or the bridge itself being
+    // terminated). This test spawns a real bridge, drives it far enough to
+    // spawn the detached managed child via ensureProjectEndpoint, kills only
+    // the bridge with SIGTERM, and asserts the managed child is still alive
+    // afterward.
+    const projectRoot = await mkdtemp(join(tmpdir(), 'nexus-auto-connector-e2e-'));
+    projectRoots.push(projectRoot);
+    const storageDir = join(projectRoot, '.nexus');
+
+    const bridge = startBridge(projectRoot);
+    await sendRequest(bridge, initializeRequest, 1);
+    await sendRequest(bridge, toolsListRequest, 2);
+
+    const endpoint = await waitFor(async () => readProjectEndpoint(storageDir), 10_000);
+    detachedManagedPids.push(endpoint.pid);
+
+    // Sanity check: the managed child must be a distinct, live process from
+    // the bridge before we kill the bridge below.
+    expect(endpoint.pid).not.toBe(bridge.pid);
+    expect(() => process.kill(endpoint.pid, 0)).not.toThrow();
+
+    bridge.kill('SIGTERM');
+    await once(bridge, 'exit');
+
+    // The bridge is gone, but the detached managed child must still be
+    // running: killing it here (not throwing ESRCH) proves it survived the
+    // bridge's termination instead of dying alongside it.
+    expect(() => process.kill(endpoint.pid, 0)).not.toThrow();
+});
 });
