@@ -36,7 +36,7 @@ Nexus は `<projectRoot>/.nexus.json` から設定を読み込みます。
     "baseUrl": "http://127.0.0.1:11434",
     "apiKey": "",
     "maxConcurrency": 1,
-    "batchSize": 4,
+    "batchSize": 32,
     "retryCount": 3,
     "retryBaseDelayMs": 250,
     "timeoutMs": 120000,
@@ -62,6 +62,7 @@ Dashboard CLI では `--aggregator-port` が `aggregatorPort` と `NEXUS_AGGREGA
 | `storage.rootDir`        | string | `<projectRoot>/.nexus`             | `NEXUS_STORAGE_ROOT_DIR`         | Nexus が管理するローカル状態のルートディレクトリ |
 | `storage.metadataDbPath` | string | `<projectRoot>/.nexus/metadata.db` | `NEXUS_STORAGE_METADATA_DB_PATH` | SQLite metadata database のパス                  |
 | `storage.vectorDbPath`   | string | `<projectRoot>/.nexus/vectors`     | `NEXUS_STORAGE_VECTOR_DB_PATH`   | LanceDB vector store ディレクトリ                |
+| `storage.batchSize`        | positive integer | `1000` | `NEXUS_STORAGE_BATCH_SIZE` | SQLite metadata bulk operation のバッチサイズ |
 
 ## Watcher
 
@@ -70,7 +71,7 @@ Dashboard CLI では `--aggregator-port` が `aggregatorPort` と `NEXUS_AGGREGA
 | `watcher.debounceMs`        | positive integer | `100`                                                                                                                                                                                                                                                 | `NEXUS_WATCHER_DEBOUNCE_MS`         | 連続した filesystem event を束ねる待ち時間              |
 | `watcher.maxQueueSize`      | positive integer | `10000`                                                                                                                                                                                                                                               | `NEXUS_WATCHER_MAX_QUEUE_SIZE`      | overflow handling に入る前の最大キュー長                |
 | `watcher.fullScanThreshold` | positive integer | `5000`                                                                                                                                                                                                                                                | `NEXUS_WATCHER_FULL_SCAN_THRESHOLD` | incremental 処理から広い scan recovery へ切り替える閾値 |
-| `watcher.ignorePaths`       | string list      | `['node_modules', '.git', '.worktrees', '.nexus', 'dist', 'build', 'out', 'coverage', '.cache', '.parcel-cache', 'venv', '.venv', 'env', '.idea', '.vscode', '.DS_Store', 'package-lock.json', 'pnpm-lock.yaml', 'yarn.lock', 'bun.lockb', '*.lock']` | `NEXUS_WATCHER_IGNORE_PATHS`        | 監視・インデックス対象外とするパスのリスト              |
+| `watcher.ignorePaths`       | string list      | `['node_modules', '.git', '.worktrees', '.nexus', 'dist', 'build', 'out', 'coverage', '.cache', '.parcel-cache', 'venv', '.venv', 'env', '.idea', '.vscode', '.DS_Store', 'package-lock.json', 'pnpm-lock.yaml', 'yarn.lock', 'bun.lockb', '*.lock', '__pycache__', '*.pyc', '.pytest_cache', '.mypy_cache', '.ruff_cache']` | `NEXUS_WATCHER_IGNORE_PATHS`        | 監視・インデックス対象外とするパスのリスト              |
 
 > **シークレットファイルの常時除外**: `.env` および `.env.*` は、`watcher.ignorePaths` を `.nexus.json` や `NEXUS_WATCHER_IGNORE_PATHS` で上書きした場合でも、**常に**除外対象としてマージされます。シークレットが誤ってインデックス（ベクトル DB）へ取り込まれるのを防ぐためで、上書きによって再度有効化することはできません。
 
@@ -86,7 +87,7 @@ Dashboard CLI では `--aggregator-port` が `aggregatorPort` と `NEXUS_AGGREGA
 | `embedding.region`           | string                                       | unset（フォールバック `us-east-1`） | `NEXUS_EMBEDDING_REGION`              | `bedrock` provider 用の AWS リージョン。未設定時はプロバイダ側で `us-east-1` にフォールバックし警告ログを出力します |
 | `embedding.profile`          | string                                       | unset                               | `NEXUS_EMBEDDING_PROFILE`             | `bedrock` provider が `fromIni({ profile })` で名前付き AWS プロファイルの認証情報を使う場合に指定する任意項目      |
 | `embedding.maxConcurrency`   | positive integer                             | `1`                                 | `NEXUS_EMBEDDING_MAX_CONCURRENCY`     | 並列 embedding request の上限                                                                                       |
-| `embedding.batchSize`        | positive integer                             | `4`                                 | `NEXUS_EMBEDDING_BATCH_SIZE`          | 1 回の embed batch に含める chunk 数                                                                                |
+| `embedding.batchSize`        | positive integer                             | `32`                                | `NEXUS_EMBEDDING_BATCH_SIZE`          | 1 回の embed batch に含める chunk 数                                                                                |
 | `embedding.retryCount`       | non-negative integer                         | `3`                                 | `NEXUS_EMBEDDING_RETRY_COUNT`         | 一時的失敗に対する retry 回数                                                                                       |
 | `embedding.retryBaseDelayMs` | positive integer                             | `250`                               | `NEXUS_EMBEDDING_RETRY_BASE_DELAY_MS` | retry backoff の基準待機時間（ミリ秒）                                                                              |
 | `embedding.timeoutMs`        | positive integer                             | `120000`                            | `NEXUS_EMBEDDING_TIMEOUT_MS`          | embedding HTTP リクエスト 1 回あたりのタイムアウト（ミリ秒）                                                        |
@@ -100,9 +101,12 @@ Dashboard CLI では `--aggregator-port` が `aggregatorPort` と `NEXUS_AGGREGA
 
 ## Indexing
 
-| Field                   | Type             | Default           | Environment Variable            | Description                                                                                                                                               |
-| ----------------------- | ---------------- | ----------------- | ------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `indexing.maxFileBytes` | positive integer | `1048576` (1 MiB) | `NEXUS_INDEXING_MAX_FILE_BYTES` | embedding 対象とするファイルの最大バイト数（UTF-8）。これを超えるファイルは embedding せずスキップし、`skippedFiles` に記録します（DLQ には送られません） |
+| Field | Type | Default | Environment Variable | Description |
+| --- | --- | --- | --- | --- |
+| `indexing.maxFileBytes`  | positive integer | `1048576` (1 MiB) | `NEXUS_INDEXING_MAX_FILE_BYTES` | embedding 対象とするファイルの最大バイト数（UTF-8）。これを超えるファイルは embedding せずスキップし、`skippedFiles` に記録します（DLQ には送られません） |
+| `indexing.maxChunkChars` | non-negative integer | `6000` | `NEXUS_INDEXING_MAX_CHUNK_CHARS` | 1 チャンクあたりの最大文字数。`0` は無制限を意味します |
+| `indexing.chunkConcurrency` | positive integer | `2` | `NEXUS_INDEXING_CHUNK_CONCURRENCY` | インデックスパイプライン stage 1 での並列ファイル読み込み・チャンキング数 |
+| `indexing.embedBatchWindowSize` | positive integer | `16` | `NEXUS_INDEXING_EMBED_BATCH_WINDOW_SIZE` | 複数ファイルのチャンクを 1 つの `embed()` バッチに束ねるウィンドウサイズ |
 
 ## バリデーションの注意点
 

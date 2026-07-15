@@ -47,8 +47,8 @@ Use the repository scripts instead of ad-hoc commands:
 | Test all | `npm test` |
 | Test specific files | `npx vitest run <test-file...>` |
 | Run locally | `npx tsx src/bin/nexus.ts` |
-| Dashboard | `node dist/bin/nexus.js dashboard` |
-| Aggregator (Standalone) | `node dist/bin/nexus.js aggregator` |
+| Dashboard | `node dist/bin/dashboard.js` (or `nexus-dashboard` bin) |
+| Aggregator (Standalone) | `node dist/bin/aggregator.js` (or `nexus-aggregator` bin) |
 
 If `.devcontainer/` is available, prefer running install, lint, build, and
 tests inside the devcontainer. Do not run git commands inside the
