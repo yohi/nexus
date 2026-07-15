@@ -6,6 +6,7 @@ const mocks = vi.hoisted(() => ({
   createRestApiHandler: vi.fn(),
   createRuntime: vi.fn(),
   createStreamableHttpHandler: vi.fn(),
+  dashboardMain: vi.fn(),
   loadConfig: vi.fn(),
   releaseProcessLock: vi.fn(),
   startManagedHttpServer: vi.fn(),
@@ -102,6 +103,7 @@ describe("nexus CLI shutdown", () => {
     if (originalExitDescriptor !== undefined) {
       Object.defineProperty(process, "exit", originalExitDescriptor);
     }
+    vi.restoreAllMocks();
   });
 
   it("disposes the local HTTP MCP handler before closing the runtime", async () => {
@@ -166,5 +168,78 @@ describe("nexus CLI shutdown", () => {
     await vi.waitFor(() => expect(managedServer.close).toHaveBeenCalledOnce());
     expect(mocks.createStreamableHttpHandler).not.toHaveBeenCalled();
     expect(runtime.close).not.toHaveBeenCalled();
+  });
+
+  it("shows only default server options in top-level help", async () => {
+    const log = vi.spyOn(console, "log").mockImplementation(() => undefined);
+    process.argv = [originalArgv[0] ?? "node", originalArgv[1] ?? "nexus", "--help"];
+
+    await import("../../../src/bin/nexus.js");
+
+    const output = log.mock.calls.flat().join("\n");
+    expect(output).not.toContain("--url");
+    expect(output).toContain("Server options (no subcommand):");
+  });
+
+  it("lists every registered command in top-level help", async () => {
+    const log = vi.spyOn(console, "log").mockImplementation(() => undefined);
+    process.argv = [originalArgv[0] ?? "node", originalArgv[1] ?? "nexus", "--help"];
+
+    await import("../../../src/bin/nexus.js");
+
+    const output = log.mock.calls.flat().join("\n");
+    expect(output).toContain("Commands:");
+    expect(output).toContain("dashboard");
+    expect(output).toContain("aggregator");
+    expect(output).toContain("http-bridge");
+  });
+
+  it("does not mutate process.argv when dispatching a subcommand", async () => {
+    vi.doMock(new URL("../../../src/dashboard/cli.js", import.meta.url).href, () => ({
+      main: mocks.dashboardMain,
+    }));
+    const argv = [
+      originalArgv[0] ?? "node",
+      originalArgv[1] ?? "nexus",
+      "dashboard",
+      "--port",
+      "9470",
+    ];
+    process.argv = argv;
+
+    await import("../../../src/bin/nexus.js");
+
+    await vi.waitFor(() => expect(mocks.dashboardMain).toHaveBeenCalledWith(["--port", "9470"]));
+    expect(process.argv).toBe(argv);
+    expect(process.argv).toEqual(argv);
+  });
+
+  it("reports the dispatched command name when startup fails", async () => {
+    const error = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    mocks.dashboardMain.mockRejectedValueOnce(new Error("dashboard startup failed"));
+    vi.doMock(new URL("../../../src/dashboard/cli.js", import.meta.url).href, () => ({
+      main: mocks.dashboardMain,
+    }));
+    process.argv = [originalArgv[0] ?? "node", originalArgv[1] ?? "nexus", "dashboard"];
+
+    await import("../../../src/bin/nexus.js");
+
+    await vi.waitFor(() => expect(process.exit).toHaveBeenCalledWith(1));
+    expect(error.mock.calls.flat().join("\n")).toContain("Failed to start dashboard");
+  });
+
+  it("rejects an unknown subcommand and lists valid command names", async () => {
+    const error = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    process.argv = [originalArgv[0] ?? "node", originalArgv[1] ?? "nexus", "bogus-command"];
+
+    await import("../../../src/bin/nexus.js");
+
+    await vi.waitFor(() => expect(process.exit).toHaveBeenCalledWith(1));
+    const output = error.mock.calls.flat().join("\n");
+    expect(output).toContain("Unknown command: bogus-command");
+    expect(output).toContain("dashboard");
+    expect(output).toContain("aggregator");
+    expect(output).toContain("http-bridge");
+    expect(mocks.createRuntime).not.toHaveBeenCalled();
   });
 });

@@ -1,3 +1,3 @@
 #!/usr/bin/env node
-process.argv.splice(2, 0, "aggregator");
-await import("./nexus.js");
+const { main } = await import("./aggregator-command.js");
+await main(process.argv.slice(2));
