@@ -255,19 +255,25 @@ export async function ensureProjectEndpoint(options: ProjectConnectorOptions): P
     childStdout?.on('data', onStdoutData);
     childStderr?.on('data', onStderrData);
 
-    // Race the health-check poll against the child's own error/exit events.
+    // Race the health-check poll against the child's own error/close events.
     // Without this, a spawn failure (e.g. ENOENT) or a child that crashes
     // immediately would otherwise be masked: waitForHealthyEndpoint() would
     // just keep polling until startupTimeoutMs elapses and report a generic
     // timeout instead of the real failure.
+    //
+    // We listen to 'close' rather than 'exit' so any remaining stdio data has
+    // already been drained into the buffers before we snapshot them. 'exit' can
+    // fire while the stdout/stderr pipes still hold pending chunks, which would
+    // cause us to drop the child's final diagnostics.
     let rejectChildFailure: (reason: unknown) => void = () => {};
     const childFailure = new Promise<never>((_, reject) => {
       rejectChildFailure = reject;
     });
     const onChildError = (error: Error): void => {
+      removeOutputListeners();
       rejectChildFailure(error);
     };
-    const onChildExit = (code: number | null, signal: NodeJS.Signals | null): void => {
+    const onChildClose = (code: number | null, signal: NodeJS.Signals | null): void => {
       removeOutputListeners();
       const outputPreview = (stderrBuffer || stdoutBuffer)
         ? `\n\nChild output:\n${stderrBuffer || stdoutBuffer}`.trimEnd()
@@ -279,7 +285,7 @@ export async function ensureProjectEndpoint(options: ProjectConnectorOptions): P
       );
     };
     child.once('error', onChildError);
-    child.once('exit', onChildExit);
+    child.once('close', onChildClose);
     child.unref();
 
     try {
@@ -295,11 +301,11 @@ export async function ensureProjectEndpoint(options: ProjectConnectorOptions): P
       ]);
       succeeded = true;
       return new URL(managedEndpoint.url);
-} finally {
-child.removeListener('error', onChildError);
-child.removeListener('exit', onChildExit);
-removeOutputListeners();
-}
+    } finally {
+      child.removeListener('error', onChildError);
+      child.removeListener('close', onChildClose);
+      removeOutputListeners();
+    }
   } finally {
     await lockHandle?.release().catch(() => {});
     // If we spawned a child but never saw a healthy descriptor, clean up the
