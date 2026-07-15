@@ -308,24 +308,19 @@ export async function ensureProjectEndpoint(options: ProjectConnectorOptions): P
       rejectChildFailure = reject;
     });
     function buildFailureError(code: number | null, signal: NodeJS.Signals | null): Error {
-      let stdoutLog = '';
-      let stderrLog = '';
-      try {
-        stdoutLog = readFileSync(startupStdoutLog, 'utf8');
-      } catch (error) {
-        const err = error as NodeJS.ErrnoException;
-        if (err.code !== 'ENOENT') {
-          throw error;
+      const readStartupLog = (path: string, label: string): string => {
+        try {
+          return readFileSync(path, 'utf8');
+        } catch (error) {
+          const err = error as NodeJS.ErrnoException;
+          if (err.code === 'ENOENT') {
+            return '';
+          }
+          return `[Unable to read ${label} startup log: ${err.message}]`;
         }
-      }
-      try {
-        stderrLog = readFileSync(startupStderrLog, 'utf8');
-      } catch (error) {
-        const err = error as NodeJS.ErrnoException;
-        if (err.code !== 'ENOENT') {
-          throw error;
-        }
-      }
+      };
+      const stdoutLog = readStartupLog(startupStdoutLog, 'stdout');
+      const stderrLog = readStartupLog(startupStderrLog, 'stderr');
       const outputPreview = buildOutputPreview(
         tailBytes(stdoutLog, MAX_STARTUP_LOG_BYTES),
         tailBytes(stderrLog, MAX_STARTUP_LOG_BYTES),
