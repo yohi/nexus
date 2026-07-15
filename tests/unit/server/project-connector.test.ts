@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import { randomUUID } from 'node:crypto';
 import { spawn, type ChildProcess } from 'node:child_process';
 import { EventEmitter } from 'node:events';
+import { PassThrough, Readable } from 'node:stream';
 
 import {
   ensureProjectEndpoint,
@@ -18,6 +19,8 @@ import {
 
 interface FakeChildProcess extends ChildProcess {
   unref: ReturnType<typeof vi.fn>;
+  stdout: Readable | null;
+  stderr: Readable | null;
 }
 
 function createFakeChildProcess(): FakeChildProcess {
@@ -27,6 +30,8 @@ function createFakeChildProcess(): FakeChildProcess {
   const emitter = new EventEmitter();
   return Object.assign(emitter, {
     unref: vi.fn(),
+    stdout: null,
+    stderr: null,
   }) as unknown as FakeChildProcess;
 }
 
@@ -392,10 +397,97 @@ describe('project-connector', () => {
     const pending = ensureProjectEndpoint(options);
     await waitForSpawnCall(harness.spawnImpl);
     fakeChild!.emit('exit', 1, null);
+    fakeChild!.emit('close', 1, null);
+    await expect(pending).rejects.toThrow(
+      'Managed nexus child exited before publishing a healthy endpoint (code=1, signal=null)',
+    );
+  });
+
+  it('includes captured child output when the child exits before publishing a healthy endpoint', async () => {
+    const harness = createHarness();
+    let fakeChild: FakeChildProcess | undefined;
+    let stdoutLog = '';
+    let stderrLog = '';
+    harness.spawnImpl.mockImplementation((_exec: string, _args: readonly string[], options: object) => {
+      fakeChild = createFakeChildProcess();
+      const castOptions = options as { env: Record<string, string> };
+      // Read the log paths the connector generated itself (rather than
+      // overriding them) so writes below land where buildFailureError reads.
+      stdoutLog = castOptions.env.NEXUS_STARTUP_STDOUT_LOG;
+      stderrLog = castOptions.env.NEXUS_STARTUP_STDERR_LOG;
+      return fakeChild;
+    });
+    harness.fetchImpl.mockResolvedValue(new Response('not found', { status: 404 }));
+
+    const options: ProjectConnectorOptions = {
+      projectRoot,
+      storageDir,
+      childExecutable: process.execPath,
+      env: {},
+      spawn: harness.spawnImpl,
+      fetch: harness.fetchImpl,
+      startupTimeoutMs: 60_000,
+      pollIntervalMs: 25,
+    };
+
+    const pending = ensureProjectEndpoint(options);
+    await waitForSpawnCall(harness.spawnImpl);
+    await writeFile(stderrLog, 'already running\n');
+    await writeFile(stdoutLog, 'ignored stdout\n');
+    fakeChild!.emit('exit', 1, null);
+    // Verify output written between exit and close is still captured.
+    await writeFile(stderrLog, 'post-exit diagnostic\n', { flag: 'a' });
+    await writeFile(stdoutLog, 'post-exit stdout\n', { flag: 'a' });
+    fakeChild!.emit('close', 1, null);
+    await expect(pending).rejects.toThrow(
+      'Managed nexus child exited before publishing a healthy endpoint (code=1, signal=null)',
+    );
+    await expect(pending).rejects.toThrow('Child stderr:\nalready running\npost-exit diagnostic');
+    await expect(pending).rejects.toThrow('Child stdout:\nignored stdout\npost-exit stdout');
+  });
+
+  it('reports child exit even when a startup log cannot be read for a non-ENOENT reason', async () => {
+    const harness = createHarness();
+    let fakeChild: FakeChildProcess | undefined;
+    let stdoutLog = '';
+    let stderrLog = '';
+    harness.spawnImpl.mockImplementation((_exec: string, _args: readonly string[], options: object) => {
+      fakeChild = createFakeChildProcess();
+      const castOptions = options as { env: Record<string, string> };
+      stdoutLog = castOptions.env.NEXUS_STARTUP_STDOUT_LOG;
+      stderrLog = castOptions.env.NEXUS_STARTUP_STDERR_LOG;
+      return fakeChild;
+    });
+    harness.fetchImpl.mockResolvedValue(new Response('not found', { status: 404 }));
+
+    const options: ProjectConnectorOptions = {
+      projectRoot,
+      storageDir,
+      childExecutable: process.execPath,
+      env: {},
+      spawn: harness.spawnImpl,
+      fetch: harness.fetchImpl,
+      startupTimeoutMs: 60_000,
+      pollIntervalMs: 25,
+    };
+
+    const pending = ensureProjectEndpoint(options);
+    await waitForSpawnCall(harness.spawnImpl);
+    // Force a non-ENOENT read failure (EISDIR) on the stdout log by making the
+    // path a directory instead of a regular file, while stderr reads normally.
+    // Regression test for: reading a startup log must never throw out of the
+    // synchronous 'close' handler, or rejectChildFailure would never run and
+    // the bridge process would crash with an unhandled exception instead.
+    await mkdir(stdoutLog);
+    await writeFile(stderrLog, 'boot failure\n');
+    fakeChild!.emit('exit', 1, null);
+    fakeChild!.emit('close', 1, null);
 
     await expect(pending).rejects.toThrow(
       'Managed nexus child exited before publishing a healthy endpoint (code=1, signal=null)',
     );
+    await expect(pending).rejects.toThrow('[Unable to read stdout startup log:');
+    await expect(pending).rejects.toThrow('Child stderr:\nboot failure');
   });
 
   it('spawns a new child when the descriptor projectRoot does not match', async () => {
@@ -520,7 +612,7 @@ describe('project-connector', () => {
         '0',
         '--managed',
       ]);
-      expect(options).toMatchObject({ detached: true, stdio: 'ignore' });
+      expect(options).toMatchObject({ detached: true, stdio: ['ignore', 'ignore', 'ignore'] });
       setTimeout(() => {
         void writeProjectEndpoint(storageDir, healthyEndpoint(instanceId, port));
       }, 25);
