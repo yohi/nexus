@@ -397,7 +397,7 @@ describe('project-connector', () => {
     const pending = ensureProjectEndpoint(options);
     await waitForSpawnCall(harness.spawnImpl);
     fakeChild!.emit('exit', 1, null);
-
+    fakeChild!.emit('close', 1, null);
     await expect(pending).rejects.toThrow(
       'Managed nexus child exited before publishing a healthy endpoint (code=1, signal=null)',
     );
@@ -432,7 +432,7 @@ describe('project-connector', () => {
     stderr.write('already running\n');
     stdout.write('ignored stdout\n');
     fakeChild!.emit('exit', 1, null);
-
+    fakeChild!.emit('close', 1, null);
     await expect(pending).rejects.toThrow(
       'Managed nexus child exited before publishing a healthy endpoint (code=1, signal=null)\n\nChild output:\nalready running',
     );

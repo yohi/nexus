@@ -162,7 +162,7 @@ describe('project auto-connector CLI', () => {
     const managed = spawn(
       process.execPath,
       [cliPath, '--project-root', projectRoot, '--port', '0', '--managed'],
-      { stdio: ['ignore', 'pipe', 'pipe'] },
+      { stdio: ['pipe', 'pipe', 'pipe'] },
     );
     managedProcesses.push(managed);
 
