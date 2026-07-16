@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.28.3](https://github.com/yohi/nexus/compare/v1.28.2...v1.28.3) (2026-07-16)
+
+
+### Bug Fixes
+
+* マーケットプレイスカタログ更新時のレガシーエントリ検証を緩和 ([6d23a30](https://github.com/yohi/nexus/commit/6d23a30df7c3aa959d225bf483554789b16f0bb7))
+* マーケットプレイスカタログ更新時のレガシーエントリ検証を緩和 ([6b95356](https://github.com/yohi/nexus/commit/6b95356373f3105a5380f91b07b2e05654838f2c))
+
 ## [1.28.2](https://github.com/yohi/nexus/compare/v1.28.1...v1.28.2) (2026-07-16)
 
 
