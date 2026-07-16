@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.28.2](https://github.com/yohi/nexus/compare/v1.28.1...v1.28.2) (2026-07-16)
+
+
+### Bug Fixes
+
+* **bin:** CLIエラーハンドリングの未捕捉・型安全性・テスト容易性を改善する ([3e02a41](https://github.com/yohi/nexus/commit/3e02a410a30ad01a2f8d7994cfe3c3ba4d440841))
+
 ## [1.28.1](https://github.com/yohi/nexus/compare/v1.28.0...v1.28.1) (2026-07-15)
 
 
