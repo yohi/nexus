@@ -8,6 +8,7 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { unlinkSync, appendFileSync } from "node:fs";
 
 import { loadConfig } from "../config/index.js";
+import { handleFatalError } from "./fatal-error.js";
 import { NexusServerFactory } from "../server/factory.js";
 import type { NexusRuntime } from "../server/index.js";
 import {
@@ -19,8 +20,51 @@ import { acquireProcessLock, releaseProcessLock, LOCK_FILENAME } from "../server
 import type { ManagedHttpServer } from "../server/managed-http-server.js";
 import type { Config } from "../types/index.js";
 
-async function main() {
+interface CliCommand {
+  readonly name: string;
+  readonly summary: string;
+  readonly run: (args: string[]) => Promise<void>;
+}
+
+interface CommandModule {
+  readonly main?: (args: string[]) => Promise<void>;
+}
+
+const commands: readonly CliCommand[] = [
+  {
+    name: "dashboard",
+    summary: "Launch the TUI dashboard",
+    run: async (args) => {
+      const module = (await import(new URL("../dashboard/cli.js", import.meta.url).href)) as CommandModule;
+      if (typeof module.main !== "function") {
+        throw new TypeError("Dashboard module did not export a main() function");
+      }
+      await module.main(args);
+    },
+  },
+  {
+    name: "aggregator",
+    summary: "Run the standalone metrics aggregator",
+    run: (args) => import("./aggregator-command.js").then((module) => module.main(args)),
+  },
+  {
+    name: "http-bridge",
+    summary: "Bridge stdio MCP clients to an auto-managed HTTP server",
+    run: async (args) => {
+      const module = (await import(new URL("./http-bridge.js", import.meta.url).href)) as CommandModule;
+      if (typeof module.main !== "function") {
+        throw new TypeError("HTTP bridge module did not export a main() function");
+      }
+      await module.main(args);
+    },
+  },
+];
+
+const argv = process.argv.slice(2);
+
+async function main(args: string[]): Promise<void> {
   const { values } = parseArgs({
+    args,
     options: {
       "project-root": { type: "string" },
       "port": { type: "string" },
@@ -36,14 +80,20 @@ async function main() {
   });
 
   if (values["help"]) {
+    const commandHelp = commands
+      .map((command) => `  ${command.name.padEnd(14)} ${command.summary}`)
+      .join("\n");
     console.log(
       `Nexus - AI-native codebase indexing and search MCP server\n\n` +
       `Usage:\n` +
       `  nexus [options]\n` +
       `  nexus dashboard\n` +
       `  nexus aggregator\n` +
-      `  nexus http-bridge [--url <url>]\n\n` +
-      `Options:\n` +
+      `  nexus http-bridge [options]\n\n` +
+      `Commands:\n` +
+      `${commandHelp}\n\n` +
+      `Run \`nexus <command> --help\` for command-specific options.\n\n` +
+      `Server options (no subcommand):\n` +
       `  --project-root <path>  Path to the project root directory\n` +
       `  --port <number>        Start HTTP server (with MCP + REST API) on the given port\n` +
       `  --managed              Run as a managed HTTP server (requires --port; use --port 0 for an ephemeral port)\n` +
@@ -347,38 +397,6 @@ async function startStdioMode({
   });
 }
 
-function handleFatalError(message: string, error: unknown): never {
-  console.error(`\n\u274c ${message}:`);
-  console.error(error);
-
-  console.error("\n\ud83d\udd0d Troubleshooting Info:");
-  console.error(`   Node.js:  ${process.version}`);
-  console.error(`   Platform: ${process.platform} (${process.arch})`);
-
-  if (typeof error === "object" && error !== null) {
-    const err = error as Record<string, unknown> & { code?: string; path?: string; message?: string; stack?: string };
-
-    if (err.code === "ENOENT") {
-      console.error(`   Diagnosis: A required file or directory was not found: ${err.path ?? "unknown path"}`);
-      console.error("   Action:    Ensure the path is correct and accessible. Check if --project-root is set correctly.");
-    } else if (err.code === "EACCES" || err.code === "EPERM") {
-      console.error(`   Diagnosis: Permission denied at ${err.path ?? "unknown path"}`);
-      console.error("   Action:    Check filesystem permissions for the storage and project directories.");
-    } else if (err.message?.includes("rg") || err.message?.includes("ripgrep")) {
-      console.error("   Diagnosis: ripgrep (rg) might be missing or not in PATH.");
-      console.error("   Action:    Install ripgrep: https://github.com/BurntSushi/ripgrep#installation");
-    } else if (err.message?.includes("better-sqlite3") || err.stack?.includes("better-sqlite3")) {
-      console.error("   Diagnosis: better-sqlite3 failed to load. This usually means a native module mismatch.");
-      console.error("   Action:    Try 'npm rebuild better-sqlite3' or ensure you are using a supported Node.js version.");
-    } else if (err.message?.includes("lancedb") || err.stack?.includes("lancedb")) {
-      console.error("   Diagnosis: @lancedb/lancedb failed to load. Native components might be missing.");
-      console.error("   Action:    Ensure your platform is supported and you have the necessary build tools.");
-    }
-  }
-
-  console.error("\n   For more details, check the indexer log in your storage directory (default: .nexus/indexer.log).\n");
-  process.exit(1);
-}
 function setupSignalHandlers(
   runtime: NexusRuntime,
   storageDir: string,
@@ -434,129 +452,30 @@ function setupSignalHandlers(
   process.once("SIGTERM", handleShutdown);
 }
 
-if (process.argv[2] === "http-bridge") {
-  // Remove "http-bridge" from argv so the bridge's parseArgs doesn't complain.
-  process.argv.splice(2, 1);
+async function dispatch(args: string[]): Promise<void> {
+  const commandName = args[0];
+  const command = commands.find((candidate) => candidate.name === commandName);
 
-  try {
-    interface HttpBridgeModule {
-      main?: () => Promise<void>;
+  if (command !== undefined) {
+    try {
+      await command.run(args.slice(1));
+    } catch (error) {
+      handleFatalError(`Failed to start ${command.name}`, error);
     }
-    const module = (await import(new URL("./http-bridge.js", import.meta.url).href)) as HttpBridgeModule;
-    if (typeof module.main !== "function") {
-      throw new TypeError("HTTP bridge module did not export a main() function");
-    }
-    await module.main();
-  } catch (error) {
-    handleFatalError("Failed to start HTTP bridge", error);
+    return;
   }
-} else if (process.argv[2] === "aggregator") {
-  // Remove "aggregator" from argv so parseArgs doesn't complain.
-  process.argv.splice(2, 1);
 
-  try {
-    interface DashboardCliModule {
-      AggregatorServer?: new () => {
-        start: (port: number) => Promise<void>;
-        stop: () => Promise<void>;
-      };
-    }
-    const module = (await import(new URL("../dashboard/cli.js", import.meta.url).href)) as DashboardCliModule;
-    if (!module.AggregatorServer) {
-      throw new Error("Dashboard module did not export AggregatorServer");
-    }
-
-    const { values } = parseArgs({
-      options: {
-        port: { type: "string" },
-        "project-root": { type: "string" },
-        help: { type: "boolean", short: "h" },
-      },
-      strict: true,
-    });
-
-    if (values.help) {
-      console.log(
-        `Nexus Metrics Aggregator - Standalone Prometheus metrics aggregator\n\n` +
-        `Usage:\n` +
-        `  nexus-aggregator [options]\n\n` +
-        `Options:\n` +
-        `  --port <number>        Port for the metrics aggregator server (default: 9470)\n` +
-        `  --project-root <path>  Path to the project root directory\n` +
-        `  -h, --help             Show help`
-      );
-      process.exit(0);
-    }
-
-    const rawProjectRoot = (
-      (values["project-root"] as string) ??
-      process.env.NEXUS_PROJECT_ROOT ??
-      ""
-    ).trim();
-    const root = rawProjectRoot ? path.resolve(rawProjectRoot) : process.cwd();
-    const config = await loadConfig({ projectRoot: root });
-
-    const aggregatorPort = (() => {
-      if (values.port !== undefined) {
-        if (!/^\d+$/.test(values.port)) {
-          throw new Error(`Invalid port value: ${values.port}`);
-        }
-        return Number.parseInt(values.port, 10);
-      }
-      if (config.aggregatorPort !== undefined) {
-        return config.aggregatorPort;
-      }
-      if (process.env.NEXUS_AGGREGATOR_PORT) {
-        const rawEnvPort = process.env.NEXUS_AGGREGATOR_PORT.trim();
-        if (!/^\d+$/.test(rawEnvPort)) {
-          throw new Error(`Invalid NEXUS_AGGREGATOR_PORT environment variable: ${rawEnvPort}`);
-        }
-        return Number.parseInt(rawEnvPort, 10);
-      }
-      return 9470;
-    })();
-
-    if (Number.isNaN(aggregatorPort) || aggregatorPort < 1 || aggregatorPort > 65535) {
-      throw new Error(`Invalid port: ${aggregatorPort}`);
-    }
-
-    const aggregator = new module.AggregatorServer();
-    await aggregator.start(aggregatorPort);
-    console.error(`🚀 Nexus Metrics Aggregator running on http://127.0.0.1:${aggregatorPort}`);
-
-    const handleShutdown = () => {
-      aggregator.stop()
-        .then(() => {
-          process.exit(0);
-        })
-        .catch((err: unknown) => {
-          handleFatalError("Failed to stop aggregator", err);
-        });
-    };
-    process.once("SIGINT", handleShutdown);
-    process.once("SIGTERM", handleShutdown);
-  } catch (error) {
-    handleFatalError("Failed to start aggregator", error);
+  if (commandName !== undefined && !commandName.startsWith("-")) {
+    console.error(
+      `Unknown command: ${commandName}\nValid commands: ${commands.map((candidate) => candidate.name).join(", ")}`,
+    );
+    process.exit(1);
+    return;
   }
-} else if (process.argv[2] === "dashboard") {
-  // Remove "dashboard" from argv so the sub-command's parseArgs doesn't complain.
-  process.argv.splice(2, 1);
 
-  // Start the TUI dashboard (the MCP server will not be started)
-  try {
-    interface DashboardCliModule {
-      main?: () => Promise<void>;
-    }
-    const module = (await import(new URL("../dashboard/cli.js", import.meta.url).href)) as DashboardCliModule;
-    if (typeof module.main !== "function") {
-      throw new Error("Dashboard module did not export a main() function");
-    }
-    await module.main();
-  } catch (error) {
-    handleFatalError("Failed to start dashboard", error);
-  }
-} else {
-  main().catch((error) => {
-    handleFatalError("Fatal error starting Nexus", error);
-  });
+  await main(args);
 }
+
+dispatch(argv).catch((error) => {
+  handleFatalError("Fatal error starting Nexus", error);
+});

@@ -206,8 +206,9 @@ async function readMetricsPortFile(storageDir: string): Promise<number | undefin
   return undefined;
 }
 
-export async function main() {
+export async function main(args: string[] = process.argv.slice(2)) {
   const { values } = parseArgs({
+    args,
     options: {
       port: { type: "string" },
       interval: { type: "string", default: "2000" },

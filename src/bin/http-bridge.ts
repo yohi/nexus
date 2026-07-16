@@ -278,8 +278,8 @@ export async function runBridgeCli(
     createTransport: (transportUrl) => new StreamableHTTPClientTransport(transportUrl),
   });
 }
-export async function main(): Promise<void> {
-  await runBridgeCli(process.argv.slice(2), process.env, {
+export async function main(args: string[] = process.argv.slice(2)): Promise<void> {
+  await runBridgeCli(args, process.env, {
     ensureProjectEndpoint: async ({ projectRoot, env }) => {
       const { loadConfig } = await import("../config/index.js");
       const resolvedConfig = await loadConfig({ projectRoot, env });

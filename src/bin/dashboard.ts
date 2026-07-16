@@ -1,3 +1,11 @@
 #!/usr/bin/env node
-process.argv.splice(2, 0, "dashboard");
-await import("./nexus.js");
+import { handleFatalError } from "./fatal-error.js";
+
+try {
+  const { main } = (await import(new URL("../dashboard/cli.js", import.meta.url).href)) as {
+    readonly main: (args: string[]) => Promise<void>;
+  };
+  await main(process.argv.slice(2));
+} catch (error) {
+  handleFatalError("Failed to start dashboard", error);
+}
