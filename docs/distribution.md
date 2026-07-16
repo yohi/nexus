@@ -148,6 +148,7 @@ Bitbucket 配布・Marketplace 運用に必要な TOKEN は用途ごとに分か
   - MCP サーバー `nexus` が起動すること
 
 - **注意**: 利用者マシンには以下が必要です:
+  - Bitbucket 向け SSH アクセス（`git@bitbucket.org` への `ssh-agent` 登録済み鍵、および known_hosts への登録）。plugin marketplace の `nexus` エントリの `source.url` は SSH URL（`git@bitbucket.org:<workspace>/<repo>.git`）で配布されるため、プラグイン配布リポジトリが private である以上、HTTPS 用の git credential helper では代替できません
   - Node.js 24 以上
   - C/C++ ビルドツールチェーン（prebuilt 非対応プラットフォームでのネイティブモジュールビルド用）
   - AWS 資格情報（P5 参照）
@@ -225,3 +226,4 @@ dist/
 | `npm install` 失敗 | Node.js バージョン不足 / C++ ビルドツール未インストール | Node.js 24+ と C++ ビルドツールをインストールしてください |
 | `healthCheck failed` | AWS 資格情報が無効 / Bedrock モデル未有効化 | P5 を確認し、AWS コンソールで Bedrock モデルアクセスを有効化してください |
 | `MCP server not starting` | ポート競合 / 権限不足 | ローカルで `npx tsx src/bin/nexus.ts` を実行し、エラーログを確認してください |
+| `Failed to install: ... fatal: could not read Username for 'https://bitbucket.org': terminal prompts disabled` | プラグイン配布リポジトリが private で、marketplace エントリの `source.url` を無認証で clone しようとした（HTTPS 用の git credential helper が未設定） | 利用者マシンで Bitbucket 向け SSH キーを `ssh-agent` に登録し、`ssh-keyscan bitbucket.org >> ~/.ssh/known_hosts` 等で known_hosts に追加してください。marketplace エントリの `source.url` は SSH 形式（`git@bitbucket.org:<workspace>/<repo>.git`）で配布されるため、SSH アクセスが前提です |
