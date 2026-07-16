@@ -171,7 +171,6 @@ packages/dashboard/src/
 scripts/setup-plugin.sh
 LICENSE
 NOTICE
-README_BITBUCKET.md（→ README.md としてステージ）
 ```
 
 ### 配布に含めないファイル
@@ -194,7 +193,7 @@ docs/
 examples/
 SPEC.md
 AGENTS.md
-README.md（開発者向け。配布時は README_BITBUCKET.md が README.md としてステージされるため除外）
+README.md
 CHANGELOG.md
 node_modules/
 dist/
@@ -204,7 +203,6 @@ dist/
 
 - `bootstrap.mjs` を除外することで、利用者マシンの `setup-plugin.sh` が `npm install --no-audit --no-fund` + `npm run build` パスを通り、インストール時 lint を避けます。
 - `node_modules/` と `dist/` を除外することで、ソースミラーの自己完結性を保証します（利用者マシンで再ビルド）。
-- 開発者向けの `README.md`（AI エージェント向けセットアップ手順、npm 公開情報などを含む）はそのまま配布せず、Bitbucket ミラーの利用者（`/plugin install` する側）向けに書き直した `README_BITBUCKET.md` を `stage-plugin-dist.sh` が `README.md` にリネームしてステージします。
 
 ---
 
@@ -226,4 +224,4 @@ dist/
 | `npm install` 失敗 | Node.js バージョン不足 / C++ ビルドツール未インストール | Node.js 24+ と C++ ビルドツールをインストールしてください |
 | `healthCheck failed` | AWS 資格情報が無効 / Bedrock モデル未有効化 | P5 を確認し、AWS コンソールで Bedrock モデルアクセスを有効化してください |
 | `MCP server not starting` | ポート競合 / 権限不足 | ローカルで `npx tsx src/bin/nexus.ts` を実行し、エラーログを確認してください |
-| `Failed to install: ... fatal: could not read Username for 'https://bitbucket.org': terminal prompts disabled` | プラグイン配布リポジトリが private で、marketplace エントリの `source.url` を無認証で clone しようとした（HTTPS 用の git credential helper が未設定） | 利用者マシンで Bitbucket 向け SSH キーを `ssh-agent` に登録し、`ssh-keyscan bitbucket.org >> ~/.ssh/known_hosts` 等で known_hosts に追加してください。marketplace エントリの `source.url` は SSH 形式（`git@bitbucket.org:<workspace>/<repo>.git`）で配布されるため、SSH アクセスが前提です |
+| `Failed to install: ... fatal: could not read Username for 'https://bitbucket.org': terminal prompts disabled` | プラグイン配布リポジトリが private で、marketplace エントリの `source.url` を無認証で clone しようとした（HTTPS 用の git credential helper が未設定） | 利用者マシンで Bitbucket 向け SSH キーを `ssh-agent` に登録し、`ssh-keyscan -H bitbucket.org >> ~/.ssh/known_hosts` 等で known_hosts に追加してください（追加後は `ssh-keygen -lf ~/.ssh/known_hosts` で Bitbucket 公式フィンガープリントと一致することを確認してください）。marketplace エントリの `source.url` は SSH 形式（`git@bitbucket.org:<workspace>/<repo>.git`）で配布されるため、SSH アクセスが前提です |
