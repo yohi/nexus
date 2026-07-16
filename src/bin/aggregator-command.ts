@@ -129,27 +129,23 @@ export async function runAggregatorCli(
 }
 
 export async function main(args: string[] = process.argv.slice(2)): Promise<void> {
-  try {
-    await runAggregatorCli(args, process.env, {
-      createAggregator: async () => {
-        interface DashboardCliModule {
-          readonly AggregatorServer?: new () => AggregatorServer;
-        }
+  await runAggregatorCli(args, process.env, {
+    createAggregator: async () => {
+      interface DashboardCliModule {
+        readonly AggregatorServer?: new () => AggregatorServer;
+      }
 
-        const module = (await import(new URL("../dashboard/cli.js", import.meta.url).href)) as DashboardCliModule;
-        if (module.AggregatorServer === undefined) {
-          throw new Error("Dashboard module did not export AggregatorServer");
-        }
-        return new module.AggregatorServer();
-      },
-      errorOutput: process.stderr,
-      exit: process.exit.bind(process),
-      loadConfig,
-      output: process.stdout,
-      signalSource: process,
-    });
-  } catch (error) { // no-excuse-ok: catch -- CLI boundary reports unexpected startup failures.
-    handleFatalError("Failed to start aggregator", error);
-  }
+      const module = (await import(new URL("../dashboard/cli.js", import.meta.url).href)) as DashboardCliModule;
+      if (module.AggregatorServer === undefined) {
+        throw new Error("Dashboard module did not export AggregatorServer");
+      }
+      return new module.AggregatorServer();
+    },
+    errorOutput: process.stderr,
+    exit: process.exit.bind(process),
+    loadConfig,
+    output: process.stdout,
+    signalSource: process,
+  });
 }
 

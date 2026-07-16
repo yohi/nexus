@@ -45,8 +45,6 @@ const commands: readonly CliCommand[] = [
   {
     name: "aggregator",
     summary: "Run the standalone metrics aggregator",
-    // aggregator-command.ts handles runtime errors itself for the standalone nexus-aggregator bin;
-    // this outer catch remains as a fallback for import-resolution failures in this command.
     run: (args) => import("./aggregator-command.js").then((module) => module.main(args)),
   },
   {
