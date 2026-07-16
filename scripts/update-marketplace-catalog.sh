@@ -7,10 +7,15 @@
 #   - .github/workflows/deploy-plugin-to-bitbucket.yml (auto, on each deploy)
 #   - .github/workflows/update-marketplace-entry.yml (manual backfill / customization)
 #
-# Repository URLs are constructed as
-# https://bitbucket.org/<BITBUCKET_WORKSPACE_NAME>/<repository-name>.git
-# rather than accepted as raw URLs, so callers only ever configure a
-# workspace + repository name pair (no risk of a malformed/inconsistent URL).
+# Repository URLs are constructed from a workspace + repository name pair
+# (no risk of a malformed/inconsistent URL), so callers only ever configure
+# those two values. The marketplace repo URL (used for the git clone/push in
+# this script) is HTTPS + token via GIT_ASKPASS. The plugin source URL
+# (PLUGIN_BITBUCKET_URL, written into marketplace.json's plugins[].source.url
+# for end users to clone) is SSH (git@bitbucket.org:<workspace>/<repo>.git),
+# since Claude Code's plugin install clones that URL on each user's machine
+# without any token and the plugin repo is private; SSH relies on the
+# user's own Bitbucket SSH key (ssh-agent) instead.
 #
 # Required env vars:
 #   BITBUCKET_MARKETPLACE_TOKEN
@@ -33,7 +38,7 @@ set -euo pipefail
 : "${PLUGIN_DESCRIPTION:?PLUGIN_DESCRIPTION is required}"
 
 MARKETPLACE_REPO_URL="https://bitbucket.org/${BITBUCKET_WORKSPACE_NAME}/${BITBUCKET_MARKETPLACE_REPOSITORY_NAME}.git"
-export PLUGIN_BITBUCKET_URL="https://bitbucket.org/${BITBUCKET_WORKSPACE_NAME}/${BITBUCKET_PLUGIN_REPOSITORY_NAME}.git"
+export PLUGIN_BITBUCKET_URL="git@bitbucket.org:${BITBUCKET_WORKSPACE_NAME}/${BITBUCKET_PLUGIN_REPOSITORY_NAME}.git"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 UPDATE_ENTRY_SCRIPT="${SCRIPT_DIR}/marketplace-update-entry.mjs"
