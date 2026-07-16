@@ -170,6 +170,7 @@ packages/dashboard/src/
 scripts/setup-plugin.sh
 LICENSE
 NOTICE
+README_BITBUCKET.md（→ README.md としてステージ）
 ```
 
 ### 配布に含めないファイル
@@ -192,7 +193,7 @@ docs/
 examples/
 SPEC.md
 AGENTS.md
-README.md
+README.md（開発者向け。配布時は README_BITBUCKET.md が README.md としてステージされるため除外）
 CHANGELOG.md
 node_modules/
 dist/
@@ -202,6 +203,7 @@ dist/
 
 - `bootstrap.mjs` を除外することで、利用者マシンの `setup-plugin.sh` が `npm install --no-audit --no-fund` + `npm run build` パスを通り、インストール時 lint を避けます。
 - `node_modules/` と `dist/` を除外することで、ソースミラーの自己完結性を保証します（利用者マシンで再ビルド）。
+- 開発者向けの `README.md`（AI エージェント向けセットアップ手順、npm 公開情報などを含む）はそのまま配布せず、Bitbucket ミラーの利用者（`/plugin install` する側）向けに書き直した `README_BITBUCKET.md` を `stage-plugin-dist.sh` が `README.md` にリネームしてステージします。
 
 ---
 
