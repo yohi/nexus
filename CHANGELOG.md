@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.28.4](https://github.com/yohi/nexus/compare/v1.28.3...v1.28.4) (2026-07-16)
+
+
+### Bug Fixes
+
+* release-please workflowからレガシーなBitbucket同期ステップを削除 ([44b163b](https://github.com/yohi/nexus/commit/44b163bd3223efa0f4df18c9b4dbf5b0b00af75a))
+* release-please workflowからレガシーなBitbucket同期ステップを削除 ([7972ca7](https://github.com/yohi/nexus/commit/7972ca72dc3739c90d3d0aa56f9dab5fc82c41da))
+
 ## [1.28.3](https://github.com/yohi/nexus/compare/v1.28.2...v1.28.3) (2026-07-16)
 
 
