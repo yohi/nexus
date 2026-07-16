@@ -31,7 +31,8 @@ Claude Code で以下を実行してください。
 
 - `userConfig`（Embedding プロバイダ選択 UI）を除去
 - `mcpServers.nexus.env` を固定値に置換:
-  - `NEXUS_PACKAGE_MODE=1`（`embedding.provider` を `bedrock` にハードロック / fail-fast）
+  - `NEXUS_PACKAGE_MODE=1`（fail-fast モードを有効化）
+  - `NEXUS_EMBEDDING_PROVIDER=bedrock`（Embedding プロバイダを Bedrock にハードロック）
   - `NEXUS_EMBEDDING_MODEL` / `NEXUS_EMBEDDING_DIMENSIONS` / `NEXUS_EMBEDDING_REGION`（配布時に固定値として注入）
 
 利用者側で `embedding.provider` を変更することはできません。モデルやリージョンの変更が必要な場合は、ソースリポジトリ側で再配布してください。
