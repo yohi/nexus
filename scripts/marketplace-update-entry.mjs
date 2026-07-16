@@ -50,8 +50,13 @@ if (!catalog.name) {
 if (!Array.isArray(catalog.plugins)) {
   throw new Error('invalid marketplace.json structure: catalog.plugins must be an array');
 }
+// Only `p.name` is actually read below (for the upsert lookup), so that is
+// the only invariant enforced here. `source` shapes legitimately vary
+// across marketplace entries (url / github / npm / local path, etc.), and
+// entries managed by other tooling should not block this script from
+// updating its own entry.
 for (const p of catalog.plugins) {
-  if (typeof p !== 'object' || p === null || !p.name || !p.source?.url) {
+  if (typeof p !== 'object' || p === null || typeof p.name !== 'string' || !p.name) {
     throw new Error(`invalid plugin entry: ${JSON.stringify(p)}`);
   }
 }
