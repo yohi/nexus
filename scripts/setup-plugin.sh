@@ -4,8 +4,8 @@ set -e
 # Move to the plugin root directory
 cd "$(dirname "$0")/.."
 
-# 1. Install dependencies if node_modules is missing
-if [[ ! -d "node_modules" ]]; then
+# 1. Install dependencies if the TypeScript compiler is missing
+if [[ ! -x "node_modules/.bin/tsc" ]]; then
   echo "[Nexus Plugin] Installing dependencies..."
   if [[ -f "scripts/bootstrap.mjs" ]] && [[ ! -f "dist/bin/nexus.js" ]]; then
     node scripts/bootstrap.mjs

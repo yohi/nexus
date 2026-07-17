@@ -207,6 +207,9 @@ export class EventQueue {
           if (res.status === 'fulfilled') {
             results.push(res.value);
           } else {
+            if (typeof res.reason === 'object' && res.reason !== null && Reflect.get(res.reason, 'code') === 'ENOENT') {
+              continue;
+            }
             if (this.size() >= this.options.maxQueueSize) {
               this.enterOverflow();
               this.droppedEventCount += 1;

@@ -181,6 +181,36 @@ describe('EventQueue', () => {
   });
 
   describe('drain with error handling', () => {
+    it('drops stale watcher events when the handler rejects with ENOENT', async () => {
+      vi.useFakeTimers();
+      const queue = new EventQueue({ debounceMs: 0, maxQueueSize: 10, fullScanThreshold: 5, concurrency: 1 });
+      let attempts = 0;
+
+      queue.enqueue(makeEvent({ filePath: '.claude/settings.local.json.tmp.123' }));
+      vi.runAllTimers();
+
+      const results = await queue.drain(async () => {
+        attempts += 1;
+        throw Object.assign(new Error('file disappeared'), { code: 'ENOENT' });
+      });
+
+      expect(results).toEqual([]);
+      expect(attempts).toBe(1);
+      expect(queue.size()).toBe(0);
+    });
+
+    it('re-enqueues reindex events when the handler rejects with ENOENT', async () => {
+      const queue = new EventQueue({ debounceMs: 0, maxQueueSize: 10, fullScanThreshold: 5, concurrency: 1 });
+      queue.enqueueReindex({ reason: 'manual' });
+
+      const drain = queue.drain(async () => {
+        throw Object.assign(new Error('reindex source disappeared'), { code: 'ENOENT' });
+      });
+
+      await expect(drain).rejects.toThrow('reindex source disappeared');
+      expect(queue.size()).toBe(1);
+    });
+
     it('re-enqueues only failed events when handler rejects', async () => {
       vi.useFakeTimers();
       const queue = new EventQueue({ debounceMs: 0, maxQueueSize: 10, fullScanThreshold: 5, concurrency: 2 });
