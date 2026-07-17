@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.28.5](https://github.com/yohi/nexus/compare/v1.28.4...v1.28.5) (2026-07-16)
+
+
+### Bug Fixes
+
+* プラグインmarketplaceエントリのsource.urlをSSH形式に変更 ([86e40e2](https://github.com/yohi/nexus/commit/86e40e2373881400f22621f08c42fd8cdb8e51f9))
+
 ## [1.28.4](https://github.com/yohi/nexus/compare/v1.28.3...v1.28.4) (2026-07-16)
 
 
