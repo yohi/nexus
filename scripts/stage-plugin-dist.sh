@@ -35,9 +35,6 @@ cp -r packages/dashboard/src "$STAGING_DIR/packages/dashboard/"
 cp scripts/setup-plugin.sh "$STAGING_DIR/scripts/"
 cp LICENSE NOTICE "$STAGING_DIR/"
 
-# Bitbucket ミラー向け README（開発者向け README.md の代わりに README.md としてステージ）
-cp README_BITBUCKET.md "$STAGING_DIR/README.md"
-
 # Transform plugin.json: strip userConfig, inject fixed env
 STAGING_DIR="$STAGING_DIR" REGION="$REGION" MODEL="$MODEL" DIMENSIONS="$DIMENSIONS" PROFILE="$PROFILE" \
   node --input-type=module <<'NODE'

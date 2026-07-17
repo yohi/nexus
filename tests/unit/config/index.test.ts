@@ -170,12 +170,13 @@ describe('loadConfig', () => {
     expect(config.embedding.apiKey).toBe('secret-key');
   });
 
-  it('includes lockfile entries and the secret denylist in the default ignorePaths', async () => {
+  it('includes Claude Code, lockfile entries, and the secret denylist in the default ignorePaths', async () => {
     tempDir = await mkdtemp(path.join(os.tmpdir(), 'nexus-config-'));
 
     const config = await loadConfig({ projectRoot: tempDir, env: {} });
     const ignorePaths = config.watcher.ignorePaths ?? [];
 
+    expect(ignorePaths).toContain('.claude');
     for (const lockfile of ['package-lock.json', 'pnpm-lock.yaml', 'yarn.lock', 'bun.lockb', '*.lock']) {
       expect(ignorePaths).toContain(lockfile);
     }

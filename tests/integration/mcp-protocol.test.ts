@@ -1,5 +1,6 @@
 import { createServer } from 'node:http';
 import fs from 'node:fs/promises';
+import os from 'node:os';
 import path from 'node:path';
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -7,7 +8,9 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 
 import { createNexusServer } from '../../src/server/index.js';
+import { NexusServerFactory } from '../../src/server/factory.js';
 import { createStreamableHttpHandler } from '../../src/server/transport.js';
+import { loadConfig } from '../../src/config/index.js';
 import { Chunker } from '../../src/indexer/chunker.js';
 import { IndexPipeline } from '../../src/indexer/pipeline.js';
 import { PluginRegistry } from '../../src/plugins/registry.js';
@@ -196,5 +199,61 @@ describe('Phase 2 MCP protocol integration', () => {
       reconciliation: { added: 0, modified: 0, deleted: 0, unchanged: 0 },
       chunksIndexed: 0,
     });
+  });
+});
+
+describe('MCP reindex factory integration', () => {
+  it('returns a normal reindex result when the factory scanner callback is used', async () => {
+    const projectRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'nexus-mcp-reindex-'));
+    const config = await loadConfig({ projectRoot, env: {} });
+    const runtime = await NexusServerFactory.createRuntime(config);
+    const handler = createStreamableHttpHandler({ createServer: () => runtime.createServer() });
+    const httpServer = createServer((req, res) => {
+      void handler(req, res);
+    });
+    const client = new Client({ name: 'reindex-client', version: '1.0.0' });
+
+    try {
+      await new Promise<void>((resolve) => {
+        httpServer.listen(0, '127.0.0.1', () => resolve());
+      });
+      const address = httpServer.address();
+      if (address === null || typeof address === 'string') {
+        throw new Error('failed to bind reindex test server');
+      }
+      const transport = new StreamableHTTPClientTransport(
+        new URL(`http://127.0.0.1:${address.port}/mcp`),
+      );
+      await client.connect(transport);
+
+      const result = await client.callTool({
+        name: 'reindex',
+        arguments: { fullRebuild: true },
+      });
+
+      expect(result.isError).not.toBe(true);
+      expect(result.structuredContent).toMatchObject({
+        startedAt: expect.any(String),
+        finishedAt: expect.any(String),
+        durationMs: expect.any(Number),
+        reconciliation: { added: 0, modified: 0, deleted: 0, unchanged: 0 },
+        chunksIndexed: 0,
+      });
+      expect(result.structuredContent).not.toMatchObject({ status: 'already_running' });
+    } finally {
+      await client.close();
+      await handler.dispose();
+      await new Promise<void>((resolve, reject) => {
+        httpServer.close((error) => {
+          if (error) {
+            reject(error);
+            return;
+          }
+          resolve();
+        });
+      });
+      await runtime.close();
+      await fs.rm(projectRoot, { recursive: true, force: true });
+    }
   });
 });
