@@ -458,7 +458,14 @@ export const buildNexusRuntime = (
 
   const reindex = async (fullRebuild?: boolean) => {
     await initialize();
-    await options.runReindex({ fullScan: fullRebuild });
+    const result = await options.pipeline.reindex(
+      options.runReindex,
+      options.loadFileContent,
+      fullRebuild,
+    );
+    if ("status" in result) {
+      throw new Error(`Reindex already running: ${result.status}`);
+    }
   };
 
   const createServer = (): McpServer => createNexusServer(options, () => initialize());

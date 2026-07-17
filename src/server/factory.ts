@@ -514,27 +514,13 @@ export class NexusServerFactory {
             await projectLock.release().catch(() => {});
           }
         },
-        runReindex: async (args) => {
-          let scannedEvents: IndexEvent[] = [];
-          const result = await pipeline.reindex(
-            async () => {
-              scannedEvents = await DirectoryScanner.scan(
-                projectRoot,
-                projectRoot,
-                ignorePaths,
-                onLog,
-              );
-              return scannedEvents;
-            },
-            loadFileContent,
-            args?.fullScan,
-          );
-
-          if ("status" in result) {
-            throw new Error(`Reindex already running: ${result.status}`);
-          }
-          return scannedEvents;
-        },
+        runReindex: () =>
+          DirectoryScanner.scan(
+            projectRoot,
+            projectRoot,
+            ignorePaths,
+            onLog,
+          ),
       });
     } catch (error) {
       await onClose();

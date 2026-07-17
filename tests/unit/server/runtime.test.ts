@@ -125,6 +125,47 @@ describe('initializeNexusRuntime', () => {
     await runtime.close();
   });
 
+  it('delegates manual reindexing to the pipeline with the scanner callback', async () => {
+    const options = makeServerOptions();
+    const runReindex = vi.fn(async () => []);
+    const loadFileContent = vi.fn(async () => '');
+    const pipelineReindex = vi.fn(async () => ({
+      startedAt: '2026-07-17T00:00:00.000Z',
+      finishedAt: '2026-07-17T00:00:01.000Z',
+      durationMs: 1000,
+      reconciliation: { added: 0, modified: 0, deleted: 0, unchanged: 0 },
+      chunksIndexed: 0,
+    }));
+    options.runReindex = runReindex;
+    options.loadFileContent = loadFileContent;
+    options.pipeline.reindex = pipelineReindex;
+    const watcher = {
+      start: async () => undefined,
+      stop: async () => undefined,
+    };
+    const runtime = await initializeNexusRuntime({ ...options, watcher });
+
+    await runtime.reindex(true);
+
+    expect(pipelineReindex).toHaveBeenCalledWith(runReindex, loadFileContent, true);
+    await runtime.close();
+  });
+
+  it('rejects manual reindexing when the pipeline is already running', async () => {
+    const options = makeServerOptions();
+    options.pipeline.reindex = vi.fn(async () => ({ status: 'already_running' as const }));
+    const watcher = {
+      start: async () => undefined,
+      stop: async () => undefined,
+    };
+    const runtime = await initializeNexusRuntime({ ...options, watcher });
+
+    await expect(runtime.reindex()).rejects.toThrow(
+      'Reindex already running: already_running',
+    );
+    await runtime.close();
+  });
+
   it('registers with a 1000ms timeout and projectRoot basename when aggregatorPort is configured', async () => {
     vi.useFakeTimers();
     const registrations: Array<{ readonly url: string; readonly body: unknown; readonly signal: AbortSignal | undefined }> = [];
