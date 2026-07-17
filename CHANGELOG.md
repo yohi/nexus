@@ -1,5 +1,14 @@
 # Changelog
 
+## [1.28.6](https://github.com/yohi/nexus/compare/v1.28.5...v1.28.6) (2026-07-17)
+
+
+### Bug Fixes
+
+* plugin marketplace source url ssh ([0031249](https://github.com/yohi/nexus/commit/00312490684ca5e00ef6455242cba3817e6e4aa1))
+* リインデックスの自己再入デッドロックを解消 ([9beb1be](https://github.com/yohi/nexus/commit/9beb1be1d401d671df448545b74ef487699f0789))
+* 配布版プラグインのセットアップ・インデックス不具合を修正 ([d133470](https://github.com/yohi/nexus/commit/d133470779b3ba87a96215128e037780f217b690))
+
 ## [1.28.5](https://github.com/yohi/nexus/compare/v1.28.4...v1.28.5) (2026-07-16)
 
 
