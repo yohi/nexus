@@ -212,6 +212,7 @@ export interface EmbeddingConfig {
   apiKey?: string;
   region?: string;
   profile?: string;
+  headers?: Record<string, string>;
   maxConcurrency: number;
   batchSize: number;
   retryCount: number;

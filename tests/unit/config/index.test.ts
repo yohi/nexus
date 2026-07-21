@@ -53,6 +53,39 @@ describe('loadConfig', () => {
     expect(config.embedding.dimensions).toBe(16);
   });
 
+  it('parses NEXUS_EMBEDDING_HEADERS from env and file config', async () => {
+    tempDir = await mkdtemp(path.join(os.tmpdir(), 'nexus-config-'));
+    await writeFile(
+      path.join(tempDir, '.nexus.json'),
+      JSON.stringify({
+        embedding: { headers: { 'x-file-header': 'file-value' } },
+      }),
+      'utf8',
+    );
+
+    const configWithFile = await loadConfig({ projectRoot: tempDir, env: {} });
+    expect(configWithFile.embedding.headers).toEqual({ 'x-file-header': 'file-value' });
+
+    const configWithEnv = await loadConfig({
+      projectRoot: tempDir,
+      env: {
+        NEXUS_EMBEDDING_HEADERS: '{"x-env-header":"env-value"}',
+      },
+    });
+    expect(configWithEnv.embedding.headers).toEqual({ 'x-env-header': 'env-value' });
+  });
+
+  it('returns undefined for NEXUS_EMBEDDING_HEADERS when header syntax is invalid', async () => {
+    tempDir = await mkdtemp(path.join(os.tmpdir(), 'nexus-config-'));
+    const configWithInvalidHeaderEnv = await loadConfig({
+      projectRoot: tempDir,
+      env: {
+        NEXUS_EMBEDDING_HEADERS: '{"invalid header name\\n": "value"}',
+      },
+    });
+    expect(configWithInvalidHeaderEnv.embedding.headers).toBeUndefined();
+  });
+
   it('falls back to defaults when env values are invalid', async () => {
     tempDir = await mkdtemp(path.join(os.tmpdir(), 'nexus-config-'));
 

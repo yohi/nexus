@@ -41,12 +41,109 @@ describe('OpenAICompatEmbeddingProvider', () => {
     
     const callArgs = mockFetch.mock.calls[0] as [string, RequestInit];
     expect(callArgs[0]).toBe('https://api.openai.com/v1/embeddings');
-    expect(callArgs[1].headers).toHaveProperty('Authorization', 'Bearer sk-test-key');
+    expect(callArgs[1].headers).toHaveProperty('authorization', 'Bearer sk-test-key');
     expect(JSON.parse(callArgs[1].body as string)).toEqual({
       model: 'text-embedding-3-small',
       input: ['text1', 'text2'],
       dimensions: 2,
     });
+  });
+
+  it('sends custom headers if configured', async () => {
+    const mockFetch = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        data: [{ embedding: [0.1, 0.2] }],
+      }),
+    });
+
+    const provider = new OpenAICompatEmbeddingProvider(
+      {
+        ...mockConfig,
+        headers: {
+          'x-portkey-api-key': 'portkey-key',
+          'x-portkey-config': 'portkey-config',
+        },
+      },
+      {
+        fetch: mockFetch,
+        sleep: vi.fn(),
+      },
+    );
+
+    await provider.embed(['test']);
+
+    const callArgs = mockFetch.mock.calls[0] as [string, RequestInit];
+    expect(callArgs[1].headers).toMatchObject({
+      'authorization': 'Bearer sk-test-key',
+      'x-portkey-api-key': 'portkey-key',
+    });
+  });
+
+  it('normalizes header names to lowercase and merges extraHeaders case-insensitively', async () => {
+    const mockFetch = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        data: [{ embedding: [0.1, 0.2] }],
+      }),
+    });
+
+    const provider = new OpenAICompatEmbeddingProvider(
+      {
+        ...mockConfig,
+        headers: {
+          'X-Custom-Header': 'base-val',
+          'Content-Type': 'application/json',
+        },
+      },
+      {
+        fetch: mockFetch,
+        sleep: vi.fn(),
+      },
+    );
+
+    await provider.embed(['test']);
+
+    const callArgs = mockFetch.mock.calls[0] as [string, RequestInit];
+    expect(callArgs[1].headers).toEqual({
+      'x-custom-header': 'base-val',
+      'content-type': 'application/json',
+      'authorization': 'Bearer sk-test-key',
+    });
+  });
+
+  it('does not overwrite custom Authorization header with apiKey in embed and healthCheck', async () => {
+    const mockFetch = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        data: [{ embedding: [0.1, 0.2] }],
+      }),
+    });
+
+    const provider = new OpenAICompatEmbeddingProvider(
+      {
+        ...mockConfig,
+        apiKey: 'sk-test-key',
+        headers: {
+          'Authorization': 'Bearer custom-token-123',
+        },
+      },
+      {
+        fetch: mockFetch,
+        sleep: vi.fn(),
+      },
+    );
+
+    await provider.embed(['test']);
+    let callArgs = mockFetch.mock.calls[0] as [string, RequestInit];
+    const headers = callArgs[1].headers as Record<string, string>;
+    expect(headers['authorization']).toBe('Bearer custom-token-123');
+
+    mockFetch.mockClear();
+    await provider.healthCheck();
+    callArgs = mockFetch.mock.calls[0] as [string, RequestInit];
+    const healthHeaders = callArgs[1].headers as Record<string, string>;
+    expect(healthHeaders['authorization']).toBe('Bearer custom-token-123');
   });
 
   it('throws EmbedError immediately if dimensions are not positive', async () => {
@@ -167,7 +264,7 @@ describe('OpenAICompatEmbeddingProvider', () => {
     const isHealthy = await provider.healthCheck();
     expect(isHealthy).toBe(true);
     expect(mockFetch).toHaveBeenCalledWith('https://api.openai.com/v1/models', expect.objectContaining({
-      headers: { Authorization: 'Bearer sk-test-key' }
+      headers: { authorization: 'Bearer sk-test-key' }
     }));
   });
 
