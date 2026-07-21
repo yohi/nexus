@@ -1,5 +1,19 @@
 # Changelog
 
+## [1.29.0](https://github.com/yohi/nexus/compare/v1.28.6...v1.29.0) (2026-07-21)
+
+
+### Features
+
+* **embedding:** NEXUS_EMBEDDING_HEADERS によるカスタム HTTP ヘッダーサポートを追加 ([e4b12f2](https://github.com/yohi/nexus/commit/e4b12f2837b2ad39107da600e816e38eacdb9262))
+* **embedding:** NEXUS_EMBEDDING_HEADERS によるカスタム HTTP ヘッダーサポートを追加 ([1c1eaa9](https://github.com/yohi/nexus/commit/1c1eaa9ca616066f388cdbb779ad1ebec12f8a12))
+
+
+### Bug Fixes
+
+* **embeddings:** カスタムAuthorizationヘッダーがapiKeyで上書きされる問題を修正 ([8ce867d](https://github.com/yohi/nexus/commit/8ce867db6fa75c5c2ee1ca45be7969e7285037e7))
+* **embeddings:** ヘッダー構文検証の追加と小文字正規化マージのサポート ([47d265c](https://github.com/yohi/nexus/commit/47d265cce44007c6acaecc3f1ceaa45193d65ec1))
+
 ## [1.28.6](https://github.com/yohi/nexus/compare/v1.28.5...v1.28.6) (2026-07-17)
 
 
