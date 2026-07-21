@@ -123,6 +123,7 @@ export const loadConfig = async (options: LoadConfigOptions): Promise<Config> =>
       apiKey: asString(env.NEXUS_EMBEDDING_API_KEY) ?? validateString(fileConfig.embedding?.apiKey) ?? defaults.embedding.apiKey,
       region: asString(env.NEXUS_EMBEDDING_REGION) ?? validateString(fileConfig.embedding?.region) ?? defaults.embedding.region,
       profile: asString(env.NEXUS_EMBEDDING_PROFILE) ?? validateString(fileConfig.embedding?.profile) ?? defaults.embedding.profile,
+      headers: asJsonRecord(env.NEXUS_EMBEDDING_HEADERS) ?? validateHeaders(fileConfig.embedding?.headers),
       maxConcurrency:
         asPositiveInt(env.NEXUS_EMBEDDING_MAX_CONCURRENCY) ??
         validatePositiveInt(fileConfig.embedding?.maxConcurrency) ??
@@ -262,6 +263,26 @@ const validateProvider = (value: unknown): EmbeddingConfig['provider'] | undefin
 
 const isProvider = (value: unknown): value is EmbeddingConfig['provider'] => {
   return value === 'ollama' || value === 'openai-compat' || value === 'bedrock' || value === 'test';
+};
+
+const asJsonRecord = (value: string | undefined): Record<string, string> | undefined => {
+  if (value === undefined) return undefined;
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    return validateHeaders(parsed);
+  } catch {
+    return undefined;
+  }
+};
+
+const validateHeaders = (value: unknown): Record<string, string> | undefined => {
+  if (value !== null && typeof value === 'object' && !Array.isArray(value)) {
+    const entries = Object.entries(value);
+    if (entries.every(([k, v]) => typeof k === 'string' && typeof v === 'string')) {
+      return Object.fromEntries(entries) as Record<string, string>;
+    }
+  }
+  return undefined;
 };
 
 const asStringList = (value: string | undefined): string[] | undefined => {

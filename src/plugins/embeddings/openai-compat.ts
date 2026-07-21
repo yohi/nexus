@@ -48,6 +48,7 @@ export class OpenAICompatEmbeddingProvider extends BaseEmbeddingProvider {
       | 'apiKey'
       | 'model'
       | 'dimensions'
+      | 'headers'
       | 'maxConcurrency'
       | 'batchSize'
       | 'retryCount'
@@ -78,7 +79,9 @@ export class OpenAICompatEmbeddingProvider extends BaseEmbeddingProvider {
 
     try {
       const url = this.buildUrl('v1/models');
-      const headers: Record<string, string> = {};
+      const headers: Record<string, string> = {
+        ...this.config.headers,
+      };
       if (this.config.apiKey) {
         headers['Authorization'] = `Bearer ${this.config.apiKey}`;
       }
@@ -98,23 +101,17 @@ export class OpenAICompatEmbeddingProvider extends BaseEmbeddingProvider {
   private buildUrl(path: string): string {
     const baseUrl = this.config.baseUrl || 'https://api.openai.com';
     const url = new URL(baseUrl);
-
-    // Ensure pathname ends with a slash before joining
-    if (!url.pathname.endsWith('/')) {
-      url.pathname += '/';
-    }
-
-    // Resolve the clean path relative to the normalized base
-    const cleanPath = path.replace(/^\//, '');
-    return new URL(cleanPath, url.toString()).toString();
+    const trimmedPath = url.pathname.endsWith('/') ? url.pathname : `${url.pathname}/`;
+    url.pathname = `${trimmedPath}${path}`;
+    return url.toString();
   }
 
   private async embedBatchWithRetry(batch: string[]): Promise<number[][]> {
-    let attempt = 0;
+    const maxRetries = this.config.retryCount ?? 3;
+    const baseDelay = this.config.retryBaseDelayMs ?? 250;
     let lastError: Error | undefined;
 
-    // attempt=0 is the first try, so we allow up to retryCount retries (total attempts: retryCount + 1)
-    while (attempt <= this.config.retryCount) {
+    for (let attempt = 0; attempt <= maxRetries; attempt++) {
       try {
         return await this.requestEmbeddings(batch);
       } catch (error) {
@@ -128,16 +125,16 @@ export class OpenAICompatEmbeddingProvider extends BaseEmbeddingProvider {
           throw error;
         }
 
-        if (attempt >= this.config.retryCount) {
+        if (attempt === maxRetries) {
           break;
         }
 
-        attempt += 1;
-        await this.dependencies.sleep(this.config.retryBaseDelayMs * 2 ** (attempt - 1));
+        const delay = baseDelay * Math.pow(2, attempt);
+        await this.dependencies.sleep(delay);
       }
     }
 
-    throw new RetryExhaustedError('Failed to fetch embeddings from OpenAI-compatible API', attempt + 1, {
+    throw new RetryExhaustedError('Failed to fetch embeddings from OpenAI-compatible API', maxRetries + 1, {
       cause: lastError,
     });
   }
@@ -150,6 +147,7 @@ export class OpenAICompatEmbeddingProvider extends BaseEmbeddingProvider {
     const url = this.buildUrl('v1/embeddings');
     const headers: Record<string, string> = {
       'Content-Type': 'application/json',
+      ...this.config.headers,
     };
     if (this.config.apiKey) {
       headers['Authorization'] = `Bearer ${this.config.apiKey}`;

@@ -49,6 +49,39 @@ describe('OpenAICompatEmbeddingProvider', () => {
     });
   });
 
+  it('sends custom headers if configured', async () => {
+    const mockFetch = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        data: [{ embedding: [0.1, 0.2] }],
+      }),
+    });
+
+    const provider = new OpenAICompatEmbeddingProvider(
+      {
+        ...mockConfig,
+        headers: {
+          'x-portkey-api-key': 'portkey-key',
+          'x-portkey-config': 'portkey-config',
+        },
+      },
+      {
+        fetch: mockFetch,
+        sleep: vi.fn(),
+      },
+    );
+
+    await provider.embed(['test']);
+
+    const callArgs = mockFetch.mock.calls[0] as [string, RequestInit];
+    expect(callArgs[1].headers).toMatchObject({
+      'Content-Type': 'application/json',
+      'Authorization': 'Bearer sk-test-key',
+      'x-portkey-api-key': 'portkey-key',
+      'x-portkey-config': 'portkey-config',
+    });
+  });
+
   it('throws EmbedError immediately if dimensions are not positive', async () => {
     const provider = new OpenAICompatEmbeddingProvider({ ...mockConfig, dimensions: 0 });
     await expect(provider.embed(['text1'])).rejects.toThrow('Embedding dimensions must be a positive integer');
