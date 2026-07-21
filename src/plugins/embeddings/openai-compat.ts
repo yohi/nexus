@@ -79,12 +79,7 @@ export class OpenAICompatEmbeddingProvider extends BaseEmbeddingProvider {
 
     try {
       const url = this.buildUrl('v1/models');
-      const headers: Record<string, string> = {
-        ...this.config.headers,
-      };
-      if (this.config.apiKey) {
-        headers['Authorization'] = `Bearer ${this.config.apiKey}`;
-      }
+      const headers = this.buildHeaders();
       const response = await this.dependencies.fetch(url, {
         method: 'GET',
         headers,
@@ -96,6 +91,20 @@ export class OpenAICompatEmbeddingProvider extends BaseEmbeddingProvider {
     } finally {
       clearTimeout(timeout);
     }
+  }
+
+  private buildHeaders(extraHeaders?: Record<string, string>): Record<string, string> {
+    const headers: Record<string, string> = {
+      ...this.config.headers,
+      ...extraHeaders,
+    };
+    const hasAuthHeader = Object.keys(headers).some(
+      (key) => key.toLowerCase() === 'authorization',
+    );
+    if (this.config.apiKey && !hasAuthHeader) {
+      headers['Authorization'] = `Bearer ${this.config.apiKey}`;
+    }
+    return headers;
   }
 
   private buildUrl(path: string): string {
@@ -145,13 +154,7 @@ export class OpenAICompatEmbeddingProvider extends BaseEmbeddingProvider {
     }
 
     const url = this.buildUrl('v1/embeddings');
-    const headers: Record<string, string> = {
-      'Content-Type': 'application/json',
-      ...this.config.headers,
-    };
-    if (this.config.apiKey) {
-      headers['Authorization'] = `Bearer ${this.config.apiKey}`;
-    }
+    const headers = this.buildHeaders({ 'Content-Type': 'application/json' });
 
     const controller = new AbortController();
     const timeoutMs = this.config.timeoutMs || DEFAULT_TIMEOUT_MS;

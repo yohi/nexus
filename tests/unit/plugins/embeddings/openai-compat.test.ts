@@ -82,6 +82,38 @@ describe('OpenAICompatEmbeddingProvider', () => {
     });
   });
 
+  it('does not overwrite custom Authorization header with apiKey in embed and healthCheck', async () => {
+    const mockFetch = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        data: [{ embedding: [0.1, 0.2] }],
+      }),
+    });
+
+    const provider = new OpenAICompatEmbeddingProvider(
+      {
+        ...mockConfig,
+        apiKey: 'sk-test-key',
+        headers: {
+          'Authorization': 'Bearer custom-token-123',
+        },
+      },
+      {
+        fetch: mockFetch,
+        sleep: vi.fn(),
+      },
+    );
+
+    await provider.embed(['test']);
+    let callArgs = mockFetch.mock.calls[0] as [string, RequestInit];
+    expect((callArgs[1].headers as Record<string, string>)['Authorization']).toBe('Bearer custom-token-123');
+
+    mockFetch.mockClear();
+    await provider.healthCheck();
+    callArgs = mockFetch.mock.calls[0] as [string, RequestInit];
+    expect((callArgs[1].headers as Record<string, string>)['Authorization']).toBe('Bearer custom-token-123');
+  });
+
   it('throws EmbedError immediately if dimensions are not positive', async () => {
     const provider = new OpenAICompatEmbeddingProvider({ ...mockConfig, dimensions: 0 });
     await expect(provider.embed(['text1'])).rejects.toThrow('Embedding dimensions must be a positive integer');
