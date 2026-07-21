@@ -279,7 +279,12 @@ const validateHeaders = (value: unknown): Record<string, string> | undefined => 
   if (value !== null && typeof value === 'object' && !Array.isArray(value)) {
     const entries = Object.entries(value);
     if (entries.every(([k, v]) => typeof k === 'string' && typeof v === 'string')) {
-      return Object.fromEntries(entries) as Record<string, string>;
+      try {
+        new Headers(entries as [string, string][]);
+        return Object.fromEntries(entries) as Record<string, string>;
+      } catch {
+        return undefined;
+      }
     }
   }
   return undefined;

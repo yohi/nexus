@@ -94,15 +94,19 @@ export class OpenAICompatEmbeddingProvider extends BaseEmbeddingProvider {
   }
 
   private buildHeaders(extraHeaders?: Record<string, string>): Record<string, string> {
-    const headers: Record<string, string> = {
-      ...this.config.headers,
-      ...extraHeaders,
-    };
-    const hasAuthHeader = Object.keys(headers).some(
-      (key) => key.toLowerCase() === 'authorization',
-    );
-    if (this.config.apiKey && !hasAuthHeader) {
-      headers['Authorization'] = `Bearer ${this.config.apiKey}`;
+    const headers: Record<string, string> = {};
+    if (this.config.headers) {
+      for (const [k, v] of Object.entries(this.config.headers)) {
+        headers[k.toLowerCase()] = v;
+      }
+    }
+    if (extraHeaders) {
+      for (const [k, v] of Object.entries(extraHeaders)) {
+        headers[k.toLowerCase()] = v;
+      }
+    }
+    if (this.config.apiKey && !headers['authorization']) {
+      headers['authorization'] = `Bearer ${this.config.apiKey}`;
     }
     return headers;
   }
