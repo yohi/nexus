@@ -1,5 +1,15 @@
 # Changelog
 
+## [1.31.5](https://github.com/yohi/nexus/compare/v1.31.4...v1.31.5) (2026-08-07)
+
+
+### Bug Fixes
+
+* **deps:** 脆弱性対応のためfast-uri, hono, ip-addressの依存バージョンを更新 ([da912cd](https://github.com/yohi/nexus/commit/da912cd296202ae6237b7d17de5b1bfb4fda9450))
+* **embeddings:** openai-compatのbaseUrlでフルURLパス指定をサポート ([380bac0](https://github.com/yohi/nexus/commit/380bac0f574850fdf8cb8fb4288f417ed6a45b81))
+* **embeddings:** openai-compatのbaseUrlでフルURLパス指定をサポート ([a5cbb45](https://github.com/yohi/nexus/commit/a5cbb45be41ffd0a4a695c05524e616054a6a77e))
+* **embeddings:** openai-compatのhealthCheckがbaseUrlのパスを保持するよう修正 ([19d8edf](https://github.com/yohi/nexus/commit/19d8edf6830c3cad5a23c83c780dfb857e6d2fc2))
+
 ## [1.31.4](https://github.com/yohi/nexus/compare/v1.31.3...v1.31.4) (2026-08-02)
 
 
