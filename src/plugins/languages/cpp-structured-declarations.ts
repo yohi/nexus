@@ -116,11 +116,6 @@ export const declarationsFor = (root: Parser.SyntaxNode): readonly DeclarationDe
     if (descriptor !== undefined) {
       unresolved.push(descriptor);
       if (!['namespace', 'struct', 'class'].includes(descriptor.kind)) return;
-      if (
-        hasSyntaxProblem(descriptor.node) ||
-        hasSyntaxProblem(descriptor.rangeNode) ||
-        (descriptor.scopeNode !== undefined && hasSyntaxProblem(descriptor.scopeNode))
-      ) return;
       const body = bodyFor(node);
       if (body === undefined) return;
       const childScope: Scope = {
