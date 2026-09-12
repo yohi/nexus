@@ -44,6 +44,11 @@ structured declarations or imports.
 - **C / C++:** Header files (`.h`) are parsed as C++. The parser performs
   source-only syntax analysis; it does not resolve compilation semantics such
   as preprocessor defines, include paths, or conditional compilation.
+- **C++:** Out-of-line member definitions (for example `void Widget::render()`
+  `{}` in a `.cpp` file) are currently indexed as top-level functions, not as
+  methods of their class. Class membership is captured only for declarations
+  written inside the class body; keep the in-class declaration available for
+  exact method retrieval.
 
 ## Upgrading to a new language set
 

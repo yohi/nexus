@@ -93,7 +93,7 @@ export class CppStructuredParser implements StructuredLanguageParser {
   constructor(private readonly runtime: CppTreeSitterRuntime) {}
 
   async parseStructured(source: StructuredSource): Promise<StructuredParseResult> {
-    if (source.bytes.length === 0) {
+    if (!source.bytes) {
       return {
         status: 'degraded',
         retrievability: 'partial',

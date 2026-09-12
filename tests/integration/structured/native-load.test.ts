@@ -170,4 +170,13 @@ describe('Node.js 24 native-load smoke test', () => {
       });
     }
   });
+
+  it('does not abort a full rebuild when a .cpp file is empty', async () => {
+    const { pipeline } = await createNativeLoadFixture();
+
+    const events: IndexEvent[] = [createEvent('added', 'cpp/empty.cpp', '')];
+    const result = await pipeline.processEvents(events, async () => '', { fullRebuild: true });
+
+    expect(result.structuredParseFailures).toHaveLength(0);
+  });
 });
