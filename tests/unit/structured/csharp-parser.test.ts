@@ -59,4 +59,15 @@ describe('C# structured parser', () => {
     expect(names.has('BrokenNamespace.Broken.Good')).toBe(false);
     expect(names.has('Good')).toBe(false);
   });
+
+  it('preserves UTF-8 byte ranges for declarations near multi-byte text', async () => {
+    const { bytes, result } = await parseCSharpFixture('Unicode.cs');
+    const point = result.declarations.find((declaration) => declaration.qualifiedName === 'UnicodeDemo.Point');
+
+    expect(point?.kind).toBe('class');
+    const rawBytes = bytes.subarray(point?.startByte ?? 0, point?.endByte ?? 0);
+    expect(point?.rawSource).toBe(decodeUtf8(rawBytes));
+    expect(point?.sourceHash).toBe(sha256Hex(rawBytes));
+    expect(rawBytes.byteLength).toBeGreaterThan(decodeUtf8(rawBytes).length);
+  });
 });
