@@ -973,34 +973,27 @@ export class LanceVectorStore implements IVectorStore {
         throw new Error('VectorStore.swapLegacyShadowTable: unknown shadow table');
       }
 
-      const newTable = this.legacyShadowTable;
-      const oldTable = this.table;
+      const shadowTable = this.legacyShadowTable;
       const oldShadowName = this.legacyShadowName;
-
       this.legacyShadowTable = undefined;
       this.legacyShadowName = undefined;
 
-      try {
-        if (oldTable) {
-          const oldName = oldTable.name;
-          await oldTable.delete('true');
-          await this.db.dropTable(oldName).catch(() => {});
-        }
-      } catch (e) {
-        console.error('[LanceVectorStore] Error dropping old legacy table during swap:', e);
-      }
-
+      // Materialize the new live table from the shadow before dropping the shadow.
+      // `mode: 'overwrite'` replaces the old `chunks` table only once the new
+      // contents are ready, so a failure here leaves the previous table intact
+      // (LanceDB has no atomic rename; see the task report for the residual
+      // crash-window limitation shared with the structured shadow swap).
       const batchSize = 500;
       let offset = 0;
       let liveTable: Table | undefined;
       while (true) {
-        const rowsRaw = await newTable.query().limit(batchSize).offset(offset).toArray() as unknown as LanceRow[];
+        const rowsRaw = await shadowTable.query().limit(batchSize).offset(offset).toArray() as unknown as LanceRow[];
         if (rowsRaw.length === 0) {
           break;
         }
         const rows: LanceRow[] = rowsRaw.map((row) => ({ ...row, vector: Array.from(row.vector) }));
         if (liveTable === undefined) {
-          liveTable = await this.db.createTable('chunks', rows);
+          liveTable = await this.db.createTable('chunks', rows, { mode: 'overwrite' });
         } else {
           await liveTable.add(rows);
         }
@@ -1009,17 +1002,19 @@ export class LanceVectorStore implements IVectorStore {
           break;
         }
       }
+      if (liveTable === undefined) {
+        // The rebuild emptied every legacy row: keep an empty, schema-correct
+        // `chunks` table instead of leaving the store without a live table.
+        liveTable = await this.db.createEmptyTable('chunks', await shadowTable.schema(), { mode: 'overwrite' });
+      }
+
       await this.db.dropTable(oldShadowName).catch(() => {});
       this.table = liveTable;
 
       // Reconcile store counters with the swapped table contents.
       this.staleCount = 0;
-      if (liveTable) {
-        const rows = await liveTable.query().select(['filepath']).toArray() as unknown as { filepath: string }[];
-        this.totalFiles = new Set(rows.map((r) => r.filepath)).size;
-      } else {
-        this.totalFiles = 0;
-      }
+      const filePathRows = await liveTable.query().select(['filepath']).toArray() as unknown as { filepath: string }[];
+      this.totalFiles = new Set(filePathRows.map((row) => row.filepath)).size;
       await this.updateMetadata();
     });
   }

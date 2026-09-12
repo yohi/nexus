@@ -330,5 +330,37 @@ export function vectorStoreContractTests(
       expect(stats.totalChunks).toBe(2);
       expect(stats.totalFiles).toBe(2);
     });
+
+    it('keeps a usable, schema-correct live table after swapping an emptied legacy shadow', async () => {
+      await upsertChunks(store, [
+        makeChunk({ id: 'a1', filePath: 'src/a.ts' }),
+        makeChunk({ id: 'b1', filePath: 'src/b.ts' }),
+      ]);
+
+      const shadow = await store.beginLegacyShadowTable();
+      await store.stageLegacyShadowDeletions(shadow, { filePaths: ['src/a.ts', 'src/b.ts'] });
+      await store.swapLegacyShadowTable(shadow);
+
+      await expectSearchResults(store, { count: 0 });
+      const stats = await store.getStats();
+      expect(stats.totalChunks).toBe(0);
+      expect(stats.totalFiles).toBe(0);
+
+      // The store must keep accepting writes after an emptied rebuild.
+      await upsertChunks(store, [makeChunk({ id: 'c1', filePath: 'src/c.ts' })]);
+      await expectSearchResults(store, { count: 1, chunkId: 'c1' });
+
+      // A second rebuild cycle on the emptied store must work end to end.
+      const secondShadow = await store.beginLegacyShadowTable();
+      await store.stageLegacyShadowChunks(secondShadow, [
+        { chunk: makeChunk({ id: 'd1', filePath: 'src/d.ts' }), vector: embedding },
+      ]);
+      await store.swapLegacyShadowTable(secondShadow);
+      const results = await store.search(embedding, 10);
+      expect(results.map((result) => result.chunk.id).sort()).toEqual(['c1', 'd1']);
+      const statsAfter = await store.getStats();
+      expect(statsAfter.totalChunks).toBe(2);
+      expect(statsAfter.totalFiles).toBe(2);
+    });
   });
 }
