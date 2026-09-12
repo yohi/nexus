@@ -87,4 +87,35 @@ describe('Rust structured parser', () => {
     expect(point?.sourceHash).toBe(sha256Hex(bytes.subarray(point?.startByte ?? 0, point?.endByte ?? 0)));
     expect(point?.startByte).toBe(Buffer.byteLength(text.slice(0, text.indexOf('pub struct Point')), 'utf8'));
   });
+
+  it('does not let a broken container affect owner resolution of valid siblings', async () => {
+    const text = [
+      'pub struct Point;',
+      '',
+      'impl Point {',
+      '    pub fn valid() {}',
+      '}',
+      '',
+      'impl Point {',
+      '    pub struct Point;',
+      '    pub fn broken( {}',
+      '}',
+      '',
+    ].join('\n');
+    const bytes = new TextEncoder().encode(text);
+    const parser = await new RustLanguagePlugin().createStructuredParser();
+    const result = await parser.parseStructured({
+      filePath: 'broken-container.rs',
+      language: 'rust',
+      bytes,
+      text,
+    });
+
+    const point = result.declarations.find((d) => d.qualifiedName === 'Point');
+    const validMethod = result.declarations.find((d) => d.qualifiedName === 'Point.valid');
+
+    expect(validMethod?.kind).toBe('method');
+    expect(validMethod?.parentSymbolId).toBe(point?.symbolId);
+    expect(result.declarations.find((d) => d.qualifiedName === 'Point.broken')).toBeUndefined();
+  });
 });
