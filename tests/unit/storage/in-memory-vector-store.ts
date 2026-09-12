@@ -1,11 +1,14 @@
 import type {
   ActiveGeneration,
+  ChunkWithEmbedding,
   CodeChunk,
   CompactionConfig,
   CompactionMutex,
   CompactionResult,
   GenerationChunkBatch,
   IVectorStore,
+  LegacyShadowDeletion,
+  LegacyShadowTable,
   StructuredRowVisibility,
   StructuredShadowTable,
   VectorFilter,
@@ -48,6 +51,7 @@ export class InMemoryVectorStore implements IVectorStore {
   private readonly records = new Map<string, StoredVector>();
   private readonly structuredRecords = new Map<string, StructuredRow>();
   private structuredShadow: Map<string, StructuredRow> | undefined;
+  private legacyShadow: Map<string, StoredVector> | undefined;
 
   private deletedCount = 0;
 
@@ -304,6 +308,82 @@ export class InMemoryVectorStore implements IVectorStore {
 
   async abortStructuredShadowTable(_shadowTable: StructuredShadowTable): Promise<void> {
     this.structuredShadow = undefined;
+  }
+
+  async beginLegacyShadowTable(): Promise<LegacyShadowTable> {
+    this.legacyShadow = new Map();
+    for (const [key, record] of this.records.entries()) {
+      if (!record.deleted) {
+        this.legacyShadow.set(key, { ...record });
+      }
+    }
+    return { name: 'in-memory-legacy-shadow' };
+  }
+
+  async stageLegacyShadowChunks(_shadow: LegacyShadowTable, chunks: ChunkWithEmbedding[]): Promise<void> {
+    const shadowMap = this.legacyShadow;
+    if (!shadowMap) {
+      throw new Error('InMemoryVectorStore.stageLegacyShadowChunks: no shadow table in progress');
+    }
+    for (const { chunk, vector } of chunks) {
+      if (vector.length !== this.dimensions) {
+        throw new Error(`InMemoryVectorStore.stageLegacyShadowChunks: vector length mismatch for chunk ${chunk.id} (expected ${this.dimensions}, got ${vector.length})`);
+      }
+      if (!vector.every(Number.isFinite)) {
+        throw new Error(`InMemoryVectorStore.stageLegacyShadowChunks: vector contains non-finite values for chunk ${chunk.id}`);
+      }
+    }
+
+    // Upsert semantics: drop existing rows for the affected files before adding.
+    const affectedFilePaths = new Set(chunks.map(({ chunk }) => chunk.filePath));
+    for (const key of [...shadowMap.keys()]) {
+      const record = shadowMap.get(key);
+      if (record && affectedFilePaths.has(record.chunk.filePath)) {
+        shadowMap.delete(key);
+      }
+    }
+    for (const { chunk, vector } of chunks) {
+      shadowMap.set(chunk.id, { chunk, vector, deleted: false });
+    }
+  }
+
+  async stageLegacyShadowDeletions(
+    _shadow: LegacyShadowTable,
+    deletions: LegacyShadowDeletion,
+  ): Promise<void> {
+    const shadowMap = this.legacyShadow;
+    if (!shadowMap) {
+      throw new Error('InMemoryVectorStore.stageLegacyShadowDeletions: no shadow table in progress');
+    }
+    const filePaths = new Set(deletions.filePaths ?? []);
+    const prefixes = (deletions.pathPrefixes ?? []).map((prefix) => (prefix.endsWith('/') ? prefix : `${prefix}/`));
+    for (const key of [...shadowMap.keys()]) {
+      const record = shadowMap.get(key);
+      if (!record) continue;
+      const path = record.chunk.filePath;
+      const matches = filePaths.has(path) || prefixes.some((prefix) => path === prefix.slice(0, -1) || path.startsWith(prefix));
+      if (matches) {
+        shadowMap.delete(key);
+      }
+    }
+  }
+
+  async swapLegacyShadowTable(_shadow: LegacyShadowTable): Promise<void> {
+    const shadowMap = this.legacyShadow;
+    if (!shadowMap) {
+      throw new Error('InMemoryVectorStore.swapLegacyShadowTable: no shadow table in progress');
+    }
+    this.records.clear();
+    for (const [key, record] of shadowMap.entries()) {
+      this.records.set(key, { ...record, deleted: false });
+    }
+    this.legacyShadow = undefined;
+    // Staged rows are physically present (no tombstones), so counters are clean after the swap.
+    this.deletedCount = 0;
+  }
+
+  async abortLegacyShadowTable(_shadow: LegacyShadowTable): Promise<void> {
+    this.legacyShadow = undefined;
   }
 
   async reconcileStructuredRows(activeGenerations: readonly ActiveGeneration[]): Promise<void> {
