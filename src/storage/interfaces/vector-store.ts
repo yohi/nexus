@@ -60,6 +60,23 @@ export interface StructuredShadowTable {
   readonly name: string;
 }
 
+/** Opaque handle for a legacy vector shadow table used during atomic full rebuilds. */
+export interface LegacyShadowTable {
+  readonly name: string;
+}
+
+/** A legacy chunk paired with its embedding vector for shadow staging. */
+export interface ChunkWithEmbedding {
+  readonly chunk: CodeChunk;
+  readonly vector: number[];
+}
+
+/** File-path based removals staged into a legacy shadow table. */
+export interface LegacyShadowDeletion {
+  readonly filePaths?: readonly string[];
+  readonly pathPrefixes?: readonly string[];
+}
+
 export interface IVectorStore {
   initialize(): Promise<void>;
   upsertChunks(chunks: CodeChunk[], embeddings?: number[][], affectedFilePaths?: string[]): Promise<void>;
@@ -87,4 +104,11 @@ export interface IVectorStore {
   swapStructuredShadowTable(shadowTable: StructuredShadowTable): Promise<void>;
   abortStructuredShadowTable(shadowTable: StructuredShadowTable): Promise<void>;
   reconcileStructuredRows(activeGenerations: readonly ActiveGeneration[]): Promise<void>;
+
+  /** Legacy-vector shadow lifecycle methods (atomic full rebuild). */
+  beginLegacyShadowTable(): Promise<LegacyShadowTable>;
+  stageLegacyShadowChunks(shadow: LegacyShadowTable, chunks: ChunkWithEmbedding[]): Promise<void>;
+  stageLegacyShadowDeletions(shadow: LegacyShadowTable, deletions: LegacyShadowDeletion): Promise<void>;
+  swapLegacyShadowTable(shadow: LegacyShadowTable): Promise<void>;
+  abortLegacyShadowTable(shadow: LegacyShadowTable): Promise<void>;
 }
