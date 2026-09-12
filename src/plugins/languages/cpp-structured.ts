@@ -51,7 +51,8 @@ const declarationsWithIds = (
   const drafts = descriptors.flatMap((descriptor) => {
     if (
       hasSyntaxProblem(descriptor.node) ||
-      hasSyntaxProblem(descriptor.rangeNode)
+      hasSyntaxProblem(descriptor.rangeNode) ||
+      (descriptor.scopeNode !== undefined && hasSyntaxProblem(descriptor.scopeNode))
     ) return [];
     const signatureDiscriminator = signatureFor(source, descriptor.node);
     const occurrenceKey = `${descriptor.qualifiedName}\u0000${descriptor.kind}\u0000${signatureDiscriminator}`;
