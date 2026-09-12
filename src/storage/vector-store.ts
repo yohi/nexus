@@ -143,6 +143,16 @@ export class LanceVectorStore implements IVectorStore {
 
         const tableNames = await localDb.tableNames();
 
+        // Drop orphaned shadow tables left behind by an interrupted full-rebuild
+        // swap. No shadow lifecycle can be in flight while initialize() runs, so
+        // any leftover `chunks_shadow_*` / `structured_chunks_shadow_*` table is
+        // a stale artifact.
+        for (const name of tableNames) {
+          if (name.startsWith(LEGACY_SHADOW_PREFIX) || name.startsWith(STRUCTURED_SHADOW_PREFIX)) {
+            await localDb.dropTable(name).catch(() => {});
+          }
+        }
+
         // 1. Attempt to load sidecar metadata for URI consistency and dimensions
         let metadata: SidecarMetadata | undefined;
         if (!isUri) {
@@ -975,14 +985,16 @@ export class LanceVectorStore implements IVectorStore {
 
       const shadowTable = this.legacyShadowTable;
       const oldShadowName = this.legacyShadowName;
-      this.legacyShadowTable = undefined;
-      this.legacyShadowName = undefined;
 
       // Materialize the new live table from the shadow before dropping the shadow.
-      // `mode: 'overwrite'` replaces the old `chunks` table only once the new
-      // contents are ready, so a failure here leaves the previous table intact
-      // (LanceDB has no atomic rename; see the task report for the residual
-      // crash-window limitation shared with the structured shadow swap).
+      // This is not atomic: the first `createTable(..., { mode: 'overwrite' })`
+      // batch already replaces the previous `chunks` table, so a failure from
+      // that point on leaves the live table partially rebuilt (only the batches
+      // written so far) even though the shadow still holds the full new
+      // contents. LanceDB has no atomic rename. The shadow fields stay set
+      // until the swap succeeds so `abortLegacyShadowTable` can drop the
+      // shadow after a failure; a crash leaves an orphaned `chunks_shadow_*`
+      // table that `initialize()` removes on the next start.
       const batchSize = 500;
       let offset = 0;
       let liveTable: Table | undefined;
@@ -1010,6 +1022,8 @@ export class LanceVectorStore implements IVectorStore {
 
       await this.db.dropTable(oldShadowName).catch(() => {});
       this.table = liveTable;
+      this.legacyShadowTable = undefined;
+      this.legacyShadowName = undefined;
 
       // Reconcile store counters with the swapped table contents.
       this.staleCount = 0;
