@@ -145,6 +145,7 @@ export const declarationsFor = (root: Parser.SyntaxNode): readonly DeclarationDe
       typeDescriptors.push(descriptor);
     }
     if (!isContainer(descriptor)) return;
+    if (hasSyntaxProblem(node)) return;
     const body = bodyNode(node);
     if (body === undefined) return;
     const childScope = descriptor.kind === 'impl'
