@@ -50,6 +50,12 @@ Search chunks and logical symbols are different retrieval units. Prefer exact st
 
 `get_file_outline` requires `filePath`. On `ok`, symbols can include `name`, `qualifiedName`, `symbolId`, `kind`, `signatureDiscriminator`, `position`, `isExact`, `languageId`, and `parentSymbolId`.
 
+### `kind`
+
+Symbols report a `kind` describing the declaration shape. Core kinds include `function`, `class`, `interface`, `method`, `property`, `variable`, `enum`, `type`, `namespace`, `module`, and `import`.
+
+Additional language-specific kinds include `struct`, `trait`, `impl`, `record`, and `field`.
+
 `get_symbol_source` requires `symbolId`. On `ok`, it returns the complete verified declaration plus freshness/reindex state. Non-`ok` outcomes do not return guessed source.
 
 `get_symbol_context` requires `symbolId` and `tokenBudget` (`1..100000`). The complete symbol declaration is preserved even if it exceeds the budget; related imports are reduced instead. Budget metadata reports requested/actual usage, whether it was exceeded, and omissions.
