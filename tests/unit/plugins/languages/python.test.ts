@@ -68,4 +68,11 @@ def build_token(user_id: str) -> str:
       }),
     ]);
   });
+
+  it('routes .py and .pyi files', () => {
+    const plugin = new PythonLanguagePlugin();
+    expect(plugin.supports('src/module.py')).toBe(true);
+    expect(plugin.supports('src/module.pyi')).toBe(true);
+    expect(plugin.supports('src/module.rs')).toBe(false);
+  });
 });

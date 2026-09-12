@@ -43,7 +43,7 @@ const projectLegacyResult = (result: Awaited<ReturnType<StructuredLanguageParser
 export class PythonLanguagePlugin implements LanguagePlugin {
   readonly languageId = 'python';
 
-  readonly fileExtensions = ['.py'];
+  readonly fileExtensions = ['.py', '.pyi'];
 
   supports(filePath: string): boolean {
     return this.fileExtensions.some((extension) => filePath.endsWith(extension));
