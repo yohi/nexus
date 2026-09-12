@@ -154,3 +154,41 @@ describe('NexusServerFactory.createRuntime', () => {
     }
   });
 });
+
+
+describe('NexusServerFactory language registration', () => {
+  it('routes every supported extension through the factory-created registry', async () => {
+    const projectRoot = await mkdtemp(path.join(os.tmpdir(), 'nexus-factory-routing-'));
+    try {
+      const config = await loadConfig({
+        projectRoot,
+        env: {
+          NEXUS_EMBEDDING_PROVIDER: 'bedrock',
+          NEXUS_EMBEDDING_DIMENSIONS: '1024',
+          NEXUS_EMBEDDING_REGION: 'us-east-1',
+        },
+      });
+      const registry = internals.setupPluginRegistry(config);
+      const routes: ReadonlyArray<readonly [string, string]> = [
+        ['.pyi', 'python'],
+        ['.rs', 'rust'],
+        ['.java', 'java'],
+        ['.cs', 'csharp'],
+        ['.c', 'c'],
+        ['.h', 'cpp'],
+        ['.cc', 'cpp'],
+        ['.cpp', 'cpp'],
+        ['.cxx', 'cpp'],
+        ['.hh', 'cpp'],
+        ['.hpp', 'cpp'],
+        ['.hxx', 'cpp'],
+      ];
+      for (const [extension, languageId] of routes) {
+        expect(registry.getLanguagePlugin(`src/example${extension}`)?.languageId).toBe(languageId);
+      }
+      expect(registry.getLanguagePlugin('src/example.txt')).toBeUndefined();
+    } finally {
+      await rm(projectRoot, { recursive: true, force: true });
+    }
+  });
+});
