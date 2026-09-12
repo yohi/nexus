@@ -40,4 +40,13 @@ describe('C structured parser', () => {
     expect(good?.rawSource).toBe(decodeUtf8(bytes.subarray(good?.startByte ?? 0, good?.endByte ?? 0)));
     expect(good?.sourceHash).toBe(sha256Hex(bytes.subarray(good?.startByte ?? 0, good?.endByte ?? 0)));
   });
+
+  it('skips tagged structs whose enclosing declaration is malformed', async () => {
+    const { result } = await parseCFixture('partial-struct.c');
+    const byName = new Map(result.declarations.map((declaration) => [declaration.qualifiedName, declaration]));
+
+    expect(result.status).toBe('degraded');
+    expect(byName.get('Good')?.kind).toBe('struct');
+    expect(byName.has('Bad')).toBe(false);
+  });
 });
