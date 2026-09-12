@@ -244,6 +244,54 @@ describe('IndexPipeline structured lifecycle', () => {
     });
   });
 
+  it('preserves legacy vectors, counters, Merkle state, and generations when a later full-rebuild window fails', async () => {
+    const { metadataStore, vectorStore, pipeline, coordinator } = await createStructuredPipeline();
+    const stablePath = 'src/stable.ts';
+    const deletedPath = 'src/deleted.ts';
+    const brokenPath = 'src/broken.ts';
+    const initialContent = 'export function stable(): number { return 1; }\n';
+    const updatedContent = 'export function stable(): number { return 2; }\n';
+    const deletedContent = 'export function deleted(): number { return 3; }\n';
+    const brokenContent = 'export function broken(): number { return (4; }\n';
+
+    await indexContent(pipeline, 'added', stablePath, initialContent);
+    await indexContent(pipeline, 'added', deletedPath, deletedContent);
+    await indexContent(pipeline, 'added', brokenPath, initialContent);
+
+    const vectorIdsBefore = (await vectorStore.search(new Array(64).fill(0), 100))
+      .map((result) => result.chunk.id)
+      .sort();
+    const statsBefore = await vectorStore.getStats();
+    const merkleBefore = await metadataStore.getAllNodes();
+    const generationsBefore = [...(await metadataStore.getStructuredIndexState()).activeGenerations.entries()];
+    const runFullRebuildSpy = vi.spyOn(coordinator, 'runFullRebuild');
+    const atomicPipeline = new IndexPipeline({
+      metadataStore,
+      vectorStore,
+      chunker: new Chunker((pipeline as unknown as { options: { pluginRegistry: ReturnType<typeof createStructuredPipeline> extends Promise<infer T> ? T extends { pluginRegistry: infer P } ? P : never : never } }).options.pluginRegistry),
+      embeddingProvider: new TestEmbeddingProvider(),
+      pluginRegistry: (pipeline as unknown as { options: { pluginRegistry: ReturnType<typeof createStructuredPipeline> extends Promise<infer T> ? T extends { pluginRegistry: infer P } ? P : never : never } }).options.pluginRegistry,
+      structuredIndexCoordinator: coordinator,
+      embedBatchWindowSize: 1,
+    });
+
+    await expect(atomicPipeline.reindex(
+      async () => [
+        createEvent('deleted', deletedPath, deletedContent),
+        createEvent('modified', stablePath, updatedContent),
+        createEvent('modified', brokenPath, brokenContent),
+      ],
+      async (filePath) => filePath === stablePath ? updatedContent : brokenContent,
+      true,
+    )).rejects.toThrow(`Structured full rebuild aborted: parsing failed for ${brokenPath}`);
+
+    expect(runFullRebuildSpy).not.toHaveBeenCalled();
+    expect((await vectorStore.search(new Array(64).fill(0), 100)).map((result) => result.chunk.id).sort()).toEqual(vectorIdsBefore);
+    await expect(vectorStore.getStats()).resolves.toEqual(statsBefore);
+    await expect(metadataStore.getAllNodes()).resolves.toEqual(merkleBefore);
+    expect([...(await metadataStore.getStructuredIndexState()).activeGenerations.entries()]).toEqual(generationsBefore);
+  });
+
   it('retires structured state when incremental indexing skips an oversized file', async () => {
     const { metadataStore, vectorStore, pluginRegistry, coordinator, pipeline } = await createStructuredPipeline();
     const filePath = 'src/oversized-incremental.ts';

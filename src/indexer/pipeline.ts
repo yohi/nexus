@@ -14,6 +14,8 @@ import {
   type IMetadataStore,
   type IVectorStore,
   type CodeChunk,
+  type ChunkWithEmbedding,
+  type LegacyShadowTable,
   type IndexEvent,
   type RuntimeInitializationResult,
   type ReindexResult,
@@ -85,6 +87,12 @@ type StructuredReadResult =
   | { kind: 'work'; work: StructuredFileWork }
   | { kind: 'retire' }
   | { kind: 'parse-failed' };
+
+/** A Merkle mutation deferred until the full-rebuild commit boundary. */
+type DeferredMerkleOp =
+  | { kind: 'update'; filePath: string; contentHash: string }
+  | { kind: 'remove'; filePath: string }
+  | { kind: 'subtree-delete'; filePath: string };
 
 interface FileWork {
   event: IndexEvent;
@@ -270,7 +278,13 @@ export class IndexPipeline implements IIndexPipeline {
     const embeddingFailures: string[] = [];
     let completedSuccessfully = false;
 
+    let legacyShadow: LegacyShadowTable | undefined;
+    const deferredMerkleOps: DeferredMerkleOp[] = [];
+
     try {
+      if (useStructuredFullRebuild) {
+        legacyShadow = await this.options.vectorStore.beginLegacyShadowTable();
+      }
       const renameCandidates = MerkleTree.detectRenameCandidates(events);
       const consumedEvents = new Set<IndexEvent>();
       let renamedEventCount = 0;
@@ -301,7 +315,7 @@ export class IndexPipeline implements IIndexPipeline {
           if (trackProgress) {
             this.progress.currentFile = event.filePath;
           }
-          await this.handleDeleteEvent(event.filePath, useStructuredFullRebuild);
+          await this.handleDeleteEvent(event.filePath, useStructuredFullRebuild, legacyShadow, useStructuredFullRebuild ? deferredMerkleOps : undefined);
           if (trackProgress) {
             this.progress.processedFiles++;
             this.safeNotifyMetrics((h) => { h.onIndexingProgress(this.progress.processedFiles, this.progress.totalFiles, true); });
@@ -327,6 +341,8 @@ export class IndexPipeline implements IIndexPipeline {
           trackProgress,
           useStructuredFullRebuild ? structuredRebuildFiles : undefined,
           structuredParseFailures,
+          useStructuredFullRebuild ? legacyShadow : undefined,
+          useStructuredFullRebuild ? deferredMerkleOps : undefined,
         );
         chunksIndexed += windowResult.chunksIndexed;
         embeddingFailures.push(...windowResult.embeddingFailures);
@@ -340,10 +356,26 @@ export class IndexPipeline implements IIndexPipeline {
 
       if (useStructuredFullRebuild && !this.abortController.signal.aborted) {
         if (structuredParseFailures.length > 0) {
+          if (legacyShadow !== undefined) {
+            await this.options.vectorStore.abortLegacyShadowTable(legacyShadow).catch(() => {});
+            legacyShadow = undefined;
+          }
           const filePaths = [...new Set(structuredParseFailures)].join(', ');
           throw new Error(`Structured full rebuild aborted: parsing failed for ${filePaths}`);
         }
-        await structuredIndexCoordinator.runFullRebuild({ files: structuredRebuildFiles });
+        try {
+          await structuredIndexCoordinator.runFullRebuild({ files: structuredRebuildFiles });
+          if (legacyShadow !== undefined) {
+            await this.options.vectorStore.swapLegacyShadowTable(legacyShadow);
+          }
+          await this.applyDeferredMerkleOps(deferredMerkleOps);
+        } catch (error) {
+          if (legacyShadow !== undefined) {
+            await this.options.vectorStore.abortLegacyShadowTable(legacyShadow).catch(() => {});
+            legacyShadow = undefined;
+          }
+          throw error;
+        }
       }
 
       completedSuccessfully = !this.abortController.signal.aborted;
@@ -353,6 +385,9 @@ export class IndexPipeline implements IIndexPipeline {
         embeddingFailures: [...new Set(embeddingFailures)],
       };
     } finally {
+      if (legacyShadow !== undefined) {
+        await this.options.vectorStore.abortLegacyShadowTable(legacyShadow).catch(() => {});
+      }
       if (trackProgress) {
         this.progress.currentFile = undefined;
       }
@@ -516,6 +551,8 @@ export class IndexPipeline implements IIndexPipeline {
     trackProgress: boolean,
     structuredRebuildFiles?: FullRebuildFile[],
     structuredParseFailures?: string[],
+    legacyShadow?: LegacyShadowTable,
+    deferredMerkleOps?: DeferredMerkleOp[],
   ): Promise<ProcessEventWindowResult> {
     // Stage 1: bounded-concurrency read + chunk (no Merkle/vector writes here).
     const limit = pLimit(this.chunkConcurrency);
@@ -658,10 +695,12 @@ export class IndexPipeline implements IIndexPipeline {
         this.skippedFiles.set(work.event.filePath, work.skipReason ?? 'file skipped');
         if (structuredRebuildFiles === undefined && this.options.structuredIndexCoordinator !== undefined) {
           await this.options.structuredIndexCoordinator.deleteFile({ filePath: work.event.filePath });
+        } else if (legacyShadow !== undefined) {
+          await this.options.vectorStore.stageLegacyShadowDeletions(legacyShadow, { filePaths: [work.event.filePath] });
         } else {
           await this.options.vectorStore.deleteByFilePath(work.event.filePath);
         }
-        await this.merkleTree.update(work.event.filePath, work.event.contentHash ?? '');
+        await this.commitOrDeferMerkleUpdate(work.event.filePath, work.event.contentHash ?? '', deferredMerkleOps);
         if (trackProgress) {
           this.progress.processedFiles++;
         }
@@ -711,7 +750,12 @@ export class IndexPipeline implements IIndexPipeline {
       }
 
       if (legacyCount > 0) {
-        await this.options.vectorStore.upsertChunks(work.chunks, legacyEmbeddings, [work.event.filePath]);
+        if (legacyShadow !== undefined) {
+          const stagedChunks: ChunkWithEmbedding[] = work.chunks.map((chunk, i) => ({ chunk, vector: legacyEmbeddings[i] ?? [] }));
+          await this.options.vectorStore.stageLegacyShadowChunks(legacyShadow, stagedChunks);
+        } else {
+          await this.options.vectorStore.upsertChunks(work.chunks, legacyEmbeddings, [work.event.filePath]);
+        }
       }
 
       if (work.structured !== undefined && this.options.structuredIndexCoordinator !== undefined) {
@@ -751,9 +795,13 @@ export class IndexPipeline implements IIndexPipeline {
       if (legacyCount === 0 && structuredCount === 0) {
         // Valid file that produced no chunks (e.g. empty file): drop stale vectors, keep Merkle current.
         if (!work.structuredRetirement) {
-          await this.options.vectorStore.deleteByFilePath(work.event.filePath);
+          if (legacyShadow !== undefined) {
+            await this.options.vectorStore.stageLegacyShadowDeletions(legacyShadow, { filePaths: [work.event.filePath] });
+          } else {
+            await this.options.vectorStore.deleteByFilePath(work.event.filePath);
+          }
         }
-        await this.merkleTree.update(work.event.filePath, work.event.contentHash ?? '');
+        await this.commitOrDeferMerkleUpdate(work.event.filePath, work.event.contentHash ?? '', deferredMerkleOps);
         this.skippedFiles.delete(work.event.filePath);
         if (trackProgress) {
           this.progress.processedFiles++;
@@ -761,7 +809,7 @@ export class IndexPipeline implements IIndexPipeline {
         continue;
       }
 
-      await this.merkleTree.update(work.event.filePath, work.event.contentHash ?? '');
+      await this.commitOrDeferMerkleUpdate(work.event.filePath, work.event.contentHash ?? '', deferredMerkleOps);
       this.skippedFiles.delete(work.event.filePath);
       chunksIndexed += legacyCount;
       if (trackProgress) {
@@ -772,15 +820,28 @@ export class IndexPipeline implements IIndexPipeline {
     return { chunksIndexed, embeddingFailures: [...failedFilePaths] };
   }
 
-  private async handleDeleteEvent(filePath: string, deferStructuredRetirement = false): Promise<void> {
+  private async handleDeleteEvent(
+    filePath: string,
+    deferStructuredRetirement = false,
+    legacyShadow?: LegacyShadowTable,
+    deferredMerkleOps?: DeferredMerkleOp[],
+  ): Promise<void> {
     const existingNode = await this.options.metadataStore.getMerkleNode(filePath);
     if (existingNode?.isDirectory) {
       const prefix = filePath.endsWith('/') ? filePath : filePath + '/';
-      await this.options.vectorStore.deleteByPathPrefix(prefix);
-      await this.options.metadataStore.deleteSubtree(filePath);
+      if (legacyShadow !== undefined) {
+        await this.options.vectorStore.stageLegacyShadowDeletions(legacyShadow, { pathPrefixes: [prefix] });
+      } else {
+        await this.options.vectorStore.deleteByPathPrefix(prefix);
+      }
+      if (deferredMerkleOps !== undefined) {
+        deferredMerkleOps.push({ kind: 'subtree-delete', filePath });
+      } else {
+        await this.options.metadataStore.deleteSubtree(filePath);
 
-      // Incremental update of the tree (avoids full reload)
-      await this.merkleTree.remove(filePath);
+        // Incremental update of the tree (avoids full reload)
+        await this.merkleTree.remove(filePath);
+      }
 
       this.skippedFiles.delete(filePath);
       await this.deadLetterQueue.removeByPathPrefix(filePath);
@@ -790,14 +851,47 @@ export class IndexPipeline implements IIndexPipeline {
         }
       }
     } else {
-      await this.options.vectorStore.deleteByFilePath(filePath);
+      if (legacyShadow !== undefined) {
+        await this.options.vectorStore.stageLegacyShadowDeletions(legacyShadow, { filePaths: [filePath] });
+      } else {
+        await this.options.vectorStore.deleteByFilePath(filePath);
+      }
       if (!deferStructuredRetirement) {
         await this.options.structuredIndexCoordinator?.deleteFile({ filePath });
       }
-      await this.merkleTree.remove(filePath);
+      if (deferredMerkleOps !== undefined) {
+        deferredMerkleOps.push({ kind: 'remove', filePath });
+      } else {
+        await this.merkleTree.remove(filePath);
+      }
       this.skippedFiles.delete(filePath);
       await this.deadLetterQueue.removeByFilePath(filePath);
     }
+  }
+
+  private async applyDeferredMerkleOps(ops: readonly DeferredMerkleOp[]): Promise<void> {
+    for (const op of ops) {
+      if (op.kind === 'update') {
+        await this.merkleTree.update(op.filePath, op.contentHash);
+      } else if (op.kind === 'remove') {
+        await this.merkleTree.remove(op.filePath);
+      } else {
+        await this.options.metadataStore.deleteSubtree(op.filePath);
+        await this.merkleTree.remove(op.filePath);
+      }
+    }
+  }
+
+  private async commitOrDeferMerkleUpdate(
+    filePath: string,
+    contentHash: string,
+    deferredMerkleOps?: DeferredMerkleOp[],
+  ): Promise<void> {
+    if (deferredMerkleOps !== undefined) {
+      deferredMerkleOps.push({ kind: 'update', filePath, contentHash });
+      return;
+    }
+    await this.merkleTree.update(filePath, contentHash);
   }
 
   async reindex(

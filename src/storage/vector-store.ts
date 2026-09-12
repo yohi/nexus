@@ -6,12 +6,15 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type {
   ActiveGeneration,
+  ChunkWithEmbedding,
   CodeChunk,
   CompactionConfig,
   CompactionMutex,
   CompactionResult,
   GenerationChunkBatch,
   IVectorStore,
+  LegacyShadowDeletion,
+  LegacyShadowTable,
   StructuredRowVisibility,
   StructuredShadowTable,
   VectorFilter,
@@ -48,6 +51,7 @@ interface LanceStructuredRow extends LanceRow {
 
 const STRUCTURED_TABLE_NAME = 'structured_chunks';
 const STRUCTURED_SHADOW_PREFIX = 'structured_chunks_shadow_';
+const LEGACY_SHADOW_PREFIX = 'chunks_shadow_';
 
 interface SidecarMetadata {
   dimensions?: string;
@@ -68,6 +72,8 @@ export class LanceVectorStore implements IVectorStore {
   private structuredTable: Table | undefined;
   private structuredShadowTable: Table | undefined;
   private structuredShadowName: string | undefined;
+  private legacyShadowTable: Table | undefined;
+  private legacyShadowName: string | undefined;
 
   private inflightOps = 0;
   private closingResolve: (() => void) | undefined;
@@ -386,6 +392,8 @@ export class LanceVectorStore implements IVectorStore {
   }
 
   private async releaseLanceResources(): Promise<void> {
+    await this.closeResource(this.legacyShadowTable, 'legacy shadow table resources');
+    this.legacyShadowTable = undefined;
     await this.closeResource(this.structuredShadowTable, 'structured shadow table resources');
     this.structuredShadowTable = undefined;
     await this.closeResource(this.structuredTable, 'structured table resources');
@@ -843,6 +851,188 @@ export class LanceVectorStore implements IVectorStore {
         const name = this.structuredShadowName;
         this.structuredShadowTable = undefined;
         this.structuredShadowName = undefined;
+        await this.db.dropTable(name).catch(() => {});
+      }
+    });
+  }
+
+  async beginLegacyShadowTable(): Promise<LegacyShadowTable> {
+    return this.runInWriteLock(async () => {
+      if (!this.db) {
+        throw new Error('VectorStore not initialized');
+      }
+      this.legacyShadowName = `${LEGACY_SHADOW_PREFIX}${randomUUID().replaceAll('-', '_')}`;
+      const sample: LanceRow[] = [{
+        vector: new Array<number>(this.dimensions).fill(0),
+        id: 'placeholder',
+        filepath: 'placeholder',
+        content: '',
+        language: 'typescript',
+        symbolname: '',
+        symbolkind: 'function',
+        startline: 0,
+        endline: 0,
+        hash: 'placeholder',
+      }];
+      this.legacyShadowTable = await this.db.createTable(this.legacyShadowName, sample);
+      await this.legacyShadowTable.delete("filepath = 'placeholder'");
+
+      // Preserve existing live rows so the swap keeps files outside the rebuild input.
+      if (this.table) {
+        const batchSize = 500;
+        let offset = 0;
+        while (true) {
+          const rowsRaw = await this.table.query().limit(batchSize).offset(offset).toArray() as unknown as LanceRow[];
+          if (rowsRaw.length === 0) {
+            break;
+          }
+          const rows: LanceRow[] = rowsRaw.map((row) => ({ ...row, vector: Array.from(row.vector) }));
+          await this.legacyShadowTable.add(rows);
+          offset += rows.length;
+          if (rows.length < batchSize) {
+            break;
+          }
+        }
+      }
+      return { name: this.legacyShadowName };
+    });
+  }
+
+  async stageLegacyShadowChunks(shadow: LegacyShadowTable, chunks: ChunkWithEmbedding[]): Promise<void> {
+    return this.runInWriteLock(async () => {
+      if (!this.db) {
+        throw new Error('VectorStore not initialized');
+      }
+      if (!this.legacyShadowTable || this.legacyShadowName !== shadow.name) {
+        throw new Error('VectorStore.stageLegacyShadowChunks: unknown shadow table');
+      }
+      for (const item of chunks) {
+        if (item.vector.length !== this.dimensions) {
+          throw new Error(
+            `VectorStore.stageLegacyShadowChunks: vector length mismatch for chunk ${item.chunk.id}`
+          );
+        }
+      }
+      const shadowTable = this.legacyShadowTable;
+
+      // Upsert semantics: drop existing rows for the affected files before adding.
+      const uniqueFilePaths = [...new Set(chunks.map((item) => item.chunk.filePath))];
+      if (uniqueFilePaths.length > 0) {
+        const escapedPaths = uniqueFilePaths.map((fp) => `'${this.escapeFilterValue(fp)}'`).join(', ');
+        await shadowTable.delete(`filepath IN (${escapedPaths})`);
+      }
+
+      const BATCH_SIZE = 500;
+      for (let i = 0; i < chunks.length; i += BATCH_SIZE) {
+        const batch = chunks.slice(i, i + BATCH_SIZE);
+        const rows: LanceRow[] = batch.map(({ chunk, vector }) => ({
+          vector: Array.from(vector),
+          id: chunk.id,
+          filepath: chunk.filePath,
+          content: chunk.content,
+          language: chunk.language,
+          symbolname: chunk.symbolName ?? '',
+          symbolkind: chunk.symbolKind,
+          startline: chunk.startLine,
+          endline: chunk.endLine,
+          hash: chunk.hash,
+          ...(chunk.generationId === undefined ? {} : { generationid: chunk.generationId }),
+        }));
+        await shadowTable.add(rows);
+      }
+    });
+  }
+
+  async stageLegacyShadowDeletions(
+    shadow: LegacyShadowTable,
+    deletions: LegacyShadowDeletion,
+  ): Promise<void> {
+    return this.runInWriteLock(async () => {
+      if (!this.db) {
+        throw new Error('VectorStore not initialized');
+      }
+      if (!this.legacyShadowTable || this.legacyShadowName !== shadow.name) {
+        throw new Error('VectorStore.stageLegacyShadowDeletions: unknown shadow table');
+      }
+      const shadowTable = this.legacyShadowTable;
+      for (const filePath of deletions.filePaths ?? []) {
+        await shadowTable.delete(this.filePathFilter(filePath));
+      }
+      for (const pathPrefix of deletions.pathPrefixes ?? []) {
+        await shadowTable.delete(this.filePathPrefixFilter(pathPrefix));
+      }
+    });
+  }
+
+  async swapLegacyShadowTable(shadow: LegacyShadowTable): Promise<void> {
+    return this.runInWriteLock(async () => {
+      if (!this.db) {
+        throw new Error('VectorStore not initialized');
+      }
+      if (!this.legacyShadowTable || this.legacyShadowName !== shadow.name) {
+        throw new Error('VectorStore.swapLegacyShadowTable: unknown shadow table');
+      }
+
+      const newTable = this.legacyShadowTable;
+      const oldTable = this.table;
+      const oldShadowName = this.legacyShadowName;
+
+      this.legacyShadowTable = undefined;
+      this.legacyShadowName = undefined;
+
+      try {
+        if (oldTable) {
+          const oldName = oldTable.name;
+          await oldTable.delete('true');
+          await this.db.dropTable(oldName).catch(() => {});
+        }
+      } catch (e) {
+        console.error('[LanceVectorStore] Error dropping old legacy table during swap:', e);
+      }
+
+      const batchSize = 500;
+      let offset = 0;
+      let liveTable: Table | undefined;
+      while (true) {
+        const rowsRaw = await newTable.query().limit(batchSize).offset(offset).toArray() as unknown as LanceRow[];
+        if (rowsRaw.length === 0) {
+          break;
+        }
+        const rows: LanceRow[] = rowsRaw.map((row) => ({ ...row, vector: Array.from(row.vector) }));
+        if (liveTable === undefined) {
+          liveTable = await this.db.createTable('chunks', rows);
+        } else {
+          await liveTable.add(rows);
+        }
+        offset += rows.length;
+        if (rows.length < batchSize) {
+          break;
+        }
+      }
+      await this.db.dropTable(oldShadowName).catch(() => {});
+      this.table = liveTable;
+
+      // Reconcile store counters with the swapped table contents.
+      this.staleCount = 0;
+      if (liveTable) {
+        const rows = await liveTable.query().select(['filepath']).toArray() as unknown as { filepath: string }[];
+        this.totalFiles = new Set(rows.map((r) => r.filepath)).size;
+      } else {
+        this.totalFiles = 0;
+      }
+      await this.updateMetadata();
+    });
+  }
+
+  async abortLegacyShadowTable(shadow: LegacyShadowTable): Promise<void> {
+    return this.runInWriteLock(async () => {
+      if (!this.db) {
+        return;
+      }
+      if (this.legacyShadowTable && this.legacyShadowName === shadow.name) {
+        const name = this.legacyShadowName;
+        this.legacyShadowTable = undefined;
+        this.legacyShadowName = undefined;
         await this.db.dropTable(name).catch(() => {});
       }
     });
