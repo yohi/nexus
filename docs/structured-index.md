@@ -49,7 +49,11 @@ structured declarations or imports.
 
 Files that already existed in a workspace before a new language is added and
 have not changed since are not reprocessed automatically. To backfill existing
-unchanged files with newly supported extensions, run `nexus --reindex --full`.
+unchanged files with newly supported extensions, run `nexus --reindex --full`:
+
+```bash
+nexus --reindex --full
+```
 
 ## Requesting additional languages
 
