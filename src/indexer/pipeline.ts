@@ -462,7 +462,7 @@ export class IndexPipeline implements IIndexPipeline {
       if (result.status === 'degraded' && result.declarations.length === 0) {
         return { kind: 'parse-failed' };
       }
-      if (result.status === 'ok' && result.declarations.length === 0) {
+      if (result.status === 'ok' && result.declarations.length === 0 && result.imports.length === 0) {
         return { kind: 'retire' };
       }
 
