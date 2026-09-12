@@ -62,6 +62,16 @@ describe('C++ structured parser', () => {
     expect(names.has('bad')).toBe(false);
   });
 
+  it('preserves valid sibling classes and excludes a broken class', async () => {
+    const { result } = await parseCppFixture('partial-class.cpp');
+    const names = new Set(result.declarations.map((declaration) => declaration.qualifiedName));
+    expect(result.status).toBe('degraded');
+    expect(names.has('app.Good')).toBe(true);
+    expect(names.has('app.AlsoGood')).toBe(true);
+    expect(names.has('app.Bad')).toBe(false);
+    expect(names.has('app.Bad.method')).toBe(false);
+  });
+
   it('keeps exact byte ranges and hashes', async () => {
     const { bytes, result } = await parseCppFixture('exactness.cpp');
     const declaration = result.declarations.find((item) => item.qualifiedName === 'app.Widget');

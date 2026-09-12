@@ -51,8 +51,7 @@ const declarationsWithIds = (
   const drafts = descriptors.flatMap((descriptor) => {
     if (
       hasSyntaxProblem(descriptor.node) ||
-      hasSyntaxProblem(descriptor.rangeNode) ||
-      (descriptor.scopeNode !== undefined && hasSyntaxProblem(descriptor.scopeNode))
+      hasSyntaxProblem(descriptor.rangeNode)
     ) return [];
     const signatureDiscriminator = signatureFor(source, descriptor.node);
     const occurrenceKey = `${descriptor.qualifiedName}\u0000${descriptor.kind}\u0000${signatureDiscriminator}`;
@@ -93,7 +92,7 @@ export class CppStructuredParser implements StructuredLanguageParser {
   constructor(private readonly runtime: CppTreeSitterRuntime) {}
 
   async parseStructured(source: StructuredSource): Promise<StructuredParseResult> {
-    if (!source.bytes) {
+    if (source.bytes.length === 0) {
       return {
         status: 'degraded',
         retrievability: 'partial',
