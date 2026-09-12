@@ -29,14 +29,15 @@ const descriptorFor = (node: Parser.SyntaxNode): DeclarationDescriptor | undefin
       node, rangeNode: node, declarationKey: keyFor(node), kind: 'function', name, qualifiedName: name,
     };
   }
-  if (node.type === 'struct_specifier' || node.type === 'enum_specifier') {
-    const name = node.childForFieldName('name')?.text ?? node.namedChildren.find((child) =>
+  const taggedType = node.type === 'declaration' ? node.childForFieldName('type') : node;
+  if (taggedType?.type === 'struct_specifier' || taggedType?.type === 'enum_specifier') {
+    const name = taggedType.childForFieldName('name')?.text ?? taggedType.namedChildren.find((child) =>
       child.type === 'type_identifier')?.text;
     return name === undefined ? undefined : {
       node,
-      rangeNode: node,
+      rangeNode: taggedType,
       declarationKey: keyFor(node),
-      kind: node.type === 'struct_specifier' ? 'struct' : 'enum',
+      kind: taggedType.type === 'struct_specifier' ? 'struct' : 'enum',
       name,
       qualifiedName: name,
     };
