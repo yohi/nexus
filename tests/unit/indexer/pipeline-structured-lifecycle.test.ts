@@ -73,6 +73,23 @@ describe('IndexPipeline structured lifecycle', () => {
     expect(activateFileSpy).not.toHaveBeenCalled();
   });
 
+  it('does not abort the legacy shadow after a successful swap', async () => {
+    const { pipeline, vectorStore } = await createStructuredPipeline();
+    const swapLegacyShadowTableSpy = vi.spyOn(vectorStore, 'swapLegacyShadowTable');
+    const abortLegacyShadowTableSpy = vi.spyOn(vectorStore, 'abortLegacyShadowTable');
+    const content = 'export function committed(): number { return 1; }\n';
+    const filePath = 'src/committed.ts';
+
+    await pipeline.reindex(
+      () => Promise.resolve([createEvent('added', filePath, content)]),
+      () => Promise.resolve(content),
+      true,
+    );
+
+    expect(swapLegacyShadowTableSpy).toHaveBeenCalledOnce();
+    expect(abortLegacyShadowTableSpy).not.toHaveBeenCalled();
+  });
+
   it('retires structured state when a file produces no legacy or structured chunks', async () => {
     const { metadataStore, pipeline } = await createStructuredPipeline();
     const filePath = 'src/empty.ts';

@@ -367,6 +367,7 @@ export class IndexPipeline implements IIndexPipeline {
           await structuredIndexCoordinator.runFullRebuild({ files: structuredRebuildFiles });
           if (legacyShadow !== undefined) {
             await this.options.vectorStore.swapLegacyShadowTable(legacyShadow);
+            legacyShadow = undefined;
           }
           await this.applyDeferredMerkleOps(deferredMerkleOps);
         } catch (error) {
