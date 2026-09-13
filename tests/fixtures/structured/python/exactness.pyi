@@ -1,0 +1,6 @@
+from typing import Protocol
+
+class Drawable(Protocol):
+    def draw(self) -> None: ...
+
+def render(items: list[Drawable]) -> None: ...
