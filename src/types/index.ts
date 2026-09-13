@@ -16,7 +16,12 @@ export type SymbolKind =
   | 'constructor'
   | 'import'
   | 'comment'
-  | 'unknown';
+  | 'unknown'
+  | 'struct'
+  | 'trait'
+  | 'impl'
+  | 'record'
+  | 'field';
 
 export interface CodeChunk {
   id: string;
