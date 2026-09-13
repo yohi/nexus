@@ -77,6 +77,26 @@ describe('NexusServerFactory.setupPluginRegistry', () => {
     expect(registry.getActiveEmbeddingProviderName()).toBe('bedrock');
   });
 
+  it('registers all structured language plugins in the production registry', async () => {
+    tempDir = await mkdtemp(path.join(os.tmpdir(), 'nexus-factory-'));
+    const config = await loadConfig({
+      projectRoot: tempDir,
+      env: {
+        NEXUS_EMBEDDING_PROVIDER: 'bedrock',
+        NEXUS_EMBEDDING_DIMENSIONS: '1024',
+        NEXUS_EMBEDDING_REGION: 'us-east-1',
+      },
+    });
+
+    const registry = internals.setupPluginRegistry(config);
+
+    expect(registry.getLanguagePlugin('src/example.c')?.languageId).toBe('c');
+    expect(registry.getLanguagePlugin('src/example.hpp')?.languageId).toBe('cpp');
+    expect(registry.getLanguagePlugin('src/example.cs')?.languageId).toBe('csharp');
+    expect(registry.getLanguagePlugin('src/example.java')?.languageId).toBe('java');
+    expect(registry.getLanguagePlugin('src/example.rs')?.languageId).toBe('rust');
+  });
+
   it('registers the bedrock provider when packageMode is true', async () => {
     tempDir = await mkdtemp(path.join(os.tmpdir(), 'nexus-factory-'));
     const config = await loadConfig({
