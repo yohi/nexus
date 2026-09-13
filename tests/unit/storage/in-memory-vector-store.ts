@@ -336,7 +336,7 @@ export class InMemoryVectorStore implements IVectorStore {
 
     // Upsert semantics: drop existing rows for the affected files before adding.
     const affectedFilePaths = new Set(chunks.map(({ chunk }) => chunk.filePath));
-    for (const key of [...shadowMap.keys()]) {
+    for (const key of shadowMap.keys()) {
       const record = shadowMap.get(key);
       if (record && affectedFilePaths.has(record.chunk.filePath)) {
         shadowMap.delete(key);
@@ -357,7 +357,7 @@ export class InMemoryVectorStore implements IVectorStore {
     }
     const filePaths = new Set(deletions.filePaths ?? []);
     const prefixes = (deletions.pathPrefixes ?? []).map((prefix) => (prefix.endsWith('/') ? prefix : `${prefix}/`));
-    for (const key of [...shadowMap.keys()]) {
+    for (const key of shadowMap.keys()) {
       const record = shadowMap.get(key);
       if (!record) continue;
       const path = record.chunk.filePath;

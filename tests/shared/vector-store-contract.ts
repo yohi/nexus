@@ -325,7 +325,7 @@ export function vectorStoreContractTests(
 
       const results = await store.search(embedding, 10);
       expect(results).toHaveLength(2);
-      expect(results.map((result) => result.chunk.id).sort()).toEqual(['a1b', 'c1']);
+      expect(results.map((result) => result.chunk.id).sort((left, right) => left.localeCompare(right))).toEqual(['a1b', 'c1']);
       const stats = await store.getStats();
       expect(stats.totalChunks).toBe(2);
       expect(stats.totalFiles).toBe(2);
@@ -357,7 +357,7 @@ export function vectorStoreContractTests(
       ]);
       await store.swapLegacyShadowTable(secondShadow);
       const results = await store.search(embedding, 10);
-      expect(results.map((result) => result.chunk.id).sort()).toEqual(['c1', 'd1']);
+      expect(results.map((result) => result.chunk.id).sort((left, right) => left.localeCompare(right))).toEqual(['c1', 'd1']);
       const statsAfter = await store.getStats();
       expect(statsAfter.totalChunks).toBe(2);
       expect(statsAfter.totalFiles).toBe(2);

@@ -828,45 +828,62 @@ export class IndexPipeline implements IIndexPipeline {
   ): Promise<void> {
     const existingNode = await this.options.metadataStore.getMerkleNode(filePath);
     if (existingNode?.isDirectory) {
-      const prefix = filePath.endsWith('/') ? filePath : filePath + '/';
-      if (legacyShadow !== undefined) {
-        await this.options.vectorStore.stageLegacyShadowDeletions(legacyShadow, { pathPrefixes: [prefix] });
-      } else {
-        await this.options.vectorStore.deleteByPathPrefix(prefix);
-      }
-      if (deferredMerkleOps !== undefined) {
-        deferredMerkleOps.push({ kind: 'subtree-delete', filePath });
-      } else {
-        await this.options.metadataStore.deleteSubtree(filePath);
-
-        // Incremental update of the tree (avoids full reload)
-        await this.merkleTree.remove(filePath);
-      }
-
-      this.skippedFiles.delete(filePath);
-      await this.deadLetterQueue.removeByPathPrefix(filePath);
-      for (const path of this.skippedFiles.keys()) {
-        if (path.startsWith(prefix)) {
-          this.skippedFiles.delete(path);
-        }
-      }
-    } else {
-      if (legacyShadow !== undefined) {
-        await this.options.vectorStore.stageLegacyShadowDeletions(legacyShadow, { filePaths: [filePath] });
-      } else {
-        await this.options.vectorStore.deleteByFilePath(filePath);
-      }
-      if (!deferStructuredRetirement) {
-        await this.options.structuredIndexCoordinator?.deleteFile({ filePath });
-      }
-      if (deferredMerkleOps !== undefined) {
-        deferredMerkleOps.push({ kind: 'remove', filePath });
-      } else {
-        await this.merkleTree.remove(filePath);
-      }
-      this.skippedFiles.delete(filePath);
-      await this.deadLetterQueue.removeByFilePath(filePath);
+      await this.handleDeletedDirectory(filePath, legacyShadow, deferredMerkleOps);
+      return;
     }
+    await this.handleDeletedFile(filePath, deferStructuredRetirement, legacyShadow, deferredMerkleOps);
+  }
+
+  private async handleDeletedDirectory(
+    filePath: string,
+    legacyShadow?: LegacyShadowTable,
+    deferredMerkleOps?: DeferredMerkleOp[],
+  ): Promise<void> {
+    const prefix = filePath.endsWith('/') ? filePath : filePath + '/';
+    if (legacyShadow !== undefined) {
+      await this.options.vectorStore.stageLegacyShadowDeletions(legacyShadow, { pathPrefixes: [prefix] });
+    } else {
+      await this.options.vectorStore.deleteByPathPrefix(prefix);
+    }
+    if (deferredMerkleOps !== undefined) {
+      deferredMerkleOps.push({ kind: 'subtree-delete', filePath });
+    } else {
+      await this.options.metadataStore.deleteSubtree(filePath);
+
+      // Incremental update of the tree (avoids full reload)
+      await this.merkleTree.remove(filePath);
+    }
+
+    this.skippedFiles.delete(filePath);
+    await this.deadLetterQueue.removeByPathPrefix(filePath);
+    for (const path of this.skippedFiles.keys()) {
+      if (path.startsWith(prefix)) {
+        this.skippedFiles.delete(path);
+      }
+    }
+  }
+
+  private async handleDeletedFile(
+    filePath: string,
+    deferStructuredRetirement: boolean,
+    legacyShadow?: LegacyShadowTable,
+    deferredMerkleOps?: DeferredMerkleOp[],
+  ): Promise<void> {
+    if (legacyShadow !== undefined) {
+      await this.options.vectorStore.stageLegacyShadowDeletions(legacyShadow, { filePaths: [filePath] });
+    } else {
+      await this.options.vectorStore.deleteByFilePath(filePath);
+    }
+    if (!deferStructuredRetirement) {
+      await this.options.structuredIndexCoordinator?.deleteFile({ filePath });
+    }
+    if (deferredMerkleOps !== undefined) {
+      deferredMerkleOps.push({ kind: 'remove', filePath });
+    } else {
+      await this.merkleTree.remove(filePath);
+    }
+    this.skippedFiles.delete(filePath);
+    await this.deadLetterQueue.removeByFilePath(filePath);
   }
 
   private async applyDeferredMerkleOps(ops: readonly DeferredMerkleOp[]): Promise<void> {
