@@ -33,13 +33,16 @@ const sourceFor = (file: FileToChunk): StructuredSource => {
   };
 };
 
-const projectLegacyResult = (
+export const projectLegacyResult = (
   result: Pick<StructuredParseResult, 'declarations' | 'imports'>,
   source: StructuredSource,
-  rootType: string,
+  options: {
+    readonly rootType: string;
+    readonly typeFor?: (kind: ParsedDeclaration['type']) => ParsedDeclaration['type'];
+  },
 ): ParsedSourceFile => {
   const declarations = result.declarations.map(({ kind, name, position, rawSource }): ParsedDeclaration => ({
-    type: kind,
+    type: options.typeFor?.(kind) ?? kind,
     name,
     startLine: position.startLine,
     endLine: position.endLine,
@@ -57,7 +60,7 @@ const projectLegacyResult = (
     });
   }
   return {
-    rootType,
+    rootType: options.rootType,
     declarations: declarations.toSorted((left, right) => left.startLine - right.startLine),
   };
 };
@@ -91,7 +94,7 @@ export class TreeSitterLanguagePlugin implements LanguagePlugin {
             if (fallback !== undefined) return fallback(file);
             throw new Error(result.failure.message);
           }
-          return projectLegacyResult(result, source, this.config.rootType);
+          return projectLegacyResult(result, source, { rootType: this.config.rootType });
         } catch (error) {
           if (error instanceof Error) this.config.onParseFailure?.(error);
           throw error;

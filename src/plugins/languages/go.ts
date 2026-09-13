@@ -1,8 +1,8 @@
 import type { FileToChunk, LanguagePlugin, ParsedDeclaration, ParsedSourceFile } from '../../types/index.js';
 import type { StructuredLanguageParser } from '../../structured/contracts.js';
-import { decodeUtf8 } from '../../structured/hash.js';
 import { GoStructuredParser } from './go-structured.js';
 import type { GoTreeSitterRuntime } from './go-structured.js';
+import { projectLegacyResult } from './tree-sitter-language-plugin.js';
 
 /**
  * Builds a Go declaration by scanning lines until the braces are balanced.
@@ -228,31 +228,6 @@ const loadTreeSitter = async (): Promise<GoTreeSitterRuntime> => {
   return { Parser: parser.default, Go: go.default };
 };
 
-const projectLegacyResult = (result: Awaited<ReturnType<StructuredLanguageParser['parseStructured']>>, source: ReturnType<typeof sourceFor>): ParsedSourceFile => {
-  const declarations = result.declarations.map(({ kind, name, position, rawSource }): ParsedDeclaration => ({
-    type: kind === 'interface' ? 'class' : kind,
-    name,
-    startLine: position.startLine,
-    endLine: position.endLine,
-    content: rawSource ?? '',
-  }));
-  const ranges = [...new Map(result.imports.map((item) => [`${item.startByte}:${item.endByte}`, item])).values()]
-    .toSorted((left, right) => left.startByte - right.startByte);
-  for (const item of ranges) {
-    declarations.push({
-      type: 'import',
-      name: 'imports',
-      startLine: item.position.startLine,
-      endLine: item.position.endLine,
-      content: decodeUtf8(source.bytes.subarray(item.startByte, item.endByte)),
-    });
-  }
-  return {
-    rootType: 'source_file',
-    declarations: declarations.toSorted((left, right) => left.startLine - right.startLine),
-  };
-};
-
 export class GoLanguagePlugin implements LanguagePlugin {
   readonly languageId = 'go';
 
@@ -277,7 +252,10 @@ export class GoLanguagePlugin implements LanguagePlugin {
             const source = sourceFor(file);
             const structuredResult = await structured.parseStructured(source);
             if (structuredResult.status === 'ok') {
-              return projectLegacyResult(structuredResult, source);
+              return projectLegacyResult(structuredResult, source, {
+                rootType: 'source_file',
+                typeFor: (kind) => kind === 'interface' ? 'class' : kind,
+              });
             }
           } catch (error) {
             if (error instanceof Error) return legacyParser.parse(file);
