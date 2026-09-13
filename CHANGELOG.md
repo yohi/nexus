@@ -1,5 +1,23 @@
 # Changelog
 
+## [2.3.0](https://github.com/yohi/nexus/compare/v2.2.2...v2.3.0) (2026-09-13)
+
+
+### Features
+
+* **structured-index:** TypeScript プラグインで .mjs/.cjs/.mts/.cts をサポート ([d2a2bee](https://github.com/yohi/nexus/commit/d2a2bee5c463e39ee1c3ddf1c2d1328dc31c2261))
+* **structured-index:** TypeScript プラグインで .mjs/.cjs/.mts/.cts をサポート ([39dbdb1](https://github.com/yohi/nexus/commit/39dbdb10c0bf6107d462a34f08963da4c1927fd2))
+* **structured:** add SymbolKind extensions, .pyi support, and grammar dependencies ([71d64c9](https://github.com/yohi/nexus/commit/71d64c9133766adf9902548815bde720c63292d7))
+* **structured:** add SymbolKind extensions, .pyi support, and tree-sitter grammar dependencies ([db2da4e](https://github.com/yohi/nexus/commit/db2da4ecc0fa4f35bc80f21b018f5228d7053316))
+
+
+### Bug Fixes
+
+* peer dependency 解決を明示化 ([0c4a524](https://github.com/yohi/nexus/commit/0c4a524fbe915364dfa147834bac3d713f15727b))
+* **structured:** pin tree-sitter-c via override and add .npmrc for legacy-peer-deps ([c449636](https://github.com/yohi/nexus/commit/c449636fd11656d2026edd449da6dfb8cc760aca))
+* TypeScript fixture の依存値参照を修正 ([022a4a7](https://github.com/yohi/nexus/commit/022a4a716f3b5d62c6c0e8139280deb26b167c1b))
+* 埋め込み API キーの通信先を HTTPS に制限 ([02ee89f](https://github.com/yohi/nexus/commit/02ee89f549ca2dcf0023b1c3a5a5ead3599b1c49))
+
 ## [2.2.2](https://github.com/yohi/nexus/compare/v2.2.1...v2.2.2) (2026-09-07)
 
 
