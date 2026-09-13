@@ -18,6 +18,11 @@ import { Chunker } from "../indexer/chunker.js";
 import { TypeScriptLanguagePlugin } from "../plugins/languages/typescript.js";
 import { PythonLanguagePlugin } from "../plugins/languages/python.js";
 import { GoLanguagePlugin } from "../plugins/languages/go.js";
+import { CLanguagePlugin } from "../plugins/languages/c.js";
+import { CppLanguagePlugin } from "../plugins/languages/cpp.js";
+import { CSharpLanguagePlugin } from "../plugins/languages/csharp.js";
+import { JavaLanguagePlugin } from "../plugins/languages/java.js";
+import { RustLanguagePlugin } from "../plugins/languages/rust.js";
 import { OllamaEmbeddingProvider, resolveLocalOllamaBaseUrl } from "../plugins/embeddings/ollama.js";
 import { InstrumentedEmbeddingProvider } from "../plugins/embeddings/instrumented.js";
 import { OpenAICompatEmbeddingProvider } from "../plugins/embeddings/openai-compat.js";
@@ -604,6 +609,11 @@ export class NexusServerFactory {
     registry.registerLanguage(new TypeScriptLanguagePlugin());
     registry.registerLanguage(new PythonLanguagePlugin());
     registry.registerLanguage(new GoLanguagePlugin());
+    registry.registerLanguage(new CLanguagePlugin());
+    registry.registerLanguage(new CppLanguagePlugin());
+    registry.registerLanguage(new CSharpLanguagePlugin());
+    registry.registerLanguage(new JavaLanguagePlugin());
+    registry.registerLanguage(new RustLanguagePlugin());
 
     let provider;
     switch (config.embedding.provider) {

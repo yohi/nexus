@@ -1,0 +1,83 @@
+import type Parser from 'tree-sitter';
+import type { StructuredImport } from '../../structured/contracts.js';
+import {
+  collectTreeSitterImports,
+  type TreeSitterImportContext,
+} from './tree-sitter-structured-imports.js';
+
+interface ModuleSpecifier {
+  readonly moduleSpecifier: string;
+  readonly bindingName?: string;
+  readonly completeness: 'complete' | 'partial';
+}
+
+const moduleSpecifiersFor = (node: Parser.SyntaxNode): readonly ModuleSpecifier[] => {
+  if (node.type !== 'use_declaration') return [];
+  const argument = node.childForFieldName('argument');
+  if (!argument) return [];
+
+  const recursive = (n: Parser.SyntaxNode, prefix: string): readonly ModuleSpecifier[] => {
+    switch (n.type) {
+      case 'self': {
+        if (!prefix.endsWith('::')) return [];
+        const moduleSpecifier = prefix.slice(0, -2).replace(/^::/, '');
+        const bindingName = moduleSpecifier.split('::').at(-1);
+        if (moduleSpecifier === '' || bindingName === undefined) return [];
+        return [{ moduleSpecifier, bindingName, completeness: 'complete' }];
+      }
+      case 'scoped_identifier':
+      case 'identifier': {
+        const moduleSpecifier = `${prefix}${n.text}`.replace(/^::/, '');
+        const bindingName = n.type === 'identifier'
+          ? n.text
+          : (n.childForFieldName('name')?.text ?? n.text.split('::').at(-1));
+        return [{ moduleSpecifier, bindingName, completeness: 'complete' }];
+      }
+      case 'use_as_clause': {
+        const path = n.childForFieldName('path') ?? n.namedChildren[0];
+        const alias = n.childForFieldName('alias') ?? n.namedChildren.at(-1);
+        if (path === undefined || alias === undefined) return [];
+        return [{
+          moduleSpecifier: `${prefix}${path.text}`.replace(/^::/, ''),
+          bindingName: alias.text,
+          completeness: 'complete',
+        }];
+      }
+      case 'scoped_use_list': {
+        const path = n.childForFieldName('path') ?? n.namedChildren.find((child) => child.type !== 'use_list');
+        const list = n.childForFieldName('list') ?? n.namedChildren.find((child) => child.type === 'use_list');
+        if (path === undefined || list === undefined) return [];
+        const nestedPrefix = `${prefix}${path.text}`.replace(/^::/, '') + '::';
+        return recursive(list, nestedPrefix);
+      }
+      case 'use_wildcard': {
+        const path = n.childForFieldName('path') ?? n.children.find((c) => c.type === 'scoped_identifier' || c.type === 'identifier');
+        return [{
+          moduleSpecifier: `${prefix}${path?.text ?? ''}`.replace(/^::/, ''),
+          bindingName: undefined,
+          completeness: 'partial',
+        }];
+      }
+      case 'use_list':
+        return n.namedChildren.flatMap((child) => recursive(child, prefix));
+      default:
+        return [];
+    }
+  };
+
+  const bindings = recursive(argument, '');
+  return bindings.map((b) => ({
+    moduleSpecifier: b.moduleSpecifier,
+    bindingName: b.bindingName,
+    completeness: b.completeness,
+  }));
+};
+
+export const importsFor = ({ source, root, offsets }: TreeSitterImportContext): readonly StructuredImport[] =>
+  collectTreeSitterImports({
+    source,
+    root,
+    offsets,
+    isImportNode: (node) => node.type === 'use_declaration',
+    candidatesFor: moduleSpecifiersFor,
+  });
