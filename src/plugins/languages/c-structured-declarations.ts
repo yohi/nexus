@@ -1,5 +1,5 @@
 import type Parser from 'tree-sitter';
-import { hasSyntaxProblem } from './c-structured-support.js';
+import { hasSyntaxProblem } from './tree-sitter-structured-support.js';
 
 export interface DeclarationDescriptor {
   readonly node: Parser.SyntaxNode;

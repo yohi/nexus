@@ -1,5 +1,5 @@
 import type Parser from 'tree-sitter';
-import { hasSyntaxProblem } from './cpp-structured-support.js';
+import { hasSyntaxProblem } from './tree-sitter-structured-support.js';
 
 type DeclarationKind = 'namespace' | 'function' | 'struct' | 'class' | 'enum' | 'method' | 'constructor';
 
@@ -60,49 +60,53 @@ const memberDescriptorFor = (node: Parser.SyntaxNode, scope: Scope): Declaration
   };
 };
 
+const typeKindFor = (node: Parser.SyntaxNode): 'struct' | 'class' | 'enum' => {
+  if (node.type === 'struct_specifier') return 'struct';
+  if (node.type === 'class_specifier') return 'class';
+  return 'enum';
+};
+
+const namespaceDescriptorFor = (node: Parser.SyntaxNode, scope: Scope): DeclarationDescriptor | undefined => {
+  if (node.type !== 'namespace_definition') return undefined;
+  const name = node.childForFieldName('name')?.text;
+  return name === undefined ? undefined : {
+    node, rangeNode: node, scopeNode: scope.scopeNode, declarationKey: keyFor(node),
+    ownerKey: scope.ownerKey, kind: 'namespace', name,
+    qualifiedName: join(scope.qualifiedName, name),
+  };
+};
+
+const typeDescriptorFor = (node: Parser.SyntaxNode, scope: Scope): DeclarationDescriptor | undefined => {
+  if (node.type !== 'struct_specifier' && node.type !== 'class_specifier' && node.type !== 'enum_specifier') {
+    return undefined;
+  }
+  const name = node.childForFieldName('name')?.text ?? node.namedChildren.find((child) =>
+    child.type === 'type_identifier')?.text;
+  return name === undefined ? undefined : {
+    node, rangeNode: node, scopeNode: scope.scopeNode, declarationKey: keyFor(node),
+    ownerKey: scope.ownerKey, kind: typeKindFor(node), name,
+    qualifiedName: join(scope.qualifiedName, name),
+  };
+};
+
+const functionDescriptorFor = (node: Parser.SyntaxNode, scope: Scope): DeclarationDescriptor | undefined => {
+  if (node.type !== 'function_definition') return undefined;
+  const name = declaratorName(node);
+  return name === undefined ? undefined : {
+    node, rangeNode: node, scopeNode: scope.scopeNode, declarationKey: keyFor(node),
+    ownerKey: scope.ownerKey, kind: 'function', name,
+    qualifiedName: join(scope.qualifiedName, name),
+  };
+};
+
 const descriptorFor = (node: Parser.SyntaxNode, scope: Scope): DeclarationDescriptor | undefined => {
   if (scope.typeName !== undefined) {
     const member = memberDescriptorFor(node, scope);
     if (member !== undefined) return member;
   }
-  if (node.type === 'namespace_definition') {
-    const name = node.childForFieldName('name')?.text;
-    return name === undefined ? undefined : {
-      node, rangeNode: node, scopeNode: scope.scopeNode, declarationKey: keyFor(node),
-      ownerKey: scope.ownerKey, kind: 'namespace', name,
-      qualifiedName: join(scope.qualifiedName, name),
-    };
-  }
-  if (node.type === 'struct_specifier' || node.type === 'class_specifier' || node.type === 'enum_specifier') {
-    const name = node.childForFieldName('name')?.text ?? node.namedChildren.find((child) =>
-      child.type === 'type_identifier')?.text;
-    if (name === undefined) return undefined;
-    const kind = node.type === 'struct_specifier' ? 'struct' : node.type === 'class_specifier' ? 'class' : 'enum';
-    return {
-      node,
-      rangeNode: node,
-      scopeNode: scope.scopeNode,
-      declarationKey: keyFor(node),
-      ownerKey: scope.ownerKey,
-      kind,
-      name,
-      qualifiedName: join(scope.qualifiedName, name),
-    };
-  }
-  if (node.type === 'function_definition') {
-    const name = declaratorName(node);
-    return name === undefined ? undefined : {
-      node,
-      rangeNode: node,
-      scopeNode: scope.scopeNode,
-      declarationKey: keyFor(node),
-      ownerKey: scope.ownerKey,
-      kind: 'function',
-      name,
-      qualifiedName: join(scope.qualifiedName, name),
-    };
-  }
-  return undefined;
+  return namespaceDescriptorFor(node, scope)
+    ?? typeDescriptorFor(node, scope)
+    ?? functionDescriptorFor(node, scope);
 };
 
 const bodyFor = (node: Parser.SyntaxNode): Parser.SyntaxNode | undefined =>
