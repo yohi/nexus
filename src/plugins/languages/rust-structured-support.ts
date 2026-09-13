@@ -4,6 +4,7 @@ export const declarationStartByteFor = ({
   node,
   offsets,
   textLines,
+  lineStartOffsets,
 }: TreeSitterStartByteContext): number => {
   let lineIndex = node.startPosition.row;
   while (lineIndex > 0) {
@@ -17,7 +18,7 @@ export const declarationStartByteFor = ({
     }
     break;
   }
-  const lineStartOffset = textLines.slice(0, lineIndex).join('\n').length + (lineIndex > 0 ? 1 : 0);
+  const lineStartOffset = lineStartOffsets[lineIndex] ?? 0;
   const charOffset = lineIndex === node.startPosition.row
     ? lineStartOffset + node.startPosition.column
     : lineStartOffset;

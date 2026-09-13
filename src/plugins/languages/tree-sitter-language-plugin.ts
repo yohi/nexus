@@ -23,12 +23,15 @@ export const loadTreeSitterLanguage = async <TLanguage>(
   return { Parser: parser.default, language: language.default };
 };
 
-const sourceFor = (file: FileToChunk): StructuredSource => ({
-  filePath: file.filePath,
-  language: file.language,
-  bytes: file.bytes ?? textEncoder.encode(file.content),
-  text: file.content,
-});
+const sourceFor = (file: FileToChunk): StructuredSource => {
+  const bytes = file.bytes ?? textEncoder.encode(file.content);
+  return {
+    filePath: file.filePath,
+    language: file.language,
+    bytes,
+    text: file.bytes === undefined ? file.content : decodeUtf8(bytes),
+  };
+};
 
 const projectLegacyResult = (
   result: Pick<StructuredParseResult, 'declarations' | 'imports'>,

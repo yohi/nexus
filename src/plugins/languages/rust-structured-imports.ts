@@ -24,6 +24,23 @@ const moduleSpecifiersFor = (node: Parser.SyntaxNode): readonly ModuleSpecifier[
         : (n.childForFieldName('name')?.text ?? n.text.split('::').at(-1));
       return [{ moduleSpecifier, bindingName, completeness: 'complete' }];
     }
+    if (n.type === 'use_as_clause') {
+      const path = n.childForFieldName('path') ?? n.namedChildren[0];
+      const alias = n.childForFieldName('alias') ?? n.namedChildren.at(-1);
+      if (path === undefined || alias === undefined) return [];
+      return [{
+        moduleSpecifier: `${prefix}${path.text}`.replace(/^::/, ''),
+        bindingName: alias.text,
+        completeness: 'complete',
+      }];
+    }
+    if (n.type === 'scoped_use_list') {
+      const path = n.childForFieldName('path') ?? n.namedChildren.find((child) => child.type !== 'use_list');
+      const list = n.childForFieldName('list') ?? n.namedChildren.find((child) => child.type === 'use_list');
+      if (path === undefined || list === undefined) return [];
+      const nestedPrefix = `${prefix}${path.text}`.replace(/^::/, '') + '::';
+      return recursive(list, nestedPrefix);
+    }
     if (n.type === 'use_wildcard') {
       const path = n.childForFieldName('path') ?? n.children.find((c) => c.type === 'scoped_identifier' || c.type === 'identifier');
       return [{

@@ -13,12 +13,14 @@ export interface TreeSitterDeclarationDescriptor {
   readonly kind: SymbolKind;
   readonly name: string;
   readonly qualifiedName: string;
+  readonly signaturePrefix?: string;
 }
 
 export interface TreeSitterStartByteContext {
   readonly node: Parser.SyntaxNode;
   readonly offsets: Utf8OffsetTable;
   readonly textLines: readonly string[];
+  readonly lineStartOffsets: readonly number[];
 }
 
 const defaultDiagnosticFor = (node: Parser.SyntaxNode): string =>

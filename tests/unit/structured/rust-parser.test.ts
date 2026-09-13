@@ -118,4 +118,87 @@ describe('Rust structured parser', () => {
     expect(validMethod?.parentSymbolId).toBe(point?.symbolId);
     expect(result.declarations.find((d) => d.qualifiedName === 'Point.broken')).toBeUndefined();
   });
+
+  it('normalizes generic impl targets and resolves method parents', async () => {
+    const text = [
+      'pub struct Point<T> {',
+      '    value: T,',
+      '}',
+      '',
+      'impl<T> Point<T> {',
+      '    pub fn local(&self) {}',
+      '}',
+      '',
+      'mod outer {',
+      '    pub struct Point<T> {',
+      '        value: T,',
+      '    }',
+      '}',
+      '',
+      'impl<T> outer::Point<T> {',
+      '    pub fn scoped(&self) {}',
+      '}',
+      '',
+      'pub trait Drawable<T> {',
+      '    fn draw(&self);',
+      '}',
+      '',
+      'impl<T> Drawable<T> for Point<T> {',
+      '    pub fn draw(&self) {}',
+      '}',
+      '',
+    ].join('\n');
+    const bytes = new TextEncoder().encode(text);
+    const parser = await new RustLanguagePlugin().createStructuredParser();
+    const result = await parser.parseStructured({
+      filePath: 'generic-impl.rs',
+      language: 'rust',
+      bytes,
+      text,
+    });
+
+    const point = result.declarations.find((declaration) => declaration.qualifiedName === 'Point');
+    const nestedPoint = result.declarations.find((declaration) => declaration.qualifiedName === 'outer.Point');
+    const local = result.declarations.find((declaration) => declaration.qualifiedName === 'Point.local');
+    const scoped = result.declarations.find((declaration) => declaration.qualifiedName === 'outer.Point.scoped');
+    const traitImpl = result.declarations.find((declaration) => declaration.qualifiedName === 'Drawable.Point.impl');
+    const traitMethod = result.declarations.find((declaration) => declaration.qualifiedName === 'Point.draw');
+
+    expect(result.status).toBe('ok');
+    expect(local?.parentSymbolId).toBe(point?.symbolId);
+    expect(scoped?.parentSymbolId).toBe(nestedPoint?.symbolId);
+    expect(traitImpl?.kind).toBe('impl');
+    expect(traitMethod?.parentSymbolId).toBe(point?.symbolId);
+  });
+
+  it('extracts grouped, aliased, and nested use imports', async () => {
+    const text = [
+      'use std::collections::{HashMap, BTreeMap};',
+      'use foo::bar as baz;',
+      'mod nested {',
+      '    use crate::{a, inner::{b, c as d}};',
+      '    use std::io::*;',
+      '}',
+      '',
+    ].join('\n');
+    const bytes = new TextEncoder().encode(text);
+    const parser = await new RustLanguagePlugin().createStructuredParser();
+    const result = await parser.parseStructured({
+      filePath: 'grouped-imports.rs',
+      language: 'rust',
+      bytes,
+      text,
+    });
+
+    const findImport = (moduleSpecifier: string, bindingName?: string) =>
+      result.imports.find((item) => item.moduleSpecifier === moduleSpecifier && item.bindingName === bindingName);
+
+    expect(findImport('std::collections::HashMap', 'HashMap')?.completeness).toBe('complete');
+    expect(findImport('std::collections::BTreeMap', 'BTreeMap')?.completeness).toBe('complete');
+    expect(findImport('foo::bar', 'baz')?.completeness).toBe('complete');
+    expect(findImport('crate::a', 'a')?.completeness).toBe('complete');
+    expect(findImport('crate::inner::b', 'b')?.completeness).toBe('complete');
+    expect(findImport('crate::inner::c', 'd')?.completeness).toBe('complete');
+    expect(findImport('std::io')?.completeness).toBe('partial');
+  });
 });

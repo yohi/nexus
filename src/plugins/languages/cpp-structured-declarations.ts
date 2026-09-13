@@ -12,6 +12,7 @@ export interface DeclarationDescriptor {
   readonly kind: DeclarationKind;
   readonly name: string;
   readonly qualifiedName: string;
+  readonly signaturePrefix?: string;
 }
 
 interface Scope {
@@ -109,6 +110,25 @@ const descriptorFor = (node: Parser.SyntaxNode, scope: Scope): DeclarationDescri
     ?? functionDescriptorFor(node, scope);
 };
 
+const templateDescriptorFor = (node: Parser.SyntaxNode, scope: Scope): DeclarationDescriptor | undefined => {
+  if (node.type !== 'template_declaration') return undefined;
+  const declaration = node.namedChildren.find((child) =>
+    ['class_specifier', 'struct_specifier', 'function_definition', 'declaration'].includes(child.type));
+  if (declaration === undefined) return undefined;
+  const descriptor = descriptorFor(declaration, scope);
+  if (descriptor === undefined) return undefined;
+  const parameters = node.namedChildren.find((child) => child.type === 'template_parameter_list');
+  const signaturePrefix = parameters === undefined
+    ? 'template'
+    : `template ${parameters.text.replace(/\s+/gu, ' ').trim()}`;
+  return {
+    ...descriptor,
+    rangeNode: node,
+    declarationKey: keyFor(node),
+    signaturePrefix,
+  };
+};
+
 const bodyFor = (node: Parser.SyntaxNode): Parser.SyntaxNode | undefined =>
   node.childForFieldName('body') ?? node.namedChildren.find((child) =>
     ['declaration_list', 'field_declaration_list', 'compound_statement'].includes(child.type));
@@ -116,7 +136,7 @@ const bodyFor = (node: Parser.SyntaxNode): Parser.SyntaxNode | undefined =>
 export const declarationsFor = (root: Parser.SyntaxNode): readonly DeclarationDescriptor[] => {
   const unresolved: DeclarationDescriptor[] = [];
   const walk = (node: Parser.SyntaxNode, scope: Scope): void => {
-    const descriptor = descriptorFor(node, scope);
+    const descriptor = templateDescriptorFor(node, scope) ?? descriptorFor(node, scope);
     if (descriptor !== undefined) {
       unresolved.push(descriptor);
       if (!['namespace', 'struct', 'class'].includes(descriptor.kind)) return;
@@ -125,12 +145,12 @@ export const declarationsFor = (root: Parser.SyntaxNode): readonly DeclarationDe
         hasSyntaxProblem(descriptor.rangeNode) ||
         (descriptor.scopeNode !== undefined && hasSyntaxProblem(descriptor.scopeNode))
       ) return;
-      const body = bodyFor(node);
+      const body = bodyFor(descriptor.node);
       if (body === undefined) return;
       const childScope: Scope = {
         qualifiedName: descriptor.qualifiedName,
         ownerKey: descriptor.declarationKey,
-        scopeNode: node,
+        scopeNode: descriptor.rangeNode,
         ...(descriptor.kind === 'class' || descriptor.kind === 'struct' ? { typeName: descriptor.name } : {}),
       };
       for (const child of body.namedChildren) walk(child, childScope);

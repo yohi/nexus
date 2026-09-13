@@ -34,6 +34,17 @@ const nameNodeText = (node: Parser.SyntaxNode): string | undefined => {
   return name?.text;
 };
 
+const typePathFor = (node: Parser.SyntaxNode): string | undefined => {
+  if (node.type === 'generic_type' || node.type === 'type') {
+    const pathNode = node.namedChildren.find((child) => child.type !== 'type_arguments');
+    return pathNode === undefined ? undefined : typePathFor(pathNode);
+  }
+  if (!['identifier', 'scoped_identifier', 'type_identifier', 'scoped_type_identifier'].includes(node.type)) {
+    return undefined;
+  }
+  return node.text.replace(/^::/u, '').replace(/::/gu, '.');
+};
+
 const bodyNode = (node: Parser.SyntaxNode): Parser.SyntaxNode | undefined =>
   node.children.find((child) => child.type === 'declaration_list' || child.type === 'block');
 
@@ -82,12 +93,13 @@ const declarationFor = (
   }
   if (node.type === 'impl_item') {
     const typeNode = node.childForFieldName('type') ?? node.children.find((c) => c.type === 'type');
-    const traitNode = node.childForFieldName('trait');
-    const name = typeNode?.text;
+    const traitNode = node.childForFieldName('trait') ?? undefined;
+    const name = typeNode === undefined ? undefined : typePathFor(typeNode);
     if (!name) return undefined;
     const targetQualifiedName = joinQualifiedName(scope.qualifiedName, name);
-    const qualifiedName = traitNode
-      ? `${joinQualifiedName(scope.qualifiedName, traitNode.text)}.${name}.impl`
+    const traitName = traitNode === undefined ? undefined : typePathFor(traitNode);
+    const qualifiedName = traitName !== undefined
+      ? `${joinQualifiedName(scope.qualifiedName, traitName)}.${name}.impl`
       : `${targetQualifiedName}.impl`;
     return {
       node, rangeNode: node, scopeNode, declarationKey, ownerKey,

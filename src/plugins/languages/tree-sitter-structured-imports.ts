@@ -34,35 +34,44 @@ export const collectTreeSitterImports = ({
 }: TreeSitterImportCollectorOptions): readonly StructuredImport[] => {
   const occurrences = new Map<string, number>();
   const imports: StructuredImport[] = [];
-  for (const node of root.namedChildren) {
-    if (!isImportNode(node) || hasSyntaxProblem(node)) continue;
-    const startByte = offsets.byteOffsetAtUtf16(node.startIndex);
-    const endByte = offsets.byteOffsetAtUtf16(node.endIndex);
-    for (const candidate of candidatesFor(node)) {
-      const bindingKey = includeBindingInKey ? `:${candidate.bindingName ?? ''}` : '';
-      const key = `${source.filePath}:${startByte}:${candidate.moduleSpecifier}${bindingKey}`;
-      const occurrence = occurrences.get(key) ?? 0;
-      occurrences.set(key, occurrence + 1);
-      const stableImportKey = `${key}:${occurrence}`;
-      imports.push({
-        id: `import_v1_${createHash('sha256').update(stableImportKey, 'utf8').digest('base64url')}`,
-        moduleSpecifier: candidate.moduleSpecifier,
-        bindingName: candidate.bindingName,
-        startByte,
-        endByte,
-        sourceHash: sha256Hex(source.bytes.subarray(startByte, endByte)),
-        completeness: candidate.completeness,
-        position: positionFor(node),
-      });
+  const visit = (node: Parser.SyntaxNode): void => {
+    if (isImportNode(node)) {
+      if (hasSyntaxProblem(node)) return;
+      const startByte = offsets.byteOffsetAtUtf16(node.startIndex);
+      const endByte = offsets.byteOffsetAtUtf16(node.endIndex);
+      for (const candidate of candidatesFor(node)) {
+        const bindingKey = includeBindingInKey ? `:${candidate.bindingName ?? ''}` : '';
+        const key = `${source.filePath}:${startByte}:${candidate.moduleSpecifier}${bindingKey}`;
+        const occurrence = occurrences.get(key) ?? 0;
+        occurrences.set(key, occurrence + 1);
+        const stableImportKey = `${key}:${occurrence}`;
+        imports.push({
+          id: `import_v1_${createHash('sha256').update(stableImportKey, 'utf8').digest('base64url')}`,
+          moduleSpecifier: candidate.moduleSpecifier,
+          bindingName: candidate.bindingName,
+          startByte,
+          endByte,
+          sourceHash: sha256Hex(source.bytes.subarray(startByte, endByte)),
+          completeness: candidate.completeness,
+          position: positionFor(node),
+        });
+      }
     }
-  }
+    for (const child of node.namedChildren) visit(child);
+  };
+  for (const node of root.namedChildren) visit(node);
   return imports;
 };
 
-const includePathFor = (node: Parser.SyntaxNode): string | undefined => {
+const includePathFor = (node: Parser.SyntaxNode): TreeSitterImportCandidate | undefined => {
   const pathNode = node.namedChildren.find((child) =>
-    child.type === 'system_lib_string' || child.type === 'string_literal');
-  return pathNode === undefined ? undefined : pathNode.text.slice(1, -1);
+    ['system_lib_string', 'string_literal', 'identifier', 'call_expression'].includes(child.type));
+  if (pathNode === undefined) return undefined;
+  const isStringLiteral = pathNode.type === 'system_lib_string' || pathNode.type === 'string_literal';
+  return {
+    moduleSpecifier: isStringLiteral ? pathNode.text.slice(1, -1) : pathNode.text,
+    completeness: isStringLiteral ? 'complete' : 'partial',
+  };
 };
 
 export const importsForPreprocessorIncludes = (
@@ -72,9 +81,7 @@ export const importsForPreprocessorIncludes = (
   includeBindingInKey: false,
   isImportNode: (node) => node.type === 'preproc_include',
   candidatesFor: (node) => {
-    const moduleSpecifier = includePathFor(node);
-    return moduleSpecifier === undefined
-      ? []
-      : [{ moduleSpecifier, completeness: 'complete' }];
+    const candidate = includePathFor(node);
+    return candidate === undefined ? [] : [candidate];
   },
 });

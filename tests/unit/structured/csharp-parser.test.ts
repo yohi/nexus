@@ -70,4 +70,34 @@ describe('C# structured parser', () => {
     expect(point?.sourceHash).toBe(sha256Hex(rawBytes));
     expect(rawBytes.byteLength).toBeGreaterThan(decodeUtf8(rawBytes).length);
   });
+
+  it('preserves C# using aliases alongside static and regular imports', async () => {
+    const text = [
+      'using Alias = System.Collections.Generic;',
+      'using static System.Math;',
+      'using System.Text;',
+      '',
+    ].join('\n');
+    const bytes = new TextEncoder().encode(text);
+    const parser = await new CSharpLanguagePlugin().createStructuredParser();
+    const result = await parser.parseStructured({
+      filePath: 'aliases.cs',
+      language: 'csharp',
+      bytes,
+      text,
+    });
+
+    const alias = result.imports.find((item) => item.bindingName === 'Alias');
+    const staticImport = result.imports.find((item) => item.moduleSpecifier === 'System.Math');
+    const regularImport = result.imports.find((item) => item.moduleSpecifier === 'System.Text');
+
+    expect(result.status).toBe('ok');
+    expect(alias).toMatchObject({
+      moduleSpecifier: 'System.Collections.Generic',
+      bindingName: 'Alias',
+      completeness: 'complete',
+    });
+    expect(staticImport?.completeness).toBe('partial');
+    expect(regularImport?.completeness).toBe('complete');
+  });
 });

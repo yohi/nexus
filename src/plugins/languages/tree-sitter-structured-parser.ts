@@ -63,6 +63,14 @@ const generationFor = (
   fileDiagnostics: diagnostics,
 });
 
+const lineStartOffsetsFor = (text: string): readonly number[] => {
+  const lineStarts = [0];
+  for (let newlineIndex = text.indexOf('\n'); newlineIndex !== -1; newlineIndex = text.indexOf('\n', newlineIndex + 1)) {
+    lineStarts.push(newlineIndex + 1);
+  }
+  return lineStarts;
+};
+
 const declarationsWithIds = (
   source: StructuredSource,
   descriptors: readonly TreeSitterDeclarationDescriptor[],
@@ -72,6 +80,7 @@ const declarationsWithIds = (
   const resolveSignature = options.signatureFor ?? signatureFor;
   const resolveStartByte = options.startByteFor ?? ((context) => startByteFor(context.node, context.offsets));
   const textLines = options.startByteFor === undefined ? [] : source.text.split('\n');
+  const lineStartOffsets = options.startByteFor === undefined ? [] : lineStartOffsetsFor(source.text);
   const occurrences = new Map<string, number>();
   const drafts = descriptors.flatMap((descriptor): readonly DeclarationDraft[] => {
     const scopeHasProblem = options.checkScopeNode === true
@@ -79,11 +88,14 @@ const declarationsWithIds = (
       && hasSyntaxProblem(descriptor.scopeNode);
     if (hasSyntaxProblem(descriptor.node) || hasSyntaxProblem(descriptor.rangeNode) || scopeHasProblem) return [];
 
-    const signatureDiscriminator = resolveSignature(source, descriptor.node);
+    const signature = resolveSignature(source, descriptor.node);
+    const signatureDiscriminator = descriptor.signaturePrefix === undefined
+      ? signature
+      : `${descriptor.signaturePrefix} ${signature}`.trim();
     const occurrenceKey = `${descriptor.qualifiedName}\u0000${descriptor.kind}\u0000${signatureDiscriminator}`;
     const occurrence = occurrences.get(occurrenceKey) ?? 0;
     occurrences.set(occurrenceKey, occurrence + 1);
-    const startByte = resolveStartByte({ node: descriptor.rangeNode, offsets, textLines });
+    const startByte = resolveStartByte({ node: descriptor.rangeNode, offsets, textLines, lineStartOffsets });
     const endByte = offsets.byteOffsetAtUtf16(descriptor.rangeNode.endIndex);
     const declaration: StructuredDeclaration = {
       symbolId: createSymbolId({
