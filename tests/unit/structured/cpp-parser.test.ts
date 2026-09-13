@@ -68,4 +68,68 @@ describe('C++ structured parser', () => {
     expect(declaration?.rawSource).toBe(decodeUtf8(bytes.subarray(declaration?.startByte ?? 0, declaration?.endByte ?? 0)));
     expect(declaration?.sourceHash).toBe(sha256Hex(bytes.subarray(declaration?.startByte ?? 0, declaration?.endByte ?? 0)));
   });
+
+  it('keeps C++ template prefixes in declaration ranges and signatures', async () => {
+    const classSource = [
+      'template <typename T>',
+      'class Point {',
+      'public:',
+      '    T value;',
+      '};',
+    ].join('\n');
+    const functionSource = 'template <typename T>\nT add(T left, T right) { return left + right; }';
+    const text = `${classSource}\n\n${functionSource}\n`;
+    const bytes = new TextEncoder().encode(text);
+    const parser = await new CppLanguagePlugin().createStructuredParser();
+    const result = await parser.parseStructured({
+      filePath: 'template.cpp',
+      language: 'cpp',
+      bytes,
+      text,
+    });
+
+    const point = result.declarations.find((declaration) => declaration.qualifiedName === 'Point');
+    const add = result.declarations.find((declaration) => declaration.qualifiedName === 'add');
+
+    expect(result.status).toBe('ok');
+    expect(point?.rawSource).toBe(classSource);
+    expect(point?.startByte).toBe(0);
+    expect(point?.endByte).toBe(Buffer.byteLength(classSource, 'utf8'));
+    expect(point?.signatureDiscriminator).toBe('template <typename T> class Point');
+    expect(add?.rawSource).toBe(functionSource);
+    expect(add?.signatureDiscriminator).toBe('template <typename T> T add(T left, T right)');
+  });
+
+  it('collects nested and macro include targets with accurate completeness', async () => {
+    const text = [
+      '#include <vector>',
+      '#include HEADER',
+      '#include MACRO(foo)',
+      '#if FLAG',
+      '#include "conditional.h"',
+      '#endif',
+      'namespace nested {',
+      '#include "nested.h"',
+      '}',
+      '',
+    ].join('\n');
+    const bytes = new TextEncoder().encode(text);
+    const parser = await new CppLanguagePlugin().createStructuredParser();
+    const result = await parser.parseStructured({
+      filePath: 'includes.cpp',
+      language: 'cpp',
+      bytes,
+      text,
+    });
+
+    const findImport = (moduleSpecifier: string) =>
+      result.imports.find((item) => item.moduleSpecifier === moduleSpecifier);
+
+    expect(result.status).toBe('ok');
+    expect(findImport('vector')?.completeness).toBe('complete');
+    expect(findImport('HEADER')?.completeness).toBe('partial');
+    expect(findImport('MACRO(foo)')?.completeness).toBe('partial');
+    expect(findImport('conditional.h')?.completeness).toBe('complete');
+    expect(findImport('nested.h')?.completeness).toBe('complete');
+  });
 });
