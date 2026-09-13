@@ -165,6 +165,11 @@ describe('Rust structured parser', () => {
     const traitMethod = result.declarations.find((declaration) => declaration.qualifiedName === 'Point.draw');
 
     expect(result.status).toBe('ok');
+    expect(point).toBeDefined();
+    expect(nestedPoint).toBeDefined();
+    expect(local).toBeDefined();
+    expect(scoped).toBeDefined();
+    expect(traitMethod).toBeDefined();
     expect(local?.parentSymbolId).toBe(point?.symbolId);
     expect(scoped?.parentSymbolId).toBe(nestedPoint?.symbolId);
     expect(traitImpl?.kind).toBe('impl');
@@ -174,6 +179,7 @@ describe('Rust structured parser', () => {
   it('extracts grouped, aliased, and nested use imports', async () => {
     const text = [
       'use std::collections::{HashMap, BTreeMap};',
+      'use foo::{self, bar, inner::{self, baz}};',
       'use foo::bar as baz;',
       'mod nested {',
       '    use crate::{a, inner::{b, c as d}};',
@@ -195,6 +201,8 @@ describe('Rust structured parser', () => {
 
     expect(findImport('std::collections::HashMap', 'HashMap')?.completeness).toBe('complete');
     expect(findImport('std::collections::BTreeMap', 'BTreeMap')?.completeness).toBe('complete');
+    expect(findImport('foo', 'foo')?.completeness).toBe('complete');
+    expect(findImport('foo::inner', 'inner')?.completeness).toBe('complete');
     expect(findImport('foo::bar', 'baz')?.completeness).toBe('complete');
     expect(findImport('crate::a', 'a')?.completeness).toBe('complete');
     expect(findImport('crate::inner::b', 'b')?.completeness).toBe('complete');

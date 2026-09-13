@@ -12,6 +12,15 @@ interface CSharpImportPath {
 }
 
 const pathFor = (node: Parser.SyntaxNode): CSharpImportPath | undefined => {
+  const bindingName = node.childForFieldName('name');
+  const equals = node.children.find((child) => child.type === '=');
+  if (bindingName !== null && equals !== undefined) {
+    const moduleSpecifier = node.namedChildren.find((child) => child.startIndex > equals.endIndex);
+    if (moduleSpecifier !== undefined) {
+      return { moduleSpecifier: moduleSpecifier.text, bindingName: bindingName.text };
+    }
+  }
+
   const alias = node.namedChildren.find((child) => child.type === 'identifier');
   const qualifiedPath = node.namedChildren.find((child) =>
     ['qualified_name', 'alias_qualified_name'].includes(child.type));

@@ -17,6 +17,13 @@ const moduleSpecifiersFor = (node: Parser.SyntaxNode): readonly ModuleSpecifier[
   if (!argument) return [];
 
   const recursive = (n: Parser.SyntaxNode, prefix: string): readonly ModuleSpecifier[] => {
+    if (n.type === 'self') {
+      if (!prefix.endsWith('::')) return [];
+      const moduleSpecifier = prefix.slice(0, -2).replace(/^::/, '');
+      const bindingName = moduleSpecifier.split('::').at(-1);
+      if (moduleSpecifier === '' || bindingName === undefined) return [];
+      return [{ moduleSpecifier, bindingName, completeness: 'complete' }];
+    }
     if (n.type === 'scoped_identifier' || n.type === 'identifier') {
       const moduleSpecifier = `${prefix}${n.text}`.replace(/^::/, '');
       const bindingName = n.type === 'identifier'

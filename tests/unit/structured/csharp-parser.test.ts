@@ -74,6 +74,7 @@ describe('C# structured parser', () => {
   it('preserves C# using aliases alongside static and regular imports', async () => {
     const text = [
       'using Alias = System.Collections.Generic;',
+      'using SimpleAlias = Target;',
       'using static System.Math;',
       'using System.Text;',
       '',
@@ -88,6 +89,7 @@ describe('C# structured parser', () => {
     });
 
     const alias = result.imports.find((item) => item.bindingName === 'Alias');
+    const simpleAlias = result.imports.find((item) => item.bindingName === 'SimpleAlias');
     const staticImport = result.imports.find((item) => item.moduleSpecifier === 'System.Math');
     const regularImport = result.imports.find((item) => item.moduleSpecifier === 'System.Text');
 
@@ -95,6 +97,11 @@ describe('C# structured parser', () => {
     expect(alias).toMatchObject({
       moduleSpecifier: 'System.Collections.Generic',
       bindingName: 'Alias',
+      completeness: 'complete',
+    });
+    expect(simpleAlias).toMatchObject({
+      moduleSpecifier: 'Target',
+      bindingName: 'SimpleAlias',
       completeness: 'complete',
     });
     expect(staticImport?.completeness).toBe('partial');
