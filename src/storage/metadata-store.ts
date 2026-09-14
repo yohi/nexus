@@ -29,6 +29,7 @@ export interface SqliteMetadataStoreOptions {
 }
 
 const PRIMARY_STATS_ID = 'primary';
+type FullRebuildValidationMode = 'prepare' | 'activate';
 
 const UPSERT_INDEX_STATS_SQL = `
   INSERT INTO index_stats (
@@ -521,31 +522,81 @@ export class SqliteMetadataStore implements IMetadataStore, IStructuredCatalog {
     };
   }
 
+  private validateFullRebuildEpoch(
+    input: StructuredFullRebuildActivation,
+    mode: FullRebuildValidationMode,
+  ): void {
+    const epoch = this.db.prepare(
+      'SELECT structured_rebuild_epoch AS value FROM index_stats WHERE id = ?',
+    ).get(PRIMARY_STATS_ID) as { value: number | null } | undefined;
+    if ((epoch?.value ?? 0) !== input.rebuildEpoch) {
+      throw new Error(`SqliteMetadataStore.${mode}FullRebuild: stale rebuild epoch ${input.rebuildEpoch}`);
+    }
+  }
+
+  private validateFullRebuildTarget(
+    paths: Set<string>,
+    filePath: string,
+    expectedActiveGeneration: string | null,
+    generationId: string | undefined,
+    retired: boolean,
+    mode: FullRebuildValidationMode,
+  ): void {
+    const operation = `SqliteMetadataStore.${mode}FullRebuild`;
+    if (paths.has(filePath)) {
+      throw new Error(`${operation}: duplicate ${retired ? 'retired ' : ''}file ${filePath}`);
+    }
+    paths.add(filePath);
+
+    const requiresPendingGeneration = mode === 'activate' && generationId !== undefined;
+    const query = requiresPendingGeneration
+      ? 'SELECT active_generation,pending_generation FROM structured_files WHERE file_path = ?'
+      : 'SELECT active_generation FROM structured_files WHERE file_path = ?';
+    const row = this.db.prepare(query).get(filePath) as {
+      active_generation?: string | null;
+      pending_generation?: string | null;
+    } | undefined;
+    const activeMatches = retired
+      ? row?.active_generation === expectedActiveGeneration
+      : (row?.active_generation ?? null) === expectedActiveGeneration;
+    const pendingMatches = !requiresPendingGeneration || row?.pending_generation === generationId;
+    if (!activeMatches || !pendingMatches) {
+      throw new Error(`${operation}: ${retired ? 'retired ' : ''}generation validation failed for ${filePath}`);
+    }
+  }
+
+  private validateFullRebuildTargets(
+    input: StructuredFullRebuildActivation,
+    mode: FullRebuildValidationMode,
+  ): void {
+    this.validateFullRebuildEpoch(input, mode);
+    const paths = new Set<string>();
+    for (const file of input.files) {
+      this.validateFullRebuildTarget(
+        paths,
+        file.filePath,
+        file.expectedActiveGeneration,
+        file.generationId,
+        false,
+        mode,
+      );
+    }
+    for (const file of input.retiredFiles) {
+      this.validateFullRebuildTarget(
+        paths,
+        file.filePath,
+        file.expectedActiveGeneration,
+        undefined,
+        true,
+        mode,
+      );
+    }
+  }
+
   async prepareFullRebuild(input: StructuredFullRebuildActivation): Promise<void> {
     await this.asyncBoundary();
     this.immediateTransaction(() => {
-      const epoch = this.db.prepare('SELECT structured_rebuild_epoch AS value FROM index_stats WHERE id = ?').get(PRIMARY_STATS_ID) as { value: number | null } | undefined;
-      if ((epoch?.value ?? 0) !== input.rebuildEpoch) {
-        throw new Error(`SqliteMetadataStore.prepareFullRebuild: stale rebuild epoch ${input.rebuildEpoch}`);
-      }
-
-      const paths = new Set<string>();
-      for (const file of input.files) {
-        if (paths.has(file.filePath)) throw new Error(`SqliteMetadataStore.prepareFullRebuild: duplicate file ${file.filePath}`);
-        paths.add(file.filePath);
-        const row = this.db.prepare('SELECT active_generation FROM structured_files WHERE file_path = ?').get(file.filePath) as { active_generation: string | null } | undefined;
-        if ((row?.active_generation ?? null) !== file.expectedActiveGeneration) {
-          throw new Error(`SqliteMetadataStore.prepareFullRebuild: generation validation failed for ${file.filePath}`);
-        }
-      }
-      for (const file of input.retiredFiles) {
-        if (paths.has(file.filePath)) throw new Error(`SqliteMetadataStore.prepareFullRebuild: duplicate retired file ${file.filePath}`);
-        paths.add(file.filePath);
-        const row = this.db.prepare('SELECT active_generation FROM structured_files WHERE file_path = ?').get(file.filePath) as { active_generation: string | null } | undefined;
-        if (row?.active_generation !== file.expectedActiveGeneration) {
-          throw new Error(`SqliteMetadataStore.prepareFullRebuild: retired generation validation failed for ${file.filePath}`);
-        }
-      }
+      this.validateFullRebuildTargets(input, 'prepare');
 
       this.db.prepare('DELETE FROM structured_rebuild_backup_runs WHERE rebuild_epoch = ?').run(input.rebuildEpoch);
       this.db.prepare('DELETE FROM structured_rebuild_backup_files WHERE rebuild_epoch = ?').run(input.rebuildEpoch);
@@ -563,28 +614,7 @@ export class SqliteMetadataStore implements IMetadataStore, IStructuredCatalog {
   async activateFullRebuild(input: StructuredFullRebuildActivation): Promise<void> {
     await this.asyncBoundary();
     this.immediateTransaction(() => {
-      const epoch = this.db.prepare('SELECT structured_rebuild_epoch AS value FROM index_stats WHERE id = ?').get(PRIMARY_STATS_ID) as { value: number | null } | undefined;
-      if ((epoch?.value ?? 0) !== input.rebuildEpoch) {
-        throw new Error(`SqliteMetadataStore.activateFullRebuild: stale rebuild epoch ${input.rebuildEpoch}`);
-      }
-
-      const paths = new Set<string>();
-      for (const file of input.files) {
-        if (paths.has(file.filePath)) throw new Error(`SqliteMetadataStore.activateFullRebuild: duplicate file ${file.filePath}`);
-        paths.add(file.filePath);
-        const row = this.db.prepare('SELECT active_generation,pending_generation FROM structured_files WHERE file_path = ?').get(file.filePath) as { active_generation: string | null; pending_generation: string | null } | undefined;
-        if ((row?.active_generation ?? null) !== file.expectedActiveGeneration || row?.pending_generation !== file.generationId) {
-          throw new Error(`SqliteMetadataStore.activateFullRebuild: generation validation failed for ${file.filePath}`);
-        }
-      }
-      for (const file of input.retiredFiles) {
-        if (paths.has(file.filePath)) throw new Error(`SqliteMetadataStore.activateFullRebuild: duplicate retired file ${file.filePath}`);
-        paths.add(file.filePath);
-        const row = this.db.prepare('SELECT active_generation FROM structured_files WHERE file_path = ?').get(file.filePath) as { active_generation: string | null } | undefined;
-        if (row?.active_generation !== file.expectedActiveGeneration) {
-          throw new Error(`SqliteMetadataStore.activateFullRebuild: retired generation validation failed for ${file.filePath}`);
-        }
-      }
+      this.validateFullRebuildTargets(input, 'activate');
 
       const pendingSymbols = this.db.prepare('SELECT symbol_id FROM symbols WHERE file_path = ? AND generation = ?');
       const previousSymbols = this.db.prepare('SELECT symbol_id FROM symbols WHERE file_path = ? AND generation = ?');

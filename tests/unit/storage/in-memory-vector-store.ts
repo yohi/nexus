@@ -316,7 +316,7 @@ export class InMemoryVectorStore implements IVectorStore {
   }
 
   async swapStructuredShadowTable(shadowTable: StructuredShadowTable): Promise<void> {
-    if (!this.structuredShadow || this.structuredShadow.name !== shadowTable.name) {
+    if (this.structuredShadow?.name !== shadowTable.name) {
       throw new Error('InMemoryVectorStore.swapStructuredShadowTable: no shadow table in progress');
     }
     this.structuredSwapBackup = {
@@ -363,7 +363,7 @@ export class InMemoryVectorStore implements IVectorStore {
 
   async stageLegacyShadowChunks(shadow: LegacyShadowTable, chunks: ChunkWithEmbedding[]): Promise<void> {
     const shadowState = this.legacyShadow;
-    if (!shadowState || shadowState.name !== shadow.name) {
+    if (shadowState?.name !== shadow.name) {
       throw new Error('InMemoryVectorStore.stageLegacyShadowChunks: no shadow table in progress');
     }
     const shadowMap = shadowState.records;
@@ -394,7 +394,7 @@ export class InMemoryVectorStore implements IVectorStore {
     deletions: LegacyShadowDeletion,
   ): Promise<void> {
     const shadowState = this.legacyShadow;
-    if (!shadowState || shadowState.name !== shadow.name) {
+    if (shadowState?.name !== shadow.name) {
       throw new Error('InMemoryVectorStore.stageLegacyShadowDeletions: no shadow table in progress');
     }
     const shadowMap = shadowState.records;
@@ -413,7 +413,7 @@ export class InMemoryVectorStore implements IVectorStore {
 
   async swapLegacyShadowTable(shadow: LegacyShadowTable): Promise<void> {
     const shadowState = this.legacyShadow;
-    if (!shadowState || shadowState.name !== shadow.name) {
+    if (shadowState?.name !== shadow.name) {
       throw new Error('InMemoryVectorStore.swapLegacyShadowTable: no shadow table in progress');
     }
     this.legacySwapBackup = {

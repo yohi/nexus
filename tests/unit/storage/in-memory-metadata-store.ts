@@ -476,7 +476,7 @@ export class InMemoryMetadataStore implements IMetadataStore, IStructuredCatalog
   private activateGenerationState(filePath: string, generationId: string, rebuildEpoch: number): void {
     const pending = this.pending.get(filePath);
     const active = this.active.get(filePath);
-    if (pending === undefined || pending.generation.generationId !== generationId) {
+    if (pending?.generation.generationId !== generationId) {
       throw new Error(`InMemoryMetadataStore.activateFullRebuild: missing generation for ${filePath}`);
     }
     if (active !== undefined) {

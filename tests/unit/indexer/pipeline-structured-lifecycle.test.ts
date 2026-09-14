@@ -44,6 +44,45 @@ const indexContent = async (
   );
 };
 
+type StructuredPipelineStores = Pick<
+  Awaited<ReturnType<typeof createStructuredPipeline>>,
+  'metadataStore' | 'vectorStore'
+>;
+
+const expectFullRebuildCommitFailureToRollback = async (
+  filePath: string,
+  failureMessage: string,
+  injectFailure: (stores: StructuredPipelineStores) => void,
+): Promise<void> => {
+  const { metadataStore, vectorStore, pipeline } = await createStructuredPipeline();
+  const initialContent = 'export function stable(): number { return 1; }\n';
+  const replacementContent = 'export function replacement(): number { return 2; }\n';
+
+  await indexContent(pipeline, 'added', filePath, initialContent);
+  const generationsBefore = [...(await metadataStore.getStructuredIndexState()).activeGenerations.entries()];
+  const vectorIdsBefore = (await vectorStore.search(new Array(64).fill(0), 100))
+    .map((result) => result.chunk.id)
+    .sort();
+  const merkleBefore = await metadataStore.getAllNodes();
+  injectFailure({ metadataStore, vectorStore });
+
+  await expect(pipeline.reindex(
+    () => Promise.resolve([createEvent('modified', filePath, replacementContent)]),
+    () => Promise.resolve(replacementContent),
+    true,
+  )).rejects.toThrow(failureMessage);
+
+  expect((await vectorStore.search(new Array(64).fill(0), 100)).map((result) => result.chunk.id).sort())
+    .toEqual(vectorIdsBefore);
+  await expect(metadataStore.getAllNodes()).resolves.toEqual(merkleBefore);
+  expect([...(await metadataStore.getStructuredIndexState()).activeGenerations.entries()])
+    .toEqual(generationsBefore);
+  await expect(metadataStore.resolveFile(filePath)).resolves.toEqual({
+    kind: 'active',
+    generationId: generationsBefore[0]?.[1],
+  });
+};
+
 describe('IndexPipeline structured lifecycle', () => {
   it('routes a structured full rebuild through the coordinator full-rebuild API', async () => {
     const { coordinator, pipeline } = await createStructuredPipeline();
@@ -310,58 +349,23 @@ describe('IndexPipeline structured lifecycle', () => {
   });
 
   it('rolls back every index when the legacy full-rebuild commit fails', async () => {
-    const { metadataStore, vectorStore, pipeline } = await createStructuredPipeline();
-    const filePath = 'src/legacy-commit-failure.ts';
-    const initialContent = 'export function stable(): number { return 1; }\n';
-    const replacementContent = 'export function replacement(): number { return 2; }\n';
-
-    await indexContent(pipeline, 'added', filePath, initialContent);
-    const generationsBefore = [...(await metadataStore.getStructuredIndexState()).activeGenerations.entries()];
-    const vectorIdsBefore = (await vectorStore.search(new Array(64).fill(0), 100)).map((result) => result.chunk.id).sort();
-    const merkleBefore = await metadataStore.getAllNodes();
-
-    vi.spyOn(vectorStore, 'swapLegacyShadowTable').mockRejectedValueOnce(new Error('legacy commit failed'));
-
-    await expect(pipeline.reindex(
-      () => Promise.resolve([createEvent('modified', filePath, replacementContent)]),
-      () => Promise.resolve(replacementContent),
-      true,
-    )).rejects.toThrow('legacy commit failed');
-
-    expect((await vectorStore.search(new Array(64).fill(0), 100)).map((result) => result.chunk.id).sort()).toEqual(vectorIdsBefore);
-    await expect(metadataStore.getAllNodes()).resolves.toEqual(merkleBefore);
-    expect([...(await metadataStore.getStructuredIndexState()).activeGenerations.entries()]).toEqual(generationsBefore);
-    await expect(metadataStore.resolveFile(filePath)).resolves.toEqual({
-      kind: 'active',
-      generationId: generationsBefore[0]?.[1],
-    });
+    await expectFullRebuildCommitFailureToRollback(
+      'src/legacy-commit-failure.ts',
+      'legacy commit failed',
+      ({ vectorStore }) => {
+        vi.spyOn(vectorStore, 'swapLegacyShadowTable').mockRejectedValueOnce(new Error('legacy commit failed'));
+      },
+    );
   });
 
   it('rolls back every index when deferred Merkle commit fails', async () => {
-    const { metadataStore, vectorStore, pipeline } = await createStructuredPipeline();
-    const filePath = 'src/merkle-commit-failure.ts';
-    const initialContent = 'export function stable(): number { return 1; }\n';
-    const replacementContent = 'export function replacement(): number { return 2; }\n';
-
-    await indexContent(pipeline, 'added', filePath, initialContent);
-    const generationsBefore = [...(await metadataStore.getStructuredIndexState()).activeGenerations.entries()];
-    const vectorIdsBefore = (await vectorStore.search(new Array(64).fill(0), 100)).map((result) => result.chunk.id).sort();
-    const merkleBefore = await metadataStore.getAllNodes();
-    vi.spyOn(metadataStore, 'bulkUpsertMerkleNodes').mockRejectedValueOnce(new Error('Merkle commit failed'));
-
-    await expect(pipeline.reindex(
-      () => Promise.resolve([createEvent('modified', filePath, replacementContent)]),
-      () => Promise.resolve(replacementContent),
-      true,
-    )).rejects.toThrow('Merkle commit failed');
-
-    expect((await vectorStore.search(new Array(64).fill(0), 100)).map((result) => result.chunk.id).sort()).toEqual(vectorIdsBefore);
-    await expect(metadataStore.getAllNodes()).resolves.toEqual(merkleBefore);
-    expect([...(await metadataStore.getStructuredIndexState()).activeGenerations.entries()]).toEqual(generationsBefore);
-    await expect(metadataStore.resolveFile(filePath)).resolves.toEqual({
-      kind: 'active',
-      generationId: generationsBefore[0]?.[1],
-    });
+    await expectFullRebuildCommitFailureToRollback(
+      'src/merkle-commit-failure.ts',
+      'Merkle commit failed',
+      ({ metadataStore }) => {
+        vi.spyOn(metadataStore, 'bulkUpsertMerkleNodes').mockRejectedValueOnce(new Error('Merkle commit failed'));
+      },
+    );
   });
 
   it('retires structured state when incremental indexing skips an oversized file', async () => {
