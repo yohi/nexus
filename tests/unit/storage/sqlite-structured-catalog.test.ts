@@ -4,7 +4,10 @@ import os from 'node:os';
 import path from 'node:path';
 import Database from 'better-sqlite3';
 import { SqliteMetadataStore } from '../../../src/storage/metadata-store.js';
-import type { StructuredGenerationStage } from '../../../src/storage/interfaces/structured-catalog.js';
+import type {
+  StructuredFullRebuildActivation,
+  StructuredGenerationStage,
+} from '../../../src/storage/interfaces/structured-catalog.js';
 
 const generation = (id: string, fileCompleteness: 'complete' | 'partial' = 'complete') => ({ generationId: id, schemaVersion: 1 as const, parserId: 'test', parserVersion: '1', fileHash: `hash-${id}`, fileCompleteness });
 const stage = (filePath: string, id: string, symbolId: string): StructuredGenerationStage => ({
@@ -21,6 +24,27 @@ const readRows = <T>(databasePath: string, sql: string): T[] => {
     database.close();
   }
 };
+
+const activateInitialGeneration = async (store: SqliteMetadataStore): Promise<void> => {
+  await store.incrementRebuildEpoch();
+  await store.stageGeneration(stage('src/a.ts', 'g1', 'old'));
+  await store.activateGeneration({
+    filePath: 'src/a.ts',
+    generationId: 'g1',
+    expectedActiveGeneration: null,
+    expectedRebuildEpoch: 1,
+  });
+};
+
+const fullRebuildActivation = (
+  rebuildEpoch: number,
+  generationId = 'g2',
+): StructuredFullRebuildActivation => ({
+  rebuildEpoch,
+  files: [{ filePath: 'src/a.ts', generationId, expectedActiveGeneration: 'g1' }],
+  retiredFiles: [],
+});
+
 describe('SQLite structured catalog', () => {
   let dir: string;
   let store: SqliteMetadataStore;
@@ -45,16 +69,10 @@ describe('SQLite structured catalog', () => {
 
   it('restores the previous generations after a full rebuild rollback', async () => {
     await store.initialize();
-    await store.incrementRebuildEpoch();
-    await store.stageGeneration(stage('src/a.ts', 'g1', 'old'));
-    await store.activateGeneration({ filePath: 'src/a.ts', generationId: 'g1', expectedActiveGeneration: null, expectedRebuildEpoch: 1 });
+    await activateInitialGeneration(store);
 
     const rebuildEpoch = await store.incrementRebuildEpoch();
-    const activation = {
-      rebuildEpoch,
-      files: [{ filePath: 'src/a.ts', generationId: 'g2', expectedActiveGeneration: 'g1' }],
-      retiredFiles: [],
-    } as const;
+    const activation = fullRebuildActivation(rebuildEpoch);
     await store.prepareFullRebuild(activation, []);
     await store.stageGeneration({ ...stage('src/a.ts', 'g2', 'new'), rebuildEpoch });
     await store.activateFullRebuild(activation);
@@ -69,16 +87,10 @@ describe('SQLite structured catalog', () => {
   it('recovers an interrupted full rebuild during startup', async () => {
     const databasePath = path.join(dir, 'metadata.db');
     await store.initialize();
-    await store.incrementRebuildEpoch();
-    await store.stageGeneration(stage('src/a.ts', 'g1', 'old'));
-    await store.activateGeneration({ filePath: 'src/a.ts', generationId: 'g1', expectedActiveGeneration: null, expectedRebuildEpoch: 1 });
+    await activateInitialGeneration(store);
 
     const rebuildEpoch = await store.incrementRebuildEpoch();
-    const activation = {
-      rebuildEpoch,
-      files: [{ filePath: 'src/a.ts', generationId: 'g2', expectedActiveGeneration: 'g1' }],
-      retiredFiles: [],
-    } as const;
+    const activation = fullRebuildActivation(rebuildEpoch);
     await store.setStructuredRebuildState({ rebuildState: 'building' });
     await store.prepareFullRebuild(activation, []);
     await store.stageGeneration({ ...stage('src/a.ts', 'g2', 'new'), rebuildEpoch });
@@ -173,16 +185,10 @@ describe('SQLite structured catalog', () => {
   it('does not roll back a finalized generation when cleanup left backup rows', async () => {
     const databasePath = path.join(dir, 'metadata.db');
     await store.initialize();
-    await store.incrementRebuildEpoch();
-    await store.stageGeneration(stage('src/a.ts', 'g1', 'old'));
-    await store.activateGeneration({ filePath: 'src/a.ts', generationId: 'g1', expectedActiveGeneration: null, expectedRebuildEpoch: 1 });
+    await activateInitialGeneration(store);
 
     const rebuildEpoch = await store.incrementRebuildEpoch();
-    const activation = {
-      rebuildEpoch,
-      files: [{ filePath: 'src/a.ts', generationId: 'g2', expectedActiveGeneration: 'g1' }],
-      retiredFiles: [],
-    } as const;
+    const activation = fullRebuildActivation(rebuildEpoch);
     await store.setStructuredRebuildState({ rebuildState: 'building' });
     await store.prepareFullRebuild(activation, []);
     await store.stageGeneration({ ...stage('src/a.ts', 'g2', 'new'), rebuildEpoch });
@@ -198,24 +204,14 @@ describe('SQLite structured catalog', () => {
 
   it('removes backup remnants from earlier rebuild epochs before preparing a new rebuild', async () => {
     await store.initialize();
-    await store.incrementRebuildEpoch();
-    await store.stageGeneration(stage('src/a.ts', 'g1', 'old'));
-    await store.activateGeneration({ filePath: 'src/a.ts', generationId: 'g1', expectedActiveGeneration: null, expectedRebuildEpoch: 1 });
+    await activateInitialGeneration(store);
 
     const firstEpoch = await store.incrementRebuildEpoch();
-    const firstActivation = {
-      rebuildEpoch: firstEpoch,
-      files: [{ filePath: 'src/a.ts', generationId: 'g2', expectedActiveGeneration: 'g1' }],
-      retiredFiles: [],
-    } as const;
+    const firstActivation = fullRebuildActivation(firstEpoch);
     await store.prepareFullRebuild(firstActivation, []);
 
     const secondEpoch = await store.incrementRebuildEpoch();
-    const secondActivation = {
-      rebuildEpoch: secondEpoch,
-      files: [{ filePath: 'src/a.ts', generationId: 'g3', expectedActiveGeneration: 'g1' }],
-      retiredFiles: [],
-    } as const;
+    const secondActivation = fullRebuildActivation(secondEpoch, 'g3');
     await store.prepareFullRebuild(secondActivation, []);
 
     const rows = readRows<{ rebuild_epoch: number }>(
