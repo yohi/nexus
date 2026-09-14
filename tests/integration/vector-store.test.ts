@@ -1,6 +1,6 @@
 import * as lancedb from '@lancedb/lancedb';
 import { describe, it, expect, afterEach, beforeEach } from 'vitest';
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { LanceVectorStore } from '../../src/storage/vector-store.js';
@@ -143,6 +143,41 @@ describe('LanceVectorStore (LanceDB integration)', () => {
       expect(results).toHaveLength(1);
       expect(results[0]?.chunk.id).toBe('persist-test');
       await store2.close();
+    });
+
+    it('recoverInterruptedFullRebuild() — 復元後にカウンタとサイドカーを整合させる', async () => {
+      const embedding = Array.from({ length: 64 }, (_, i) => (i === 0 ? 1 : 0));
+      const store1 = new LanceVectorStore({ dbPath: tmpDir, dimensions: 64, deferRebuildCleanup: true });
+      await store1.initialize();
+      await store1.upsertChunks(
+        [
+          makeChunk({ id: 'a', filePath: 'src/a.ts' }),
+          makeChunk({ id: 'b', filePath: 'src/b.ts' }),
+        ],
+        [embedding, embedding],
+      );
+      await store1.upsertChunks([makeChunk({ id: 'a-new', filePath: 'src/a.ts' })], [embedding]);
+
+      const shadow = await store1.beginLegacyShadowTable();
+      await store1.stageLegacyShadowDeletions(shadow, { filePaths: ['src/b.ts'] });
+      await store1.swapLegacyShadowTable(shadow);
+
+      const store2 = new LanceVectorStore({ dbPath: tmpDir, dimensions: 64, deferRebuildCleanup: true });
+      await store2.initialize();
+      await store2.recoverInterruptedFullRebuild('rollback');
+
+      await expect(store2.getStats()).resolves.toMatchObject({
+        totalChunks: 2,
+        totalFiles: 2,
+        fragmentationRatio: 0,
+      });
+      await expect(readFile(join(tmpDir, 'metadata.json'), 'utf8').then((content) => JSON.parse(content))).resolves.toMatchObject({
+        staleCount: '0',
+        totalFiles: '2',
+      });
+
+      await store2.close();
+      await store1.close();
     });
 
     it('検索結果 — 保存済み generationid を generationId として復元', async () => {

@@ -111,6 +111,61 @@ describe('SQLite structured catalog', () => {
     await expect(store.initialize()).resolves.toBeUndefined();
   });
 
+  it('returns a recoverable record when deferred recovery has a malformed snapshot', async () => {
+    const databasePath = path.join(dir, 'metadata.db');
+    await store.initialize();
+    const rebuildEpoch = await store.incrementRebuildEpoch();
+    await store.setStructuredRebuildState({ rebuildState: 'building' });
+    await store.prepareFullRebuild({ rebuildEpoch, files: [], retiredFiles: [] }, []);
+    await store.close();
+
+    const database = new Database(databasePath);
+    database.prepare('UPDATE structured_rebuild_backup_runs SET merkle_snapshot = ?').run('not-json');
+    database.close();
+
+    store = new SqliteMetadataStore({ databasePath, deferFullRebuildRecovery: true });
+    await store.initialize();
+
+    await expect(store.getFullRebuildRecovery()).resolves.toEqual({
+      rebuildEpoch,
+      phase: 'building',
+      merkleSnapshot: null,
+    });
+  });
+
+  it('removes retired file rows when finalizing a full rebuild', async () => {
+    await store.initialize();
+    await store.incrementRebuildEpoch();
+    await store.stageGeneration(stage('src/a.ts', 'g1', 'old'));
+    await store.activateGeneration({
+      filePath: 'src/a.ts',
+      generationId: 'g1',
+      expectedActiveGeneration: null,
+      expectedRebuildEpoch: 1,
+    });
+
+    const rebuildEpoch = await store.incrementRebuildEpoch();
+    const activation = {
+      rebuildEpoch,
+      files: [],
+      retiredFiles: [{ filePath: 'src/a.ts', expectedActiveGeneration: 'g1' }],
+    } as const;
+    await store.prepareFullRebuild(activation);
+    await store.activateFullRebuild(activation);
+
+    expect(readRows<{ file_path: string; active_generation: string | null; pending_generation: string | null }>(
+      path.join(dir, 'metadata.db'),
+      'SELECT file_path, active_generation, pending_generation FROM structured_files',
+    )).toEqual([{ file_path: 'src/a.ts', active_generation: null, pending_generation: null }]);
+
+    await store.finalizeFullRebuild(activation);
+
+    expect(readRows<{ file_path: string }>(
+      path.join(dir, 'metadata.db'),
+      'SELECT file_path FROM structured_files',
+    )).toEqual([]);
+  });
+
   it('does not roll back a finalized generation when cleanup left backup rows', async () => {
     const databasePath = path.join(dir, 'metadata.db');
     await store.initialize();

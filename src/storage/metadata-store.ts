@@ -634,15 +634,14 @@ export class SqliteMetadataStore implements IMetadataStore, IStructuredCatalog {
     this.immediateTransaction(() => {
       this.validateFullRebuildTargets(input, 'activate');
 
-      const pendingSymbols = this.db.prepare('SELECT symbol_id FROM symbols WHERE file_path = ? AND generation = ?');
-      const previousSymbols = this.db.prepare('SELECT symbol_id FROM symbols WHERE file_path = ? AND generation = ?');
+      const symbolsByFileAndGeneration = this.db.prepare('SELECT symbol_id FROM symbols WHERE file_path = ? AND generation = ?');
       const addTombstone = this.db.prepare('INSERT OR REPLACE INTO symbol_tombstones (symbol_id,file_path,generation,retired_at_rebuild_epoch,retired_at) VALUES (?,?,?,?,?)');
       const deleteNewTombstone = this.db.prepare('DELETE FROM symbol_tombstones WHERE symbol_id IN (SELECT symbol_id FROM symbols WHERE file_path = ? AND generation = ?)');
       const activate = this.db.prepare('UPDATE structured_files SET active_generation = ?, pending_generation = NULL WHERE file_path = ?');
       for (const file of input.files) {
         if (file.expectedActiveGeneration !== null) {
-          const newSymbols = new Set((pendingSymbols.all(file.filePath, file.generationId) as Array<{ symbol_id: string }>).map((row) => row.symbol_id));
-          for (const row of previousSymbols.all(file.filePath, file.expectedActiveGeneration) as Array<{ symbol_id: string }>) {
+          const newSymbols = new Set((symbolsByFileAndGeneration.all(file.filePath, file.generationId) as Array<{ symbol_id: string }>).map((row) => row.symbol_id));
+          for (const row of symbolsByFileAndGeneration.all(file.filePath, file.expectedActiveGeneration) as Array<{ symbol_id: string }>) {
             if (!newSymbols.has(row.symbol_id)) addTombstone.run(row.symbol_id, file.filePath, file.expectedActiveGeneration, input.rebuildEpoch, Date.now());
           }
         }
@@ -650,7 +649,7 @@ export class SqliteMetadataStore implements IMetadataStore, IStructuredCatalog {
         activate.run(file.generationId, file.filePath);
       }
       for (const file of input.retiredFiles) {
-        for (const row of previousSymbols.all(file.filePath, file.expectedActiveGeneration) as Array<{ symbol_id: string }>) {
+        for (const row of symbolsByFileAndGeneration.all(file.filePath, file.expectedActiveGeneration) as Array<{ symbol_id: string }>) {
           addTombstone.run(row.symbol_id, file.filePath, file.expectedActiveGeneration, input.rebuildEpoch, Date.now());
         }
         activate.run(null, file.filePath);
@@ -667,6 +666,7 @@ export class SqliteMetadataStore implements IMetadataStore, IStructuredCatalog {
     await this.asyncBoundary();
     this.immediateTransaction(() => {
       this.pruneOrphanedStructuredData();
+      this.db.prepare('DELETE FROM structured_files WHERE active_generation IS NULL AND pending_generation IS NULL').run();
       this.db.prepare('DELETE FROM structured_rebuild_backup_runs WHERE rebuild_epoch = ?').run(input.rebuildEpoch);
       this.db.prepare('DELETE FROM structured_rebuild_backup_files WHERE rebuild_epoch = ?').run(input.rebuildEpoch);
       this.db.prepare('DELETE FROM structured_rebuild_backup_tombstones WHERE rebuild_epoch = ?').run(input.rebuildEpoch);
@@ -701,26 +701,32 @@ export class SqliteMetadataStore implements IMetadataStore, IStructuredCatalog {
 
   private parseMerkleSnapshot(value: string | null): readonly MerkleSnapshotNode[] | null {
     if (value === null) return null;
-    const parsed: unknown = JSON.parse(value);
-    if (!Array.isArray(parsed)) throw new Error('Invalid full rebuild Merkle snapshot');
-    return parsed.map((node: unknown) => {
-      if (typeof node !== 'object' || node === null) throw new Error('Invalid full rebuild Merkle snapshot node');
-      const candidate = node as Record<string, unknown>;
-      if (
-        typeof candidate.path !== 'string'
-        || typeof candidate.hash !== 'string'
-        || (candidate.parentPath !== null && typeof candidate.parentPath !== 'string')
-        || typeof candidate.isDirectory !== 'boolean'
-      ) {
-        throw new Error('Invalid full rebuild Merkle snapshot node');
-      }
-      return {
-        path: candidate.path,
-        hash: candidate.hash,
-        parentPath: candidate.parentPath,
-        isDirectory: candidate.isDirectory,
-      };
-    });
+    try {
+      const parsed: unknown = JSON.parse(value);
+      if (!Array.isArray(parsed)) throw new Error('Invalid full rebuild Merkle snapshot');
+      return parsed.map((node: unknown) => {
+        if (typeof node !== 'object' || node === null) throw new Error('Invalid full rebuild Merkle snapshot node');
+        const candidate = node as Record<string, unknown>;
+        if (
+          typeof candidate.path !== 'string'
+          || typeof candidate.hash !== 'string'
+          || (candidate.parentPath !== null && typeof candidate.parentPath !== 'string')
+          || typeof candidate.isDirectory !== 'boolean'
+        ) {
+          throw new Error('Invalid full rebuild Merkle snapshot node');
+        }
+        return {
+          path: candidate.path,
+          hash: candidate.hash,
+          parentPath: candidate.parentPath,
+          isDirectory: candidate.isDirectory,
+        };
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      console.error('[Nexus MetadataStore] Failed to parse full rebuild Merkle snapshot:', message);
+      return null;
+    }
   }
 
   private recoverInterruptedFullRebuildOnInitialize(): void {

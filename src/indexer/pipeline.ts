@@ -900,8 +900,6 @@ export class IndexPipeline implements IIndexPipeline {
     for (const op of ops) {
       if (op.kind === 'update') {
         await this.merkleTree.update(op.filePath, op.contentHash);
-      } else if (op.kind === 'remove') {
-        await this.merkleTree.remove(op.filePath);
       } else {
         await this.merkleTree.remove(op.filePath);
       }

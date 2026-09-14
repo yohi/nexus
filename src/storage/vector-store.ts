@@ -485,6 +485,7 @@ export class LanceVectorStore implements IVectorStore {
         return;
       }
 
+      let legacyTableRestored = false;
       const restore = async (liveName: string, backupPrefix: string): Promise<void> => {
         const backupName = names.find((name) => name.startsWith(backupPrefix));
         if (backupName === undefined) {
@@ -493,12 +494,26 @@ export class LanceVectorStore implements IVectorStore {
         const restored = await this.restoreTableFromBackup(backupName, liveName, true);
         if (restored !== undefined) {
           if (liveName === STRUCTURED_TABLE_NAME) this.structuredTable = restored;
-          else this.table = restored;
+          else {
+            this.table = restored;
+            legacyTableRestored = true;
+          }
         }
       };
 
       await restore('chunks', LEGACY_BACKUP_PREFIX);
       await restore(STRUCTURED_TABLE_NAME, STRUCTURED_BACKUP_PREFIX);
+      if (legacyTableRestored) {
+        this.staleCount = 0;
+        const table = this.table;
+        if (table === undefined) {
+          this.totalFiles = 0;
+        } else {
+          const filePathRows = await table.query().select(['filepath']).toArray() as unknown as { filepath: string }[];
+          this.totalFiles = new Set(filePathRows.map((row) => row.filepath)).size;
+        }
+        await this.updateMetadata();
+      }
       await this.dropOrphanedRebuildTables(this.db, await this.db.tableNames());
     });
   }
