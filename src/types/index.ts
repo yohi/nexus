@@ -111,6 +111,10 @@ export type {
   VectorSearchResult,
   VectorStoreStats,
 } from '../storage/interfaces/vector-store.js';
+export type {
+  FullRebuildCommitPhase,
+  FullRebuildRecovery,
+} from '../storage/interfaces/structured-catalog.js';
 
 export interface GrepParams {
   query: string;

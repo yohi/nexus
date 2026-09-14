@@ -56,6 +56,11 @@ export class MerkleTree {
     this.rootHash = await this.computeRootHashFromStore();
   }
 
+  async restore(nodes: readonly MerkleNodeRow[]): Promise<void> {
+    await this.metadataStore.replaceAllMerkleNodes([...nodes]);
+    await this.load();
+  }
+
   async update(filePath: string, contentHash: string): Promise<void> {
     const parentPath = path.dirname(filePath) === '.' ? null : path.dirname(filePath);
     const fileNode: MerkleNodeRow = {

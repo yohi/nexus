@@ -20,6 +20,7 @@ import {
   type RuntimeInitializationResult,
   type ReindexResult,
   type DeadLetterEntry,
+  type MerkleNodeRow,
   type IIndexPipeline,
   type PipelineProgress,
   type RetryExhaustedError,
@@ -258,7 +259,18 @@ export class IndexPipeline implements IIndexPipeline {
     const structuredParseFailures: string[] = [];
     if (events.length === 0) {
       if (useStructuredFullRebuild) {
-        await structuredIndexCoordinator.runFullRebuild({ files: structuredRebuildFiles });
+        if (!this.isTreeLoaded) {
+          await this.merkleTree.load();
+          this.isTreeLoaded = true;
+        }
+        const legacyShadow = await this.options.vectorStore.beginLegacyShadowTable();
+        await this.commitStructuredFullRebuild(
+          structuredIndexCoordinator,
+          structuredRebuildFiles,
+          [],
+          legacyShadow,
+          await this.options.metadataStore.getAllNodes(),
+        );
       }
       return { chunksIndexed: 0, structuredParseFailures: [], embeddingFailures: [] };
     }
@@ -267,6 +279,9 @@ export class IndexPipeline implements IIndexPipeline {
       await this.merkleTree.load();
       this.isTreeLoaded = true;
     }
+    const merkleSnapshot = useStructuredFullRebuild
+      ? await this.options.metadataStore.getAllNodes()
+      : undefined;
 
     const trackProgress = options.trackProgress ?? true;
     if (trackProgress) {
@@ -363,19 +378,17 @@ export class IndexPipeline implements IIndexPipeline {
           const filePaths = [...new Set(structuredParseFailures)].join(', ');
           throw new Error(`Structured full rebuild aborted: parsing failed for ${filePaths}`);
         }
-        try {
-          await structuredIndexCoordinator.runFullRebuild({ files: structuredRebuildFiles });
-          if (legacyShadow !== undefined) {
-            await this.options.vectorStore.swapLegacyShadowTable(legacyShadow);
-          }
-          await this.applyDeferredMerkleOps(deferredMerkleOps);
-        } catch (error) {
-          if (legacyShadow !== undefined) {
-            await this.options.vectorStore.abortLegacyShadowTable(legacyShadow).catch(() => {});
-            legacyShadow = undefined;
-          }
-          throw error;
+        if (legacyShadow === undefined || merkleSnapshot === undefined) {
+          throw new Error('Structured full rebuild transaction was not initialized');
         }
+        await this.commitStructuredFullRebuild(
+          structuredIndexCoordinator,
+          structuredRebuildFiles,
+          deferredMerkleOps,
+          legacyShadow,
+          merkleSnapshot,
+        );
+        legacyShadow = undefined;
       }
 
       completedSuccessfully = !this.abortController.signal.aborted;
@@ -828,57 +841,102 @@ export class IndexPipeline implements IIndexPipeline {
   ): Promise<void> {
     const existingNode = await this.options.metadataStore.getMerkleNode(filePath);
     if (existingNode?.isDirectory) {
-      const prefix = filePath.endsWith('/') ? filePath : filePath + '/';
-      if (legacyShadow !== undefined) {
-        await this.options.vectorStore.stageLegacyShadowDeletions(legacyShadow, { pathPrefixes: [prefix] });
-      } else {
-        await this.options.vectorStore.deleteByPathPrefix(prefix);
-      }
-      if (deferredMerkleOps !== undefined) {
-        deferredMerkleOps.push({ kind: 'subtree-delete', filePath });
-      } else {
-        await this.options.metadataStore.deleteSubtree(filePath);
-
-        // Incremental update of the tree (avoids full reload)
-        await this.merkleTree.remove(filePath);
-      }
-
-      this.skippedFiles.delete(filePath);
-      await this.deadLetterQueue.removeByPathPrefix(filePath);
-      for (const path of this.skippedFiles.keys()) {
-        if (path.startsWith(prefix)) {
-          this.skippedFiles.delete(path);
-        }
-      }
-    } else {
-      if (legacyShadow !== undefined) {
-        await this.options.vectorStore.stageLegacyShadowDeletions(legacyShadow, { filePaths: [filePath] });
-      } else {
-        await this.options.vectorStore.deleteByFilePath(filePath);
-      }
-      if (!deferStructuredRetirement) {
-        await this.options.structuredIndexCoordinator?.deleteFile({ filePath });
-      }
-      if (deferredMerkleOps !== undefined) {
-        deferredMerkleOps.push({ kind: 'remove', filePath });
-      } else {
-        await this.merkleTree.remove(filePath);
-      }
-      this.skippedFiles.delete(filePath);
-      await this.deadLetterQueue.removeByFilePath(filePath);
+      await this.handleDeletedDirectory(filePath, legacyShadow, deferredMerkleOps);
+      return;
     }
+    await this.handleDeletedFile(filePath, deferStructuredRetirement, legacyShadow, deferredMerkleOps);
+  }
+
+  private async handleDeletedDirectory(
+    filePath: string,
+    legacyShadow?: LegacyShadowTable,
+    deferredMerkleOps?: DeferredMerkleOp[],
+  ): Promise<void> {
+    const prefix = filePath.endsWith('/') ? filePath : filePath + '/';
+    if (legacyShadow !== undefined) {
+      await this.options.vectorStore.stageLegacyShadowDeletions(legacyShadow, { pathPrefixes: [prefix] });
+    } else {
+      await this.options.vectorStore.deleteByPathPrefix(prefix);
+    }
+    if (deferredMerkleOps !== undefined) {
+      deferredMerkleOps.push({ kind: 'subtree-delete', filePath });
+    } else {
+      await this.merkleTree.remove(filePath);
+    }
+
+    this.skippedFiles.delete(filePath);
+    await this.deadLetterQueue.removeByPathPrefix(filePath);
+    for (const path of this.skippedFiles.keys()) {
+      if (path.startsWith(prefix)) {
+        this.skippedFiles.delete(path);
+      }
+    }
+  }
+
+  private async handleDeletedFile(
+    filePath: string,
+    deferStructuredRetirement: boolean,
+    legacyShadow?: LegacyShadowTable,
+    deferredMerkleOps?: DeferredMerkleOp[],
+  ): Promise<void> {
+    if (legacyShadow !== undefined) {
+      await this.options.vectorStore.stageLegacyShadowDeletions(legacyShadow, { filePaths: [filePath] });
+    } else {
+      await this.options.vectorStore.deleteByFilePath(filePath);
+    }
+    if (!deferStructuredRetirement) {
+      await this.options.structuredIndexCoordinator?.deleteFile({ filePath });
+    }
+    if (deferredMerkleOps !== undefined) {
+      deferredMerkleOps.push({ kind: 'remove', filePath });
+    } else {
+      await this.merkleTree.remove(filePath);
+    }
+    this.skippedFiles.delete(filePath);
+    await this.deadLetterQueue.removeByFilePath(filePath);
   }
 
   private async applyDeferredMerkleOps(ops: readonly DeferredMerkleOp[]): Promise<void> {
     for (const op of ops) {
       if (op.kind === 'update') {
         await this.merkleTree.update(op.filePath, op.contentHash);
-      } else if (op.kind === 'remove') {
-        await this.merkleTree.remove(op.filePath);
       } else {
-        await this.options.metadataStore.deleteSubtree(op.filePath);
         await this.merkleTree.remove(op.filePath);
       }
+    }
+  }
+
+  private async commitStructuredFullRebuild(
+    coordinator: StructuredIndexCoordinator,
+    files: readonly FullRebuildFile[],
+    deferredMerkleOps: readonly DeferredMerkleOp[],
+    legacyShadow: LegacyShadowTable,
+    merkleSnapshot: readonly MerkleNodeRow[],
+  ): Promise<void> {
+    try {
+      await coordinator.runFullRebuild({
+        files: [...files],
+        merkleSnapshot,
+        beforeCommit: async (rebuildEpoch) => {
+          await this.options.vectorStore.swapLegacyShadowTable(legacyShadow, rebuildEpoch);
+        },
+        afterCommit: async () => {
+          await this.applyDeferredMerkleOps(deferredMerkleOps);
+        },
+      });
+      await this.options.vectorStore.finalizeLegacyShadowTable(legacyShadow).catch((error) => {
+        console.error('[IndexPipeline] Failed to finalize legacy vector backup:', error);
+      });
+    } catch (error) {
+      await this.options.vectorStore.abortLegacyShadowTable(legacyShadow).catch((abortError) => {
+        console.error('[IndexPipeline] Failed to roll back legacy vectors:', abortError);
+      });
+      try {
+        await this.merkleTree.restore(merkleSnapshot);
+      } catch (restoreError) {
+        console.error('[IndexPipeline] Failed to restore Merkle metadata:', restoreError);
+      }
+      throw error;
     }
   }
 
@@ -1076,6 +1134,19 @@ export class IndexPipeline implements IIndexPipeline {
   async reconcileOnStartup(): Promise<RuntimeInitializationResult> {
     const startedAt = new Date().toISOString();
     const startTime = Date.now();
+
+    const recovery = await this.options.metadataStore.getFullRebuildRecovery?.();
+    if (recovery !== null && recovery !== undefined) {
+      const finalized = recovery.phase === 'merkle-activated';
+      await this.options.vectorStore.recoverInterruptedFullRebuild(recovery, finalized ? 'finalize' : 'rollback');
+      if (finalized) {
+        await this.options.metadataStore.finalizeInterruptedFullRebuild?.();
+      } else {
+        await this.options.metadataStore.recoverInterruptedFullRebuild?.();
+      }
+    }
+    await this.options.vectorStore.cleanupOrphanedRebuildTables?.();
+    await this.options.structuredIndexCoordinator?.reconcile();
 
     if (!this.isTreeLoaded) {
       await this.merkleTree.load();

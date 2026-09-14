@@ -1,10 +1,11 @@
 import * as lancedb from '@lancedb/lancedb';
 import { describe, it, expect, afterEach, beforeEach } from 'vitest';
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { LanceVectorStore } from '../../src/storage/vector-store.js';
 import type { CodeChunk } from '../../src/types/index.js';
+import type { FullRebuildVectorArtifact } from '../../src/storage/interfaces/structured-catalog.js';
 import { vectorStoreContractTests } from '../shared/vector-store-contract.js';
 
 const makeChunk = (overrides: Partial<CodeChunk> = {}): CodeChunk => ({
@@ -55,6 +56,20 @@ describe('LanceVectorStore (LanceDB integration)', () => {
       await store.initialize();
       await store.close();
       await expect(store.initialize()).rejects.toThrow('VectorStore is closed');
+    });
+
+    it('stageLegacyShadowChunks() — 非有限ベクトルを拒否する', async () => {
+      const store = new LanceVectorStore({ dbPath: tmpDir, dimensions: 64 });
+      await store.initialize();
+      const shadow = await store.beginLegacyShadowTable();
+      const vector = new Array(64).fill(0);
+      vector[0] = Number.NaN;
+
+      await expect(store.stageLegacyShadowChunks(shadow, [{ chunk: makeChunk(), vector }])).rejects.toThrow(
+        'VectorStore.stageLegacyShadowChunks: vector contains non-finite values for chunk chunk-1',
+      );
+      await store.abortLegacyShadowTable(shadow);
+      await store.close();
     });
 
     it('compactAfterReindex() — optimize() が呼ばれた場合に compacted を true にする', async () => {
@@ -129,6 +144,63 @@ describe('LanceVectorStore (LanceDB integration)', () => {
       expect(results).toHaveLength(1);
       expect(results[0]?.chunk.id).toBe('persist-test');
       await store2.close();
+    });
+
+    it('recoverInterruptedFullRebuild() — 復元後にカウンタとサイドカーを整合させる', async () => {
+      const embedding = Array.from({ length: 64 }, (_, i) => (i === 0 ? 1 : 0));
+      let vectorArtifact: FullRebuildVectorArtifact | undefined;
+      const rebuildJournal = {
+        recordFullRebuildVectorArtifact: async (input: FullRebuildVectorArtifact): Promise<void> => {
+          vectorArtifact = input;
+        },
+        markFullRebuildVectorBackupComplete: async (): Promise<void> => {
+          if (vectorArtifact !== undefined) {
+            vectorArtifact = { ...vectorArtifact, backupComplete: true };
+          }
+        },
+      };
+      const store1 = new LanceVectorStore({
+        dbPath: tmpDir,
+        dimensions: 64,
+        deferRebuildCleanup: true,
+        rebuildJournal,
+      });
+      await store1.initialize();
+      await store1.upsertChunks(
+        [
+          makeChunk({ id: 'a', filePath: 'src/a.ts' }),
+          makeChunk({ id: 'b', filePath: 'src/b.ts' }),
+        ],
+        [embedding, embedding],
+      );
+      await store1.upsertChunks([makeChunk({ id: 'a-new', filePath: 'src/a.ts' })], [embedding]);
+
+      const shadow = await store1.beginLegacyShadowTable();
+      await store1.stageLegacyShadowDeletions(shadow, { filePaths: ['src/b.ts'] });
+      await store1.swapLegacyShadowTable(shadow, 1);
+
+      const store2 = new LanceVectorStore({ dbPath: tmpDir, dimensions: 64, deferRebuildCleanup: true });
+      await store2.initialize();
+      expect(vectorArtifact).toBeDefined();
+      await store2.recoverInterruptedFullRebuild({
+        rebuildEpoch: 1,
+        phase: 'legacy-swapped',
+        merkleSnapshot: [],
+        vectorArtifacts: [vectorArtifact!],
+      }, 'rollback');
+
+      await expect(store2.getStats()).resolves.toMatchObject({
+        totalChunks: 2,
+        totalFiles: 2,
+        fragmentationRatio: 0,
+      });
+      await expect(readFile(join(tmpDir, 'metadata.json'), 'utf8').then((content) => JSON.parse(content))).resolves.toMatchObject({
+        staleCount: '0',
+        totalFiles: '2',
+      });
+
+      await store2.close();
+      await store1.close();
     });
 
     it('検索結果 — 保存済み generationid を generationId として復元', async () => {

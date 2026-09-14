@@ -1,6 +1,6 @@
 import type Parser from 'tree-sitter';
 import type { SymbolKind } from '../../types/index.js';
-import { hasSyntaxProblem } from './java-structured-support.js';
+import { hasSyntaxProblem } from './tree-sitter-structured-support.js';
 
 export interface DeclarationDescriptor {
   readonly node: Parser.SyntaxNode;

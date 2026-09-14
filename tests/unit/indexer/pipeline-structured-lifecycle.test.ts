@@ -44,6 +44,45 @@ const indexContent = async (
   );
 };
 
+type StructuredPipelineStores = Pick<
+  Awaited<ReturnType<typeof createStructuredPipeline>>,
+  'metadataStore' | 'vectorStore'
+>;
+
+const expectFullRebuildCommitFailureToRollback = async (
+  filePath: string,
+  failureMessage: string,
+  injectFailure: (stores: StructuredPipelineStores) => void,
+): Promise<void> => {
+  const { metadataStore, vectorStore, pipeline } = await createStructuredPipeline();
+  const initialContent = 'export function stable(): number { return 1; }\n';
+  const replacementContent = 'export function replacement(): number { return 2; }\n';
+
+  await indexContent(pipeline, 'added', filePath, initialContent);
+  const generationsBefore = [...(await metadataStore.getStructuredIndexState()).activeGenerations.entries()];
+  const vectorIdsBefore = (await vectorStore.search(new Array(64).fill(0), 100))
+    .map((result) => result.chunk.id)
+    .sort();
+  const merkleBefore = await metadataStore.getAllNodes();
+  injectFailure({ metadataStore, vectorStore });
+
+  await expect(pipeline.reindex(
+    () => Promise.resolve([createEvent('modified', filePath, replacementContent)]),
+    () => Promise.resolve(replacementContent),
+    true,
+  )).rejects.toThrow(failureMessage);
+
+  expect((await vectorStore.search(new Array(64).fill(0), 100)).map((result) => result.chunk.id).sort())
+    .toEqual(vectorIdsBefore);
+  await expect(metadataStore.getAllNodes()).resolves.toEqual(merkleBefore);
+  expect([...(await metadataStore.getStructuredIndexState()).activeGenerations.entries()])
+    .toEqual(generationsBefore);
+  await expect(metadataStore.resolveFile(filePath)).resolves.toEqual({
+    kind: 'active',
+    generationId: generationsBefore[0]?.[1],
+  });
+};
+
 describe('IndexPipeline structured lifecycle', () => {
   it('routes a structured full rebuild through the coordinator full-rebuild API', async () => {
     const { coordinator, pipeline } = await createStructuredPipeline();
@@ -69,8 +108,69 @@ describe('IndexPipeline structured lifecycle', () => {
     });
     expect(runFullRebuildSpy.mock.calls[0]?.[0].files[0]?.chunks).toHaveLength(1);
     expect(runFullRebuildSpy.mock.calls[0]?.[0].files[0]?.embeddings).toHaveLength(1);
+    expect(runFullRebuildSpy.mock.calls[0]?.[0].merkleSnapshot).toEqual([]);
     expect(stageFileSpy).not.toHaveBeenCalled();
     expect(activateFileSpy).not.toHaveBeenCalled();
+  });
+
+  it('evicts cached Merkle descendants during a structured directory deletion', async () => {
+    const { metadataStore, pipeline } = await createStructuredPipeline();
+    const filePath = 'src/cached.ts';
+    const content = 'export function cached(): number { return 1; }\n';
+
+    await indexContent(pipeline, 'added', filePath, content);
+    const merkleTree = (pipeline as unknown as {
+      merkleTree: { getNode(path: string): Promise<unknown> };
+    }).merkleTree;
+    await expect(merkleTree.getNode('src')).resolves.toBeDefined();
+    await expect(merkleTree.getNode(filePath)).resolves.toBeDefined();
+
+    await pipeline.reindex(
+      () => Promise.resolve([createEvent('deleted', 'src', '')]),
+      () => Promise.resolve(''),
+      true,
+    );
+
+    await expect(metadataStore.getMerkleNode(filePath)).resolves.toBeNull();
+    await expect(merkleTree.getNode(filePath)).resolves.toBeUndefined();
+  });
+
+  it('does not abort the legacy shadow after a successful swap', async () => {
+    const { pipeline, vectorStore } = await createStructuredPipeline();
+    const swapLegacyShadowTableSpy = vi.spyOn(vectorStore, 'swapLegacyShadowTable');
+    const abortLegacyShadowTableSpy = vi.spyOn(vectorStore, 'abortLegacyShadowTable');
+    const content = 'export function committed(): number { return 1; }\n';
+    const filePath = 'src/committed.ts';
+
+    await pipeline.reindex(
+      () => Promise.resolve([createEvent('added', filePath, content)]),
+      () => Promise.resolve(content),
+      true,
+    );
+
+    expect(swapLegacyShadowTableSpy).toHaveBeenCalledOnce();
+    expect(abortLegacyShadowTableSpy).not.toHaveBeenCalled();
+  });
+
+  it('persists every full-rebuild commit phase in order', async () => {
+    const { metadataStore, pipeline } = await createStructuredPipeline();
+    const stateSpy = vi.spyOn(metadataStore, 'setStructuredRebuildState');
+    const content = 'export function phased(): number { return 1; }\n';
+
+    await pipeline.reindex(
+      () => Promise.resolve([createEvent('added', 'src/phased.ts', content)]),
+      () => Promise.resolve(content),
+      true,
+    );
+
+    expect(stateSpy.mock.calls.map(([input]) => input.rebuildState)).toEqual([
+      'building',
+      'legacy-swapped',
+      'structured-swapped',
+      'catalog-activated',
+      'merkle-activated',
+      'idle',
+    ]);
   });
 
   it('retires structured state when a file produces no legacy or structured chunks', async () => {
@@ -290,6 +390,64 @@ describe('IndexPipeline structured lifecycle', () => {
     await expect(vectorStore.getStats()).resolves.toEqual(statsBefore);
     await expect(metadataStore.getAllNodes()).resolves.toEqual(merkleBefore);
     expect([...(await metadataStore.getStructuredIndexState()).activeGenerations.entries()]).toEqual(generationsBefore);
+  });
+
+  it('rolls back every index when the legacy full-rebuild commit fails', async () => {
+    await expectFullRebuildCommitFailureToRollback(
+      'src/legacy-commit-failure.ts',
+      'legacy commit failed',
+      ({ vectorStore }) => {
+        vi.spyOn(vectorStore, 'swapLegacyShadowTable').mockRejectedValueOnce(new Error('legacy commit failed'));
+      },
+    );
+  });
+
+  it('rolls back every index when deferred Merkle commit fails', async () => {
+    await expectFullRebuildCommitFailureToRollback(
+      'src/merkle-commit-failure.ts',
+      'Merkle commit failed',
+      ({ metadataStore }) => {
+        vi.spyOn(metadataStore, 'bulkUpsertMerkleNodes').mockRejectedValueOnce(new Error('Merkle commit failed'));
+      },
+    );
+  });
+
+  it('rolls back every index when the structured vector commit fails', async () => {
+    await expectFullRebuildCommitFailureToRollback(
+      'src/structured-commit-failure.ts',
+      'structured commit failed',
+      ({ vectorStore }) => {
+        vi.spyOn(vectorStore, 'swapStructuredShadowTable').mockRejectedValueOnce(new Error('structured commit failed'));
+      },
+    );
+  });
+
+  it('rolls back every index when catalog activation fails', async () => {
+    await expectFullRebuildCommitFailureToRollback(
+      'src/catalog-activation-failure.ts',
+      'catalog activation failed',
+      ({ metadataStore }) => {
+        vi.spyOn(metadataStore, 'activateFullRebuild').mockRejectedValueOnce(new Error('catalog activation failed'));
+      },
+    );
+  });
+
+  it('keeps a successful generation after finalization cleanup fails', async () => {
+    const { metadataStore, vectorStore, pipeline } = await createStructuredPipeline();
+    vi.spyOn(vectorStore, 'finalizeStructuredShadowTable').mockRejectedValueOnce(new Error('structured cleanup failed'));
+    vi.spyOn(metadataStore, 'finalizeFullRebuild').mockRejectedValueOnce(new Error('catalog cleanup failed'));
+
+    await expect(pipeline.reindex(
+      () => Promise.resolve([createEvent(
+        'added',
+        'src/finalization-cleanup-failure.ts',
+        'export function finalized(): number { return 1; }\n',
+      )]),
+      () => Promise.resolve('export function finalized(): number { return 1; }\n'),
+      true,
+    )).resolves.toMatchObject({ chunksIndexed: expect.any(Number) });
+
+    await expect(metadataStore.getStructuredIndexState()).resolves.toMatchObject({ rebuildState: 'idle' });
   });
 
   it('retires structured state when incremental indexing skips an oversized file', async () => {

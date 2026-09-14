@@ -4,7 +4,10 @@ import os from 'node:os';
 import path from 'node:path';
 import Database from 'better-sqlite3';
 import { SqliteMetadataStore } from '../../../src/storage/metadata-store.js';
-import type { StructuredGenerationStage } from '../../../src/storage/interfaces/structured-catalog.js';
+import type {
+  StructuredFullRebuildActivation,
+  StructuredGenerationStage,
+} from '../../../src/storage/interfaces/structured-catalog.js';
 
 const generation = (id: string, fileCompleteness: 'complete' | 'partial' = 'complete') => ({ generationId: id, schemaVersion: 1 as const, parserId: 'test', parserVersion: '1', fileHash: `hash-${id}`, fileCompleteness });
 const stage = (filePath: string, id: string, symbolId: string): StructuredGenerationStage => ({
@@ -21,6 +24,27 @@ const readRows = <T>(databasePath: string, sql: string): T[] => {
     database.close();
   }
 };
+
+const activateInitialGeneration = async (store: SqliteMetadataStore): Promise<void> => {
+  await store.incrementRebuildEpoch();
+  await store.stageGeneration(stage('src/a.ts', 'g1', 'old'));
+  await store.activateGeneration({
+    filePath: 'src/a.ts',
+    generationId: 'g1',
+    expectedActiveGeneration: null,
+    expectedRebuildEpoch: 1,
+  });
+};
+
+const fullRebuildActivation = (
+  rebuildEpoch: number,
+  generationId = 'g2',
+): StructuredFullRebuildActivation => ({
+  rebuildEpoch,
+  files: [{ filePath: 'src/a.ts', generationId, expectedActiveGeneration: 'g1' }],
+  retiredFiles: [],
+});
+
 describe('SQLite structured catalog', () => {
   let dir: string;
   let store: SqliteMetadataStore;
@@ -41,6 +65,160 @@ describe('SQLite structured catalog', () => {
     expect((await store.activateGeneration({ filePath: 'src/a.ts', generationId: 'g2', expectedActiveGeneration: 'g1', expectedRebuildEpoch: 1 })).activated).toBe(true);
     expect(await store.getTombstone('old')).toMatchObject({ symbolId: 'old' });
     expect((await store.resolveSymbol('new')).kind).toBe('active');
+  });
+
+  it('restores the previous generations after a full rebuild rollback', async () => {
+    await store.initialize();
+    await activateInitialGeneration(store);
+
+    const rebuildEpoch = await store.incrementRebuildEpoch();
+    const activation = fullRebuildActivation(rebuildEpoch);
+    await store.prepareFullRebuild(activation, []);
+    await store.stageGeneration({ ...stage('src/a.ts', 'g2', 'new'), rebuildEpoch });
+    await store.activateFullRebuild(activation);
+    await store.rollbackFullRebuild(activation);
+
+    expect(await store.resolveFile('src/a.ts')).toEqual({ kind: 'active', generationId: 'g1' });
+    expect(await store.getGeneration('src/a.ts', 'g2')).toBeNull();
+    expect((await store.resolveSymbol('old')).kind).toBe('active');
+    expect((await store.resolveSymbol('new')).kind).toBe('missing');
+  });
+
+  it('recovers an interrupted full rebuild during startup', async () => {
+    const databasePath = path.join(dir, 'metadata.db');
+    await store.initialize();
+    await activateInitialGeneration(store);
+
+    const rebuildEpoch = await store.incrementRebuildEpoch();
+    const activation = fullRebuildActivation(rebuildEpoch);
+    await store.setStructuredRebuildState({ rebuildState: 'building' });
+    await store.prepareFullRebuild(activation, []);
+    await store.stageGeneration({ ...stage('src/a.ts', 'g2', 'new'), rebuildEpoch });
+    await store.close();
+
+    store = new SqliteMetadataStore({ databasePath });
+    await store.initialize();
+
+    expect(await store.resolveFile('src/a.ts')).toEqual({ kind: 'active', generationId: 'g1' });
+    expect(await store.getGeneration('src/a.ts', 'g2')).toBeNull();
+    expect(await store.getStructuredIndexState()).toMatchObject({
+      rebuildState: 'failed',
+      lastErrorCode: 'interrupted full rebuild rolled back during startup recovery',
+    });
+  });
+
+  it('initializes when the persisted Merkle snapshot is malformed', async () => {
+    const databasePath = path.join(dir, 'metadata.db');
+    await store.initialize();
+    const rebuildEpoch = await store.incrementRebuildEpoch();
+    await store.setStructuredRebuildState({ rebuildState: 'building' });
+    await store.prepareFullRebuild({ rebuildEpoch, files: [], retiredFiles: [] }, []);
+    await store.close();
+
+    const database = new Database(databasePath);
+    database.prepare('UPDATE structured_rebuild_backup_runs SET merkle_snapshot = ?').run('not-json');
+    database.close();
+
+    store = new SqliteMetadataStore({ databasePath });
+    await expect(store.initialize()).resolves.toBeUndefined();
+    expect(readRows<{ rebuild_epoch: number }>(
+      databasePath,
+      'SELECT rebuild_epoch FROM structured_rebuild_backup_runs',
+    )).toEqual([{ rebuild_epoch: rebuildEpoch }]);
+  });
+
+  it('rejects deferred recovery when the persisted Merkle snapshot is malformed', async () => {
+    const databasePath = path.join(dir, 'metadata.db');
+    await store.initialize();
+    const rebuildEpoch = await store.incrementRebuildEpoch();
+    await store.setStructuredRebuildState({ rebuildState: 'building' });
+    await store.prepareFullRebuild({ rebuildEpoch, files: [], retiredFiles: [] }, []);
+    await store.close();
+
+    const database = new Database(databasePath);
+    database.prepare('UPDATE structured_rebuild_backup_runs SET merkle_snapshot = ?').run('not-json');
+    database.close();
+
+    store = new SqliteMetadataStore({ databasePath, deferFullRebuildRecovery: true });
+    await store.initialize();
+
+    await expect(store.getFullRebuildRecovery()).rejects.toThrow('Invalid full rebuild Merkle snapshot');
+    expect(readRows<{ rebuild_epoch: number }>(
+      databasePath,
+      'SELECT rebuild_epoch FROM structured_rebuild_backup_runs',
+    )).toEqual([{ rebuild_epoch: rebuildEpoch }]);
+  });
+
+  it('removes retired file rows when finalizing a full rebuild', async () => {
+    await store.initialize();
+    await store.incrementRebuildEpoch();
+    await store.stageGeneration(stage('src/a.ts', 'g1', 'old'));
+    await store.activateGeneration({
+      filePath: 'src/a.ts',
+      generationId: 'g1',
+      expectedActiveGeneration: null,
+      expectedRebuildEpoch: 1,
+    });
+
+    const rebuildEpoch = await store.incrementRebuildEpoch();
+    const activation = {
+      rebuildEpoch,
+      files: [],
+      retiredFiles: [{ filePath: 'src/a.ts', expectedActiveGeneration: 'g1' }],
+    } as const;
+    await store.prepareFullRebuild(activation, []);
+    await store.activateFullRebuild(activation);
+
+    expect(readRows<{ file_path: string; active_generation: string | null; pending_generation: string | null }>(
+      path.join(dir, 'metadata.db'),
+      'SELECT file_path, active_generation, pending_generation FROM structured_files',
+    )).toEqual([{ file_path: 'src/a.ts', active_generation: null, pending_generation: null }]);
+
+    await store.finalizeFullRebuild(activation);
+
+    expect(readRows<{ file_path: string }>(
+      path.join(dir, 'metadata.db'),
+      'SELECT file_path FROM structured_files',
+    )).toEqual([]);
+  });
+
+  it('does not roll back a finalized generation when cleanup left backup rows', async () => {
+    const databasePath = path.join(dir, 'metadata.db');
+    await store.initialize();
+    await activateInitialGeneration(store);
+
+    const rebuildEpoch = await store.incrementRebuildEpoch();
+    const activation = fullRebuildActivation(rebuildEpoch);
+    await store.setStructuredRebuildState({ rebuildState: 'building' });
+    await store.prepareFullRebuild(activation, []);
+    await store.stageGeneration({ ...stage('src/a.ts', 'g2', 'new'), rebuildEpoch });
+    await store.activateFullRebuild(activation);
+    await store.setStructuredRebuildState({ rebuildState: 'idle' });
+    await store.close();
+
+    store = new SqliteMetadataStore({ databasePath });
+    await store.initialize();
+
+    expect(await store.resolveFile('src/a.ts')).toEqual({ kind: 'active', generationId: 'g2' });
+  });
+
+  it('removes backup remnants from earlier rebuild epochs before preparing a new rebuild', async () => {
+    await store.initialize();
+    await activateInitialGeneration(store);
+
+    const firstEpoch = await store.incrementRebuildEpoch();
+    const firstActivation = fullRebuildActivation(firstEpoch);
+    await store.prepareFullRebuild(firstActivation, []);
+
+    const secondEpoch = await store.incrementRebuildEpoch();
+    const secondActivation = fullRebuildActivation(secondEpoch, 'g3');
+    await store.prepareFullRebuild(secondActivation, []);
+
+    const rows = readRows<{ rebuild_epoch: number }>(
+      path.join(dir, 'metadata.db'),
+      'SELECT rebuild_epoch FROM structured_rebuild_backup_runs ORDER BY rebuild_epoch',
+    );
+    expect(rows).toEqual([{ rebuild_epoch: secondEpoch }]);
   });
 
   it('does not clear pending generation after a compare-and-swap conflict', async () => {

@@ -97,10 +97,66 @@ export interface StructuredReconciliationResult {
   readonly prunedTombstones: number;
 }
 
-export interface IStructuredCatalog {
+export type FullRebuildCommitPhase =
+  | 'building'
+  | 'legacy-swapped'
+  | 'structured-swapped'
+  | 'catalog-activated'
+  | 'merkle-activated'
+  | 'idle'
+  | 'failed';
+
+export interface MerkleSnapshotNode {
+  readonly path: string;
+  readonly hash: string;
+  readonly parentPath: string | null;
+  readonly isDirectory: boolean;
+}
+
+export type FullRebuildVectorTable = 'legacy' | 'structured';
+
+export interface FullRebuildVectorArtifact {
+  readonly rebuildEpoch: number;
+  readonly table: FullRebuildVectorTable;
+  readonly shadowName: string;
+  readonly replacementName: string;
+  readonly backupName: string | null;
+  readonly hadLiveTable: boolean;
+  readonly backupComplete: boolean;
+}
+
+export interface FullRebuildVectorJournal {
+  recordFullRebuildVectorArtifact(input: FullRebuildVectorArtifact): Promise<void>;
+  markFullRebuildVectorBackupComplete(input: Pick<FullRebuildVectorArtifact, 'rebuildEpoch' | 'table'>): Promise<void>;
+  getFullRebuildRecovery?(): Promise<FullRebuildRecovery | null>;
+}
+
+export interface FullRebuildRecovery {
+  readonly rebuildEpoch: number;
+  readonly phase: FullRebuildCommitPhase;
+  readonly merkleSnapshot: readonly MerkleSnapshotNode[] | null;
+  readonly vectorArtifacts: readonly FullRebuildVectorArtifact[];
+}
+
+export interface StructuredFullRebuildFile {
+  readonly filePath: string;
+  readonly generationId: string;
+  readonly expectedActiveGeneration: string | null;
+}
+
+export interface StructuredFullRebuildActivation {
+  readonly rebuildEpoch: number;
+  readonly files: readonly StructuredFullRebuildFile[];
+  readonly retiredFiles: readonly {
+    readonly filePath: string;
+    readonly expectedActiveGeneration: string;
+  }[];
+}
+
+export interface IStructuredCatalog extends FullRebuildVectorJournal {
   bootstrapStructuredSchema(): Promise<void>;
   getStructuredIndexState(): Promise<StructuredIndexState>;
-  setStructuredRebuildState(input: { rebuildState: string; lastErrorCode?: string | null }): Promise<void>;
+  setStructuredRebuildState(input: { rebuildState: FullRebuildCommitPhase; lastErrorCode?: string | null }): Promise<void>;
   incrementRebuildEpoch(): Promise<number>;
   stageGeneration(input: StructuredGenerationStage): Promise<void>;
   activateGeneration(input: StructuredGenerationActivation): Promise<StructuredActivationResult>;
@@ -115,5 +171,14 @@ export interface IStructuredCatalog {
   getImportsForSymbol(symbolId: string): Promise<readonly StructuredImportRecord[]>;
   getFileDeclarations(filePath: string): Promise<readonly StructuredDeclaration[]>;
   getGeneration(filePath: string, generationId: string): Promise<StructuredGeneration | null>;
+  prepareFullRebuild(input: StructuredFullRebuildActivation, merkleSnapshot: readonly MerkleSnapshotNode[]): Promise<void>;
+  recordFullRebuildVectorArtifact(input: FullRebuildVectorArtifact): Promise<void>;
+  markFullRebuildVectorBackupComplete(input: Pick<FullRebuildVectorArtifact, 'rebuildEpoch' | 'table'>): Promise<void>;
+  activateFullRebuild(input: StructuredFullRebuildActivation): Promise<void>;
+  rollbackFullRebuild(input: StructuredFullRebuildActivation): Promise<void>;
+  finalizeFullRebuild(input: StructuredFullRebuildActivation): Promise<void>;
+  getFullRebuildRecovery?(): Promise<FullRebuildRecovery | null>;
+  recoverInterruptedFullRebuild?(): Promise<void>;
+  finalizeInterruptedFullRebuild?(): Promise<void>;
   reconcileStructuredState(): Promise<StructuredReconciliationResult>;
 }

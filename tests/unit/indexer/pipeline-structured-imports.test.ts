@@ -38,6 +38,28 @@ const importFor = (content: string) => ({
   position: { startLine: 1, startColumn: 0, endLine: 1, endColumn: content.length },
 });
 
+const createDegradedImportFixture = async () => {
+  const { metadataStore, vectorStore, pipeline, pluginRegistry } = await createCppPipeline();
+  const filePath = 'header.h';
+  const initial = '#include <stdio.h>\n';
+  const broken = '#include <stdio.h>\n// degraded\n';
+  await pipeline.processEvents([eventFor('added', filePath, initial)], async () => initial);
+  const activeBefore = await metadataStore.resolveFile(filePath);
+  const vectorsBefore = await vectorStore.search(new Array(64).fill(0), 100, { filePathPrefix: filePath });
+  const plugin = pluginRegistry.getLanguagePlugin(filePath);
+  if (plugin?.createStructuredParser === undefined) throw new Error('C++ structured parser is unavailable');
+  plugin.createStructuredParser = async () => ({
+    parseStructured: async () => ({
+      status: 'degraded',
+      retrievability: 'partial',
+      declarations: [],
+      imports: [importFor(broken)],
+      failure: { reasonCode: 'parse_error', message: 'degraded import-only fixture' },
+    }),
+  });
+  return { metadataStore, vectorStore, pipeline, filePath, broken, activeBefore, vectorsBefore };
+};
+
 describe('IndexPipeline structured import-only handling', () => {
   it('persists an ok import-only file through incremental processing', async () => {
     const { metadataStore, pipeline } = await createCppPipeline();
@@ -51,24 +73,7 @@ describe('IndexPipeline structured import-only handling', () => {
   });
 
   it('routes degraded import-only incremental updates to DLQ without replacing active state', async () => {
-    const { metadataStore, vectorStore, pipeline, pluginRegistry } = await createCppPipeline();
-    const filePath = 'header.h';
-    const initial = '#include <stdio.h>\n';
-    const broken = '#include <stdio.h>\n// degraded\n';
-    await pipeline.processEvents([eventFor('added', filePath, initial)], async () => initial);
-    const activeBefore = await metadataStore.resolveFile(filePath);
-    const vectorsBefore = await vectorStore.search(new Array(64).fill(0), 100, { filePathPrefix: filePath });
-    const plugin = pluginRegistry.getLanguagePlugin(filePath);
-    if (plugin?.createStructuredParser === undefined) throw new Error('C++ structured parser is unavailable');
-    plugin.createStructuredParser = async () => ({
-      parseStructured: async () => ({
-        status: 'degraded',
-        retrievability: 'partial',
-        declarations: [],
-        imports: [importFor(broken)],
-        failure: { reasonCode: 'parse_error', message: 'degraded import-only fixture' },
-      }),
-    });
+    const { metadataStore, vectorStore, pipeline, filePath, broken, activeBefore, vectorsBefore } = await createDegradedImportFixture();
 
     await pipeline.processEvents([eventFor('modified', filePath, broken)], async () => broken);
     await expect(metadataStore.getDeadLetterEntries()).resolves.toHaveLength(1);
@@ -78,24 +83,7 @@ describe('IndexPipeline structured import-only handling', () => {
   });
 
   it('aborts a degraded import-only full rebuild and preserves active state', async () => {
-    const { metadataStore, vectorStore, pipeline, pluginRegistry } = await createCppPipeline();
-    const filePath = 'header.h';
-    const initial = '#include <stdio.h>\n';
-    const broken = '#include <stdio.h>\n// degraded rebuild\n';
-    await pipeline.processEvents([eventFor('added', filePath, initial)], async () => initial);
-    const activeBefore = await metadataStore.resolveFile(filePath);
-    const vectorsBefore = await vectorStore.search(new Array(64).fill(0), 100, { filePathPrefix: filePath });
-    const plugin = pluginRegistry.getLanguagePlugin(filePath);
-    if (plugin?.createStructuredParser === undefined) throw new Error('C++ structured parser is unavailable');
-    plugin.createStructuredParser = async () => ({
-      parseStructured: async () => ({
-        status: 'degraded',
-        retrievability: 'partial',
-        declarations: [],
-        imports: [importFor(broken)],
-        failure: { reasonCode: 'parse_error', message: 'degraded import-only rebuild fixture' },
-      }),
-    });
+    const { metadataStore, vectorStore, pipeline, filePath, broken, activeBefore, vectorsBefore } = await createDegradedImportFixture();
 
     await expect(pipeline.reindex(
       async () => [eventFor('modified', filePath, broken)],

@@ -217,7 +217,7 @@ export function vectorStoreContractTests(
 
       const shadowTable = await store.beginStructuredShadowTable();
       await stageGeneration(store, { filePath: 'src/b.ts', generationId: 'gen-2', chunkId: 'b1', symbolId: 'symbol-2' });
-      await store.swapStructuredShadowTable(shadowTable);
+      await store.swapStructuredShadowTable(shadowTable, 1);
 
       await expectSearchResults(store, { count: 1, filePath: 'src/b.ts' });
     });
@@ -241,7 +241,7 @@ export function vectorStoreContractTests(
         chunks,
         vectors: chunks.map(() => embedding),
       });
-      await store.swapStructuredShadowTable(shadowTable);
+      await store.swapStructuredShadowTable(shadowTable, 1);
 
       const results = await store.search(embedding, chunkCount);
       expect(results).toHaveLength(chunkCount);
@@ -289,7 +289,7 @@ export function vectorStoreContractTests(
       // Live rows stay untouched while the shadow is open.
       await expectSearchResults(store, { count: 2, chunkId: 'a1' });
 
-      await store.swapLegacyShadowTable(shadow);
+      await store.swapLegacyShadowTable(shadow, 1);
       await expectSearchResults(store, { count: 1, chunkId: 'a2', filePath: 'src/a.ts' });
     });
 
@@ -308,6 +308,21 @@ export function vectorStoreContractTests(
       await expect(store.getStats()).resolves.toEqual(statsBefore);
     });
 
+    it('legacy shadow handles are unique and reject stale writers', async () => {
+      const firstShadow = await store.beginLegacyShadowTable();
+      const secondShadow = await store.beginLegacyShadowTable();
+
+      expect(secondShadow.name).not.toBe(firstShadow.name);
+      await expect(store.stageLegacyShadowChunks(firstShadow, [
+        { chunk: makeChunk({ id: 'stale', filePath: 'src/stale.ts' }), vector: embedding },
+      ])).rejects.toThrow();
+
+      await store.stageLegacyShadowChunks(secondShadow, [
+        { chunk: makeChunk({ id: 'current', filePath: 'src/current.ts' }), vector: embedding },
+      ]);
+      await store.abortLegacyShadowTable(secondShadow);
+    });
+
     it('legacy shadow staging replaces rows for the same file and stages prefix deletions', async () => {
       await upsertChunks(store, [
         makeChunk({ id: 'a1', filePath: 'src/a.ts' }),
@@ -321,11 +336,11 @@ export function vectorStoreContractTests(
         { chunk: makeChunk({ id: 'a1b', filePath: 'src/a.ts' }), vector: embedding },
       ]);
       await store.stageLegacyShadowDeletions(shadow, { pathPrefixes: ['src/nested'] });
-      await store.swapLegacyShadowTable(shadow);
+      await store.swapLegacyShadowTable(shadow, 1);
 
       const results = await store.search(embedding, 10);
       expect(results).toHaveLength(2);
-      expect(results.map((result) => result.chunk.id).sort()).toEqual(['a1b', 'c1']);
+      expect(results.map((result) => result.chunk.id).sort((left, right) => left.localeCompare(right))).toEqual(['a1b', 'c1']);
       const stats = await store.getStats();
       expect(stats.totalChunks).toBe(2);
       expect(stats.totalFiles).toBe(2);
@@ -339,7 +354,7 @@ export function vectorStoreContractTests(
 
       const shadow = await store.beginLegacyShadowTable();
       await store.stageLegacyShadowDeletions(shadow, { filePaths: ['src/a.ts', 'src/b.ts'] });
-      await store.swapLegacyShadowTable(shadow);
+      await store.swapLegacyShadowTable(shadow, 1);
 
       await expectSearchResults(store, { count: 0 });
       const stats = await store.getStats();
@@ -355,9 +370,9 @@ export function vectorStoreContractTests(
       await store.stageLegacyShadowChunks(secondShadow, [
         { chunk: makeChunk({ id: 'd1', filePath: 'src/d.ts' }), vector: embedding },
       ]);
-      await store.swapLegacyShadowTable(secondShadow);
+      await store.swapLegacyShadowTable(secondShadow, 2);
       const results = await store.search(embedding, 10);
-      expect(results.map((result) => result.chunk.id).sort()).toEqual(['c1', 'd1']);
+      expect(results.map((result) => result.chunk.id).sort((left, right) => left.localeCompare(right))).toEqual(['c1', 'd1']);
       const statsAfter = await store.getStats();
       expect(statsAfter.totalChunks).toBe(2);
       expect(statsAfter.totalFiles).toBe(2);

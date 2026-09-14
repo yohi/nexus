@@ -10,6 +10,11 @@ import type {
   StructuredFileRetirement,
   StructuredGenerationActivation,
   StructuredGenerationStage,
+  StructuredFullRebuildActivation,
+  FullRebuildCommitPhase,
+  FullRebuildRecovery,
+  FullRebuildVectorArtifact,
+  MerkleSnapshotNode,
   StructuredImportRecord,
   StructuredIndexCounts,
   StructuredIndexState,
@@ -25,9 +30,11 @@ import { sha256Hex } from '../structured/hash.js';
 export interface SqliteMetadataStoreOptions {
   databasePath: string;
   batchSize?: number;
+  deferFullRebuildRecovery?: boolean;
 }
 
 const PRIMARY_STATS_ID = 'primary';
+type FullRebuildValidationMode = 'prepare' | 'activate';
 
 const UPSERT_INDEX_STATS_SQL = `
   INSERT INTO index_stats (
@@ -47,6 +54,7 @@ export class SqliteMetadataStore implements IMetadataStore, IStructuredCatalog {
   private readonly db: Database.Database;
 
   private readonly batchSize: number;
+  private readonly deferFullRebuildRecovery: boolean;
 
   private readonly asyncBoundary = async (): Promise<void> =>
     new Promise((resolve) => {
@@ -102,6 +110,7 @@ export class SqliteMetadataStore implements IMetadataStore, IStructuredCatalog {
     } else {
       this.batchSize = DEFAULT_BATCH_SIZE;
     }
+    this.deferFullRebuildRecovery = options.deferFullRebuildRecovery ?? false;
   }
 
   private addMissingColumns(
@@ -126,6 +135,10 @@ export class SqliteMetadataStore implements IMetadataStore, IStructuredCatalog {
       ['structured_rebuild_state', 'TEXT'],
       ['structured_rebuild_epoch', 'INTEGER NOT NULL DEFAULT 0'],
       ['structured_last_error_code', 'TEXT'],
+    ]);
+    this.addMissingColumns('structured_rebuild_backup_runs', [
+      ['phase', "TEXT NOT NULL DEFAULT 'building'"],
+      ['merkle_snapshot', 'TEXT'],
     ]);
     this.db.prepare('INSERT OR IGNORE INTO index_stats (id,total_files,total_chunks,last_indexed_at,last_full_scan_at,overflow_count,last_error,structured_rebuild_epoch) VALUES (?,?,?,?,?,?,?,?)').run(PRIMARY_STATS_ID, 0, 0, null, null, 0, null, 0);
     this.db.prepare('UPDATE index_stats SET structured_rebuild_epoch = COALESCE(structured_rebuild_epoch, 0) WHERE structured_rebuild_epoch IS NULL').run();
@@ -297,8 +310,46 @@ export class SqliteMetadataStore implements IMetadataStore, IStructuredCatalog {
         symbol_id TEXT PRIMARY KEY, file_path TEXT NOT NULL, generation TEXT NOT NULL,
         retired_at_rebuild_epoch INTEGER NOT NULL, retired_at INTEGER NOT NULL DEFAULT 0
       );
+
+      CREATE TABLE IF NOT EXISTS structured_rebuild_backup_files (
+        rebuild_epoch INTEGER NOT NULL,
+        file_path TEXT NOT NULL,
+        active_generation TEXT,
+        pending_generation TEXT,
+        PRIMARY KEY (rebuild_epoch, file_path)
+      );
+
+      CREATE TABLE IF NOT EXISTS structured_rebuild_backup_tombstones (
+        rebuild_epoch INTEGER NOT NULL,
+        symbol_id TEXT NOT NULL,
+        file_path TEXT NOT NULL,
+        generation TEXT NOT NULL,
+        retired_at_rebuild_epoch INTEGER NOT NULL,
+        retired_at INTEGER NOT NULL,
+        PRIMARY KEY (rebuild_epoch, symbol_id)
+      );
+
+      CREATE TABLE IF NOT EXISTS structured_rebuild_backup_runs (
+        rebuild_epoch INTEGER PRIMARY KEY,
+        phase TEXT NOT NULL DEFAULT 'building',
+        merkle_snapshot TEXT
+      );
+
+      CREATE TABLE IF NOT EXISTS structured_rebuild_backup_vectors (
+        rebuild_epoch INTEGER NOT NULL,
+        table_kind TEXT NOT NULL CHECK (table_kind IN ('legacy', 'structured')),
+        shadow_name TEXT NOT NULL,
+        replacement_name TEXT NOT NULL,
+        backup_name TEXT,
+        had_live_table INTEGER NOT NULL CHECK (had_live_table IN (0, 1)),
+        backup_complete INTEGER NOT NULL DEFAULT 0 CHECK (backup_complete IN (0, 1)),
+        PRIMARY KEY (rebuild_epoch, table_kind)
+      );
     `);
     this.migrateSchema();
+    if (!this.deferFullRebuildRecovery) {
+      this.recoverInterruptedFullRebuildOnInitialize();
+    }
   }
 
   async bootstrapStructuredSchema(): Promise<void> {
@@ -497,6 +548,365 @@ export class SqliteMetadataStore implements IMetadataStore, IStructuredCatalog {
     };
   }
 
+  private validateFullRebuildEpoch(
+    input: StructuredFullRebuildActivation,
+    mode: FullRebuildValidationMode,
+  ): void {
+    const epoch = this.db.prepare(
+      'SELECT structured_rebuild_epoch AS value FROM index_stats WHERE id = ?',
+    ).get(PRIMARY_STATS_ID) as { value: number | null } | undefined;
+    if ((epoch?.value ?? 0) !== input.rebuildEpoch) {
+      throw new Error(`SqliteMetadataStore.${mode}FullRebuild: stale rebuild epoch ${input.rebuildEpoch}`);
+    }
+  }
+
+  private validateFullRebuildTarget(
+    paths: Set<string>,
+    filePath: string,
+    expectedActiveGeneration: string | null,
+    generationId: string | undefined,
+    retired: boolean,
+    mode: FullRebuildValidationMode,
+  ): void {
+    const operation = `SqliteMetadataStore.${mode}FullRebuild`;
+    if (paths.has(filePath)) {
+      throw new Error(`${operation}: duplicate ${retired ? 'retired ' : ''}file ${filePath}`);
+    }
+    paths.add(filePath);
+
+    const requiresPendingGeneration = mode === 'activate' && generationId !== undefined;
+    const query = requiresPendingGeneration
+      ? 'SELECT active_generation,pending_generation FROM structured_files WHERE file_path = ?'
+      : 'SELECT active_generation FROM structured_files WHERE file_path = ?';
+    const row = this.db.prepare(query).get(filePath) as {
+      active_generation?: string | null;
+      pending_generation?: string | null;
+    } | undefined;
+    const activeMatches = retired
+      ? row?.active_generation === expectedActiveGeneration
+      : (row?.active_generation ?? null) === expectedActiveGeneration;
+    const pendingMatches = !requiresPendingGeneration || row?.pending_generation === generationId;
+    if (!activeMatches || !pendingMatches) {
+      throw new Error(`${operation}: ${retired ? 'retired ' : ''}generation validation failed for ${filePath}`);
+    }
+  }
+
+  private validateFullRebuildTargets(
+    input: StructuredFullRebuildActivation,
+    mode: FullRebuildValidationMode,
+  ): void {
+    this.validateFullRebuildEpoch(input, mode);
+    const paths = new Set<string>();
+    for (const file of input.files) {
+      this.validateFullRebuildTarget(
+        paths,
+        file.filePath,
+        file.expectedActiveGeneration,
+        file.generationId,
+        false,
+        mode,
+      );
+    }
+    for (const file of input.retiredFiles) {
+      this.validateFullRebuildTarget(
+        paths,
+        file.filePath,
+        file.expectedActiveGeneration,
+        undefined,
+        true,
+        mode,
+      );
+    }
+  }
+
+  async prepareFullRebuild(input: StructuredFullRebuildActivation, merkleSnapshot: readonly MerkleSnapshotNode[]): Promise<void> {
+    await this.asyncBoundary();
+    this.immediateTransaction(() => {
+      this.validateFullRebuildTargets(input, 'prepare');
+
+      this.db.prepare('DELETE FROM structured_rebuild_backup_runs').run();
+      this.db.prepare('DELETE FROM structured_rebuild_backup_files').run();
+      this.db.prepare('DELETE FROM structured_rebuild_backup_tombstones').run();
+      this.db.prepare('DELETE FROM structured_rebuild_backup_vectors').run();
+      this.db.prepare(`
+        INSERT INTO structured_rebuild_backup_files (rebuild_epoch,file_path,active_generation,pending_generation)
+        SELECT ?,file_path,active_generation,pending_generation
+        FROM structured_files
+      `).run(input.rebuildEpoch);
+      this.db.prepare('INSERT INTO structured_rebuild_backup_tombstones (rebuild_epoch,symbol_id,file_path,generation,retired_at_rebuild_epoch,retired_at) SELECT ?,symbol_id,file_path,generation,retired_at_rebuild_epoch,retired_at FROM symbol_tombstones').run(input.rebuildEpoch);
+      this.db.prepare('INSERT INTO structured_rebuild_backup_runs (rebuild_epoch,phase,merkle_snapshot) VALUES (?,?,?)').run(
+        input.rebuildEpoch,
+        'building',
+        JSON.stringify(merkleSnapshot),
+      );
+    });
+  }
+
+  async recordFullRebuildVectorArtifact(input: FullRebuildVectorArtifact): Promise<void> {
+    await this.asyncBoundary();
+    this.immediateTransaction(() => {
+      this.validateFullRebuildEpoch(
+        {
+          rebuildEpoch: input.rebuildEpoch,
+          files: [],
+          retiredFiles: [],
+        },
+        'prepare',
+      );
+      this.db.prepare(`
+        INSERT INTO structured_rebuild_backup_vectors
+          (rebuild_epoch,table_kind,shadow_name,replacement_name,backup_name,had_live_table,backup_complete)
+        VALUES (?,?,?,?,?,?,?)
+        ON CONFLICT(rebuild_epoch,table_kind) DO UPDATE SET
+          shadow_name=excluded.shadow_name,
+          replacement_name=excluded.replacement_name,
+          backup_name=excluded.backup_name,
+          had_live_table=excluded.had_live_table,
+          backup_complete=excluded.backup_complete
+      `).run(
+        input.rebuildEpoch,
+        input.table,
+        input.shadowName,
+        input.replacementName,
+        input.backupName,
+        input.hadLiveTable ? 1 : 0,
+        input.backupComplete ? 1 : 0,
+      );
+    });
+  }
+
+  async markFullRebuildVectorBackupComplete(
+    input: Pick<FullRebuildVectorArtifact, 'rebuildEpoch' | 'table'>,
+  ): Promise<void> {
+    await this.asyncBoundary();
+    this.immediateTransaction(() => {
+      const result = this.db.prepare(`
+        UPDATE structured_rebuild_backup_vectors
+        SET backup_complete=1
+        WHERE rebuild_epoch=? AND table_kind=?
+      `).run(input.rebuildEpoch, input.table);
+      if (result.changes !== 1) {
+        throw new Error(`SqliteMetadataStore.markFullRebuildVectorBackupComplete: missing ${input.table} artifact for epoch ${input.rebuildEpoch}`);
+      }
+    });
+  }
+
+  async activateFullRebuild(input: StructuredFullRebuildActivation): Promise<void> {
+    await this.asyncBoundary();
+    this.immediateTransaction(() => {
+      this.validateFullRebuildTargets(input, 'activate');
+
+      const symbolsByFileAndGeneration = this.db.prepare('SELECT symbol_id FROM symbols WHERE file_path = ? AND generation = ?');
+      const addTombstone = this.db.prepare('INSERT OR REPLACE INTO symbol_tombstones (symbol_id,file_path,generation,retired_at_rebuild_epoch,retired_at) VALUES (?,?,?,?,?)');
+      const deleteNewTombstone = this.db.prepare('DELETE FROM symbol_tombstones WHERE symbol_id IN (SELECT symbol_id FROM symbols WHERE file_path = ? AND generation = ?)');
+      const activate = this.db.prepare('UPDATE structured_files SET active_generation = ?, pending_generation = NULL WHERE file_path = ?');
+      for (const file of input.files) {
+        if (file.expectedActiveGeneration !== null) {
+          const newSymbols = new Set((symbolsByFileAndGeneration.all(file.filePath, file.generationId) as Array<{ symbol_id: string }>).map((row) => row.symbol_id));
+          for (const row of symbolsByFileAndGeneration.all(file.filePath, file.expectedActiveGeneration) as Array<{ symbol_id: string }>) {
+            if (!newSymbols.has(row.symbol_id)) addTombstone.run(row.symbol_id, file.filePath, file.expectedActiveGeneration, input.rebuildEpoch, Date.now());
+          }
+        }
+        deleteNewTombstone.run(file.filePath, file.generationId);
+        activate.run(file.generationId, file.filePath);
+      }
+      for (const file of input.retiredFiles) {
+        for (const row of symbolsByFileAndGeneration.all(file.filePath, file.expectedActiveGeneration) as Array<{ symbol_id: string }>) {
+          addTombstone.run(row.symbol_id, file.filePath, file.expectedActiveGeneration, input.rebuildEpoch, Date.now());
+        }
+        activate.run(null, file.filePath);
+      }
+    });
+  }
+
+  async rollbackFullRebuild(input: StructuredFullRebuildActivation): Promise<void> {
+    await this.asyncBoundary();
+    this.restoreFullRebuild(input.rebuildEpoch, null);
+  }
+
+  async finalizeFullRebuild(input: StructuredFullRebuildActivation): Promise<void> {
+    await this.asyncBoundary();
+    this.immediateTransaction(() => {
+      this.pruneOrphanedStructuredData();
+      this.db.prepare('DELETE FROM structured_files WHERE active_generation IS NULL AND pending_generation IS NULL').run();
+      this.db.prepare('DELETE FROM structured_rebuild_backup_runs WHERE rebuild_epoch = ?').run(input.rebuildEpoch);
+      this.db.prepare('DELETE FROM structured_rebuild_backup_files WHERE rebuild_epoch = ?').run(input.rebuildEpoch);
+      this.db.prepare('DELETE FROM structured_rebuild_backup_tombstones WHERE rebuild_epoch = ?').run(input.rebuildEpoch);
+      this.db.prepare('DELETE FROM structured_rebuild_backup_vectors WHERE rebuild_epoch = ?').run(input.rebuildEpoch);
+    });
+  }
+
+  private readFullRebuildRecovery(): FullRebuildRecovery | null {
+    const row = this.db.prepare(`
+      SELECT r.rebuild_epoch AS rebuildEpoch, r.phase, r.merkle_snapshot AS merkleSnapshot
+      FROM structured_rebuild_backup_runs AS r
+      JOIN index_stats AS s ON s.structured_rebuild_epoch = r.rebuild_epoch
+      WHERE s.id = ? AND r.phase = s.structured_rebuild_state
+      ORDER BY r.rebuild_epoch DESC
+      LIMIT 1
+    `).get(PRIMARY_STATS_ID) as { rebuildEpoch: number; phase: string; merkleSnapshot: string | null } | undefined;
+    if (row === undefined || !this.isRecoverablePhase(row.phase)) return null;
+
+    const vectorArtifacts = this.db.prepare(`
+      SELECT
+        rebuild_epoch AS rebuildEpoch,
+        table_kind AS tableKind,
+        shadow_name AS shadowName,
+        replacement_name AS replacementName,
+        backup_name AS backupName,
+        had_live_table AS hadLiveTable,
+        backup_complete AS backupComplete
+      FROM structured_rebuild_backup_vectors
+      WHERE rebuild_epoch=?
+      ORDER BY table_kind
+    `).all(row.rebuildEpoch) as Array<{
+      rebuildEpoch: number;
+      tableKind: FullRebuildVectorArtifact['table'];
+      shadowName: string;
+      replacementName: string;
+      backupName: string | null;
+      hadLiveTable: number;
+      backupComplete: number;
+    }>;
+
+    return {
+      rebuildEpoch: row.rebuildEpoch,
+      phase: row.phase,
+      merkleSnapshot: this.parseMerkleSnapshot(row.merkleSnapshot),
+      vectorArtifacts: vectorArtifacts.map((artifact) => ({
+        rebuildEpoch: artifact.rebuildEpoch,
+        table: artifact.tableKind,
+        shadowName: artifact.shadowName,
+        replacementName: artifact.replacementName,
+        backupName: artifact.backupName,
+        hadLiveTable: artifact.hadLiveTable === 1,
+        backupComplete: artifact.backupComplete === 1,
+      })),
+    };
+  }
+
+  private isRecoverablePhase(phase: string): phase is FullRebuildCommitPhase {
+    return phase === 'building'
+      || phase === 'legacy-swapped'
+      || phase === 'structured-swapped'
+      || phase === 'catalog-activated'
+      || phase === 'merkle-activated';
+  }
+
+  private parseMerkleSnapshot(value: string | null): readonly MerkleSnapshotNode[] | null {
+    if (value === null) return null;
+    try {
+      const parsed: unknown = JSON.parse(value);
+      if (!Array.isArray(parsed)) throw new Error('Invalid full rebuild Merkle snapshot');
+      return parsed.map((node: unknown) => {
+        if (typeof node !== 'object' || node === null) throw new Error('Invalid full rebuild Merkle snapshot node');
+        const candidate = node as Record<string, unknown>;
+        if (
+          typeof candidate.path !== 'string'
+          || typeof candidate.hash !== 'string'
+          || (candidate.parentPath !== null && typeof candidate.parentPath !== 'string')
+          || typeof candidate.isDirectory !== 'boolean'
+        ) {
+          throw new Error('Invalid full rebuild Merkle snapshot node');
+        }
+        return {
+          path: candidate.path,
+          hash: candidate.hash,
+          parentPath: candidate.parentPath,
+          isDirectory: candidate.isDirectory,
+        };
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      console.error('[Nexus MetadataStore] Failed to parse full rebuild Merkle snapshot:', message);
+      throw new Error('Invalid full rebuild Merkle snapshot', { cause: error });
+    }
+  }
+
+  private recoverInterruptedFullRebuildOnInitialize(): void {
+    try {
+      const recovery = this.readFullRebuildRecovery();
+      if (recovery === null || recovery.phase === 'merkle-activated') return;
+
+      this.restoreFullRebuild(recovery.rebuildEpoch, recovery.merkleSnapshot, true);
+    } catch (error) {
+      console.error('[Nexus MetadataStore] Failed to recover interrupted full rebuild:', error);
+    }
+  }
+
+  async getFullRebuildRecovery(): Promise<FullRebuildRecovery | null> {
+    await this.asyncBoundary();
+    return this.readFullRebuildRecovery();
+  }
+
+  async recoverInterruptedFullRebuild(): Promise<void> {
+    await this.asyncBoundary();
+    const recovery = this.readFullRebuildRecovery();
+    if (recovery === null || recovery.phase === 'merkle-activated') return;
+    this.restoreFullRebuild(recovery.rebuildEpoch, recovery.merkleSnapshot, true);
+  }
+
+  async finalizeInterruptedFullRebuild(): Promise<void> {
+    await this.asyncBoundary();
+    const recovery = this.readFullRebuildRecovery();
+    if (recovery === null || recovery.phase !== 'merkle-activated') return;
+    this.immediateTransaction(() => {
+      this.db.prepare('DELETE FROM structured_rebuild_backup_runs WHERE rebuild_epoch = ?').run(recovery.rebuildEpoch);
+      this.db.prepare('DELETE FROM structured_rebuild_backup_files WHERE rebuild_epoch = ?').run(recovery.rebuildEpoch);
+      this.db.prepare('DELETE FROM structured_rebuild_backup_tombstones WHERE rebuild_epoch = ?').run(recovery.rebuildEpoch);
+      this.db.prepare('DELETE FROM structured_rebuild_backup_vectors WHERE rebuild_epoch = ?').run(recovery.rebuildEpoch);
+      this.db.prepare('UPDATE index_stats SET structured_rebuild_state=?, structured_last_error_code=? WHERE id=?').run('idle', null, PRIMARY_STATS_ID);
+    });
+  }
+
+  private restoreFullRebuild(
+    rebuildEpoch: number,
+    merkleSnapshot: readonly MerkleSnapshotNode[] | null,
+    markFailed = false,
+  ): void {
+    this.immediateTransaction(() => {
+      const backupFiles = this.db.prepare(`
+        SELECT file_path AS filePath, active_generation AS activeGeneration, pending_generation AS pendingGeneration
+        FROM structured_rebuild_backup_files
+        WHERE rebuild_epoch = ?
+      `).all(rebuildEpoch) as Array<{ filePath: string; activeGeneration: string | null; pendingGeneration: string | null }>;
+      const deleteFile = this.db.prepare('DELETE FROM structured_files WHERE file_path = ?');
+      const restoreFile = this.db.prepare('INSERT INTO structured_files (file_path,active_generation,pending_generation) VALUES (?,?,?)');
+      this.db.prepare('DELETE FROM structured_files WHERE file_path NOT IN (SELECT file_path FROM structured_rebuild_backup_files WHERE rebuild_epoch = ?)').run(rebuildEpoch);
+      for (const file of backupFiles) {
+        deleteFile.run(file.filePath);
+        if (file.activeGeneration !== null || file.pendingGeneration !== null) {
+          restoreFile.run(file.filePath, file.activeGeneration, file.pendingGeneration);
+        }
+      }
+      this.db.prepare('DELETE FROM symbol_tombstones').run();
+      this.db.prepare(`
+        INSERT INTO symbol_tombstones (symbol_id,file_path,generation,retired_at_rebuild_epoch,retired_at)
+        SELECT symbol_id,file_path,generation,retired_at_rebuild_epoch,retired_at
+        FROM structured_rebuild_backup_tombstones
+        WHERE rebuild_epoch = ?
+      `).run(rebuildEpoch);
+      if (merkleSnapshot !== null) {
+        this.db.prepare('DELETE FROM merkle_nodes').run();
+        const insertMerkle = this.db.prepare('INSERT INTO merkle_nodes (path,hash,parent_path,is_directory) VALUES (?,?,?,?)');
+        for (const node of merkleSnapshot) insertMerkle.run(node.path, node.hash, node.parentPath, node.isDirectory ? 1 : 0);
+      }
+      this.pruneOrphanedStructuredData();
+      this.db.prepare('DELETE FROM structured_files WHERE active_generation IS NULL AND pending_generation IS NULL').run();
+      this.db.prepare('DELETE FROM structured_rebuild_backup_runs WHERE rebuild_epoch = ?').run(rebuildEpoch);
+      this.db.prepare('DELETE FROM structured_rebuild_backup_files WHERE rebuild_epoch = ?').run(rebuildEpoch);
+      this.db.prepare('DELETE FROM structured_rebuild_backup_tombstones WHERE rebuild_epoch = ?').run(rebuildEpoch);
+      this.db.prepare('DELETE FROM structured_rebuild_backup_vectors WHERE rebuild_epoch = ?').run(rebuildEpoch);
+      if (markFailed) {
+        this.db.prepare('UPDATE index_stats SET structured_rebuild_state=?, structured_last_error_code=? WHERE id=?').run(
+          'failed',
+          'interrupted full rebuild rolled back during startup recovery',
+          PRIMARY_STATS_ID,
+        );
+      }
+    });
+  }
+
   async reconcileStructuredState(): Promise<StructuredReconciliationResult> {
     await this.asyncBoundary();
     return this.immediateTransaction(() => {
@@ -522,7 +932,10 @@ export class SqliteMetadataStore implements IMetadataStore, IStructuredCatalog {
 
   async setStructuredRebuildState(input: { rebuildState: string; lastErrorCode?: string | null }): Promise<void> {
     await this.asyncBoundary();
-    this.db.prepare('UPDATE index_stats SET structured_rebuild_state=?, structured_last_error_code=? WHERE id=?').run(input.rebuildState, input.lastErrorCode ?? null, PRIMARY_STATS_ID);
+    this.immediateTransaction(() => {
+      this.db.prepare('UPDATE index_stats SET structured_rebuild_state=?, structured_last_error_code=? WHERE id=?').run(input.rebuildState, input.lastErrorCode ?? null, PRIMARY_STATS_ID);
+      this.db.prepare('UPDATE structured_rebuild_backup_runs SET phase=? WHERE rebuild_epoch=(SELECT structured_rebuild_epoch FROM index_stats WHERE id=?)').run(input.rebuildState, PRIMARY_STATS_ID);
+    });
   }
 
   async incrementRebuildEpoch(): Promise<number> {
@@ -600,6 +1013,26 @@ export class SqliteMetadataStore implements IMetadataStore, IStructuredCatalog {
     });
 
     return transaction(paths);
+  }
+
+  async replaceAllMerkleNodes(nodes: MerkleNodeRow[]): Promise<void> {
+    await this.asyncBoundary();
+    const transaction = this.db.transaction((rows: MerkleNodeRow[]) => {
+      this.db.prepare('DELETE FROM merkle_nodes').run();
+      const statement = this.db.prepare(`
+        INSERT INTO merkle_nodes (path, hash, parent_path, is_directory)
+        VALUES (@path, @hash, @parentPath, @isDirectory)
+      `);
+      for (const node of rows) {
+        statement.run({
+          path: node.path,
+          hash: node.hash,
+          parentPath: node.parentPath,
+          isDirectory: node.isDirectory ? 1 : 0,
+        });
+      }
+    });
+    transaction(nodes);
   }
 
   async deleteSubtree(pathPrefix: string): Promise<number> {

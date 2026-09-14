@@ -18,11 +18,11 @@ import { Chunker } from "../indexer/chunker.js";
 import { TypeScriptLanguagePlugin } from "../plugins/languages/typescript.js";
 import { PythonLanguagePlugin } from "../plugins/languages/python.js";
 import { GoLanguagePlugin } from "../plugins/languages/go.js";
-import { RustLanguagePlugin } from "../plugins/languages/rust.js";
-import { JavaLanguagePlugin } from "../plugins/languages/java.js";
-import { CSharpLanguagePlugin } from "../plugins/languages/csharp.js";
 import { CLanguagePlugin } from "../plugins/languages/c.js";
 import { CppLanguagePlugin } from "../plugins/languages/cpp.js";
+import { CSharpLanguagePlugin } from "../plugins/languages/csharp.js";
+import { JavaLanguagePlugin } from "../plugins/languages/java.js";
+import { RustLanguagePlugin } from "../plugins/languages/rust.js";
 import { OllamaEmbeddingProvider, resolveLocalOllamaBaseUrl } from "../plugins/embeddings/ollama.js";
 import { InstrumentedEmbeddingProvider } from "../plugins/embeddings/instrumented.js";
 import { OpenAICompatEmbeddingProvider } from "../plugins/embeddings/openai-compat.js";
@@ -140,11 +140,14 @@ class StorageManager {
     const metadataStore = new SqliteMetadataStore({
       databasePath: config.storage.metadataDbPath,
       batchSize: config.storage.batchSize,
+      deferFullRebuildRecovery: true,
     });
 
     const vectorStore = new LanceVectorStore({
       dbPath: config.storage.vectorDbPath,
       dimensions: config.embedding.dimensions,
+      deferRebuildCleanup: true,
+      rebuildJournal: metadataStore,
     });
 
     return { metadataStore, vectorStore };
@@ -609,11 +612,11 @@ export class NexusServerFactory {
     registry.registerLanguage(new TypeScriptLanguagePlugin());
     registry.registerLanguage(new PythonLanguagePlugin());
     registry.registerLanguage(new GoLanguagePlugin());
-    registry.registerLanguage(new RustLanguagePlugin());
-    registry.registerLanguage(new JavaLanguagePlugin());
-    registry.registerLanguage(new CSharpLanguagePlugin());
     registry.registerLanguage(new CLanguagePlugin());
     registry.registerLanguage(new CppLanguagePlugin());
+    registry.registerLanguage(new CSharpLanguagePlugin());
+    registry.registerLanguage(new JavaLanguagePlugin());
+    registry.registerLanguage(new RustLanguagePlugin());
 
     let provider;
     switch (config.embedding.provider) {

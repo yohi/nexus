@@ -1,6 +1,6 @@
 import type Parser from 'tree-sitter';
 import type { SymbolKind } from '../../types/index.js';
-import { hasSyntaxProblem } from './rust-structured-support.js';
+import { hasSyntaxProblem } from './tree-sitter-structured-support.js';
 
 export interface DeclarationDescriptor {
   readonly node: Parser.SyntaxNode;
@@ -34,6 +34,17 @@ const nameNodeText = (node: Parser.SyntaxNode): string | undefined => {
   return name?.text;
 };
 
+const typePathFor = (node: Parser.SyntaxNode): string | undefined => {
+  if (node.type === 'generic_type' || node.type === 'type') {
+    const pathNode = node.namedChildren.find((child) => child.type !== 'type_arguments');
+    return pathNode === undefined ? undefined : typePathFor(pathNode);
+  }
+  if (!['identifier', 'scoped_identifier', 'type_identifier', 'scoped_type_identifier'].includes(node.type)) {
+    return undefined;
+  }
+  return node.text.replace(/^::/u, '').replaceAll('::', '.');
+};
+
 const bodyNode = (node: Parser.SyntaxNode): Parser.SyntaxNode | undefined =>
   node.children.find((child) => child.type === 'declaration_list' || child.type === 'block');
 
@@ -60,54 +71,61 @@ const declarationFor = (
   const declarationKey = declarationKeyFor(node);
   const ownerKey = scope.ownerKey;
   const scopeNode = scope.scopeNode;
-  if (node.type === 'mod_item') {
-    const name = nameNodeText(node);
-    if (!name) return undefined;
-    return {
-      node, rangeNode: node, scopeNode, declarationKey, ownerKey,
-      kind: 'namespace',
-      name,
-      qualifiedName: joinQualifiedName(scope.qualifiedName, name),
-    };
+  switch (node.type) {
+    case 'mod_item': {
+      const name = nameNodeText(node);
+      if (!name) return undefined;
+      return {
+        node, rangeNode: node, scopeNode, declarationKey, ownerKey,
+        kind: 'namespace',
+        name,
+        qualifiedName: joinQualifiedName(scope.qualifiedName, name),
+      };
+    }
+    case 'struct_item':
+    case 'enum_item':
+    case 'trait_item': {
+      const name = nameNodeText(node);
+      if (!name) return undefined;
+      return {
+        node, rangeNode: node, scopeNode, declarationKey, ownerKey,
+        kind: kindForType(node),
+        name,
+        qualifiedName: joinQualifiedName(scope.qualifiedName, name),
+      };
+    }
+    case 'impl_item': {
+      const typeNode = node.childForFieldName('type') ?? node.children.find((c) => c.type === 'type');
+      const traitNode = node.childForFieldName('trait') ?? undefined;
+      const name = typeNode === undefined ? undefined : typePathFor(typeNode);
+      if (!name) return undefined;
+      const targetQualifiedName = joinQualifiedName(scope.qualifiedName, name);
+      const traitName = traitNode === undefined ? undefined : typePathFor(traitNode);
+      const qualifiedName = traitName !== undefined
+        ? `${joinQualifiedName(scope.qualifiedName, traitName)}.${name}.impl`
+        : `${targetQualifiedName}.impl`;
+      return {
+        node, rangeNode: node, scopeNode, declarationKey, ownerKey,
+        kind: 'impl',
+        name,
+        qualifiedName,
+        targetQualifiedName,
+      };
+    }
+    case 'function_item':
+    case 'function_signature_item': {
+      const name = nameNodeText(node);
+      if (!name) return undefined;
+      return {
+        node, rangeNode: node, scopeNode, declarationKey, ownerKey,
+        kind: kindForFunction(node, scope),
+        name,
+        qualifiedName: joinQualifiedName(scope.qualifiedName, name),
+      };
+    }
+    default:
+      return undefined;
   }
-  if (node.type === 'struct_item' || node.type === 'enum_item' || node.type === 'trait_item') {
-    const name = nameNodeText(node);
-    if (!name) return undefined;
-    return {
-      node, rangeNode: node, scopeNode, declarationKey, ownerKey,
-      kind: kindForType(node),
-      name,
-      qualifiedName: joinQualifiedName(scope.qualifiedName, name),
-    };
-  }
-  if (node.type === 'impl_item') {
-    const typeNode = node.childForFieldName('type') ?? node.children.find((c) => c.type === 'type');
-    const traitNode = node.childForFieldName('trait');
-    const name = typeNode?.text;
-    if (!name) return undefined;
-    const targetQualifiedName = joinQualifiedName(scope.qualifiedName, name);
-    const qualifiedName = traitNode
-      ? `${joinQualifiedName(scope.qualifiedName, traitNode.text)}.${name}.impl`
-      : `${targetQualifiedName}.impl`;
-    return {
-      node, rangeNode: node, scopeNode, declarationKey, ownerKey,
-      kind: 'impl',
-      name,
-      qualifiedName,
-      targetQualifiedName,
-    };
-  }
-  if (node.type === 'function_item' || node.type === 'function_signature_item') {
-    const name = nameNodeText(node);
-    if (!name) return undefined;
-    return {
-      node, rangeNode: node, scopeNode, declarationKey, ownerKey,
-      kind: kindForFunction(node, scope),
-      name,
-      qualifiedName: joinQualifiedName(scope.qualifiedName, name),
-    };
-  }
-  return undefined;
 };
 
 const isContainer = (descriptor: UnresolvedDescriptor): boolean =>
