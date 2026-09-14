@@ -25,6 +25,7 @@ import type {
 interface LanceVectorStoreOptions {
   dbPath?: string;
   dimensions: number;
+  deferRebuildCleanup?: boolean;
 }
 
 interface LanceRow {
@@ -71,6 +72,7 @@ interface Closable {
 export class LanceVectorStore implements IVectorStore {
   private readonly dbPath: string;
   private readonly dimensions: number;
+  private readonly deferRebuildCleanup: boolean;
   private db: lancedb.Connection | undefined;
   private table: Table | undefined;
   private structuredTable: Table | undefined;
@@ -118,6 +120,7 @@ export class LanceVectorStore implements IVectorStore {
     }
 
     this.dimensions = options.dimensions;
+    this.deferRebuildCleanup = options.deferRebuildCleanup ?? false;
   }
 
   async initialize(): Promise<void> {
@@ -154,6 +157,9 @@ export class LanceVectorStore implements IVectorStore {
         }
 
         const tableNames = await localDb.tableNames();
+        if (!this.deferRebuildCleanup) {
+          await this.dropOrphanedRebuildTables(localDb, tableNames);
+        }
 
         // 1. Attempt to load sidecar metadata for URI consistency and dimensions
         let metadata: SidecarMetadata | undefined;
@@ -442,6 +448,59 @@ export class LanceVectorStore implements IVectorStore {
     }
     this.legacySwapBackup = undefined;
     this.structuredSwapBackup = undefined;
+  }
+
+  private async dropOrphanedRebuildTables(
+    db: lancedb.Connection,
+    tableNames: readonly string[],
+  ): Promise<void> {
+    const prefixes = [
+      LEGACY_SHADOW_PREFIX,
+      LEGACY_REPLACEMENT_PREFIX,
+      LEGACY_BACKUP_PREFIX,
+      STRUCTURED_SHADOW_PREFIX,
+      STRUCTURED_REPLACEMENT_PREFIX,
+      STRUCTURED_BACKUP_PREFIX,
+    ];
+    await Promise.all(
+      tableNames
+        .filter((name) => prefixes.some((prefix) => name.startsWith(prefix)))
+        .map((name) => db.dropTable(name).catch(() => {})),
+    );
+  }
+
+  async cleanupOrphanedRebuildTables(): Promise<void> {
+    await this.runInWriteLock(async () => {
+      if (!this.db) return;
+      await this.dropOrphanedRebuildTables(this.db, await this.db.tableNames());
+    });
+  }
+
+  async recoverInterruptedFullRebuild(mode: 'rollback' | 'finalize'): Promise<void> {
+    await this.runInWriteLock(async () => {
+      if (!this.db) return;
+      const names = await this.db.tableNames();
+      if (mode === 'finalize') {
+        await this.dropOrphanedRebuildTables(this.db, names);
+        return;
+      }
+
+      const restore = async (liveName: string, backupPrefix: string): Promise<void> => {
+        const backupName = names.find((name) => name.startsWith(backupPrefix));
+        if (backupName === undefined) {
+          return;
+        }
+        const restored = await this.restoreTableFromBackup(backupName, liveName, true);
+        if (restored !== undefined) {
+          if (liveName === STRUCTURED_TABLE_NAME) this.structuredTable = restored;
+          else this.table = restored;
+        }
+      };
+
+      await restore('chunks', LEGACY_BACKUP_PREFIX);
+      await restore(STRUCTURED_TABLE_NAME, STRUCTURED_BACKUP_PREFIX);
+      await this.dropOrphanedRebuildTables(this.db, await this.db.tableNames());
+    });
   }
 
   private async materializeTable(

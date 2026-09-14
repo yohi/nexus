@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import * as lancedb from '@lancedb/lancedb';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -55,5 +56,44 @@ describe('LanceVectorStore structured rows', () => {
     const columnNames = (await shadowTable.schema()).fields.map((field) => field.name);
     expect(columnNames).toContain('generationid');
     await store.abortLegacyShadowTable(shadow);
+  });
+
+  it('removes all orphaned rebuild tables while retaining live tables on initialize', async () => {
+    const db = await lancedb.connect(tmpDir);
+    const row = {
+      vector: Array(64).fill(0),
+      id: 'row',
+      filepath: 'src/a.ts',
+      content: 'content',
+      language: 'typescript',
+      symbolname: 'a',
+      symbolkind: 'function',
+      startline: 1,
+      endline: 1,
+      hash: 'hash',
+      generationid: 'g1',
+    };
+    await db.createTable('chunks', [row]);
+    await db.createTable('structured_chunks', [row]);
+    for (const name of [
+      'chunks_shadow_orphan',
+      'chunks_replacement_orphan',
+      'chunks_backup_orphan',
+      'structured_chunks_shadow_orphan',
+      'structured_chunks_replacement_orphan',
+      'structured_chunks_backup_orphan',
+    ]) {
+      await db.createTable(name, [row]);
+    }
+    await store.close();
+
+    const restarted = new LanceVectorStore({ dbPath: tmpDir, dimensions: 64 });
+    await restarted.initialize();
+    const names = await (await lancedb.connect(tmpDir)).tableNames();
+
+    expect(names).toContain('chunks');
+    expect(names).toContain('structured_chunks');
+    expect(names.filter((name) => name.includes('orphan'))).toEqual([]);
+    await restarted.close();
   });
 });

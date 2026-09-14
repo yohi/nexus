@@ -95,6 +95,61 @@ describe('SQLite structured catalog', () => {
     });
   });
 
+  it('does not roll back a finalized generation when cleanup left backup rows', async () => {
+    const databasePath = path.join(dir, 'metadata.db');
+    await store.initialize();
+    await store.incrementRebuildEpoch();
+    await store.stageGeneration(stage('src/a.ts', 'g1', 'old'));
+    await store.activateGeneration({ filePath: 'src/a.ts', generationId: 'g1', expectedActiveGeneration: null, expectedRebuildEpoch: 1 });
+
+    const rebuildEpoch = await store.incrementRebuildEpoch();
+    const activation = {
+      rebuildEpoch,
+      files: [{ filePath: 'src/a.ts', generationId: 'g2', expectedActiveGeneration: 'g1' }],
+      retiredFiles: [],
+    } as const;
+    await store.setStructuredRebuildState({ rebuildState: 'building' });
+    await store.prepareFullRebuild(activation);
+    await store.stageGeneration({ ...stage('src/a.ts', 'g2', 'new'), rebuildEpoch });
+    await store.activateFullRebuild(activation);
+    await store.setStructuredRebuildState({ rebuildState: 'idle' });
+    await store.close();
+
+    store = new SqliteMetadataStore({ databasePath });
+    await store.initialize();
+
+    expect(await store.resolveFile('src/a.ts')).toEqual({ kind: 'active', generationId: 'g2' });
+  });
+
+  it('removes backup remnants from earlier rebuild epochs before preparing a new rebuild', async () => {
+    await store.initialize();
+    await store.incrementRebuildEpoch();
+    await store.stageGeneration(stage('src/a.ts', 'g1', 'old'));
+    await store.activateGeneration({ filePath: 'src/a.ts', generationId: 'g1', expectedActiveGeneration: null, expectedRebuildEpoch: 1 });
+
+    const firstEpoch = await store.incrementRebuildEpoch();
+    const firstActivation = {
+      rebuildEpoch: firstEpoch,
+      files: [{ filePath: 'src/a.ts', generationId: 'g2', expectedActiveGeneration: 'g1' }],
+      retiredFiles: [],
+    } as const;
+    await store.prepareFullRebuild(firstActivation);
+
+    const secondEpoch = await store.incrementRebuildEpoch();
+    const secondActivation = {
+      rebuildEpoch: secondEpoch,
+      files: [{ filePath: 'src/a.ts', generationId: 'g3', expectedActiveGeneration: 'g1' }],
+      retiredFiles: [],
+    } as const;
+    await store.prepareFullRebuild(secondActivation);
+
+    const rows = readRows<{ rebuild_epoch: number }>(
+      path.join(dir, 'metadata.db'),
+      'SELECT rebuild_epoch FROM structured_rebuild_backup_runs ORDER BY rebuild_epoch',
+    );
+    expect(rows).toEqual([{ rebuild_epoch: secondEpoch }]);
+  });
+
   it('does not clear pending generation after a compare-and-swap conflict', async () => {
     await store.initialize(); await store.stageGeneration(stage('src/a.ts', 'g1', 'one'));
     const result = await store.clearPendingGeneration({ filePath: 'src/a.ts', expectedActiveGeneration: 'wrong', expectedPendingGeneration: 'g1', expectedRebuildEpoch: 1 });

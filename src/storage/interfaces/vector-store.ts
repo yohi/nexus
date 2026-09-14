@@ -113,4 +113,6 @@ export interface IVectorStore {
   swapLegacyShadowTable(shadow: LegacyShadowTable): Promise<void>;
   finalizeLegacyShadowTable(shadow: LegacyShadowTable): Promise<void>;
   abortLegacyShadowTable(shadow: LegacyShadowTable): Promise<void>;
+  recoverInterruptedFullRebuild?(mode: 'rollback' | 'finalize'): Promise<void>;
+  cleanupOrphanedRebuildTables?(): Promise<void>;
 }

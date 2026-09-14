@@ -1,6 +1,6 @@
 /** Storage interfaces (design doc §7.3). Canonical home since the Phase 1b relocation; re-exported from src/types/index.ts for backward compatibility. */
 import type { DeadLetterEntry } from '../../types/index.js';
-import type { IStructuredCatalog } from './structured-catalog.js';
+import type { FullRebuildRecovery, IStructuredCatalog } from './structured-catalog.js';
 
 export interface MerkleNodeRow {
   path: string;
@@ -64,6 +64,9 @@ export interface IMetadataStore extends Partial<IStructuredCatalog> {
   deleteEmbeddings(hashes: string[]): Promise<void>;
   clearEmbeddings(): Promise<void>;
   pruneEmbeddings(maxAgeDays: number): Promise<number>;
+  getFullRebuildRecovery?(): Promise<FullRebuildRecovery | null>;
+  recoverInterruptedFullRebuild?(): Promise<void>;
+  finalizeInterruptedFullRebuild?(): Promise<void>;
 }
 
 export type StructuredCapableMetadataStore = IMetadataStore & IStructuredCatalog;

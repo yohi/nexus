@@ -97,6 +97,28 @@ export interface StructuredReconciliationResult {
   readonly prunedTombstones: number;
 }
 
+export type FullRebuildCommitPhase =
+  | 'building'
+  | 'legacy-swapped'
+  | 'structured-swapped'
+  | 'catalog-activated'
+  | 'merkle-activated'
+  | 'idle'
+  | 'failed';
+
+export interface MerkleSnapshotNode {
+  readonly path: string;
+  readonly hash: string;
+  readonly parentPath: string | null;
+  readonly isDirectory: boolean;
+}
+
+export interface FullRebuildRecovery {
+  readonly rebuildEpoch: number;
+  readonly phase: FullRebuildCommitPhase;
+  readonly merkleSnapshot: readonly MerkleSnapshotNode[] | null;
+}
+
 export interface StructuredFullRebuildFile {
   readonly filePath: string;
   readonly generationId: string;
@@ -115,7 +137,7 @@ export interface StructuredFullRebuildActivation {
 export interface IStructuredCatalog {
   bootstrapStructuredSchema(): Promise<void>;
   getStructuredIndexState(): Promise<StructuredIndexState>;
-  setStructuredRebuildState(input: { rebuildState: string; lastErrorCode?: string | null }): Promise<void>;
+  setStructuredRebuildState(input: { rebuildState: FullRebuildCommitPhase; lastErrorCode?: string | null }): Promise<void>;
   incrementRebuildEpoch(): Promise<number>;
   stageGeneration(input: StructuredGenerationStage): Promise<void>;
   activateGeneration(input: StructuredGenerationActivation): Promise<StructuredActivationResult>;
@@ -130,9 +152,12 @@ export interface IStructuredCatalog {
   getImportsForSymbol(symbolId: string): Promise<readonly StructuredImportRecord[]>;
   getFileDeclarations(filePath: string): Promise<readonly StructuredDeclaration[]>;
   getGeneration(filePath: string, generationId: string): Promise<StructuredGeneration | null>;
-  prepareFullRebuild(input: StructuredFullRebuildActivation): Promise<void>;
+  prepareFullRebuild(input: StructuredFullRebuildActivation, merkleSnapshot?: readonly MerkleSnapshotNode[]): Promise<void>;
   activateFullRebuild(input: StructuredFullRebuildActivation): Promise<void>;
   rollbackFullRebuild(input: StructuredFullRebuildActivation): Promise<void>;
   finalizeFullRebuild(input: StructuredFullRebuildActivation): Promise<void>;
+  getFullRebuildRecovery?(): Promise<FullRebuildRecovery | null>;
+  recoverInterruptedFullRebuild?(): Promise<void>;
+  finalizeInterruptedFullRebuild?(): Promise<void>;
   reconcileStructuredState(): Promise<StructuredReconciliationResult>;
 }

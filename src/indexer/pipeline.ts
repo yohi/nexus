@@ -1140,6 +1140,18 @@ export class IndexPipeline implements IIndexPipeline {
     const startedAt = new Date().toISOString();
     const startTime = Date.now();
 
+    const recovery = await this.options.metadataStore.getFullRebuildRecovery?.();
+    if (recovery !== null && recovery !== undefined) {
+      const finalized = recovery.phase === 'merkle-activated';
+      await this.options.vectorStore.recoverInterruptedFullRebuild?.(finalized ? 'finalize' : 'rollback');
+      if (finalized) {
+        await this.options.metadataStore.finalizeInterruptedFullRebuild?.();
+      } else {
+        await this.options.metadataStore.recoverInterruptedFullRebuild?.();
+      }
+    }
+    await this.options.vectorStore.cleanupOrphanedRebuildTables?.();
+
     if (!this.isTreeLoaded) {
       await this.merkleTree.load();
       this.isTreeLoaded = true;

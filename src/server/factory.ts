@@ -140,11 +140,13 @@ class StorageManager {
     const metadataStore = new SqliteMetadataStore({
       databasePath: config.storage.metadataDbPath,
       batchSize: config.storage.batchSize,
+      deferFullRebuildRecovery: true,
     });
 
     const vectorStore = new LanceVectorStore({
       dbPath: config.storage.vectorDbPath,
       dimensions: config.embedding.dimensions,
+      deferRebuildCleanup: true,
     });
 
     return { metadataStore, vectorStore };

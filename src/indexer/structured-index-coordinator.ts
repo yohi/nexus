@@ -1,5 +1,5 @@
 import type { StructuredDeclaration, StructuredImport, StructuredSource } from '../structured/contracts.js';
-import type { CodeChunk, IVectorStore } from '../types/index.js';
+import type { CodeChunk, IVectorStore, MerkleNodeRow } from '../types/index.js';
 import type { Chunker } from './chunker.js';
 import type {
   IStructuredCatalog,
@@ -27,6 +27,7 @@ export interface FullRebuildFile {
 export interface FullRebuildCommitHooks {
   readonly beforeCommit?: () => Promise<void>;
   readonly afterCommit?: () => Promise<void>;
+  readonly merkleSnapshot?: readonly MerkleNodeRow[];
 }
 
 export interface StructuredIndexCoordinatorOptions {
@@ -185,7 +186,7 @@ export class StructuredIndexCoordinator {
       const stagedFiles = new Set<string>();
 
       try {
-        await this.options.metadataStore.prepareFullRebuild(activation);
+        await this.options.metadataStore.prepareFullRebuild(activation, input.merkleSnapshot);
         metadataPrepared = true;
         shadowTable = await this.options.vectorStore.beginStructuredShadowTable();
 
@@ -233,9 +234,13 @@ export class StructuredIndexCoordinator {
         }
 
         await input.beforeCommit?.();
+        await this.options.metadataStore.setStructuredRebuildState({ rebuildState: 'legacy-swapped' });
         await this.options.vectorStore.swapStructuredShadowTable(shadowTable);
+        await this.options.metadataStore.setStructuredRebuildState({ rebuildState: 'structured-swapped' });
         await this.options.metadataStore.activateFullRebuild(activation);
+        await this.options.metadataStore.setStructuredRebuildState({ rebuildState: 'catalog-activated' });
         await input.afterCommit?.();
+        await this.options.metadataStore.setStructuredRebuildState({ rebuildState: 'merkle-activated' });
       } catch (error) {
         if (metadataPrepared) {
           try {

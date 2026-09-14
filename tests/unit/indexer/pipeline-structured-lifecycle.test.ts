@@ -129,6 +129,27 @@ describe('IndexPipeline structured lifecycle', () => {
     expect(abortLegacyShadowTableSpy).not.toHaveBeenCalled();
   });
 
+  it('persists every full-rebuild commit phase in order', async () => {
+    const { metadataStore, pipeline } = await createStructuredPipeline();
+    const stateSpy = vi.spyOn(metadataStore, 'setStructuredRebuildState');
+    const content = 'export function phased(): number { return 1; }\n';
+
+    await pipeline.reindex(
+      () => Promise.resolve([createEvent('added', 'src/phased.ts', content)]),
+      () => Promise.resolve(content),
+      true,
+    );
+
+    expect(stateSpy.mock.calls.map(([input]) => input.rebuildState)).toEqual([
+      'building',
+      'legacy-swapped',
+      'structured-swapped',
+      'catalog-activated',
+      'merkle-activated',
+      'idle',
+    ]);
+  });
+
   it('retires structured state when a file produces no legacy or structured chunks', async () => {
     const { metadataStore, pipeline } = await createStructuredPipeline();
     const filePath = 'src/empty.ts';
