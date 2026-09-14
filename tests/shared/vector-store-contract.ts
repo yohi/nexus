@@ -217,7 +217,7 @@ export function vectorStoreContractTests(
 
       const shadowTable = await store.beginStructuredShadowTable();
       await stageGeneration(store, { filePath: 'src/b.ts', generationId: 'gen-2', chunkId: 'b1', symbolId: 'symbol-2' });
-      await store.swapStructuredShadowTable(shadowTable);
+      await store.swapStructuredShadowTable(shadowTable, 1);
 
       await expectSearchResults(store, { count: 1, filePath: 'src/b.ts' });
     });
@@ -241,7 +241,7 @@ export function vectorStoreContractTests(
         chunks,
         vectors: chunks.map(() => embedding),
       });
-      await store.swapStructuredShadowTable(shadowTable);
+      await store.swapStructuredShadowTable(shadowTable, 1);
 
       const results = await store.search(embedding, chunkCount);
       expect(results).toHaveLength(chunkCount);
@@ -289,7 +289,7 @@ export function vectorStoreContractTests(
       // Live rows stay untouched while the shadow is open.
       await expectSearchResults(store, { count: 2, chunkId: 'a1' });
 
-      await store.swapLegacyShadowTable(shadow);
+      await store.swapLegacyShadowTable(shadow, 1);
       await expectSearchResults(store, { count: 1, chunkId: 'a2', filePath: 'src/a.ts' });
     });
 
@@ -336,7 +336,7 @@ export function vectorStoreContractTests(
         { chunk: makeChunk({ id: 'a1b', filePath: 'src/a.ts' }), vector: embedding },
       ]);
       await store.stageLegacyShadowDeletions(shadow, { pathPrefixes: ['src/nested'] });
-      await store.swapLegacyShadowTable(shadow);
+      await store.swapLegacyShadowTable(shadow, 1);
 
       const results = await store.search(embedding, 10);
       expect(results).toHaveLength(2);
@@ -354,7 +354,7 @@ export function vectorStoreContractTests(
 
       const shadow = await store.beginLegacyShadowTable();
       await store.stageLegacyShadowDeletions(shadow, { filePaths: ['src/a.ts', 'src/b.ts'] });
-      await store.swapLegacyShadowTable(shadow);
+      await store.swapLegacyShadowTable(shadow, 1);
 
       await expectSearchResults(store, { count: 0 });
       const stats = await store.getStats();
@@ -370,7 +370,7 @@ export function vectorStoreContractTests(
       await store.stageLegacyShadowChunks(secondShadow, [
         { chunk: makeChunk({ id: 'd1', filePath: 'src/d.ts' }), vector: embedding },
       ]);
-      await store.swapLegacyShadowTable(secondShadow);
+      await store.swapLegacyShadowTable(secondShadow, 2);
       const results = await store.search(embedding, 10);
       expect(results.map((result) => result.chunk.id).sort((left, right) => left.localeCompare(right))).toEqual(['c1', 'd1']);
       const statsAfter = await store.getStats();

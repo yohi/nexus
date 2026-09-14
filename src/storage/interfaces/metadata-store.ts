@@ -79,6 +79,8 @@ const structuredCatalogMethods = [
   'clearPendingGeneration',
   'retireFile',
   'prepareFullRebuild',
+  'recordFullRebuildVectorArtifact',
+  'markFullRebuildVectorBackupComplete',
   'activateFullRebuild',
   'rollbackFullRebuild',
   'finalizeFullRebuild',

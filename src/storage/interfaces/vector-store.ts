@@ -1,5 +1,6 @@
 /** Storage interfaces (design doc §7.3). Canonical home since the Phase 1b relocation; re-exported from src/types/index.ts for backward compatibility. */
 import type { CodeChunk, SymbolKind } from '../../types/index.js';
+import type { FullRebuildRecovery } from './structured-catalog.js';
 
 export interface VectorFilter {
   filePathPrefix?: string;
@@ -101,7 +102,7 @@ export interface IVectorStore {
   activateGenerationRows(filePath: string, generationId: string): Promise<void>;
   removeGenerationRows(filePath: string, generationId: string): Promise<void>;
   beginStructuredShadowTable(): Promise<StructuredShadowTable>;
-  swapStructuredShadowTable(shadowTable: StructuredShadowTable): Promise<void>;
+  swapStructuredShadowTable(shadowTable: StructuredShadowTable, rebuildEpoch: number): Promise<void>;
   finalizeStructuredShadowTable(shadowTable: StructuredShadowTable): Promise<void>;
   abortStructuredShadowTable(shadowTable: StructuredShadowTable): Promise<void>;
   reconcileStructuredRows(activeGenerations: readonly ActiveGeneration[]): Promise<void>;
@@ -110,9 +111,9 @@ export interface IVectorStore {
   beginLegacyShadowTable(): Promise<LegacyShadowTable>;
   stageLegacyShadowChunks(shadow: LegacyShadowTable, chunks: ChunkWithEmbedding[]): Promise<void>;
   stageLegacyShadowDeletions(shadow: LegacyShadowTable, deletions: LegacyShadowDeletion): Promise<void>;
-  swapLegacyShadowTable(shadow: LegacyShadowTable): Promise<void>;
+  swapLegacyShadowTable(shadow: LegacyShadowTable, rebuildEpoch: number): Promise<void>;
   finalizeLegacyShadowTable(shadow: LegacyShadowTable): Promise<void>;
   abortLegacyShadowTable(shadow: LegacyShadowTable): Promise<void>;
-  recoverInterruptedFullRebuild?(mode: 'rollback' | 'finalize'): Promise<void>;
+  recoverInterruptedFullRebuild(recovery: FullRebuildRecovery, mode: 'rollback' | 'finalize'): Promise<void>;
   cleanupOrphanedRebuildTables?(): Promise<void>;
 }

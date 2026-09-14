@@ -113,10 +113,29 @@ export interface MerkleSnapshotNode {
   readonly isDirectory: boolean;
 }
 
+export type FullRebuildVectorTable = 'legacy' | 'structured';
+
+export interface FullRebuildVectorArtifact {
+  readonly rebuildEpoch: number;
+  readonly table: FullRebuildVectorTable;
+  readonly shadowName: string;
+  readonly replacementName: string;
+  readonly backupName: string | null;
+  readonly hadLiveTable: boolean;
+  readonly backupComplete: boolean;
+}
+
+export interface FullRebuildVectorJournal {
+  recordFullRebuildVectorArtifact(input: FullRebuildVectorArtifact): Promise<void>;
+  markFullRebuildVectorBackupComplete(input: Pick<FullRebuildVectorArtifact, 'rebuildEpoch' | 'table'>): Promise<void>;
+  getFullRebuildRecovery?(): Promise<FullRebuildRecovery | null>;
+}
+
 export interface FullRebuildRecovery {
   readonly rebuildEpoch: number;
   readonly phase: FullRebuildCommitPhase;
   readonly merkleSnapshot: readonly MerkleSnapshotNode[] | null;
+  readonly vectorArtifacts: readonly FullRebuildVectorArtifact[];
 }
 
 export interface StructuredFullRebuildFile {
@@ -134,7 +153,7 @@ export interface StructuredFullRebuildActivation {
   }[];
 }
 
-export interface IStructuredCatalog {
+export interface IStructuredCatalog extends FullRebuildVectorJournal {
   bootstrapStructuredSchema(): Promise<void>;
   getStructuredIndexState(): Promise<StructuredIndexState>;
   setStructuredRebuildState(input: { rebuildState: FullRebuildCommitPhase; lastErrorCode?: string | null }): Promise<void>;
@@ -152,7 +171,9 @@ export interface IStructuredCatalog {
   getImportsForSymbol(symbolId: string): Promise<readonly StructuredImportRecord[]>;
   getFileDeclarations(filePath: string): Promise<readonly StructuredDeclaration[]>;
   getGeneration(filePath: string, generationId: string): Promise<StructuredGeneration | null>;
-  prepareFullRebuild(input: StructuredFullRebuildActivation, merkleSnapshot?: readonly MerkleSnapshotNode[]): Promise<void>;
+  prepareFullRebuild(input: StructuredFullRebuildActivation, merkleSnapshot: readonly MerkleSnapshotNode[]): Promise<void>;
+  recordFullRebuildVectorArtifact(input: FullRebuildVectorArtifact): Promise<void>;
+  markFullRebuildVectorBackupComplete(input: Pick<FullRebuildVectorArtifact, 'rebuildEpoch' | 'table'>): Promise<void>;
   activateFullRebuild(input: StructuredFullRebuildActivation): Promise<void>;
   rollbackFullRebuild(input: StructuredFullRebuildActivation): Promise<void>;
   finalizeFullRebuild(input: StructuredFullRebuildActivation): Promise<void>;

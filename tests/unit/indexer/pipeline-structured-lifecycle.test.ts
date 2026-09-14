@@ -412,6 +412,44 @@ describe('IndexPipeline structured lifecycle', () => {
     );
   });
 
+  it('rolls back every index when the structured vector commit fails', async () => {
+    await expectFullRebuildCommitFailureToRollback(
+      'src/structured-commit-failure.ts',
+      'structured commit failed',
+      ({ vectorStore }) => {
+        vi.spyOn(vectorStore, 'swapStructuredShadowTable').mockRejectedValueOnce(new Error('structured commit failed'));
+      },
+    );
+  });
+
+  it('rolls back every index when catalog activation fails', async () => {
+    await expectFullRebuildCommitFailureToRollback(
+      'src/catalog-activation-failure.ts',
+      'catalog activation failed',
+      ({ metadataStore }) => {
+        vi.spyOn(metadataStore, 'activateFullRebuild').mockRejectedValueOnce(new Error('catalog activation failed'));
+      },
+    );
+  });
+
+  it('keeps a successful generation after finalization cleanup fails', async () => {
+    const { metadataStore, vectorStore, pipeline } = await createStructuredPipeline();
+    vi.spyOn(vectorStore, 'finalizeStructuredShadowTable').mockRejectedValueOnce(new Error('structured cleanup failed'));
+    vi.spyOn(metadataStore, 'finalizeFullRebuild').mockRejectedValueOnce(new Error('catalog cleanup failed'));
+
+    await expect(pipeline.reindex(
+      () => Promise.resolve([createEvent(
+        'added',
+        'src/finalization-cleanup-failure.ts',
+        'export function finalized(): number { return 1; }\n',
+      )]),
+      () => Promise.resolve('export function finalized(): number { return 1; }\n'),
+      true,
+    )).resolves.toMatchObject({ chunksIndexed: expect.any(Number) });
+
+    await expect(metadataStore.getStructuredIndexState()).resolves.toMatchObject({ rebuildState: 'idle' });
+  });
+
   it('retires structured state when incremental indexing skips an oversized file', async () => {
     const { metadataStore, vectorStore, pluginRegistry, coordinator, pipeline } = await createStructuredPipeline();
     const filePath = 'src/oversized-incremental.ts';

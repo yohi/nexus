@@ -141,5 +141,6 @@ export const runStructuredFullRebuild = async (
       declarations: [stage.symbol],
       imports: [],
     }],
+    merkleSnapshot: [],
   });
 };

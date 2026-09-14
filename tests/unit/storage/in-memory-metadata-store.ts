@@ -13,6 +13,7 @@ import type {
   StructuredFileRetirement,
   StructuredFileResolution,
   StructuredFullRebuildActivation,
+  FullRebuildVectorArtifact,
   StructuredGenerationActivation,
   StructuredGenerationStage,
   StructuredImportRecord,
@@ -206,7 +207,7 @@ export class InMemoryMetadataStore implements IMetadataStore, IStructuredCatalog
     return null;
   }
 
-  async prepareFullRebuild(input: StructuredFullRebuildActivation): Promise<void> {
+  async prepareFullRebuild(input: StructuredFullRebuildActivation, _merkleSnapshot: readonly MerkleNodeRow[]): Promise<void> {
     this.validateFullRebuildTargets(input);
     this.fullRebuildBackup = {
       activation: input,
@@ -214,6 +215,16 @@ export class InMemoryMetadataStore implements IMetadataStore, IStructuredCatalog
       pending: new Map(this.pending),
       tombstones: new Map(this.tombstones),
     };
+  }
+
+  async recordFullRebuildVectorArtifact(_input: FullRebuildVectorArtifact): Promise<void> {
+    return;
+  }
+
+  async markFullRebuildVectorBackupComplete(
+    _input: Pick<FullRebuildVectorArtifact, 'rebuildEpoch' | 'table'>,
+  ): Promise<void> {
+    return;
   }
 
   async activateFullRebuild(input: StructuredFullRebuildActivation): Promise<void> {

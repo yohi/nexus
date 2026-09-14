@@ -55,7 +55,7 @@ describe('SQLite structured catalog', () => {
       files: [{ filePath: 'src/a.ts', generationId: 'g2', expectedActiveGeneration: 'g1' }],
       retiredFiles: [],
     } as const;
-    await store.prepareFullRebuild(activation);
+    await store.prepareFullRebuild(activation, []);
     await store.stageGeneration({ ...stage('src/a.ts', 'g2', 'new'), rebuildEpoch });
     await store.activateFullRebuild(activation);
     await store.rollbackFullRebuild(activation);
@@ -80,7 +80,7 @@ describe('SQLite structured catalog', () => {
       retiredFiles: [],
     } as const;
     await store.setStructuredRebuildState({ rebuildState: 'building' });
-    await store.prepareFullRebuild(activation);
+    await store.prepareFullRebuild(activation, []);
     await store.stageGeneration({ ...stage('src/a.ts', 'g2', 'new'), rebuildEpoch });
     await store.close();
 
@@ -109,9 +109,13 @@ describe('SQLite structured catalog', () => {
 
     store = new SqliteMetadataStore({ databasePath });
     await expect(store.initialize()).resolves.toBeUndefined();
+    expect(readRows<{ rebuild_epoch: number }>(
+      databasePath,
+      'SELECT rebuild_epoch FROM structured_rebuild_backup_runs',
+    )).toEqual([{ rebuild_epoch: rebuildEpoch }]);
   });
 
-  it('returns a recoverable record when deferred recovery has a malformed snapshot', async () => {
+  it('rejects deferred recovery when the persisted Merkle snapshot is malformed', async () => {
     const databasePath = path.join(dir, 'metadata.db');
     await store.initialize();
     const rebuildEpoch = await store.incrementRebuildEpoch();
@@ -126,11 +130,11 @@ describe('SQLite structured catalog', () => {
     store = new SqliteMetadataStore({ databasePath, deferFullRebuildRecovery: true });
     await store.initialize();
 
-    await expect(store.getFullRebuildRecovery()).resolves.toEqual({
-      rebuildEpoch,
-      phase: 'building',
-      merkleSnapshot: null,
-    });
+    await expect(store.getFullRebuildRecovery()).rejects.toThrow('Invalid full rebuild Merkle snapshot');
+    expect(readRows<{ rebuild_epoch: number }>(
+      databasePath,
+      'SELECT rebuild_epoch FROM structured_rebuild_backup_runs',
+    )).toEqual([{ rebuild_epoch: rebuildEpoch }]);
   });
 
   it('removes retired file rows when finalizing a full rebuild', async () => {
@@ -150,7 +154,7 @@ describe('SQLite structured catalog', () => {
       files: [],
       retiredFiles: [{ filePath: 'src/a.ts', expectedActiveGeneration: 'g1' }],
     } as const;
-    await store.prepareFullRebuild(activation);
+    await store.prepareFullRebuild(activation, []);
     await store.activateFullRebuild(activation);
 
     expect(readRows<{ file_path: string; active_generation: string | null; pending_generation: string | null }>(
@@ -180,7 +184,7 @@ describe('SQLite structured catalog', () => {
       retiredFiles: [],
     } as const;
     await store.setStructuredRebuildState({ rebuildState: 'building' });
-    await store.prepareFullRebuild(activation);
+    await store.prepareFullRebuild(activation, []);
     await store.stageGeneration({ ...stage('src/a.ts', 'g2', 'new'), rebuildEpoch });
     await store.activateFullRebuild(activation);
     await store.setStructuredRebuildState({ rebuildState: 'idle' });
@@ -204,7 +208,7 @@ describe('SQLite structured catalog', () => {
       files: [{ filePath: 'src/a.ts', generationId: 'g2', expectedActiveGeneration: 'g1' }],
       retiredFiles: [],
     } as const;
-    await store.prepareFullRebuild(firstActivation);
+    await store.prepareFullRebuild(firstActivation, []);
 
     const secondEpoch = await store.incrementRebuildEpoch();
     const secondActivation = {
@@ -212,7 +216,7 @@ describe('SQLite structured catalog', () => {
       files: [{ filePath: 'src/a.ts', generationId: 'g3', expectedActiveGeneration: 'g1' }],
       retiredFiles: [],
     } as const;
-    await store.prepareFullRebuild(secondActivation);
+    await store.prepareFullRebuild(secondActivation, []);
 
     const rows = readRows<{ rebuild_epoch: number }>(
       path.join(dir, 'metadata.db'),

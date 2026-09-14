@@ -21,11 +21,16 @@ import type {
   VectorSearchResult,
   VectorStoreStats,
 } from '../types/index.js';
+import type {
+  FullRebuildRecovery,
+  FullRebuildVectorJournal,
+} from './interfaces/structured-catalog.js';
 
 interface LanceVectorStoreOptions {
   dbPath?: string;
   dimensions: number;
   deferRebuildCleanup?: boolean;
+  rebuildJournal?: FullRebuildVectorJournal;
 }
 
 interface LanceRow {
@@ -73,6 +78,7 @@ export class LanceVectorStore implements IVectorStore {
   private readonly dbPath: string;
   private readonly dimensions: number;
   private readonly deferRebuildCleanup: boolean;
+  private readonly rebuildJournal: FullRebuildVectorJournal | undefined;
   private db: lancedb.Connection | undefined;
   private table: Table | undefined;
   private structuredTable: Table | undefined;
@@ -121,6 +127,7 @@ export class LanceVectorStore implements IVectorStore {
 
     this.dimensions = options.dimensions;
     this.deferRebuildCleanup = options.deferRebuildCleanup ?? false;
+    this.rebuildJournal = options.rebuildJournal;
   }
 
   async initialize(): Promise<void> {
@@ -158,7 +165,10 @@ export class LanceVectorStore implements IVectorStore {
 
         const tableNames = await localDb.tableNames();
         if (!this.deferRebuildCleanup) {
-          await this.dropOrphanedRebuildTables(localDb, tableNames);
+          const protectedNames = await this.getProtectedRebuildTableNames();
+          if (protectedNames !== undefined) {
+            await this.dropOrphanedRebuildTables(localDb, tableNames, protectedNames);
+          }
         }
 
         // 1. Attempt to load sidecar metadata for URI consistency and dimensions
@@ -440,10 +450,19 @@ export class LanceVectorStore implements IVectorStore {
 
   private async cleanupSwapBackups(): Promise<void> {
     if (!this.db) return;
-    if (this.legacySwapBackup?.tableName !== undefined) {
+    const hasBackups = this.legacySwapBackup?.tableName !== undefined
+      || this.structuredSwapBackup?.tableName !== undefined;
+    const protectedNames = hasBackups
+      ? await this.getProtectedRebuildTableNames()
+      : new Set<string>();
+    if (this.legacySwapBackup?.tableName !== undefined
+      && protectedNames !== undefined
+      && !protectedNames.has(this.legacySwapBackup.tableName)) {
       await this.db.dropTable(this.legacySwapBackup.tableName).catch(() => {});
     }
-    if (this.structuredSwapBackup?.tableName !== undefined) {
+    if (this.structuredSwapBackup?.tableName !== undefined
+      && protectedNames !== undefined
+      && !protectedNames.has(this.structuredSwapBackup.tableName)) {
       await this.db.dropTable(this.structuredSwapBackup.tableName).catch(() => {});
     }
     this.legacySwapBackup = undefined;
@@ -453,6 +472,7 @@ export class LanceVectorStore implements IVectorStore {
   private async dropOrphanedRebuildTables(
     db: lancedb.Connection,
     tableNames: readonly string[],
+    protectedNames: ReadonlySet<string> = new Set(),
   ): Promise<void> {
     const prefixes = [
       LEGACY_SHADOW_PREFIX,
@@ -464,46 +484,95 @@ export class LanceVectorStore implements IVectorStore {
     ];
     await Promise.all(
       tableNames
-        .filter((name) => prefixes.some((prefix) => name.startsWith(prefix)))
+        .filter((name) => !protectedNames.has(name) && prefixes.some((prefix) => name.startsWith(prefix)))
         .map((name) => db.dropTable(name).catch(() => {})),
     );
+  }
+
+  private async getProtectedRebuildTableNames(): Promise<ReadonlySet<string> | undefined> {
+    if (this.rebuildJournal === undefined) {
+      return new Set();
+    }
+    if (typeof this.rebuildJournal.getFullRebuildRecovery !== 'function') {
+      return undefined;
+    }
+
+    try {
+      const recovery = await this.rebuildJournal.getFullRebuildRecovery();
+      if (recovery === null) {
+        return new Set();
+      }
+      return new Set(
+        recovery.vectorArtifacts.flatMap((artifact) => [
+          artifact.shadowName,
+          artifact.replacementName,
+          ...(artifact.backupName === null ? [] : [artifact.backupName]),
+        ]),
+      );
+    } catch (error) {
+      console.error('[LanceVectorStore] Failed to read full rebuild recovery journal; preserving temporary tables:', error);
+      return undefined;
+    }
   }
 
   async cleanupOrphanedRebuildTables(): Promise<void> {
     await this.runInWriteLock(async () => {
       if (!this.db) return;
-      await this.dropOrphanedRebuildTables(this.db, await this.db.tableNames());
+      const protectedNames = await this.getProtectedRebuildTableNames();
+      if (protectedNames !== undefined) {
+        await this.dropOrphanedRebuildTables(this.db, await this.db.tableNames(), protectedNames);
+      }
     });
   }
 
-  async recoverInterruptedFullRebuild(mode: 'rollback' | 'finalize'): Promise<void> {
+  async recoverInterruptedFullRebuild(
+    recovery: FullRebuildRecovery,
+    mode: 'rollback' | 'finalize',
+  ): Promise<void> {
     await this.runInWriteLock(async () => {
       if (!this.db) return;
-      const names = await this.db.tableNames();
-      if (mode === 'finalize') {
-        await this.dropOrphanedRebuildTables(this.db, names);
-        return;
-      }
+      let legacyTableChanged = false;
+      for (const artifact of recovery.vectorArtifacts) {
+        const liveName = artifact.table === 'legacy' ? 'chunks' : STRUCTURED_TABLE_NAME;
+        await this.dropTableIfPresent(artifact.shadowName);
+        await this.dropTableIfPresent(artifact.replacementName);
 
-      let legacyTableRestored = false;
-      const restore = async (liveName: string, backupPrefix: string): Promise<void> => {
-        const backupName = names.find((name) => name.startsWith(backupPrefix));
-        if (backupName === undefined) {
-          return;
+        if (mode === 'finalize') {
+          await this.dropTableIfPresent(artifact.backupName);
+          continue;
         }
-        const restored = await this.restoreTableFromBackup(backupName, liveName, true);
-        if (restored !== undefined) {
-          if (liveName === STRUCTURED_TABLE_NAME) this.structuredTable = restored;
-          else {
+
+        if (!artifact.backupComplete) {
+          await this.dropTableIfPresent(artifact.backupName);
+          continue;
+        }
+
+        if (artifact.hadLiveTable) {
+          if (artifact.backupName === null) {
+            throw new Error(`LanceVectorStore: missing backup name for ${artifact.table} rebuild artifact`);
+          }
+          const restored = await this.restoreTableFromBackup(artifact.backupName, liveName, true);
+          if (restored === undefined) {
+            throw new Error(`LanceVectorStore: failed to restore ${artifact.table} rebuild backup`);
+          }
+          if (artifact.table === 'structured') {
+            this.structuredTable = restored;
+          } else {
             this.table = restored;
-            legacyTableRestored = true;
+            legacyTableChanged = true;
+          }
+        } else {
+          await this.dropTableIfPresent(liveName);
+          if (artifact.table === 'structured') this.structuredTable = undefined;
+          else {
+            this.table = undefined;
+            legacyTableChanged = true;
           }
         }
-      };
+        await this.dropTableIfPresent(artifact.backupName);
+      }
 
-      await restore('chunks', LEGACY_BACKUP_PREFIX);
-      await restore(STRUCTURED_TABLE_NAME, STRUCTURED_BACKUP_PREFIX);
-      if (legacyTableRestored) {
+      if (legacyTableChanged) {
         this.staleCount = 0;
         const table = this.table;
         if (table === undefined) {
@@ -514,8 +583,12 @@ export class LanceVectorStore implements IVectorStore {
         }
         await this.updateMetadata();
       }
-      await this.dropOrphanedRebuildTables(this.db, await this.db.tableNames());
     });
+  }
+
+  private async dropTableIfPresent(tableName: string | null): Promise<void> {
+    if (!this.db || tableName === null) return;
+    await this.db.dropTable(tableName).catch(() => {});
   }
 
   private async materializeTable(
@@ -943,7 +1016,7 @@ export class LanceVectorStore implements IVectorStore {
     });
   }
 
-  async swapStructuredShadowTable(shadowTable: StructuredShadowTable): Promise<void> {
+  async swapStructuredShadowTable(shadowTable: StructuredShadowTable, rebuildEpoch: number): Promise<void> {
     return this.runInWriteLock(async () => {
       if (!this.db) {
         throw new Error('VectorStore not initialized');
@@ -956,19 +1029,28 @@ export class LanceVectorStore implements IVectorStore {
       const oldTable = this.structuredTable;
       const shadowName = this.structuredShadowName;
       const hadLiveTable = oldTable !== undefined;
-      const backupName = hadLiveTable
-        ? `${STRUCTURED_BACKUP_PREFIX}${randomUUID().replaceAll('-', '_')}`
-        : undefined;
-      const replacementName = `${STRUCTURED_REPLACEMENT_PREFIX}${randomUUID().replaceAll('-', '_')}`;
+      const token = shadowName.slice(STRUCTURED_SHADOW_PREFIX.length);
+      const backupName = hadLiveTable ? `${STRUCTURED_BACKUP_PREFIX}${token}` : undefined;
+      const replacementName = `${STRUCTURED_REPLACEMENT_PREFIX}${token}`;
       let promotionStarted = false;
 
       try {
+        await this.rebuildJournal?.recordFullRebuildVectorArtifact({
+          rebuildEpoch,
+          table: 'structured',
+          shadowName,
+          replacementName,
+          backupName: backupName ?? null,
+          hadLiveTable,
+          backupComplete: !hadLiveTable,
+        });
         if (oldTable && backupName !== undefined) {
           await this.materializeTable(
             oldTable,
             backupName,
             (row) => ({ ...row, vector: Array.from(row.vector) }),
           );
+          await this.rebuildJournal?.markFullRebuildVectorBackupComplete({ rebuildEpoch, table: 'structured' });
         }
         const replacement = await this.materializeTable(
           newTable,
@@ -1163,7 +1245,7 @@ export class LanceVectorStore implements IVectorStore {
     });
   }
 
-  async swapLegacyShadowTable(shadow: LegacyShadowTable): Promise<void> {
+  async swapLegacyShadowTable(shadow: LegacyShadowTable, rebuildEpoch: number): Promise<void> {
     return this.runInWriteLock(async () => {
       if (!this.db) {
         throw new Error('VectorStore not initialized');
@@ -1178,19 +1260,28 @@ export class LanceVectorStore implements IVectorStore {
       const hadLiveTable = oldTable !== undefined;
       const previousStaleCount = this.staleCount;
       const previousTotalFiles = this.totalFiles;
-      const backupName = hadLiveTable
-        ? `${LEGACY_BACKUP_PREFIX}${randomUUID().replaceAll('-', '_')}`
-        : undefined;
-      const replacementName = `${LEGACY_REPLACEMENT_PREFIX}${randomUUID().replaceAll('-', '_')}`;
+      const token = shadowName.slice(LEGACY_SHADOW_PREFIX.length);
+      const backupName = hadLiveTable ? `${LEGACY_BACKUP_PREFIX}${token}` : undefined;
+      const replacementName = `${LEGACY_REPLACEMENT_PREFIX}${token}`;
       let promotionStarted = false;
 
       try {
+        await this.rebuildJournal?.recordFullRebuildVectorArtifact({
+          rebuildEpoch,
+          table: 'legacy',
+          shadowName,
+          replacementName,
+          backupName: backupName ?? null,
+          hadLiveTable,
+          backupComplete: !hadLiveTable,
+        });
         if (oldTable && backupName !== undefined) {
           await this.materializeTable(
             oldTable,
             backupName,
             (row) => ({ ...row, vector: Array.from(row.vector), generationid: row.generationid ?? '' }),
           );
+          await this.rebuildJournal?.markFullRebuildVectorBackupComplete({ rebuildEpoch, table: 'legacy' });
         }
         const replacement = await this.materializeTable(
           shadowTable,

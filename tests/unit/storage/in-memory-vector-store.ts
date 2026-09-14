@@ -17,6 +17,7 @@ import type {
   VectorSearchResult,
   VectorStoreStats,
 } from '../../../src/types/index.js';
+import type { FullRebuildRecovery } from '../../../src/storage/interfaces/structured-catalog.js';
 
 interface InMemoryVectorStoreOptions {
   dimensions: number;
@@ -315,7 +316,7 @@ export class InMemoryVectorStore implements IVectorStore {
     return { name };
   }
 
-  async swapStructuredShadowTable(shadowTable: StructuredShadowTable): Promise<void> {
+  async swapStructuredShadowTable(shadowTable: StructuredShadowTable, _rebuildEpoch: number): Promise<void> {
     if (this.structuredShadow?.name !== shadowTable.name) {
       throw new Error('InMemoryVectorStore.swapStructuredShadowTable: no shadow table in progress');
     }
@@ -411,7 +412,7 @@ export class InMemoryVectorStore implements IVectorStore {
     }
   }
 
-  async swapLegacyShadowTable(shadow: LegacyShadowTable): Promise<void> {
+  async swapLegacyShadowTable(shadow: LegacyShadowTable, _rebuildEpoch: number): Promise<void> {
     const shadowState = this.legacyShadow;
     if (shadowState?.name !== shadow.name) {
       throw new Error('InMemoryVectorStore.swapLegacyShadowTable: no shadow table in progress');
@@ -447,6 +448,13 @@ export class InMemoryVectorStore implements IVectorStore {
     if (this.legacyShadow?.name === shadow.name) {
       this.legacyShadow = undefined;
     }
+  }
+
+  async recoverInterruptedFullRebuild(
+    _recovery: FullRebuildRecovery,
+    _mode: 'rollback' | 'finalize',
+  ): Promise<void> {
+    return;
   }
 
   async reconcileStructuredRows(activeGenerations: readonly ActiveGeneration[]): Promise<void> {

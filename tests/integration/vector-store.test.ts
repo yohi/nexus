@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { LanceVectorStore } from '../../src/storage/vector-store.js';
 import type { CodeChunk } from '../../src/types/index.js';
+import type { FullRebuildVectorArtifact } from '../../src/storage/interfaces/structured-catalog.js';
 import { vectorStoreContractTests } from '../shared/vector-store-contract.js';
 
 const makeChunk = (overrides: Partial<CodeChunk> = {}): CodeChunk => ({
@@ -147,7 +148,23 @@ describe('LanceVectorStore (LanceDB integration)', () => {
 
     it('recoverInterruptedFullRebuild() — 復元後にカウンタとサイドカーを整合させる', async () => {
       const embedding = Array.from({ length: 64 }, (_, i) => (i === 0 ? 1 : 0));
-      const store1 = new LanceVectorStore({ dbPath: tmpDir, dimensions: 64, deferRebuildCleanup: true });
+      let vectorArtifact: FullRebuildVectorArtifact | undefined;
+      const rebuildJournal = {
+        recordFullRebuildVectorArtifact: async (input: FullRebuildVectorArtifact): Promise<void> => {
+          vectorArtifact = input;
+        },
+        markFullRebuildVectorBackupComplete: async (): Promise<void> => {
+          if (vectorArtifact !== undefined) {
+            vectorArtifact = { ...vectorArtifact, backupComplete: true };
+          }
+        },
+      };
+      const store1 = new LanceVectorStore({
+        dbPath: tmpDir,
+        dimensions: 64,
+        deferRebuildCleanup: true,
+        rebuildJournal,
+      });
       await store1.initialize();
       await store1.upsertChunks(
         [
@@ -160,11 +177,17 @@ describe('LanceVectorStore (LanceDB integration)', () => {
 
       const shadow = await store1.beginLegacyShadowTable();
       await store1.stageLegacyShadowDeletions(shadow, { filePaths: ['src/b.ts'] });
-      await store1.swapLegacyShadowTable(shadow);
+      await store1.swapLegacyShadowTable(shadow, 1);
 
       const store2 = new LanceVectorStore({ dbPath: tmpDir, dimensions: 64, deferRebuildCleanup: true });
       await store2.initialize();
-      await store2.recoverInterruptedFullRebuild('rollback');
+      expect(vectorArtifact).toBeDefined();
+      await store2.recoverInterruptedFullRebuild({
+        rebuildEpoch: 1,
+        phase: 'legacy-swapped',
+        merkleSnapshot: [],
+        vectorArtifacts: [vectorArtifact!],
+      }, 'rollback');
 
       await expect(store2.getStats()).resolves.toMatchObject({
         totalChunks: 2,

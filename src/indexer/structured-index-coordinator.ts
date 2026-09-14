@@ -25,9 +25,9 @@ export interface FullRebuildFile {
 }
 
 export interface FullRebuildCommitHooks {
-  readonly beforeCommit?: () => Promise<void>;
+  readonly beforeCommit?: (rebuildEpoch: number) => Promise<void>;
   readonly afterCommit?: () => Promise<void>;
-  readonly merkleSnapshot?: readonly MerkleNodeRow[];
+  readonly merkleSnapshot: readonly MerkleNodeRow[];
 }
 
 export interface StructuredIndexCoordinatorOptions {
@@ -183,6 +183,7 @@ export class StructuredIndexCoordinator {
 
       let shadowTable: StructuredShadowTable | undefined;
       let metadataPrepared = false;
+      let metadataRollbackCompleted = false;
       const stagedFiles = new Set<string>();
 
       try {
@@ -233,9 +234,9 @@ export class StructuredIndexCoordinator {
           });
         }
 
-        await input.beforeCommit?.();
+        await input.beforeCommit?.(epoch);
         await this.options.metadataStore.setStructuredRebuildState({ rebuildState: 'legacy-swapped' });
-        await this.options.vectorStore.swapStructuredShadowTable(shadowTable);
+        await this.options.vectorStore.swapStructuredShadowTable(shadowTable, epoch);
         await this.options.metadataStore.setStructuredRebuildState({ rebuildState: 'structured-swapped' });
         await this.options.metadataStore.activateFullRebuild(activation);
         await this.options.metadataStore.setStructuredRebuildState({ rebuildState: 'catalog-activated' });
@@ -245,6 +246,7 @@ export class StructuredIndexCoordinator {
         if (metadataPrepared) {
           try {
             await this.options.metadataStore.rollbackFullRebuild(activation);
+            metadataRollbackCompleted = true;
           } catch (rollbackError) {
             console.error('[StructuredIndexCoordinator] Failed to roll back catalog activation:', rollbackError);
           }
@@ -265,10 +267,12 @@ export class StructuredIndexCoordinator {
             console.error('[StructuredIndexCoordinator] Failed to roll back structured vectors:', abortError);
           });
         }
-        await this.options.metadataStore.setStructuredRebuildState({
-          rebuildState: 'failed',
-          lastErrorCode: error instanceof Error ? error.message : 'unknown',
-        });
+        if (!metadataPrepared || metadataRollbackCompleted) {
+          await this.options.metadataStore.setStructuredRebuildState({
+            rebuildState: 'failed',
+            lastErrorCode: error instanceof Error ? error.message : 'unknown',
+          });
+        }
         throw error;
       }
 

@@ -917,8 +917,8 @@ export class IndexPipeline implements IIndexPipeline {
       await coordinator.runFullRebuild({
         files: [...files],
         merkleSnapshot,
-        beforeCommit: async () => {
-          await this.options.vectorStore.swapLegacyShadowTable(legacyShadow);
+        beforeCommit: async (rebuildEpoch) => {
+          await this.options.vectorStore.swapLegacyShadowTable(legacyShadow, rebuildEpoch);
         },
         afterCommit: async () => {
           await this.applyDeferredMerkleOps(deferredMerkleOps);
@@ -1138,7 +1138,7 @@ export class IndexPipeline implements IIndexPipeline {
     const recovery = await this.options.metadataStore.getFullRebuildRecovery?.();
     if (recovery !== null && recovery !== undefined) {
       const finalized = recovery.phase === 'merkle-activated';
-      await this.options.vectorStore.recoverInterruptedFullRebuild?.(finalized ? 'finalize' : 'rollback');
+      await this.options.vectorStore.recoverInterruptedFullRebuild(recovery, finalized ? 'finalize' : 'rollback');
       if (finalized) {
         await this.options.metadataStore.finalizeInterruptedFullRebuild?.();
       } else {
@@ -1146,6 +1146,7 @@ export class IndexPipeline implements IIndexPipeline {
       }
     }
     await this.options.vectorStore.cleanupOrphanedRebuildTables?.();
+    await this.options.structuredIndexCoordinator?.reconcile();
 
     if (!this.isTreeLoaded) {
       await this.merkleTree.load();

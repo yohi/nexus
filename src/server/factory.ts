@@ -147,6 +147,7 @@ class StorageManager {
       dbPath: config.storage.vectorDbPath,
       dimensions: config.embedding.dimensions,
       deferRebuildCleanup: true,
+      rebuildJournal: metadataStore,
     });
 
     return { metadataStore, vectorStore };
