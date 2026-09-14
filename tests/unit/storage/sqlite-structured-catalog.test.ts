@@ -95,6 +95,22 @@ describe('SQLite structured catalog', () => {
     });
   });
 
+  it('initializes when the persisted Merkle snapshot is malformed', async () => {
+    const databasePath = path.join(dir, 'metadata.db');
+    await store.initialize();
+    const rebuildEpoch = await store.incrementRebuildEpoch();
+    await store.setStructuredRebuildState({ rebuildState: 'building' });
+    await store.prepareFullRebuild({ rebuildEpoch, files: [], retiredFiles: [] }, []);
+    await store.close();
+
+    const database = new Database(databasePath);
+    database.prepare('UPDATE structured_rebuild_backup_runs SET merkle_snapshot = ?').run('not-json');
+    database.close();
+
+    store = new SqliteMetadataStore({ databasePath });
+    await expect(store.initialize()).resolves.toBeUndefined();
+  });
+
   it('does not roll back a finalized generation when cleanup left backup rows', async () => {
     const databasePath = path.join(dir, 'metadata.db');
     await store.initialize();

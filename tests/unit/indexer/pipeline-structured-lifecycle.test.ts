@@ -113,6 +113,28 @@ describe('IndexPipeline structured lifecycle', () => {
     expect(activateFileSpy).not.toHaveBeenCalled();
   });
 
+  it('evicts cached Merkle descendants during a structured directory deletion', async () => {
+    const { metadataStore, pipeline } = await createStructuredPipeline();
+    const filePath = 'src/cached.ts';
+    const content = 'export function cached(): number { return 1; }\n';
+
+    await indexContent(pipeline, 'added', filePath, content);
+    const merkleTree = (pipeline as unknown as {
+      merkleTree: { getNode(path: string): Promise<unknown> };
+    }).merkleTree;
+    await expect(merkleTree.getNode('src')).resolves.toBeDefined();
+    await expect(merkleTree.getNode(filePath)).resolves.toBeDefined();
+
+    await pipeline.reindex(
+      () => Promise.resolve([createEvent('deleted', 'src', '')]),
+      () => Promise.resolve(''),
+      true,
+    );
+
+    await expect(metadataStore.getMerkleNode(filePath)).resolves.toBeNull();
+    await expect(merkleTree.getNode(filePath)).resolves.toBeUndefined();
+  });
+
   it('does not abort the legacy shadow after a successful swap', async () => {
     const { pipeline, vectorStore } = await createStructuredPipeline();
     const swapLegacyShadowTableSpy = vi.spyOn(vectorStore, 'swapLegacyShadowTable');

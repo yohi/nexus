@@ -57,6 +57,20 @@ describe('LanceVectorStore (LanceDB integration)', () => {
       await expect(store.initialize()).rejects.toThrow('VectorStore is closed');
     });
 
+    it('stageLegacyShadowChunks() — 非有限ベクトルを拒否する', async () => {
+      const store = new LanceVectorStore({ dbPath: tmpDir, dimensions: 64 });
+      await store.initialize();
+      const shadow = await store.beginLegacyShadowTable();
+      const vector = new Array(64).fill(0);
+      vector[0] = Number.NaN;
+
+      await expect(store.stageLegacyShadowChunks(shadow, [{ chunk: makeChunk(), vector }])).rejects.toThrow(
+        'VectorStore.stageLegacyShadowChunks: vector contains non-finite values for chunk chunk-1',
+      );
+      await store.abortLegacyShadowTable(shadow);
+      await store.close();
+    });
+
     it('compactAfterReindex() — optimize() が呼ばれた場合に compacted を true にする', async () => {
       const store = new LanceVectorStore({ dbPath: tmpDir, dimensions: 64 });
       await store.initialize();

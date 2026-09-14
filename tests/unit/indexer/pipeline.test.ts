@@ -182,6 +182,15 @@ describe('IndexPipeline', () => {
       },
     ]);
 
+    await pipeline.processEvents([]);
+    const merkleTree = (pipeline as unknown as {
+      merkleTree: { getNode(filePath: string): Promise<unknown> };
+    }).merkleTree;
+    await merkleTree.getNode('src');
+    await merkleTree.getNode('src/auth.ts');
+    await merkleTree.getNode('src/nested');
+    await merkleTree.getNode('src/nested/deep.ts');
+
     await pipeline.processEvents([
       {
         type: 'deleted',
@@ -195,6 +204,7 @@ describe('IndexPipeline', () => {
     await expect(vectorStore.getStats()).resolves.toEqual(
       expect.objectContaining({ totalChunks: 0, totalFiles: 0 }),
     );
+    await expect(merkleTree.getNode('src/nested/deep.ts')).resolves.toBeUndefined();
   });
 
   it('returns already_running when reindex is invoked concurrently', async () => {

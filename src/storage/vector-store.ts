@@ -1091,6 +1091,11 @@ export class LanceVectorStore implements IVectorStore {
             `VectorStore.stageLegacyShadowChunks: vector length mismatch for chunk ${item.chunk.id}`
           );
         }
+        if (!item.vector.every(Number.isFinite)) {
+          throw new Error(
+            `VectorStore.stageLegacyShadowChunks: vector contains non-finite values for chunk ${item.chunk.id}`
+          );
+        }
       }
       const shadowTable = this.legacyShadowTable;
 

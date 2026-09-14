@@ -724,10 +724,10 @@ export class SqliteMetadataStore implements IMetadataStore, IStructuredCatalog {
   }
 
   private recoverInterruptedFullRebuildOnInitialize(): void {
-    const recovery = this.readFullRebuildRecovery();
-    if (recovery === null || recovery.phase === 'merkle-activated') return;
-
     try {
+      const recovery = this.readFullRebuildRecovery();
+      if (recovery === null || recovery.phase === 'merkle-activated') return;
+
       this.restoreFullRebuild(recovery.rebuildEpoch, recovery.merkleSnapshot);
       this.db.prepare('UPDATE index_stats SET structured_rebuild_state=?, structured_last_error_code=? WHERE id=?').run(
         'failed',

@@ -861,9 +861,6 @@ export class IndexPipeline implements IIndexPipeline {
     if (deferredMerkleOps !== undefined) {
       deferredMerkleOps.push({ kind: 'subtree-delete', filePath });
     } else {
-      await this.options.metadataStore.deleteSubtree(filePath);
-
-      // Incremental update of the tree (avoids full reload)
       await this.merkleTree.remove(filePath);
     }
 
@@ -906,7 +903,6 @@ export class IndexPipeline implements IIndexPipeline {
       } else if (op.kind === 'remove') {
         await this.merkleTree.remove(op.filePath);
       } else {
-        await this.options.metadataStore.deleteSubtree(op.filePath);
         await this.merkleTree.remove(op.filePath);
       }
     }
