@@ -108,6 +108,7 @@ describe('IndexPipeline structured lifecycle', () => {
     });
     expect(runFullRebuildSpy.mock.calls[0]?.[0].files[0]?.chunks).toHaveLength(1);
     expect(runFullRebuildSpy.mock.calls[0]?.[0].files[0]?.embeddings).toHaveLength(1);
+    expect(runFullRebuildSpy.mock.calls[0]?.[0].merkleSnapshot).toEqual([]);
     expect(stageFileSpy).not.toHaveBeenCalled();
     expect(activateFileSpy).not.toHaveBeenCalled();
   });

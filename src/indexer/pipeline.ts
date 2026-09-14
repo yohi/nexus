@@ -922,6 +922,7 @@ export class IndexPipeline implements IIndexPipeline {
     try {
       await coordinator.runFullRebuild({
         files: [...files],
+        merkleSnapshot,
         beforeCommit: async () => {
           await this.options.vectorStore.swapLegacyShadowTable(legacyShadow);
         },
