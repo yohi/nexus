@@ -97,17 +97,24 @@ export type {
 export { supportsStructuredCatalog } from '../storage/interfaces/metadata-store.js';
 export type {
   ActiveGeneration,
+  ChunkWithEmbedding,
   CompactionConfig,
   CompactionMutex,
   CompactionResult,
   GenerationChunkBatch,
   IVectorStore,
+  LegacyShadowDeletion,
+  LegacyShadowTable,
   StructuredRowVisibility,
   StructuredShadowTable,
   VectorFilter,
   VectorSearchResult,
   VectorStoreStats,
 } from '../storage/interfaces/vector-store.js';
+export type {
+  FullRebuildCommitPhase,
+  FullRebuildRecovery,
+} from '../storage/interfaces/structured-catalog.js';
 
 export interface GrepParams {
   query: string;

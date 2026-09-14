@@ -1,5 +1,6 @@
 /** Storage interfaces (design doc §7.3). Canonical home since the Phase 1b relocation; re-exported from src/types/index.ts for backward compatibility. */
 import type { CodeChunk, SymbolKind } from '../../types/index.js';
+import type { FullRebuildRecovery } from './structured-catalog.js';
 
 export interface VectorFilter {
   filePathPrefix?: string;
@@ -60,6 +61,23 @@ export interface StructuredShadowTable {
   readonly name: string;
 }
 
+/** Opaque handle for a legacy vector shadow table used during atomic full rebuilds. */
+export interface LegacyShadowTable {
+  readonly name: string;
+}
+
+/** A legacy chunk paired with its embedding vector for shadow staging. */
+export interface ChunkWithEmbedding {
+  readonly chunk: CodeChunk;
+  readonly vector: number[];
+}
+
+/** File-path based removals staged into a legacy shadow table. */
+export interface LegacyShadowDeletion {
+  readonly filePaths?: readonly string[];
+  readonly pathPrefixes?: readonly string[];
+}
+
 export interface IVectorStore {
   initialize(): Promise<void>;
   upsertChunks(chunks: CodeChunk[], embeddings?: number[][], affectedFilePaths?: string[]): Promise<void>;
@@ -84,7 +102,18 @@ export interface IVectorStore {
   activateGenerationRows(filePath: string, generationId: string): Promise<void>;
   removeGenerationRows(filePath: string, generationId: string): Promise<void>;
   beginStructuredShadowTable(): Promise<StructuredShadowTable>;
-  swapStructuredShadowTable(shadowTable: StructuredShadowTable): Promise<void>;
+  swapStructuredShadowTable(shadowTable: StructuredShadowTable, rebuildEpoch: number): Promise<void>;
+  finalizeStructuredShadowTable(shadowTable: StructuredShadowTable): Promise<void>;
   abortStructuredShadowTable(shadowTable: StructuredShadowTable): Promise<void>;
   reconcileStructuredRows(activeGenerations: readonly ActiveGeneration[]): Promise<void>;
+
+  /** Legacy-vector shadow lifecycle methods (atomic full rebuild). */
+  beginLegacyShadowTable(): Promise<LegacyShadowTable>;
+  stageLegacyShadowChunks(shadow: LegacyShadowTable, chunks: ChunkWithEmbedding[]): Promise<void>;
+  stageLegacyShadowDeletions(shadow: LegacyShadowTable, deletions: LegacyShadowDeletion): Promise<void>;
+  swapLegacyShadowTable(shadow: LegacyShadowTable, rebuildEpoch: number): Promise<void>;
+  finalizeLegacyShadowTable(shadow: LegacyShadowTable): Promise<void>;
+  abortLegacyShadowTable(shadow: LegacyShadowTable): Promise<void>;
+  recoverInterruptedFullRebuild(recovery: FullRebuildRecovery, mode: 'rollback' | 'finalize'): Promise<void>;
+  cleanupOrphanedRebuildTables?(): Promise<void>;
 }

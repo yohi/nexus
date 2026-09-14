@@ -92,6 +92,7 @@ const runImportFixture = async (coordinator: StructuredIndexCoordinator, fixture
       declarations: [fixture.declaration],
       imports: [fixture.importRecord],
     }],
+    merkleSnapshot: [],
   });
 };
 
@@ -270,6 +271,7 @@ describe('SymbolRetrievalService', () => {
           },
         ],
       }],
+      merkleSnapshot: [],
     });
 
     await writeFile(join(projectRoot, 'src/a.ts'), text);
@@ -300,6 +302,7 @@ describe('SymbolRetrievalService', () => {
         declarations: [unsupportedDeclaration],
         imports: [fixture.importRecord],
       }],
+      merkleSnapshot: [],
     });
 
     const result = await restrictedService.getSymbolSource({ symbolId: fixture.symbolId });
@@ -391,6 +394,7 @@ describe('SymbolRetrievalService', () => {
           parserId: 'binary',
           parserVersion: '1',
         }],
+        merkleSnapshot: [],
       });
       await writeFile(join(projectRoot, 'src/a.ts'), text);
 
@@ -608,6 +612,7 @@ describe('SymbolRetrievalService', () => {
           parserId: 'typescript',
           parserVersion: '1',
         }],
+        merkleSnapshot: [],
       });
       await writeFile(join(projectRoot, 'src/parent.ts'), text);
 
@@ -644,6 +649,7 @@ describe('SymbolRetrievalService', () => {
           declarations: [stage1.symbol],
           imports: [],
         }],
+        merkleSnapshot: [],
       });
 
       // Now stage and activate a new generation without oldFn to create a tombstone

@@ -1,17 +1,23 @@
+import { randomUUID } from 'node:crypto';
+
 import type {
   ActiveGeneration,
+  ChunkWithEmbedding,
   CodeChunk,
   CompactionConfig,
   CompactionMutex,
   CompactionResult,
   GenerationChunkBatch,
   IVectorStore,
+  LegacyShadowDeletion,
+  LegacyShadowTable,
   StructuredRowVisibility,
   StructuredShadowTable,
   VectorFilter,
   VectorSearchResult,
   VectorStoreStats,
 } from '../../../src/types/index.js';
+import type { FullRebuildRecovery } from '../../../src/storage/interfaces/structured-catalog.js';
 
 interface InMemoryVectorStoreOptions {
   dimensions: number;
@@ -28,6 +34,16 @@ interface StructuredRow {
   vector: number[];
   generationId: string;
   visibility: StructuredRowVisibility;
+}
+
+interface StructuredShadowState {
+  readonly name: string;
+  readonly records: Map<string, StructuredRow>;
+}
+
+interface LegacyShadowState {
+  readonly name: string;
+  readonly records: Map<string, StoredVector>;
 }
 
 const cosineSimilarity = (left: number[], right: number[]): number => {
@@ -47,7 +63,14 @@ export class InMemoryVectorStore implements IVectorStore {
 
   private readonly records = new Map<string, StoredVector>();
   private readonly structuredRecords = new Map<string, StructuredRow>();
-  private structuredShadow: Map<string, StructuredRow> | undefined;
+  private structuredShadow: StructuredShadowState | undefined;
+  private structuredSwapBackup: { readonly handleName: string; readonly records: Map<string, StructuredRow> } | undefined;
+  private legacyShadow: LegacyShadowState | undefined;
+  private legacySwapBackup: {
+    readonly handleName: string;
+    readonly records: Map<string, StoredVector>;
+    readonly deletedCount: number;
+  } | undefined;
 
   private deletedCount = 0;
 
@@ -255,7 +278,7 @@ export class InMemoryVectorStore implements IVectorStore {
       }
 
       const key = this.structuredKey(batch.filePath, batch.generationId, chunk.id);
-      const target = this.structuredShadow ?? this.structuredRecords;
+      const target = this.structuredShadow?.records ?? this.structuredRecords;
       target.set(key, {
         chunk,
         vector,
@@ -287,23 +310,151 @@ export class InMemoryVectorStore implements IVectorStore {
   }
 
   async beginStructuredShadowTable(): Promise<StructuredShadowTable> {
-    this.structuredShadow = new Map();
-    return { name: 'in-memory-structured-shadow' };
+    this.structuredSwapBackup = undefined;
+    const name = `in-memory-structured-shadow-${randomUUID()}`;
+    this.structuredShadow = { name, records: new Map() };
+    return { name };
   }
 
-  async swapStructuredShadowTable(_shadowTable: StructuredShadowTable): Promise<void> {
-    if (!this.structuredShadow) {
+  async swapStructuredShadowTable(shadowTable: StructuredShadowTable, _rebuildEpoch: number): Promise<void> {
+    if (this.structuredShadow?.name !== shadowTable.name) {
       throw new Error('InMemoryVectorStore.swapStructuredShadowTable: no shadow table in progress');
     }
+    this.structuredSwapBackup = {
+      handleName: shadowTable.name,
+      records: new Map(this.structuredRecords),
+    };
     this.structuredRecords.clear();
-    for (const [key, row] of this.structuredShadow.entries()) {
+    for (const [key, row] of this.structuredShadow.records.entries()) {
       this.structuredRecords.set(key, { ...row, visibility: 'active' });
     }
     this.structuredShadow = undefined;
   }
 
-  async abortStructuredShadowTable(_shadowTable: StructuredShadowTable): Promise<void> {
-    this.structuredShadow = undefined;
+  async finalizeStructuredShadowTable(shadowTable: StructuredShadowTable): Promise<void> {
+    if (this.structuredSwapBackup?.handleName === shadowTable.name) {
+      this.structuredSwapBackup = undefined;
+    }
+  }
+
+  async abortStructuredShadowTable(shadowTable: StructuredShadowTable): Promise<void> {
+    if (this.structuredSwapBackup?.handleName === shadowTable.name) {
+      this.structuredRecords.clear();
+      for (const [key, row] of this.structuredSwapBackup.records) this.structuredRecords.set(key, row);
+      this.structuredSwapBackup = undefined;
+      return;
+    }
+    if (this.structuredShadow?.name === shadowTable.name) {
+      this.structuredShadow = undefined;
+    }
+  }
+
+  async beginLegacyShadowTable(): Promise<LegacyShadowTable> {
+    this.legacySwapBackup = undefined;
+    const name = `in-memory-legacy-shadow-${randomUUID()}`;
+    const records = new Map<string, StoredVector>();
+    for (const [key, record] of this.records.entries()) {
+      if (!record.deleted) {
+        records.set(key, { ...record });
+      }
+    }
+    this.legacyShadow = { name, records };
+    return { name };
+  }
+
+  async stageLegacyShadowChunks(shadow: LegacyShadowTable, chunks: ChunkWithEmbedding[]): Promise<void> {
+    const shadowState = this.legacyShadow;
+    if (shadowState?.name !== shadow.name) {
+      throw new Error('InMemoryVectorStore.stageLegacyShadowChunks: no shadow table in progress');
+    }
+    const shadowMap = shadowState.records;
+    for (const { chunk, vector } of chunks) {
+      if (vector.length !== this.dimensions) {
+        throw new Error(`InMemoryVectorStore.stageLegacyShadowChunks: vector length mismatch for chunk ${chunk.id} (expected ${this.dimensions}, got ${vector.length})`);
+      }
+      if (!vector.every(Number.isFinite)) {
+        throw new Error(`InMemoryVectorStore.stageLegacyShadowChunks: vector contains non-finite values for chunk ${chunk.id}`);
+      }
+    }
+
+    // Upsert semantics: drop existing rows for the affected files before adding.
+    const affectedFilePaths = new Set(chunks.map(({ chunk }) => chunk.filePath));
+    for (const key of shadowMap.keys()) {
+      const record = shadowMap.get(key);
+      if (record && affectedFilePaths.has(record.chunk.filePath)) {
+        shadowMap.delete(key);
+      }
+    }
+    for (const { chunk, vector } of chunks) {
+      shadowMap.set(chunk.id, { chunk, vector, deleted: false });
+    }
+  }
+
+  async stageLegacyShadowDeletions(
+    shadow: LegacyShadowTable,
+    deletions: LegacyShadowDeletion,
+  ): Promise<void> {
+    const shadowState = this.legacyShadow;
+    if (shadowState?.name !== shadow.name) {
+      throw new Error('InMemoryVectorStore.stageLegacyShadowDeletions: no shadow table in progress');
+    }
+    const shadowMap = shadowState.records;
+    const filePaths = new Set(deletions.filePaths ?? []);
+    const prefixes = (deletions.pathPrefixes ?? []).map((prefix) => (prefix.endsWith('/') ? prefix : `${prefix}/`));
+    for (const key of shadowMap.keys()) {
+      const record = shadowMap.get(key);
+      if (!record) continue;
+      const path = record.chunk.filePath;
+      const matches = filePaths.has(path) || prefixes.some((prefix) => path === prefix.slice(0, -1) || path.startsWith(prefix));
+      if (matches) {
+        shadowMap.delete(key);
+      }
+    }
+  }
+
+  async swapLegacyShadowTable(shadow: LegacyShadowTable, _rebuildEpoch: number): Promise<void> {
+    const shadowState = this.legacyShadow;
+    if (shadowState?.name !== shadow.name) {
+      throw new Error('InMemoryVectorStore.swapLegacyShadowTable: no shadow table in progress');
+    }
+    this.legacySwapBackup = {
+      handleName: shadow.name,
+      records: new Map(this.records),
+      deletedCount: this.deletedCount,
+    };
+    this.records.clear();
+    for (const [key, record] of shadowState.records.entries()) {
+      this.records.set(key, { ...record, deleted: false });
+    }
+    this.legacyShadow = undefined;
+    // Staged rows are physically present (no tombstones), so counters are clean after the swap.
+    this.deletedCount = 0;
+  }
+
+  async finalizeLegacyShadowTable(shadow: LegacyShadowTable): Promise<void> {
+    if (this.legacySwapBackup?.handleName === shadow.name) {
+      this.legacySwapBackup = undefined;
+    }
+  }
+
+  async abortLegacyShadowTable(shadow: LegacyShadowTable): Promise<void> {
+    if (this.legacySwapBackup?.handleName === shadow.name) {
+      this.records.clear();
+      for (const [key, record] of this.legacySwapBackup.records) this.records.set(key, record);
+      this.deletedCount = this.legacySwapBackup.deletedCount;
+      this.legacySwapBackup = undefined;
+      return;
+    }
+    if (this.legacyShadow?.name === shadow.name) {
+      this.legacyShadow = undefined;
+    }
+  }
+
+  async recoverInterruptedFullRebuild(
+    _recovery: FullRebuildRecovery,
+    _mode: 'rollback' | 'finalize',
+  ): Promise<void> {
+    return;
   }
 
   async reconcileStructuredRows(activeGenerations: readonly ActiveGeneration[]): Promise<void> {
