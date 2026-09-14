@@ -102,6 +102,7 @@ export interface IVectorStore {
   removeGenerationRows(filePath: string, generationId: string): Promise<void>;
   beginStructuredShadowTable(): Promise<StructuredShadowTable>;
   swapStructuredShadowTable(shadowTable: StructuredShadowTable): Promise<void>;
+  finalizeStructuredShadowTable(shadowTable: StructuredShadowTable): Promise<void>;
   abortStructuredShadowTable(shadowTable: StructuredShadowTable): Promise<void>;
   reconcileStructuredRows(activeGenerations: readonly ActiveGeneration[]): Promise<void>;
 
@@ -110,5 +111,6 @@ export interface IVectorStore {
   stageLegacyShadowChunks(shadow: LegacyShadowTable, chunks: ChunkWithEmbedding[]): Promise<void>;
   stageLegacyShadowDeletions(shadow: LegacyShadowTable, deletions: LegacyShadowDeletion): Promise<void>;
   swapLegacyShadowTable(shadow: LegacyShadowTable): Promise<void>;
+  finalizeLegacyShadowTable(shadow: LegacyShadowTable): Promise<void>;
   abortLegacyShadowTable(shadow: LegacyShadowTable): Promise<void>;
 }

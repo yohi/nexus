@@ -1,3 +1,5 @@
+import { randomUUID } from 'node:crypto';
+
 import type {
   ActiveGeneration,
   ChunkWithEmbedding,
@@ -33,6 +35,16 @@ interface StructuredRow {
   visibility: StructuredRowVisibility;
 }
 
+interface StructuredShadowState {
+  readonly name: string;
+  readonly records: Map<string, StructuredRow>;
+}
+
+interface LegacyShadowState {
+  readonly name: string;
+  readonly records: Map<string, StoredVector>;
+}
+
 const cosineSimilarity = (left: number[], right: number[]): number => {
   const dot = left.reduce((sum, value, index) => sum + value * (right[index] ?? 0), 0);
   const leftMagnitude = Math.sqrt(left.reduce((sum, value) => sum + value * value, 0));
@@ -50,8 +62,14 @@ export class InMemoryVectorStore implements IVectorStore {
 
   private readonly records = new Map<string, StoredVector>();
   private readonly structuredRecords = new Map<string, StructuredRow>();
-  private structuredShadow: Map<string, StructuredRow> | undefined;
-  private legacyShadow: Map<string, StoredVector> | undefined;
+  private structuredShadow: StructuredShadowState | undefined;
+  private structuredSwapBackup: { readonly handleName: string; readonly records: Map<string, StructuredRow> } | undefined;
+  private legacyShadow: LegacyShadowState | undefined;
+  private legacySwapBackup: {
+    readonly handleName: string;
+    readonly records: Map<string, StoredVector>;
+    readonly deletedCount: number;
+  } | undefined;
 
   private deletedCount = 0;
 
@@ -259,7 +277,7 @@ export class InMemoryVectorStore implements IVectorStore {
       }
 
       const key = this.structuredKey(batch.filePath, batch.generationId, chunk.id);
-      const target = this.structuredShadow ?? this.structuredRecords;
+      const target = this.structuredShadow?.records ?? this.structuredRecords;
       target.set(key, {
         chunk,
         vector,
@@ -291,40 +309,64 @@ export class InMemoryVectorStore implements IVectorStore {
   }
 
   async beginStructuredShadowTable(): Promise<StructuredShadowTable> {
-    this.structuredShadow = new Map();
-    return { name: 'in-memory-structured-shadow' };
+    this.structuredSwapBackup = undefined;
+    const name = `in-memory-structured-shadow-${randomUUID()}`;
+    this.structuredShadow = { name, records: new Map() };
+    return { name };
   }
 
-  async swapStructuredShadowTable(_shadowTable: StructuredShadowTable): Promise<void> {
-    if (!this.structuredShadow) {
+  async swapStructuredShadowTable(shadowTable: StructuredShadowTable): Promise<void> {
+    if (!this.structuredShadow || this.structuredShadow.name !== shadowTable.name) {
       throw new Error('InMemoryVectorStore.swapStructuredShadowTable: no shadow table in progress');
     }
+    this.structuredSwapBackup = {
+      handleName: shadowTable.name,
+      records: new Map(this.structuredRecords),
+    };
     this.structuredRecords.clear();
-    for (const [key, row] of this.structuredShadow.entries()) {
+    for (const [key, row] of this.structuredShadow.records.entries()) {
       this.structuredRecords.set(key, { ...row, visibility: 'active' });
     }
     this.structuredShadow = undefined;
   }
 
-  async abortStructuredShadowTable(_shadowTable: StructuredShadowTable): Promise<void> {
-    this.structuredShadow = undefined;
+  async finalizeStructuredShadowTable(shadowTable: StructuredShadowTable): Promise<void> {
+    if (this.structuredSwapBackup?.handleName === shadowTable.name) {
+      this.structuredSwapBackup = undefined;
+    }
+  }
+
+  async abortStructuredShadowTable(shadowTable: StructuredShadowTable): Promise<void> {
+    if (this.structuredSwapBackup?.handleName === shadowTable.name) {
+      this.structuredRecords.clear();
+      for (const [key, row] of this.structuredSwapBackup.records) this.structuredRecords.set(key, row);
+      this.structuredSwapBackup = undefined;
+      return;
+    }
+    if (this.structuredShadow?.name === shadowTable.name) {
+      this.structuredShadow = undefined;
+    }
   }
 
   async beginLegacyShadowTable(): Promise<LegacyShadowTable> {
-    this.legacyShadow = new Map();
+    this.legacySwapBackup = undefined;
+    const name = `in-memory-legacy-shadow-${randomUUID()}`;
+    const records = new Map<string, StoredVector>();
     for (const [key, record] of this.records.entries()) {
       if (!record.deleted) {
-        this.legacyShadow.set(key, { ...record });
+        records.set(key, { ...record });
       }
     }
-    return { name: 'in-memory-legacy-shadow' };
+    this.legacyShadow = { name, records };
+    return { name };
   }
 
-  async stageLegacyShadowChunks(_shadow: LegacyShadowTable, chunks: ChunkWithEmbedding[]): Promise<void> {
-    const shadowMap = this.legacyShadow;
-    if (!shadowMap) {
+  async stageLegacyShadowChunks(shadow: LegacyShadowTable, chunks: ChunkWithEmbedding[]): Promise<void> {
+    const shadowState = this.legacyShadow;
+    if (!shadowState || shadowState.name !== shadow.name) {
       throw new Error('InMemoryVectorStore.stageLegacyShadowChunks: no shadow table in progress');
     }
+    const shadowMap = shadowState.records;
     for (const { chunk, vector } of chunks) {
       if (vector.length !== this.dimensions) {
         throw new Error(`InMemoryVectorStore.stageLegacyShadowChunks: vector length mismatch for chunk ${chunk.id} (expected ${this.dimensions}, got ${vector.length})`);
@@ -348,13 +390,14 @@ export class InMemoryVectorStore implements IVectorStore {
   }
 
   async stageLegacyShadowDeletions(
-    _shadow: LegacyShadowTable,
+    shadow: LegacyShadowTable,
     deletions: LegacyShadowDeletion,
   ): Promise<void> {
-    const shadowMap = this.legacyShadow;
-    if (!shadowMap) {
+    const shadowState = this.legacyShadow;
+    if (!shadowState || shadowState.name !== shadow.name) {
       throw new Error('InMemoryVectorStore.stageLegacyShadowDeletions: no shadow table in progress');
     }
+    const shadowMap = shadowState.records;
     const filePaths = new Set(deletions.filePaths ?? []);
     const prefixes = (deletions.pathPrefixes ?? []).map((prefix) => (prefix.endsWith('/') ? prefix : `${prefix}/`));
     for (const key of shadowMap.keys()) {
@@ -368,13 +411,18 @@ export class InMemoryVectorStore implements IVectorStore {
     }
   }
 
-  async swapLegacyShadowTable(_shadow: LegacyShadowTable): Promise<void> {
-    const shadowMap = this.legacyShadow;
-    if (!shadowMap) {
+  async swapLegacyShadowTable(shadow: LegacyShadowTable): Promise<void> {
+    const shadowState = this.legacyShadow;
+    if (!shadowState || shadowState.name !== shadow.name) {
       throw new Error('InMemoryVectorStore.swapLegacyShadowTable: no shadow table in progress');
     }
+    this.legacySwapBackup = {
+      handleName: shadow.name,
+      records: new Map(this.records),
+      deletedCount: this.deletedCount,
+    };
     this.records.clear();
-    for (const [key, record] of shadowMap.entries()) {
+    for (const [key, record] of shadowState.records.entries()) {
       this.records.set(key, { ...record, deleted: false });
     }
     this.legacyShadow = undefined;
@@ -382,8 +430,23 @@ export class InMemoryVectorStore implements IVectorStore {
     this.deletedCount = 0;
   }
 
-  async abortLegacyShadowTable(_shadow: LegacyShadowTable): Promise<void> {
-    this.legacyShadow = undefined;
+  async finalizeLegacyShadowTable(shadow: LegacyShadowTable): Promise<void> {
+    if (this.legacySwapBackup?.handleName === shadow.name) {
+      this.legacySwapBackup = undefined;
+    }
+  }
+
+  async abortLegacyShadowTable(shadow: LegacyShadowTable): Promise<void> {
+    if (this.legacySwapBackup?.handleName === shadow.name) {
+      this.records.clear();
+      for (const [key, record] of this.legacySwapBackup.records) this.records.set(key, record);
+      this.deletedCount = this.legacySwapBackup.deletedCount;
+      this.legacySwapBackup = undefined;
+      return;
+    }
+    if (this.legacyShadow?.name === shadow.name) {
+      this.legacyShadow = undefined;
+    }
   }
 
   async reconcileStructuredRows(activeGenerations: readonly ActiveGeneration[]): Promise<void> {

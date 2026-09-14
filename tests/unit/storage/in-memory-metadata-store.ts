@@ -12,6 +12,7 @@ import type {
   StructuredActivationResult,
   StructuredFileRetirement,
   StructuredFileResolution,
+  StructuredFullRebuildActivation,
   StructuredGenerationActivation,
   StructuredGenerationStage,
   StructuredImportRecord,
@@ -24,6 +25,13 @@ import type {
   StructuredTombstone,
 } from '../../../src/storage/interfaces/structured-catalog.js';
 import type { StructuredDeclaration, StructuredGeneration, StructuredImport } from '../../../src/structured/contracts.js';
+
+interface StructuredCatalogBackup {
+  readonly activation: StructuredFullRebuildActivation;
+  readonly active: Map<string, StructuredGenerationStage>;
+  readonly pending: Map<string, StructuredGenerationStage>;
+  readonly tombstones: Map<string, StructuredTombstone>;
+}
 
 export class InMemoryMetadataStore implements IMetadataStore, IStructuredCatalog {
   private readonly nodes = new Map<string, MerkleNodeRow>();
@@ -43,6 +51,7 @@ export class InMemoryMetadataStore implements IMetadataStore, IStructuredCatalog
   private rebuildEpoch = 0;
   private rebuildState: string | null = null;
   private lastErrorCode: string | null = null;
+  private fullRebuildBackup: StructuredCatalogBackup | undefined;
 
   async initialize(): Promise<void> {
     return;
@@ -197,6 +206,70 @@ export class InMemoryMetadataStore implements IMetadataStore, IStructuredCatalog
     return null;
   }
 
+  async prepareFullRebuild(input: StructuredFullRebuildActivation): Promise<void> {
+    this.validateFullRebuildTargets(input);
+    this.fullRebuildBackup = {
+      activation: input,
+      active: new Map(this.active),
+      pending: new Map(this.pending),
+      tombstones: new Map(this.tombstones),
+    };
+  }
+
+  async activateFullRebuild(input: StructuredFullRebuildActivation): Promise<void> {
+    if (input.rebuildEpoch !== this.rebuildEpoch) {
+      throw new Error(`InMemoryMetadataStore.activateFullRebuild: stale rebuild epoch ${input.rebuildEpoch}`);
+    }
+    if (this.fullRebuildBackup?.activation.rebuildEpoch !== input.rebuildEpoch) {
+      throw new Error(`InMemoryMetadataStore.activateFullRebuild: missing rebuild backup for epoch ${input.rebuildEpoch}`);
+    }
+
+    for (const file of input.files) {
+      const active = this.active.get(file.filePath);
+      const pending = this.pending.get(file.filePath);
+      if ((active?.generation.generationId ?? null) !== file.expectedActiveGeneration) {
+        throw new Error(`InMemoryMetadataStore.activateFullRebuild: stale active generation for ${file.filePath}`);
+      }
+      if (pending?.generation.generationId !== file.generationId) {
+        throw new Error(`InMemoryMetadataStore.activateFullRebuild: missing generation for ${file.filePath}`);
+      }
+    }
+    for (const file of input.retiredFiles) {
+      const active = this.active.get(file.filePath);
+      if (active?.generation.generationId !== file.expectedActiveGeneration) {
+        throw new Error(`InMemoryMetadataStore.activateFullRebuild: stale retired generation for ${file.filePath}`);
+      }
+    }
+
+    for (const file of input.files) {
+      this.activateGenerationState(file.filePath, file.generationId, input.rebuildEpoch);
+    }
+    for (const file of input.retiredFiles) {
+      this.retireGenerationState(file.filePath, input.rebuildEpoch);
+    }
+  }
+
+  async rollbackFullRebuild(input: StructuredFullRebuildActivation): Promise<void> {
+    if (this.fullRebuildBackup?.activation.rebuildEpoch !== input.rebuildEpoch) {
+      return;
+    }
+    const backup = this.fullRebuildBackup;
+    if (backup === undefined) return;
+    this.active.clear();
+    for (const [filePath, generation] of backup.active) this.active.set(filePath, generation);
+    this.pending.clear();
+    for (const [filePath, generation] of backup.pending) this.pending.set(filePath, generation);
+    this.tombstones.clear();
+    for (const [symbolId, tombstone] of backup.tombstones) this.tombstones.set(symbolId, tombstone);
+    this.fullRebuildBackup = undefined;
+  }
+
+  async finalizeFullRebuild(input: StructuredFullRebuildActivation): Promise<void> {
+    if (this.fullRebuildBackup?.activation.rebuildEpoch === input.rebuildEpoch) {
+      this.fullRebuildBackup = undefined;
+    }
+  }
+
   async reconcileStructuredState(): Promise<StructuredReconciliationResult> {
     const activeSymbolIds = new Set([...this.active.values()].flatMap((generation) => generation.declarations.map((declaration) => declaration.symbolId)));
     let prunedTombstones = 0;
@@ -227,6 +300,13 @@ export class InMemoryMetadataStore implements IMetadataStore, IStructuredCatalog
       totalDeleted += await this.deleteSubtree(pathPrefix);
     }
     return totalDeleted;
+  }
+
+  async replaceAllMerkleNodes(nodes: MerkleNodeRow[]): Promise<void> {
+    this.nodes.clear();
+    for (const node of nodes) {
+      this.nodes.set(node.path, node);
+    }
   }
 
   async deleteSubtree(pathPrefix: string): Promise<number> {
@@ -391,5 +471,73 @@ export class InMemoryMetadataStore implements IMetadataStore, IStructuredCatalog
   async pruneEmbeddings(_maxAgeDays: number): Promise<number> {
     // In-memory store has no persistent TTL concern for tests
     return 0;
+  }
+
+  private activateGenerationState(filePath: string, generationId: string, rebuildEpoch: number): void {
+    const pending = this.pending.get(filePath);
+    const active = this.active.get(filePath);
+    if (pending === undefined || pending.generation.generationId !== generationId) {
+      throw new Error(`InMemoryMetadataStore.activateFullRebuild: missing generation for ${filePath}`);
+    }
+    if (active !== undefined) {
+      const pendingSymbolIds = new Set(pending.declarations.map((declaration) => declaration.symbolId));
+      for (const declaration of active.declarations) {
+        if (!pendingSymbolIds.has(declaration.symbolId)) {
+          this.tombstones.set(declaration.symbolId, {
+            symbolId: declaration.symbolId,
+            filePath,
+            generationId: active.generation.generationId,
+            retiredAtRebuildEpoch: rebuildEpoch,
+            retiredAt: Date.now(),
+          });
+        }
+      }
+    }
+    this.active.set(filePath, pending);
+    this.pending.delete(filePath);
+    for (const declaration of pending.declarations) this.tombstones.delete(declaration.symbolId);
+  }
+
+  private validateFullRebuildTargets(input: StructuredFullRebuildActivation): void {
+    if (input.rebuildEpoch !== this.rebuildEpoch) {
+      throw new Error(`InMemoryMetadataStore.prepareFullRebuild: stale rebuild epoch ${input.rebuildEpoch}`);
+    }
+    const paths = new Set<string>();
+    for (const file of input.files) {
+      if (paths.has(file.filePath)) {
+        throw new Error(`InMemoryMetadataStore.prepareFullRebuild: duplicate file ${file.filePath}`);
+      }
+      paths.add(file.filePath);
+      const activeGeneration = this.active.get(file.filePath)?.generation.generationId ?? null;
+      if (activeGeneration !== file.expectedActiveGeneration) {
+        throw new Error(`InMemoryMetadataStore.prepareFullRebuild: stale active generation for ${file.filePath}`);
+      }
+    }
+    for (const file of input.retiredFiles) {
+      if (paths.has(file.filePath)) {
+        throw new Error(`InMemoryMetadataStore.prepareFullRebuild: duplicate file ${file.filePath}`);
+      }
+      paths.add(file.filePath);
+      const activeGeneration = this.active.get(file.filePath)?.generation.generationId;
+      if (activeGeneration !== file.expectedActiveGeneration) {
+        throw new Error(`InMemoryMetadataStore.prepareFullRebuild: stale retired generation for ${file.filePath}`);
+      }
+    }
+  }
+
+  private retireGenerationState(filePath: string, rebuildEpoch: number): void {
+    const active = this.active.get(filePath);
+    if (active === undefined) return;
+    for (const declaration of active.declarations) {
+      this.tombstones.set(declaration.symbolId, {
+        symbolId: declaration.symbolId,
+        filePath,
+        generationId: active.generation.generationId,
+        retiredAtRebuildEpoch: rebuildEpoch,
+        retiredAt: Date.now(),
+      });
+    }
+    this.active.delete(filePath);
+    this.pending.delete(filePath);
   }
 }

@@ -29,29 +29,22 @@ describe('full rebuild lifecycle', () => {
     });
   });
 
-  it('keeps a swapped shadow table available when final SQLite activation fails', async () => {
+  it('rolls back swapped structured vectors when final catalog activation fails', async () => {
     const stage = createStructuredStage('src/a.ts', 'export function a() { return 1; }', 'a', {
       startByte: 0,
       endByte: 30,
     });
     const embedding = Array.from({ length: 64 }, (_, i) => (i === 0 ? 1 : 0));
 
-    const originalActivate = metadataStore.activateGeneration.bind(metadataStore);
-    metadataStore.activateGeneration = async (input) => {
-      if (input.generationId === stage.generationId) {
-        throw new Error('final activation failed');
-      }
-      return originalActivate(input);
+    metadataStore.activateFullRebuild = async () => {
+      throw new Error('final activation failed');
     };
 
     await expect(runStructuredFullRebuild(coordinator, stage)).rejects.toThrow('final activation failed');
 
     const state = await metadataStore.getStructuredIndexState();
     expect(state.rebuildState).toBe('failed');
-    expect(await vectorStore.search(embedding, 10)).toHaveLength(1);
-    expect(await metadataStore.resolveFile(stage.source.filePath)).toEqual({
-      kind: 'pending',
-      generationId: stage.generationId,
-    });
+    expect(await vectorStore.search(embedding, 10)).toHaveLength(0);
+    expect(await metadataStore.resolveFile(stage.source.filePath)).toEqual({ kind: 'missing' });
   });
 });

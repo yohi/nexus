@@ -97,6 +97,21 @@ export interface StructuredReconciliationResult {
   readonly prunedTombstones: number;
 }
 
+export interface StructuredFullRebuildFile {
+  readonly filePath: string;
+  readonly generationId: string;
+  readonly expectedActiveGeneration: string | null;
+}
+
+export interface StructuredFullRebuildActivation {
+  readonly rebuildEpoch: number;
+  readonly files: readonly StructuredFullRebuildFile[];
+  readonly retiredFiles: readonly {
+    readonly filePath: string;
+    readonly expectedActiveGeneration: string;
+  }[];
+}
+
 export interface IStructuredCatalog {
   bootstrapStructuredSchema(): Promise<void>;
   getStructuredIndexState(): Promise<StructuredIndexState>;
@@ -115,5 +130,9 @@ export interface IStructuredCatalog {
   getImportsForSymbol(symbolId: string): Promise<readonly StructuredImportRecord[]>;
   getFileDeclarations(filePath: string): Promise<readonly StructuredDeclaration[]>;
   getGeneration(filePath: string, generationId: string): Promise<StructuredGeneration | null>;
+  prepareFullRebuild(input: StructuredFullRebuildActivation): Promise<void>;
+  activateFullRebuild(input: StructuredFullRebuildActivation): Promise<void>;
+  rollbackFullRebuild(input: StructuredFullRebuildActivation): Promise<void>;
+  finalizeFullRebuild(input: StructuredFullRebuildActivation): Promise<void>;
   reconcileStructuredState(): Promise<StructuredReconciliationResult>;
 }

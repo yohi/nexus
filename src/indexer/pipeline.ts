@@ -20,6 +20,7 @@ import {
   type RuntimeInitializationResult,
   type ReindexResult,
   type DeadLetterEntry,
+  type MerkleNodeRow,
   type IIndexPipeline,
   type PipelineProgress,
   type RetryExhaustedError,
@@ -258,7 +259,18 @@ export class IndexPipeline implements IIndexPipeline {
     const structuredParseFailures: string[] = [];
     if (events.length === 0) {
       if (useStructuredFullRebuild) {
-        await structuredIndexCoordinator.runFullRebuild({ files: structuredRebuildFiles });
+        if (!this.isTreeLoaded) {
+          await this.merkleTree.load();
+          this.isTreeLoaded = true;
+        }
+        const legacyShadow = await this.options.vectorStore.beginLegacyShadowTable();
+        await this.commitStructuredFullRebuild(
+          structuredIndexCoordinator,
+          structuredRebuildFiles,
+          [],
+          legacyShadow,
+          await this.options.metadataStore.getAllNodes(),
+        );
       }
       return { chunksIndexed: 0, structuredParseFailures: [], embeddingFailures: [] };
     }
@@ -267,6 +279,9 @@ export class IndexPipeline implements IIndexPipeline {
       await this.merkleTree.load();
       this.isTreeLoaded = true;
     }
+    const merkleSnapshot = useStructuredFullRebuild
+      ? await this.options.metadataStore.getAllNodes()
+      : undefined;
 
     const trackProgress = options.trackProgress ?? true;
     if (trackProgress) {
@@ -363,20 +378,17 @@ export class IndexPipeline implements IIndexPipeline {
           const filePaths = [...new Set(structuredParseFailures)].join(', ');
           throw new Error(`Structured full rebuild aborted: parsing failed for ${filePaths}`);
         }
-        try {
-          await structuredIndexCoordinator.runFullRebuild({ files: structuredRebuildFiles });
-          if (legacyShadow !== undefined) {
-            await this.options.vectorStore.swapLegacyShadowTable(legacyShadow);
-            legacyShadow = undefined;
-          }
-          await this.applyDeferredMerkleOps(deferredMerkleOps);
-        } catch (error) {
-          if (legacyShadow !== undefined) {
-            await this.options.vectorStore.abortLegacyShadowTable(legacyShadow).catch(() => {});
-            legacyShadow = undefined;
-          }
-          throw error;
+        if (legacyShadow === undefined || merkleSnapshot === undefined) {
+          throw new Error('Structured full rebuild transaction was not initialized');
         }
+        await this.commitStructuredFullRebuild(
+          structuredIndexCoordinator,
+          structuredRebuildFiles,
+          deferredMerkleOps,
+          legacyShadow,
+          merkleSnapshot,
+        );
+        legacyShadow = undefined;
       }
 
       completedSuccessfully = !this.abortController.signal.aborted;
@@ -897,6 +909,39 @@ export class IndexPipeline implements IIndexPipeline {
         await this.options.metadataStore.deleteSubtree(op.filePath);
         await this.merkleTree.remove(op.filePath);
       }
+    }
+  }
+
+  private async commitStructuredFullRebuild(
+    coordinator: StructuredIndexCoordinator,
+    files: readonly FullRebuildFile[],
+    deferredMerkleOps: readonly DeferredMerkleOp[],
+    legacyShadow: LegacyShadowTable,
+    merkleSnapshot: readonly MerkleNodeRow[],
+  ): Promise<void> {
+    try {
+      await coordinator.runFullRebuild({
+        files: [...files],
+        beforeCommit: async () => {
+          await this.options.vectorStore.swapLegacyShadowTable(legacyShadow);
+        },
+        afterCommit: async () => {
+          await this.applyDeferredMerkleOps(deferredMerkleOps);
+        },
+      });
+      await this.options.vectorStore.finalizeLegacyShadowTable(legacyShadow).catch((error) => {
+        console.error('[IndexPipeline] Failed to finalize legacy vector backup:', error);
+      });
+    } catch (error) {
+      await this.options.vectorStore.abortLegacyShadowTable(legacyShadow).catch((abortError) => {
+        console.error('[IndexPipeline] Failed to roll back legacy vectors:', abortError);
+      });
+      try {
+        await this.merkleTree.restore(merkleSnapshot);
+      } catch (restoreError) {
+        console.error('[IndexPipeline] Failed to restore Merkle metadata:', restoreError);
+      }
+      throw error;
     }
   }
 

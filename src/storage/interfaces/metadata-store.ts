@@ -29,6 +29,7 @@ export interface IMetadataStore extends Partial<IStructuredCatalog> {
   bulkUpsertMerkleNodes(nodes: MerkleNodeRow[]): Promise<void>;
   bulkDeleteMerkleNodes(paths: string[]): Promise<void>;
   bulkDeleteSubtrees(paths: string[]): Promise<number>;
+  replaceAllMerkleNodes(nodes: MerkleNodeRow[]): Promise<void>;
   deleteSubtree(pathPrefix: string): Promise<number>;
   getSubtreePaths(pathPrefix: string): Promise<string[]>;
   pruneEmptyParents(path: string, pathExists: (targetPath: string) => Promise<boolean>): Promise<void>;
@@ -74,6 +75,10 @@ const structuredCatalogMethods = [
   'activateGeneration',
   'clearPendingGeneration',
   'retireFile',
+  'prepareFullRebuild',
+  'activateFullRebuild',
+  'rollbackFullRebuild',
+  'finalizeFullRebuild',
   'resolveFile',
   'getActiveGenerationMap',
   'resolveSymbol',

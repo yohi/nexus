@@ -44,4 +44,16 @@ describe('LanceVectorStore structured rows', () => {
     expect(columnNames).not.toContain('generationid');
     expect(columnNames).not.toContain('visibility');
   });
+
+  it('creates legacy shadow tables with the optional generationid column', async () => {
+    const shadow = await store.beginLegacyShadowTable();
+    const shadowTable = store['legacyShadowTable'];
+    if (shadowTable === undefined) {
+      throw new Error('legacy shadow table was not created');
+    }
+
+    const columnNames = (await shadowTable.schema()).fields.map((field) => field.name);
+    expect(columnNames).toContain('generationid');
+    await store.abortLegacyShadowTable(shadow);
+  });
 });

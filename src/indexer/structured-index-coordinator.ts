@@ -1,7 +1,13 @@
 import type { StructuredDeclaration, StructuredImport, StructuredSource } from '../structured/contracts.js';
 import type { CodeChunk, IVectorStore } from '../types/index.js';
 import type { Chunker } from './chunker.js';
-import type { IStructuredCatalog, StructuredGenerationStage, StructuredGenerationActivation, StructuredFileRetirement } from '../storage/interfaces/structured-catalog.js';
+import type {
+  IStructuredCatalog,
+  StructuredGenerationStage,
+  StructuredGenerationActivation,
+  StructuredFileRetirement,
+  StructuredFullRebuildActivation,
+} from '../storage/interfaces/structured-catalog.js';
 import type { StructuredShadowTable } from '../storage/interfaces/vector-store.js';
 import type { ProjectWriteCoordinator } from './project-write-coordinator.js';
 
@@ -16,6 +22,11 @@ export interface FullRebuildFile {
   parserVersion?: string;
   chunks?: CodeChunk[];
   embeddings?: number[][];
+}
+
+export interface FullRebuildCommitHooks {
+  readonly beforeCommit?: () => Promise<void>;
+  readonly afterCommit?: () => Promise<void>;
 }
 
 export interface StructuredIndexCoordinatorOptions {
@@ -148,7 +159,7 @@ export class StructuredIndexCoordinator {
       await this.options.vectorStore.deleteByFilePath(input.filePath);
     });
   }
-  async runFullRebuild(input: { files: FullRebuildFile[] }): Promise<void> {
+  async runFullRebuild(input: { files: FullRebuildFile[] } & FullRebuildCommitHooks): Promise<void> {
     return this.options.projectWriteCoordinator.run(async () => {
       await this.options.metadataStore.bootstrapStructuredSchema();
       const epoch = await this.options.metadataStore.incrementRebuildEpoch();
@@ -157,13 +168,25 @@ export class StructuredIndexCoordinator {
       const stateBefore = await this.options.metadataStore.getStructuredIndexState();
       const previousActiveGenerations = new Map(stateBefore.activeGenerations);
       const inputFilePaths = new Set(input.files.map((file) => file.source.filePath));
+      const activation: StructuredFullRebuildActivation = {
+        rebuildEpoch: epoch,
+        files: input.files.map((file) => ({
+          filePath: file.source.filePath,
+          generationId: file.generationId,
+          expectedActiveGeneration: previousActiveGenerations.get(file.source.filePath) ?? null,
+        })),
+        retiredFiles: [...previousActiveGenerations.entries()]
+          .filter(([filePath]) => !inputFilePaths.has(filePath))
+          .map(([filePath, generationId]) => ({ filePath, expectedActiveGeneration: generationId })),
+      };
 
       let shadowTable: StructuredShadowTable | undefined;
-      let shadowTableSwapped = false;
-      const activatedFiles: Array<{ filePath: string; generationId: string }> = [];
+      let metadataPrepared = false;
       const stagedFiles = new Set<string>();
 
       try {
+        await this.options.metadataStore.prepareFullRebuild(activation);
+        metadataPrepared = true;
         shadowTable = await this.options.vectorStore.beginStructuredShadowTable();
 
         // Stage new files into metadata and the vector shadow table.
@@ -209,39 +232,17 @@ export class StructuredIndexCoordinator {
           });
         }
 
-        // Swap vectors first; the final metadata activation remains the commit gate.
+        await input.beforeCommit?.();
         await this.options.vectorStore.swapStructuredShadowTable(shadowTable);
-        shadowTableSwapped = true;
-
-        for (const file of input.files) {
-          const previousGeneration = previousActiveGenerations.get(file.source.filePath);
-          const result = await this.options.metadataStore.activateGeneration({
-            filePath: file.source.filePath,
-            generationId: file.generationId,
-            expectedActiveGeneration: previousGeneration ?? null,
-            expectedRebuildEpoch: epoch,
-          });
-          if (!result.activated) {
-            throw new Error(`Full rebuild activation failed for ${file.source.filePath}: ${result.reason ?? 'unknown'}`);
-          }
-          activatedFiles.push({ filePath: file.source.filePath, generationId: file.generationId });
-        }
-
-        // Retire files that are no longer present only after the vector commit succeeds.
-        for (const [filePath, generationId] of previousActiveGenerations) {
-          if (!inputFilePaths.has(filePath)) {
-            await this.options.metadataStore.retireFile({
-              filePath,
-              expectedActiveGeneration: generationId,
-              rebuildEpoch: epoch,
-            });
-          }
-        }
-
-        await this.options.metadataStore.setStructuredRebuildState({ rebuildState: 'idle', lastErrorCode: null });
+        await this.options.metadataStore.activateFullRebuild(activation);
+        await input.afterCommit?.();
       } catch (error) {
-        if (shadowTableSwapped) {
-          await this.rollbackMetadataActivations(activatedFiles, previousActiveGenerations, epoch);
+        if (metadataPrepared) {
+          try {
+            await this.options.metadataStore.rollbackFullRebuild(activation);
+          } catch (rollbackError) {
+            console.error('[StructuredIndexCoordinator] Failed to roll back catalog activation:', rollbackError);
+          }
         } else {
           for (const filePath of stagedFiles) {
             const file = input.files.find((candidate) => candidate.source.filePath === filePath);
@@ -253,9 +254,11 @@ export class StructuredIndexCoordinator {
               expectedRebuildEpoch: epoch,
             });
           }
-          if (shadowTable !== undefined) {
-            await this.options.vectorStore.abortStructuredShadowTable(shadowTable).catch(() => {});
-          }
+        }
+        if (shadowTable !== undefined) {
+          await this.options.vectorStore.abortStructuredShadowTable(shadowTable).catch((abortError) => {
+            console.error('[StructuredIndexCoordinator] Failed to roll back structured vectors:', abortError);
+          });
         }
         await this.options.metadataStore.setStructuredRebuildState({
           rebuildState: 'failed',
@@ -263,31 +266,17 @@ export class StructuredIndexCoordinator {
         });
         throw error;
       }
-    });
-  }
 
-  private async rollbackMetadataActivations(
-    activatedFiles: ReadonlyArray<{ filePath: string; generationId: string }>,
-    previousActiveGenerations: ReadonlyMap<string, string>,
-    epoch: number,
-  ): Promise<void> {
-    for (const { filePath, generationId } of activatedFiles) {
-      const previousGeneration = previousActiveGenerations.get(filePath);
-      if (previousGeneration !== undefined) {
-        await this.options.metadataStore.activateGeneration({
-          filePath,
-          generationId: previousGeneration,
-          expectedActiveGeneration: generationId,
-          expectedRebuildEpoch: epoch,
-        });
-      } else {
-        await this.options.metadataStore.retireFile({
-          filePath,
-          expectedActiveGeneration: generationId,
-          rebuildEpoch: epoch,
+      if (shadowTable !== undefined) {
+        await this.options.vectorStore.finalizeStructuredShadowTable(shadowTable).catch((cleanupError) => {
+          console.error('[StructuredIndexCoordinator] Failed to finalize structured vector backup:', cleanupError);
         });
       }
-    }
+      await this.options.metadataStore.finalizeFullRebuild(activation).catch((cleanupError) => {
+        console.error('[StructuredIndexCoordinator] Failed to finalize structured catalog backup:', cleanupError);
+      });
+      await this.options.metadataStore.setStructuredRebuildState({ rebuildState: 'idle', lastErrorCode: null });
+    });
   }
 
   async reconcile(): Promise<void> {

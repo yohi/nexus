@@ -38,7 +38,7 @@ interface LanceRow {
   endline: number;
   hash: string;
   vector: number[] | Float32Array;
-  generationid?: string;
+  generationid?: string | null;
   _distance?: number;
   [key: string]: unknown;
 }
@@ -51,7 +51,11 @@ interface LanceStructuredRow extends LanceRow {
 
 const STRUCTURED_TABLE_NAME = 'structured_chunks';
 const STRUCTURED_SHADOW_PREFIX = 'structured_chunks_shadow_';
+const STRUCTURED_REPLACEMENT_PREFIX = 'structured_chunks_replacement_';
+const STRUCTURED_BACKUP_PREFIX = 'structured_chunks_backup_';
 const LEGACY_SHADOW_PREFIX = 'chunks_shadow_';
+const LEGACY_REPLACEMENT_PREFIX = 'chunks_replacement_';
+const LEGACY_BACKUP_PREFIX = 'chunks_backup_';
 
 interface SidecarMetadata {
   dimensions?: string;
@@ -74,6 +78,14 @@ export class LanceVectorStore implements IVectorStore {
   private structuredShadowName: string | undefined;
   private legacyShadowTable: Table | undefined;
   private legacyShadowName: string | undefined;
+  private structuredSwapBackup: { handleName: string; tableName?: string; hadLiveTable: boolean } | undefined;
+  private legacySwapBackup: {
+    handleName: string;
+    tableName?: string;
+    hadLiveTable: boolean;
+    staleCount: number;
+    totalFiles: number;
+  } | undefined;
 
   private inflightOps = 0;
   private closingResolve: (() => void) | undefined;
@@ -392,6 +404,7 @@ export class LanceVectorStore implements IVectorStore {
   }
 
   private async releaseLanceResources(): Promise<void> {
+    await this.cleanupSwapBackups();
     await this.closeResource(this.legacyShadowTable, 'legacy shadow table resources');
     this.legacyShadowTable = undefined;
     await this.closeResource(this.structuredShadowTable, 'structured shadow table resources');
@@ -417,6 +430,68 @@ export class LanceVectorStore implements IVectorStore {
     } catch (error) {
       console.error(`[LanceVectorStore] Error closing ${resourceName}:`, error);
     }
+  }
+
+  private async cleanupSwapBackups(): Promise<void> {
+    if (!this.db) return;
+    if (this.legacySwapBackup?.tableName !== undefined) {
+      await this.db.dropTable(this.legacySwapBackup.tableName).catch(() => {});
+    }
+    if (this.structuredSwapBackup?.tableName !== undefined) {
+      await this.db.dropTable(this.structuredSwapBackup.tableName).catch(() => {});
+    }
+    this.legacySwapBackup = undefined;
+    this.structuredSwapBackup = undefined;
+  }
+
+  private async materializeTable(
+    source: Table,
+    targetName: string,
+    mapRow: (row: LanceRow) => LanceRow,
+    overwrite = false,
+  ): Promise<Table> {
+    if (!this.db) {
+      throw new Error('VectorStore not initialized');
+    }
+    const batchSize = 500;
+    let offset = 0;
+    let target: Table | undefined;
+    while (true) {
+      const rowsRaw = await source.query().limit(batchSize).offset(offset).toArray() as unknown as LanceRow[];
+      if (rowsRaw.length === 0) break;
+      const rows = rowsRaw.map(mapRow);
+      if (target === undefined) {
+        target = overwrite
+          ? await this.db.createTable(targetName, rows, { mode: 'overwrite' })
+          : await this.db.createTable(targetName, rows);
+      } else {
+        await target.add(rows);
+      }
+      offset += rows.length;
+      if (rows.length < batchSize) break;
+    }
+    if (target !== undefined) return target;
+    return overwrite
+      ? await this.db.createEmptyTable(targetName, await source.schema(), { mode: 'overwrite' })
+      : await this.db.createEmptyTable(targetName, await source.schema());
+  }
+
+  private async restoreTableFromBackup(
+    backupName: string | undefined,
+    liveName: string,
+    hadLiveTable: boolean,
+  ): Promise<Table | undefined> {
+    if (!this.db) return undefined;
+    if (!hadLiveTable || backupName === undefined) {
+      await this.db.dropTable(liveName).catch(() => {});
+      return undefined;
+    }
+    return this.materializeTable(
+      await this.db.openTable(backupName),
+      liveName,
+      (row) => ({ ...row, vector: Array.from(row.vector), ...(row.generationid === undefined ? {} : { generationid: row.generationid }) }),
+      true,
+    );
   }
 
   async upsertChunks(chunks: CodeChunk[], embeddings?: number[][], affectedFilePaths?: string[]): Promise<void> {
@@ -669,7 +744,9 @@ export class LanceVectorStore implements IVectorStore {
         ...(structuredRow.symbolid === undefined ? {} : { symbolId: structuredRow.symbolid ?? undefined }),
       },
       score: typeof row._distance === 'number' ? 1 - row._distance : 0,
-      ...(row.generationid === undefined ? {} : { generationId: row.generationid }),
+      ...(typeof row.generationid === 'string' && row.generationid.length > 0
+        ? { generationId: row.generationid }
+        : {}),
     };
   }
 
@@ -763,6 +840,13 @@ export class LanceVectorStore implements IVectorStore {
       if (!this.db) {
         throw new Error('VectorStore not initialized');
       }
+      if (this.structuredShadowTable && this.structuredShadowName) {
+        await this.db.dropTable(this.structuredShadowName).catch(() => {});
+      }
+      if (this.structuredSwapBackup?.tableName) {
+        await this.db.dropTable(this.structuredSwapBackup.tableName).catch(() => {});
+      }
+      this.structuredSwapBackup = undefined;
       this.structuredShadowName = `${STRUCTURED_SHADOW_PREFIX}${randomUUID().replaceAll('-', '_')}`;
       const sample: LanceStructuredRow[] = [{
         vector: new Array<number>(this.dimensions).fill(0),
@@ -796,55 +880,79 @@ export class LanceVectorStore implements IVectorStore {
 
       const newTable = this.structuredShadowTable;
       const oldTable = this.structuredTable;
-      const oldShadowName = this.structuredShadowName;
-
-      this.structuredTable = newTable;
-      this.structuredShadowTable = undefined;
-      this.structuredShadowName = undefined;
+      const shadowName = this.structuredShadowName;
+      const hadLiveTable = oldTable !== undefined;
+      const backupName = hadLiveTable
+        ? `${STRUCTURED_BACKUP_PREFIX}${randomUUID().replaceAll('-', '_')}`
+        : undefined;
+      const replacementName = `${STRUCTURED_REPLACEMENT_PREFIX}${randomUUID().replaceAll('-', '_')}`;
+      let promotionStarted = false;
 
       try {
-        if (oldTable) {
-          const oldName = oldTable.name;
-          await oldTable.delete('true');
-          await this.db.dropTable(oldName).catch(() => {});
+        if (oldTable && backupName !== undefined) {
+          await this.materializeTable(
+            oldTable,
+            backupName,
+            (row) => ({ ...row, vector: Array.from(row.vector) }),
+          );
         }
-      } catch (e) {
-        console.error('[LanceVectorStore] Error dropping old structured table during swap:', e);
+        const replacement = await this.materializeTable(
+          newTable,
+          replacementName,
+          (row) => ({ ...row, vector: Array.from(row.vector), visibility: 'active' }),
+        );
+        promotionStarted = true;
+        const liveTable = await this.materializeTable(
+          replacement,
+          STRUCTURED_TABLE_NAME,
+          (row) => ({ ...row, vector: Array.from(row.vector), visibility: 'active' }),
+          true,
+        );
+        this.structuredTable = liveTable;
+        this.structuredSwapBackup = { handleName: shadowTable.name, tableName: backupName, hadLiveTable };
+        await this.db.dropTable(replacementName).catch(() => {});
+        await this.db.dropTable(shadowName).catch(() => {});
+        this.structuredShadowTable = undefined;
+        this.structuredShadowName = undefined;
+      } catch (error) {
+        if (promotionStarted) {
+          try {
+            this.structuredTable = await this.restoreTableFromBackup(backupName, STRUCTURED_TABLE_NAME, hadLiveTable);
+          } catch (restoreError) {
+            console.error('[LanceVectorStore] Failed to restore structured table after swap failure:', restoreError);
+          }
+        }
+        await this.db.dropTable(replacementName).catch(() => {});
+        if (backupName !== undefined) await this.db.dropTable(backupName).catch(() => {});
+        throw error;
       }
+    });
+  }
 
-      const batchSize = 500;
-      let offset = 0;
-      let liveTable: Table | undefined;
-      while (true) {
-        const rowsRaw = await newTable.query().limit(batchSize).offset(offset).toArray() as unknown as LanceStructuredRow[];
-        if (rowsRaw.length === 0) {
-          break;
-        }
-
-        const rows: LanceStructuredRow[] = rowsRaw.map((row) => ({
-          ...row,
-          vector: Array.from(row.vector),
-          visibility: 'active',
-        }));
-        if (liveTable === undefined) {
-          liveTable = await this.db.createTable(STRUCTURED_TABLE_NAME, rows);
-        } else {
-          await liveTable.add(rows);
-        }
-
-        offset += rows.length;
-        if (rows.length < batchSize) {
-          break;
-        }
-      }
-      await this.db.dropTable(oldShadowName).catch(() => {});
-      this.structuredTable = liveTable;
+  async finalizeStructuredShadowTable(shadowTable: StructuredShadowTable): Promise<void> {
+    return this.runInWriteLock(async () => {
+      if (!this.db) return;
+      if (this.structuredSwapBackup?.handleName !== shadowTable.name) return;
+      const backupName = this.structuredSwapBackup.tableName;
+      this.structuredSwapBackup = undefined;
+      if (backupName !== undefined) await this.db.dropTable(backupName).catch(() => {});
     });
   }
 
   async abortStructuredShadowTable(shadowTable: StructuredShadowTable): Promise<void> {
     return this.runInWriteLock(async () => {
       if (!this.db) {
+        return;
+      }
+      if (this.structuredSwapBackup?.handleName === shadowTable.name) {
+        const backup = this.structuredSwapBackup;
+        this.structuredTable = await this.restoreTableFromBackup(
+          backup.tableName,
+          STRUCTURED_TABLE_NAME,
+          backup.hadLiveTable,
+        );
+        this.structuredSwapBackup = undefined;
+        if (backup.tableName !== undefined) await this.db.dropTable(backup.tableName).catch(() => {});
         return;
       }
       if (this.structuredShadowTable && this.structuredShadowName === shadowTable.name) {
@@ -861,6 +969,13 @@ export class LanceVectorStore implements IVectorStore {
       if (!this.db) {
         throw new Error('VectorStore not initialized');
       }
+      if (this.legacyShadowTable && this.legacyShadowName) {
+        await this.db.dropTable(this.legacyShadowName).catch(() => {});
+      }
+      if (this.legacySwapBackup?.tableName) {
+        await this.db.dropTable(this.legacySwapBackup.tableName).catch(() => {});
+      }
+      this.legacySwapBackup = undefined;
       this.legacyShadowName = `${LEGACY_SHADOW_PREFIX}${randomUUID().replaceAll('-', '_')}`;
       const sample: LanceRow[] = [{
         vector: new Array<number>(this.dimensions).fill(0),
@@ -873,6 +988,7 @@ export class LanceVectorStore implements IVectorStore {
         startline: 0,
         endline: 0,
         hash: 'placeholder',
+        generationid: '',
       }];
       this.legacyShadowTable = await this.db.createTable(this.legacyShadowName, sample);
       await this.legacyShadowTable.delete("filepath = 'placeholder'");
@@ -886,7 +1002,11 @@ export class LanceVectorStore implements IVectorStore {
           if (rowsRaw.length === 0) {
             break;
           }
-          const rows: LanceRow[] = rowsRaw.map((row) => ({ ...row, vector: Array.from(row.vector) }));
+          const rows: LanceRow[] = rowsRaw.map((row) => ({
+            ...row,
+            vector: Array.from(row.vector),
+            generationid: row.generationid ?? '',
+          }));
           await this.legacyShadowTable.add(rows);
           offset += rows.length;
           if (rows.length < batchSize) {
@@ -936,7 +1056,7 @@ export class LanceVectorStore implements IVectorStore {
           startline: chunk.startLine,
           endline: chunk.endLine,
           hash: chunk.hash,
-          ...(chunk.generationId === undefined ? {} : { generationid: chunk.generationId }),
+          generationid: chunk.generationId ?? '',
         }));
         await shadowTable.add(rows);
       }
@@ -974,54 +1094,96 @@ export class LanceVectorStore implements IVectorStore {
       }
 
       const shadowTable = this.legacyShadowTable;
-      const oldShadowName = this.legacyShadowName;
-      this.legacyShadowTable = undefined;
-      this.legacyShadowName = undefined;
+      const shadowName = this.legacyShadowName;
+      const oldTable = this.table;
+      const hadLiveTable = oldTable !== undefined;
+      const previousStaleCount = this.staleCount;
+      const previousTotalFiles = this.totalFiles;
+      const backupName = hadLiveTable
+        ? `${LEGACY_BACKUP_PREFIX}${randomUUID().replaceAll('-', '_')}`
+        : undefined;
+      const replacementName = `${LEGACY_REPLACEMENT_PREFIX}${randomUUID().replaceAll('-', '_')}`;
+      let promotionStarted = false;
 
-      // Materialize the new live table from the shadow before dropping the shadow.
-      // `mode: 'overwrite'` replaces the old `chunks` table only once the new
-      // contents are ready, so a failure here leaves the previous table intact
-      // (LanceDB has no atomic rename; see the task report for the residual
-      // crash-window limitation shared with the structured shadow swap).
-      const batchSize = 500;
-      let offset = 0;
-      let liveTable: Table | undefined;
-      while (true) {
-        const rowsRaw = await shadowTable.query().limit(batchSize).offset(offset).toArray() as unknown as LanceRow[];
-        if (rowsRaw.length === 0) {
-          break;
+      try {
+        if (oldTable && backupName !== undefined) {
+          await this.materializeTable(
+            oldTable,
+            backupName,
+            (row) => ({ ...row, vector: Array.from(row.vector), generationid: row.generationid ?? '' }),
+          );
         }
-        const rows: LanceRow[] = rowsRaw.map((row) => ({ ...row, vector: Array.from(row.vector) }));
-        if (liveTable === undefined) {
-          liveTable = await this.db.createTable('chunks', rows, { mode: 'overwrite' });
-        } else {
-          await liveTable.add(rows);
+        const replacement = await this.materializeTable(
+          shadowTable,
+          replacementName,
+          (row) => ({ ...row, vector: Array.from(row.vector), generationid: row.generationid ?? '' }),
+        );
+        promotionStarted = true;
+        const liveTable = await this.materializeTable(
+          replacement,
+          'chunks',
+          (row) => ({ ...row, vector: Array.from(row.vector), generationid: row.generationid ?? '' }),
+          true,
+        );
+        this.table = liveTable;
+        this.legacySwapBackup = {
+          handleName: shadow.name,
+          tableName: backupName,
+          hadLiveTable,
+          staleCount: previousStaleCount,
+          totalFiles: previousTotalFiles,
+        };
+
+        // Reconcile store counters with the swapped table contents.
+        this.staleCount = 0;
+        const filePathRows = await liveTable.query().select(['filepath']).toArray() as unknown as { filepath: string }[];
+        this.totalFiles = new Set(filePathRows.map((row) => row.filepath)).size;
+        await this.updateMetadata();
+
+        await this.db.dropTable(replacementName).catch(() => {});
+        await this.db.dropTable(shadowName).catch(() => {});
+        this.legacyShadowTable = undefined;
+        this.legacyShadowName = undefined;
+      } catch (error) {
+        if (promotionStarted) {
+          try {
+            this.table = await this.restoreTableFromBackup(backupName, 'chunks', hadLiveTable);
+          } catch (restoreError) {
+            console.error('[LanceVectorStore] Failed to restore legacy table after swap failure:', restoreError);
+          }
         }
-        offset += rows.length;
-        if (rows.length < batchSize) {
-          break;
-        }
+        this.staleCount = previousStaleCount;
+        this.totalFiles = previousTotalFiles;
+        this.legacySwapBackup = undefined;
+        await this.db.dropTable(replacementName).catch(() => {});
+        if (backupName !== undefined) await this.db.dropTable(backupName).catch(() => {});
+        throw error;
       }
-      if (liveTable === undefined) {
-        // The rebuild emptied every legacy row: keep an empty, schema-correct
-        // `chunks` table instead of leaving the store without a live table.
-        liveTable = await this.db.createEmptyTable('chunks', await shadowTable.schema(), { mode: 'overwrite' });
-      }
+    });
+  }
 
-      await this.db.dropTable(oldShadowName).catch(() => {});
-      this.table = liveTable;
-
-      // Reconcile store counters with the swapped table contents.
-      this.staleCount = 0;
-      const filePathRows = await liveTable.query().select(['filepath']).toArray() as unknown as { filepath: string }[];
-      this.totalFiles = new Set(filePathRows.map((row) => row.filepath)).size;
-      await this.updateMetadata();
+  async finalizeLegacyShadowTable(shadow: LegacyShadowTable): Promise<void> {
+    return this.runInWriteLock(async () => {
+      if (!this.db) return;
+      if (this.legacySwapBackup?.handleName !== shadow.name) return;
+      const backupName = this.legacySwapBackup.tableName;
+      this.legacySwapBackup = undefined;
+      if (backupName !== undefined) await this.db.dropTable(backupName).catch(() => {});
     });
   }
 
   async abortLegacyShadowTable(shadow: LegacyShadowTable): Promise<void> {
     return this.runInWriteLock(async () => {
       if (!this.db) {
+        return;
+      }
+      if (this.legacySwapBackup?.handleName === shadow.name) {
+        const backup = this.legacySwapBackup;
+        this.table = await this.restoreTableFromBackup(backup.tableName, 'chunks', backup.hadLiveTable);
+        this.staleCount = backup.staleCount;
+        this.totalFiles = backup.totalFiles;
+        this.legacySwapBackup = undefined;
+        if (backup.tableName !== undefined) await this.db.dropTable(backup.tableName).catch(() => {});
         return;
       }
       if (this.legacyShadowTable && this.legacyShadowName === shadow.name) {

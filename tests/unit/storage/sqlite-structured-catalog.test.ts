@@ -43,6 +43,58 @@ describe('SQLite structured catalog', () => {
     expect((await store.resolveSymbol('new')).kind).toBe('active');
   });
 
+  it('restores the previous generations after a full rebuild rollback', async () => {
+    await store.initialize();
+    await store.incrementRebuildEpoch();
+    await store.stageGeneration(stage('src/a.ts', 'g1', 'old'));
+    await store.activateGeneration({ filePath: 'src/a.ts', generationId: 'g1', expectedActiveGeneration: null, expectedRebuildEpoch: 1 });
+
+    const rebuildEpoch = await store.incrementRebuildEpoch();
+    const activation = {
+      rebuildEpoch,
+      files: [{ filePath: 'src/a.ts', generationId: 'g2', expectedActiveGeneration: 'g1' }],
+      retiredFiles: [],
+    } as const;
+    await store.prepareFullRebuild(activation);
+    await store.stageGeneration({ ...stage('src/a.ts', 'g2', 'new'), rebuildEpoch });
+    await store.activateFullRebuild(activation);
+    await store.rollbackFullRebuild(activation);
+
+    expect(await store.resolveFile('src/a.ts')).toEqual({ kind: 'active', generationId: 'g1' });
+    expect(await store.getGeneration('src/a.ts', 'g2')).toBeNull();
+    expect((await store.resolveSymbol('old')).kind).toBe('active');
+    expect((await store.resolveSymbol('new')).kind).toBe('missing');
+  });
+
+  it('recovers an interrupted full rebuild during startup', async () => {
+    const databasePath = path.join(dir, 'metadata.db');
+    await store.initialize();
+    await store.incrementRebuildEpoch();
+    await store.stageGeneration(stage('src/a.ts', 'g1', 'old'));
+    await store.activateGeneration({ filePath: 'src/a.ts', generationId: 'g1', expectedActiveGeneration: null, expectedRebuildEpoch: 1 });
+
+    const rebuildEpoch = await store.incrementRebuildEpoch();
+    const activation = {
+      rebuildEpoch,
+      files: [{ filePath: 'src/a.ts', generationId: 'g2', expectedActiveGeneration: 'g1' }],
+      retiredFiles: [],
+    } as const;
+    await store.setStructuredRebuildState({ rebuildState: 'building' });
+    await store.prepareFullRebuild(activation);
+    await store.stageGeneration({ ...stage('src/a.ts', 'g2', 'new'), rebuildEpoch });
+    await store.close();
+
+    store = new SqliteMetadataStore({ databasePath });
+    await store.initialize();
+
+    expect(await store.resolveFile('src/a.ts')).toEqual({ kind: 'active', generationId: 'g1' });
+    expect(await store.getGeneration('src/a.ts', 'g2')).toBeNull();
+    expect(await store.getStructuredIndexState()).toMatchObject({
+      rebuildState: 'failed',
+      lastErrorCode: 'interrupted full rebuild rolled back during startup recovery',
+    });
+  });
+
   it('does not clear pending generation after a compare-and-swap conflict', async () => {
     await store.initialize(); await store.stageGeneration(stage('src/a.ts', 'g1', 'one'));
     const result = await store.clearPendingGeneration({ filePath: 'src/a.ts', expectedActiveGeneration: 'wrong', expectedPendingGeneration: 'g1', expectedRebuildEpoch: 1 });

@@ -308,6 +308,21 @@ export function vectorStoreContractTests(
       await expect(store.getStats()).resolves.toEqual(statsBefore);
     });
 
+    it('legacy shadow handles are unique and reject stale writers', async () => {
+      const firstShadow = await store.beginLegacyShadowTable();
+      const secondShadow = await store.beginLegacyShadowTable();
+
+      expect(secondShadow.name).not.toBe(firstShadow.name);
+      await expect(store.stageLegacyShadowChunks(firstShadow, [
+        { chunk: makeChunk({ id: 'stale', filePath: 'src/stale.ts' }), vector: embedding },
+      ])).rejects.toThrow();
+
+      await store.stageLegacyShadowChunks(secondShadow, [
+        { chunk: makeChunk({ id: 'current', filePath: 'src/current.ts' }), vector: embedding },
+      ]);
+      await store.abortLegacyShadowTable(secondShadow);
+    });
+
     it('legacy shadow staging replaces rows for the same file and stages prefix deletions', async () => {
       await upsertChunks(store, [
         makeChunk({ id: 'a1', filePath: 'src/a.ts' }),
