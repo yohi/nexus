@@ -63,7 +63,7 @@ Repository-wide AI-agent behavior belongs in [AGENTS.md](AGENTS.md). The canonic
 Copy and paste the prompt below into an AI coding agent (Claude Code, Cursor, OpenCode, etc.). The agent will inspect the repository and your environment, then run the appropriate setup steps.
 
 ```text
-Set up this repository for local development. Read and follow AGENTS.md, then use docs/setup.md as the canonical setup source.
+Set up the `yohi/nexus` repository (https://github.com/yohi/nexus) for local development. Read and follow https://raw.githubusercontent.com/yohi/nexus/master/AGENTS.md first, then use https://raw.githubusercontent.com/yohi/nexus/master/docs/setup.md as the canonical setup source.
 ```
 
 For a typical search:
