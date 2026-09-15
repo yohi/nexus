@@ -1,5 +1,67 @@
 # Changelog
 
+## [2.3.0](https://github.com/yohi/nexus/compare/v2.2.2...v2.3.0) (2026-09-15)
+
+
+### Features
+
+* **plugins:** register new language plugins and add Python .pyi coverage ([df0b72c](https://github.com/yohi/nexus/commit/df0b72c87d206deb6bf9ed34e82b18144929dcff))
+* **plugins:** register new language plugins and add routing tests ([fdac4d4](https://github.com/yohi/nexus/commit/fdac4d4eb34c947051d28d8291947f29a7e26604))
+* **plugins:** register new language plugins and add routing tests ([c6404ca](https://github.com/yohi/nexus/commit/c6404ca51786a862f35b6800938df443b74ad85a))
+* **structured-index:** TypeScript プラグインで .mjs/.cjs/.mts/.cts をサポート ([d2a2bee](https://github.com/yohi/nexus/commit/d2a2bee5c463e39ee1c3ddf1c2d1328dc31c2261))
+* **structured-index:** TypeScript プラグインで .mjs/.cjs/.mts/.cts をサポート ([39dbdb1](https://github.com/yohi/nexus/commit/39dbdb10c0bf6107d462a34f08963da4c1927fd2))
+* **structured:** add C structured parser ([d21459a](https://github.com/yohi/nexus/commit/d21459a1a80725873b596bdf806ea5603834e5d5))
+* **structured:** add C structured parser ([fa234dd](https://github.com/yohi/nexus/commit/fa234ddaa1a0892190dadd4729137d8c84acc908))
+* **structured:** add C# structured parser ([e0fef84](https://github.com/yohi/nexus/commit/e0fef84595ea3deede0263786002e6ed8aede580))
+* **structured:** add C# structured parser ([a90e231](https://github.com/yohi/nexus/commit/a90e231c6aba435a77ee38e22c8904f6130cc155))
+* **structured:** add Java structured parser ([c716fc8](https://github.com/yohi/nexus/commit/c716fc88e645eb0f3ee8681eb526b8ad9d8e36fe))
+* **structured:** add Java structured parser ([7c83ffc](https://github.com/yohi/nexus/commit/7c83ffc400279fc390667bf2c54ac65d56b2f46f))
+* **structured:** add Rust structured parser ([2882fee](https://github.com/yohi/nexus/commit/2882fee969fcb3c96cf334c7530dfa106e92681e))
+* **structured:** add Rust structured parser ([625fc16](https://github.com/yohi/nexus/commit/625fc16875c5318feede6429332efa2d9efca977))
+* **structured:** add Rust, Java, C#, C, and C++ structured parsers ([88f594f](https://github.com/yohi/nexus/commit/88f594ff01729bf498017ce6305ebcbc6fcd2ce7))
+* **structured:** add SymbolKind extensions, .pyi support, and grammar dependencies ([71d64c9](https://github.com/yohi/nexus/commit/71d64c9133766adf9902548815bde720c63292d7))
+* **structured:** add SymbolKind extensions, .pyi support, and tree-sitter grammar dependencies ([db2da4e](https://github.com/yohi/nexus/commit/db2da4ecc0fa4f35bc80f21b018f5228d7053316))
+* **structured:** C++構造化パーサーを追加 ([6b6e403](https://github.com/yohi/nexus/commit/6b6e403027212969dbef4152f817195a03b69fcb))
+* **structured:** C++構造化パーサーを追加 ([ebafd58](https://github.com/yohi/nexus/commit/ebafd5841d826c0afc75afd80c00408d610fc82c))
+
+
+### Bug Fixes
+
+* final review findings for empty C++ files, shadow orphan cleanup, docs ([d979e1c](https://github.com/yohi/nexus/commit/d979e1c2642c583bda5b7bd0517bafe865b086c6))
+* peer dependency 解決を明示化 ([0c4a524](https://github.com/yohi/nexus/commit/0c4a524fbe915364dfa147834bac3d713f15727b))
+* **pipeline:** keep ok import-only structured files as work ([9e6b485](https://github.com/yohi/nexus/commit/9e6b4857402f52e3548da9f2ea75dbe35896cb6d))
+* **pipeline:** keep ok import-only structured files as work ([ebccd42](https://github.com/yohi/nexus/commit/ebccd42a5971ce60948c31144b7f97d80f667902))
+* **pipeline:** make full rebuild atomic and keep ok import-only files ([3d20721](https://github.com/yohi/nexus/commit/3d20721a5aeee83dc244033c05856a909cb22644))
+* **pipeline:** make full rebuild atomic with legacy vector shadow table ([845f4ea](https://github.com/yohi/nexus/commit/845f4eae75acfe7b022274b850620ba88f16b870))
+* **pipeline:** make full rebuild atomic with legacy vector shadow table ([54b52fb](https://github.com/yohi/nexus/commit/54b52fb31a528dad9e8aabdd7eee99967e5faad1))
+* Sonarの重複コードと複雑度違反を解消 ([4cbe5cf](https://github.com/yohi/nexus/commit/4cbe5cf731d3b455173eed896809940a8e306e5a))
+* Sonar品質ゲート違反を解消 ([f3ff73b](https://github.com/yohi/nexus/commit/f3ff73bb12155c180907b1649ff21a00ac4c99ef))
+* Sonar品質ゲート違反を解消 ([864715c](https://github.com/yohi/nexus/commit/864715c80bff11af3423400788e408d7e1bfd51d))
+* **storage:** legacy shadowスワップ後もchunksテーブルの存在を保証 ([8c5d643](https://github.com/yohi/nexus/commit/8c5d6432a570cfceaab4ac947388081384e064ba))
+* **storage:** legacy shadowスワップ後もchunksテーブルの存在を保証 ([f12fabd](https://github.com/yohi/nexus/commit/f12fabdaf0d7286c3fa2726bbae22ae18ae61922))
+* **structured:** C++の壊れたコンテナ処理を補正 ([fd39718](https://github.com/yohi/nexus/commit/fd39718e6b6f8cbe8f30ad6d34afd6fbcba33bea))
+* **structured:** C++の壊れたコンテナ処理を補正 ([e69f81b](https://github.com/yohi/nexus/commit/e69f81b3672e8a7eaf4a8875c2283fc0dd92062c))
+* **structured:** C++の構文ガードを復元 ([224ebf4](https://github.com/yohi/nexus/commit/224ebf41627c3cd437df3a944f844ff2f5dae6ef))
+* **structured:** C++の構文ガードを復元 ([51deadb](https://github.com/yohi/nexus/commit/51deadbc8d8910b74d5a082b8ffebe32e92429dc))
+* **structured:** guard C declaration containers ([bbaa1f0](https://github.com/yohi/nexus/commit/bbaa1f09de5af5806d92f1434af194cf78786366))
+* **structured:** guard C declaration containers ([6398c1f](https://github.com/yohi/nexus/commit/6398c1fce1896767f7279f47891504003d611adf))
+* **structured:** pin tree-sitter-c via override and add .npmrc for legacy-peer-deps ([c449636](https://github.com/yohi/nexus/commit/c449636fd11656d2026edd449da6dfb8cc760aca))
+* **structured:** skip syntax-error containers when collecting Rust type candidates ([431b540](https://github.com/yohi/nexus/commit/431b540c05d123ba094563ede09fdcbee3e98f52))
+* **structured:** skip syntax-error containers when collecting Rust type candidates ([822bc4f](https://github.com/yohi/nexus/commit/822bc4f719f8ff6e42d5e3eb9b5c842b2a361004))
+* TypeScript fixture の依存値参照を修正 ([022a4a7](https://github.com/yohi/nexus/commit/022a4a716f3b5d62c6c0e8139280deb26b167c1b))
+* ドキュメント検証テストの期待値を現行方針に同期 ([6060f70](https://github.com/yohi/nexus/commit/6060f705b819a0c8c983b892a167ab44279f48c3))
+* パイプラインのリカバリ境界とベクトル検証を修正 ([cca49d6](https://github.com/yohi/nexus/commit/cca49d6c482f0190006a0302e00543caf6609734))
+* フルリビルドのクラッシュリカバリを永続化 ([4fc393f](https://github.com/yohi/nexus/commit/4fc393f20576348e3317e9b44840d7ea00d80eee))
+* フルリビルドのベクトル復旧を永続化 ([9fdffcd](https://github.com/yohi/nexus/commit/9fdffcde7f29799b7f9210daab8f86d2875e242d))
+* フルリビルドの全インデックス rollback を保証 ([52b382f](https://github.com/yohi/nexus/commit/52b382f650fa37855e0f751ad071f2ae45edf4ad))
+* フルリビルドへMerkleスナップショットを引き渡す ([a186bf4](https://github.com/yohi/nexus/commit/a186bf40a36da9d48a4536765c8fb43b96a0a4bf))
+* フルリビルド後のlegacy shadow解放を修正 ([d066f26](https://github.com/yohi/nexus/commit/d066f26f3807731081e68bd272c4c73ba157c458))
+* フルリビルド復旧と構造化カタログの整合性を修正 ([06ea896](https://github.com/yohi/nexus/commit/06ea8969023dc7b1f96975129e879356f93e3bcb))
+* 埋め込み API キーの通信先を HTTPS に制限 ([02ee89f](https://github.com/yohi/nexus/commit/02ee89f549ca2dcf0023b1c3a5a5ead3599b1c49))
+* 未使用の構造化支援コードを削除 ([6e72893](https://github.com/yohi/nexus/commit/6e72893b30cc56f9f49b50a9ecb9f23962bdf11a))
+* 構造化 import の alias と self を補正 ([2c20342](https://github.com/yohi/nexus/commit/2c20342ac71937604ec06c038ab1445ead8d9af9))
+* 構造化言語プラグイン解析を修正 ([06847e8](https://github.com/yohi/nexus/commit/06847e86b3ee8ee856b8d1e043df9f264e32fbb4))
+
 ## [2.2.2](https://github.com/yohi/nexus/compare/v2.2.1...v2.2.2) (2026-09-07)
 
 
