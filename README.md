@@ -63,7 +63,7 @@ Repository-wide AI-agent behavior belongs in [AGENTS.md](AGENTS.md). The canonic
 Copy and paste the prompt below into an AI coding agent (Claude Code, Cursor, OpenCode, etc.). The agent will inspect the repository and your environment, then run the appropriate setup steps.
 
 ```text
-Set up this repository for local development. First read and follow AGENTS.md, including its required setup-mode choice and repository-skill loading. Then use docs/setup.md as the canonical setup source and verify with npm test.
+Set up this repository for local development. Read and follow AGENTS.md, then use docs/setup.md as the canonical setup source.
 ```
 
 For a typical search:

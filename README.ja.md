@@ -63,7 +63,7 @@ MCP クライアントを `nexus` コマンドへ接続し、`index_status` を�
 以下のプロンプトを AI コーディングエージェント（Claude Code、Cursor、OpenCode など）に貼り付けてください。エージェントがリポジトリと環境を確認し、適切なセットアップ手順を実行します。
 
 ```text
-Set up this repository for local development. First read and follow AGENTS.md, including its required setup-mode choice and repository-skill loading. Then use docs/setup.md as the canonical setup source and verify with npm test.
+Set up this repository for local development. Read and follow AGENTS.md, then use docs/setup.md as the canonical setup source.
 ```
 
 典型的な検索フロー:
