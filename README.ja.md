@@ -48,7 +48,7 @@ MCP クライアントを `nexus` コマンドへ接続し、`index_status` を�
 
 - **Hybrid search** — semantic vector search と ripgrep を Reciprocal Rank Fusion で統合
 - **Exact search** — ripgrep による高速な文字列・正規表現検索
-- **Structured symbol retrieval** — TypeScript/JavaScript、Python、Go の stable `symbolId`、正確な source、bounded context、file outline
+- **Structured symbol retrieval** — TypeScript/JavaScript、Python、Go、Rust、Java、C#、C、C++ の stable `symbolId`、正確な source、bounded context、file outline
 - **Incremental indexing** — file watcher、差分検出、recovery queue による継続更新
 - **Local-first operation** — Ollama 利用時は source-derived embedding data をホスト内に保持可能。外部 embedding provider を設定した場合は source-derived text がそのサービスへ送信される場合があります。
 - **Observability** — Prometheus metrics と multi-process dashboard/aggregator

@@ -66,6 +66,22 @@ A full reindex is not considered successful while unresolved dead-letter work re
 
 SQLite is the metadata and structured-catalog store. LanceDB stores vector-search data. Batch mutation paths use transactional/atomic activation boundaries where required so readers do not observe partially activated structured generations.
 
+### 4.4 Full rebuild commit protocol and crash recovery
+
+A clean full rebuild (`nexus --reindex --full`) enforces an all-or-nothing transactional boundary across SQLite metadata, LanceDB vector storage, and the Merkle tree:
+
+- During full rebuild, legacy chunks and path deletions are staged in a legacy shadow table (`legacy_shadow_*`) and Merkle tree mutations are deferred. Any structured parse failure immediately aborts the rebuild, discarding staged shadow data and leaving live vector tables, Merkle metadata, and active structured catalog generations unchanged.
+- Multi-store commits follow a durable six-phase journal in SQLite (`structured_rebuild_backup_runs` and `structured_rebuild_backup_vectors`):
+  1. `building` (`prepared`): catalog backup and pre-rebuild Merkle snapshot are persisted.
+  2. `legacy-swapped`: live legacy `chunks` are backed up (`legacy_bak_*`) and the atomic replacement is promoted.
+  3. `structured-swapped`: live `structured_chunks` are backed up (`struct_bak_*`) and the atomic replacement is promoted.
+  4. `catalog-activated`: SQLite active generations are promoted.
+  5. `merkle-activated`: deferred Merkle mutations are committed to the Merkle tree.
+  6. `idle` (`finalized`): backup tables and journal records are removed.
+- An interruption before `merkle-activated` triggers a coordinated rollback across all three stores upon startup reconciliation, restoring the SQLite catalog, LanceDB vector tables, and Merkle state from the recorded snapshot.
+- An interruption at or after `merkle-activated` preserves the new generation and finalizes temporary artifact cleanup.
+- Startup reconciliation deletes unreferenced shadow (`legacy_shadow_*`, `struct_shadow_*`), replacement (`legacy_rep_*`, `struct_rep_*`), and backup (`legacy_bak_*`, `struct_bak_*`) tables while strictly preserving live `chunks` and `structured_chunks`.
+
 ## 5. Search
 
 ### 5.1 Semantic and hybrid search
@@ -90,19 +106,32 @@ A logical declaration and a search chunk are separate retrieval units. Large dec
 
 Exact symbol retrieval returns the complete verified logical declaration, not the search chunk that happened to identify it.
 
-### 6.2 Supported languages
+### 6.2 Supported languages and extensions
 
 The structured parser supports:
 
-- TypeScript / JavaScript via the TypeScript compiler API;
-- Python via tree-sitter;
-- Go via tree-sitter.
+- TypeScript / JavaScript (`.ts`, `.tsx`, `.js`, `.jsx`, `.mjs`, `.cjs`, `.mts`, `.cts`) via the TypeScript compiler API;
+- Python (`.py`, `.pyi`) via tree-sitter;
+- Go (`.go`) via tree-sitter;
+- Rust (`.rs`) via tree-sitter;
+- Java (`.java`) via tree-sitter;
+- C# (`.cs`) via tree-sitter;
+- C (`.c`) via tree-sitter;
+- C++ (`.h`, `.cc`, `.cpp`, `.cxx`, `.hh`, `.hpp`, `.hxx`) via tree-sitter (`.h` is explicitly parsed as C++).
 
 Unsupported or partially parsed files must report explicit status rather than being presented as exact structured coverage.
 
-### 6.3 Symbol identity
+### 6.3 Symbol identity and AST parsing contracts
 
-`symbolId` is a stable logical identity generated from declaration identity inputs rather than body text or source line numbers. Moving a declaration without changing its logical identity does not by itself require a new ID; identity-changing signature/name changes can.
+`symbolId` is a stable logical identity generated from declaration identity inputs (`filePath`, `qualifiedName`, `kind`, `signatureDiscriminator`, `occurrence`) rather than body text or source line numbers. Moving a declaration without changing its logical identity does not by itself require a new ID; identity-changing signature/name changes can.
+
+Core and additive language-specific `SymbolKind` values are supported (`struct`, `trait`, `impl`, `record`, `field`). The canonical `qualifiedName` uses `.` as the separator across all language catalogs (e.g. Rust `module.Trait`, `Type.method`).
+
+AST traversal guarantees:
+
+- **Error isolation:** A declaration is emitted only when its declaration, range, and scope nodes are free of syntax errors (`ERROR` / `MISSING`). Descendants of a broken container are skipped and never flattened into the parent scope.
+- **Lexical ownership:** Parent-child links are established using lexical descriptor keys (`declarationKey` and `ownerKey`) rather than name-based reverse lookup. Rust `impl` method ownership resolves to the uniquely identified target type rather than the `impl` block.
+- **Import-only preservation:** A valid parse with `status === 'ok'`, zero declarations, and non-empty imports preserves its import records in the structured catalog.
 
 Retired identities are tracked so stale IDs fail explicitly rather than resolving to a guessed replacement.
 
@@ -110,7 +139,7 @@ Retired identities are tracked so stale IDs fail explicitly rather than resolvin
 
 Structured retrieval compares the indexed file identity/hash with the current working-tree file before returning exact source. It also verifies the requested symbol slice against the indexed symbol hash.
 
-If the current file, structured generation, parser coverage, or symbol hash does not satisfy the exactness contract, the request fails closed with an explicit structured status/error. It must not silently return stale or guessed source as exact.
+If the current file, structured generation, parser coverage, or symbol hash does not satisfy the exactness contract, the request fails closed with an explicit structured status/error. It must not silently return stale or guessed source as exact. A degraded parse with zero declarations fails closed as `parse-failed` regardless of import count.
 
 For example, a current file hash mismatch returns `stale` with reason code `INDEX_FILE_HASH_MISMATCH`, while a retired symbol identity returns `stale_identity` with reason code `SYMBOL_RETIRED`.
 
@@ -188,6 +217,7 @@ Secrets and credentials are configuration inputs and must not be written into re
 ## 13. Compatibility and Source of Truth
 
 - Current public MCP schemas and response fields: [docs/mcp-tools.md](docs/mcp-tools.md)
+- Structured index languages and limitations: [docs/structured-index.md](docs/structured-index.md)
 - Runtime configuration: [docs/configuration.md](docs/configuration.md)
 - Future target state: [ROADMAP.md](ROADMAP.md)
 - Released history: [CHANGELOG.md](CHANGELOG.md)
