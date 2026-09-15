@@ -85,9 +85,9 @@ describe("documentation architecture and structured retrieval guidance", () => {
   it("keeps repository-wide agent behavior out of human setup guidance", () => {
     expect(agents).toContain("Source Build");
     expect(agents).toContain("Package Usage");
-    expect(agents).toContain("Do not choose an installation mode on the user's behalf");
-    expect(readmeJa).not.toContain("Do not choose an installation mode on the user's behalf");
-    expect(setup).not.toContain("Do not choose an installation mode on the user's behalf");
+    expect(agents).toContain("Do not choose on their behalf");
+    expect(readmeJa).not.toContain("Do not choose on their behalf");
+    expect(setup).not.toContain("Do not choose on their behalf");
     expect(setup).toContain("This guide is for people");
     expect(setup).toContain("Source Build");
     expect(setup).toContain("Package Usage");
