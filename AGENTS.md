@@ -19,6 +19,21 @@ Local-first TypeScript Model Context Protocol (MCP) server for fast, evidence-ba
 - **Initial Setup**: Before initial Nexus installation or setup, ask the user to choose **Source Build** or **Package Usage**. Do not choose on their behalf.
 - **Agent Config**: Keep agent-specific instructions in `AGENTS.md` and `.agents/skills/`. Never create agent config files elsewhere, and do not duplicate agent rules into human documentation.
 
+## Agent-driven setup
+
+The canonical setup source for this repository is `docs/setup.md`. CI (`.github/workflows/ci.yml`) and `package.json` scripts corroborate the setup contract.
+
+When asked to set up the repository:
+
+1. Use `repository_inspection` (read, list, and search repository files) to read `docs/setup.md` and inspect `package.json` scripts, `package-lock.json`, and the working tree.
+2. Use `structured_ask` (a user-choice prompt) to obtain the required Source Build or Package Usage selection and approval before installing dependencies. If unavailable, ask in plain chat and record the fallback.
+3. Use `command_execution` (a terminal command runner) to run the setup commands defined by the canonical source. After that selection and approval, reversible, repository-local commands such as `npm ci`, `npm run build`, `npm run lint`, and `npm test` may run without an additional approval.
+4. Use `secret_input` (masked input, a trusted terminal, or a credential store fallback) for any required secret, such as GitHub Packages credentials for `@yohi/nexus` package mode. Never request or print secret values in normal chat.
+5. After the environment is ready, use `repository_inspection` to check `.agents/skills/` and load any skill relevant to the task at hand. The canonical code-search workflow is in `.agents/skills/code-search.md`.
+6. Verify setup by running the repository-defined test command (`npm test`). If a step fails, report the non-secret output and next safe action.
+
+Do not commit, push, or open a pull request unless the user explicitly asks.
+
 ## Repository Map
 
 - **Root**: MCP server, retrieval engines, storage, indexing pipeline, transport, and CLI
