@@ -12,7 +12,6 @@ export type JavaTreeSitterRuntime = TreeSitterRuntime<typeof Java>;
 export const JavaStructuredParser = createTreeSitterStructuredParserClass<typeof Java>({
   languageId: 'java',
   parserVersion: '0.23.5',
-  emptySourceMessage: 'Java structured parsing requires source bytes.',
   declarationsFor,
   importsFor,
   checkScopeNode: true,

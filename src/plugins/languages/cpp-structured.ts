@@ -12,7 +12,6 @@ export type CppTreeSitterRuntime = TreeSitterRuntime<typeof Cpp>;
 export const CppStructuredParser = createTreeSitterStructuredParserClass<typeof Cpp>({
   languageId: 'cpp',
   parserVersion: '0.23.4',
-  emptySourceMessage: 'C++ structured parsing requires source bytes.',
   declarationsFor,
   importsFor,
   checkScopeNode: true,

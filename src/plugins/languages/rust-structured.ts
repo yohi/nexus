@@ -13,7 +13,6 @@ export type RustTreeSitterRuntime = TreeSitterRuntime<typeof Rust>;
 export const RustStructuredParser = createTreeSitterStructuredParserClass<typeof Rust>({
   languageId: 'rust',
   parserVersion: '0.24.0',
-  emptySourceMessage: 'Rust structured parsing requires original source bytes.',
   declarationsFor,
   importsFor,
   startByteFor: declarationStartByteFor,

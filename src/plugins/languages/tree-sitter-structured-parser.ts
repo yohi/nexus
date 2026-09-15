@@ -35,7 +35,6 @@ export interface TreeSitterRuntime<TLanguage> {
 export interface TreeSitterStructuredParserOptions {
   readonly languageId: string;
   readonly parserVersion: string;
-  readonly emptySourceMessage: string;
   readonly declarationsFor: (root: Parser.SyntaxNode) => readonly TreeSitterDeclarationDescriptor[];
   readonly importsFor: (context: TreeSitterImportContext) => readonly StructuredImport[];
   readonly signatureFor?: (source: StructuredSource, node: Parser.SyntaxNode) => string;
@@ -131,16 +130,6 @@ const parseStructuredSource = async <TLanguage>(
   runtime: TreeSitterRuntime<TLanguage>,
   options: TreeSitterStructuredParserOptions,
 ): Promise<StructuredParseResult> => {
-  if (source.bytes.byteLength === 0) {
-    return {
-      status: 'degraded',
-      retrievability: 'partial',
-      declarations: [],
-      imports: [],
-      failure: { reasonCode: 'invariant_violation', message: options.emptySourceMessage },
-    };
-  }
-
   const parser = new runtime.Parser();
   parser.setLanguage(runtime.language);
   const root = parser.parse(source.text).rootNode;

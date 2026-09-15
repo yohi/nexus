@@ -69,6 +69,18 @@ describe('C++ structured parser', () => {
     expect(declaration?.sourceHash).toBe(sha256Hex(bytes.subarray(declaration?.startByte ?? 0, declaration?.endByte ?? 0)));
   });
 
+  it('parses empty .cpp and .h files as ok with no declarations', async () => {
+    const cpp = await parseCppFixture('empty.cpp');
+    expect(cpp.result.status).toBe('ok');
+    expect(cpp.result.declarations).toHaveLength(0);
+    expect(cpp.result.imports).toHaveLength(0);
+
+    const header = await parseCppFixture('empty.h');
+    expect(header.result.status).toBe('ok');
+    expect(header.result.declarations).toHaveLength(0);
+    expect(header.result.imports).toHaveLength(0);
+  });
+
   it('keeps C++ template prefixes in declaration ranges and signatures', async () => {
     const classSource = [
       'template <typename T>',

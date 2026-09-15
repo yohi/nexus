@@ -13,7 +13,6 @@ export type CSharpTreeSitterRuntime = TreeSitterRuntime<typeof CSharp>;
 export const CSharpStructuredParser = createTreeSitterStructuredParserClass<typeof CSharp>({
   languageId: 'csharp',
   parserVersion: '0.23.5',
-  emptySourceMessage: 'C# structured parsing requires source bytes.',
   declarationsFor,
   importsFor,
   checkScopeNode: true,

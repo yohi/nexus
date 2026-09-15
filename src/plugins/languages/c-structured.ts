@@ -12,7 +12,6 @@ export type CTreeSitterRuntime = TreeSitterRuntime<typeof C>;
 export const CStructuredParser = createTreeSitterStructuredParserClass<typeof C>({
   languageId: 'c',
   parserVersion: '0.24.1',
-  emptySourceMessage: 'C structured parsing requires source bytes.',
   declarationsFor,
   importsFor,
   checkScopeNode: true,
