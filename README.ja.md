@@ -58,6 +58,14 @@ MCP クライアントを `nexus` コマンドへ接続し、`index_status` を�
 
 リポジトリ全体の AI agent ルールの正本は [AGENTS.md](AGENTS.md)、コード検索ワークフローの正本は [.agents/skills/code-search.md](.agents/skills/code-search.md) です。
 
+### AI コーディングエージェントでセットアップする
+
+以下のプロンプトを AI コーディングエージェント（Claude Code、Cursor、OpenCode など）に貼り付けてください。エージェントがリポジトリと環境を確認し、適切なセットアップ手順を実行します。
+
+```text
+Set up this repository for local development. Read and follow AGENTS.md, then use docs/setup.md as the canonical setup source.
+```
+
 典型的な検索フロー:
 
 1. `index_status` を確認
