@@ -142,7 +142,7 @@ Retired identities are tracked so stale IDs fail explicitly rather than resolvin
 
 Structured retrieval compares the indexed file identity/hash with the current working-tree file before returning exact source. It also verifies the requested symbol slice against the indexed symbol hash.
 
-If the current file, structured generation, parser coverage, or symbol hash does not satisfy the exactness contract, the request fails closed with an explicit structured status/error. It must not silently return stale or guessed source as exact. A degraded parse with zero declarations fails closed as `parse-failed` regardless of import count.
+If the current file, structured generation, parser coverage, or symbol hash does not satisfy the exactness contract, the request fails closed with an explicit structured status/error. It must not silently return stale or guessed source as exact. During indexing, a degraded parse with zero declarations is classified internally as `StructuredReadResult.kind === 'parse-failed'` regardless of import count. Incremental processing records this through `structuredParseFailed` and routes the file to the dead-letter queue; a full rebuild aborts. This internal marker is not part of the public MCP retrieval contract. The parser result contract uses `status: 'failed'` plus `failure.reasonCode` (including `parse_error` where applicable), while public retrieval tools expose only their documented `status`/`reasonCode` values.
 
 For example, a current file hash mismatch returns `stale` with reason code `INDEX_FILE_HASH_MISMATCH`, while a retired symbol identity returns `stale_identity` with reason code `SYMBOL_RETIRED`.
 
