@@ -80,6 +80,9 @@ A clean full rebuild (`nexus --reindex --full`) enforces an all-or-nothing trans
   6. `idle` (`finalized`): backup tables and journal records are removed.
 - An interruption before `merkle-activated` triggers a coordinated rollback across all three stores upon startup reconciliation, restoring the SQLite catalog, LanceDB vector tables, and Merkle state from the recorded snapshot.
 - An interruption at or after `merkle-activated` preserves the new generation and finalizes temporary artifact cleanup.
+- The journal records deterministic names for vector shadow, replacement, and
+  backup artifacts. A journal-referenced artifact is retained until coordinated
+  reconciliation completes; standalone cleanup removes only unreferenced artifacts.
 - Startup reconciliation deletes unreferenced shadow (`legacy_shadow_*`, `struct_shadow_*`), replacement (`legacy_rep_*`, `struct_rep_*`), and backup (`legacy_bak_*`, `struct_bak_*`) tables while strictly preserving live `chunks` and `structured_chunks`.
 
 ## 5. Search

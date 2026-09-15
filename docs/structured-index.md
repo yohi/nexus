@@ -34,6 +34,18 @@ Files with unsupported extensions (for example `.md`, `.txt`) are still
 indexed, but only as fixed-line **vector chunks**. They do not produce
 structured declarations or imports.
 
+## Parsing failures and outline semantics
+
+During an incremental update, a structured parsing failure sends the file to the
+dead-letter queue. Nexus keeps the active structured generation and existing
+vector rows for that file; it does not replace them with a partial result or a
+fixed-line fallback.
+
+Java `package` declarations and C# file-scoped namespaces establish the logical
+scope for following declarations. Constructors and methods written inside a C++
+class or struct are children of that type. C# / C / C++ member variables are not
+indexed as structured declarations.
+
 ## Known limitations
 
 - **TypeScript / JavaScript:** CommonJS `require()` calls and assignment-style
