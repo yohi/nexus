@@ -48,7 +48,7 @@ For client-specific setup and the Source Build / Package Usage choice, see [Setu
 
 - **Hybrid search** — semantic vector search and ripgrep results fused with Reciprocal Rank Fusion.
 - **Exact search** — fast exact text and regex search through ripgrep.
-- **Structured symbol retrieval** — stable `symbolId` values for TypeScript/JavaScript, Python, and Go, with exact source, bounded context, and file outlines.
+- **Structured symbol retrieval** — stable `symbolId` values for TypeScript/JavaScript, Python, Go, Rust, Java, C#, C, and C++, with exact source, bounded context, and file outlines.
 - **Incremental indexing** — file watching, diff detection, and recovery queues keep indexes current.
 - **Local-first operation** — Ollama can keep source-derived embedding data on the host; externally configured embedding providers may transmit source-derived text to those services.
 - **Observability** — Prometheus metrics and a dashboard/aggregator for multi-process monitoring.

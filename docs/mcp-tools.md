@@ -60,6 +60,13 @@ Additional language-specific kinds include `struct`, `trait`, `impl`, `record`, 
 
 `get_symbol_context` requires `symbolId` and `tokenBudget` (`1..100000`). The complete symbol declaration is preserved even if it exceeds the budget; related imports are reduced instead. Budget metadata reports requested/actual usage, whether it was exceeded, and omissions.
 
+### Import completeness
+
+Related imports expose `completeness`. A direct binding or concrete include is
+`complete`; wildcard, static, unresolved, or diagnostic imports are `partial`.
+This describes syntactic capture only and does not imply compiler-level module
+or include resolution.
+
 Structured retrieval is fail-closed. Public statuses include `ok`, `not_found`, `stale_identity`, `not_indexed`, `excluded`, `unsupported`, `degraded`, `stale`, and `index_incomplete`. Representative codes include `FILE_NOT_FOUND`, `SYMBOL_NOT_FOUND`, `SYMBOL_RETIRED`, `STRUCTURED_INDEX_MISSING`, `PATH_EXCLUDED`, `STRUCTURED_SCHEMA_UNSUPPORTED`, `unsupported_language`, `PARSER_COVERAGE_PARTIAL`, `PARSER_BOUNDARY_UNCERTAIN`, `INDEX_FILE_HASH_MISMATCH`, `INDEX_FILE_MISSING`, `INDEX_PENDING_GENERATION`, `INDEX_SYMBOL_HASH_MISMATCH`, `INDEX_IMPORT_HASH_MISMATCH`, and `INDEX_GENERATION_MISSING`.
 
 A stale or retired identity must not be silently mapped to a similar symbol.

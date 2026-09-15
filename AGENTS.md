@@ -1,46 +1,39 @@
 # Nexus — Instructions for AI Agents
 
-Nexus is a local-first TypeScript MCP server for fast, evidence-based codebase search and exact symbol context retrieval.
+Local-first TypeScript Model Context Protocol (MCP) server for fast, evidence-based codebase search and exact symbol context retrieval.
+
+## Stack & Commands
+
+- **Stack**: TypeScript, Node.js >=24, npm (`package-lock.json` authoritative), Vitest
+- **Type Check**: `npx tsc --noEmit`
+- **Lint**: `npm run lint`
+- **Test (file)**: `npx vitest run <file>`
+- **Test (all)**: `npx vitest run`
+- **Build**: `npm run build` (run when changing public exports, CLI output, or package artifacts)
+
+## Ground Rules
+
+- **Deterministic verification**: Authoritative evidence comes from tests, type checking, linting, and build output—not assumptions.
+- **Local-first**: Keep code exploration local. Never enable external embedding or data transmission unless explicitly instructed.
+- **Secrets & State**: Never commit credentials, tokens, machine-specific paths, or generated local state. Never ask the user to paste secrets into chat.
+- **Initial Setup**: Before initial Nexus installation or setup, ask the user to choose **Source Build** or **Package Usage**. Do not choose on their behalf.
+- **Agent Config**: Keep agent-specific instructions in `AGENTS.md` and `.agents/skills/`. Never create agent config files elsewhere, and do not duplicate agent rules into human documentation.
 
 ## Repository Map
 
-- **Root**: MCP server, retrieval engines, storage, indexing pipeline, transport, and CLI.
-- **`packages/dashboard/`**: observability and metrics dashboard.
-- **`.agents/skills/`**: canonical task-specific repository skills.
+- **Root**: MCP server, retrieval engines, storage, indexing pipeline, transport, and CLI
+- **`packages/dashboard/`**: Observability and metrics dashboard
+- **`.agents/skills/`**: Canonical task-specific repository skills
 
-## Core Principles
+## On-Demand Context (Progressive Disclosure)
 
-- Prefer verified repository evidence over guesses.
-- Keep code exploration local-first. External embedding providers can transmit source-derived text; do not enable or introduce external transmission unless the task requires it.
-- Use deterministic tooling: tests, type checking, linting, and build output are authoritative over prose assumptions.
-- Current technical behavior is defined by [SPEC.md](SPEC.md); future target state is defined separately by [ROADMAP.md](ROADMAP.md).
+Read specialized documentation only when relevant to the task:
 
-## Workflow
-
-- **Environment**: Node.js >=24 and npm. `package-lock.json` is authoritative.
-- **Code investigation**: load [.agents/skills/code-search.md](.agents/skills/code-search.md) before repository search or implementation tracing.
-- **Focused tests**: `npx vitest run <file>`.
-- **Full tests**: `npx vitest run`.
-- **Type check**: `npx tsc --noEmit`.
-- **Lint**: `npm run lint`.
-- **Build**: `npm run build` when changing public exports, CLI output, package artifacts, or build-sensitive code.
-
-## Universal Constraints
-
-- Do not commit credentials, tokens, machine-specific paths, or generated local state.
-- Never ask the user to paste secrets, GitHub tokens, or other credentials into chat.
-- Before an initial Nexus installation/setup, ask the user to choose **Source Build** or **Package Usage** before running setup commands. Do not choose an installation mode on the user's behalf.
-- Do not create project-level agent configuration files outside [.agents/skills/](.agents/skills/).
-- Do not duplicate repository-wide agent rules into README or human setup documentation.
-
-## Progressive Disclosure
-
-Read a document only when its topic is relevant:
-
-- Current architecture and behavioral contracts: [SPEC.md](SPEC.md)
-- Future product direction: [ROADMAP.md](ROADMAP.md)
-- MCP tool reference: [docs/mcp-tools.md](docs/mcp-tools.md)
-- Runtime configuration: [docs/configuration.md](docs/configuration.md)
-- Human setup and prerequisites: [docs/setup.md](docs/setup.md)
-- Packaging and release distribution: [docs/distribution.md](docs/distribution.md)
-- Metrics and Grafana dashboard: [docs/observability/README.md](docs/observability/README.md)
+- **Code search & investigation**: Load [.agents/skills/code-search.md](.agents/skills/code-search.md) before searching or tracing codebase implementation.
+- **Architecture & behavioral contracts**: Consult [SPEC.md](SPEC.md).
+- **Future product direction**: Consult [ROADMAP.md](ROADMAP.md).
+- **MCP tool reference**: Consult [docs/mcp-tools.md](docs/mcp-tools.md).
+- **Runtime configuration**: Consult [docs/configuration.md](docs/configuration.md).
+- **Human setup & prerequisites**: Consult [docs/setup.md](docs/setup.md).
+- **Packaging & distribution**: Consult [docs/distribution.md](docs/distribution.md).
+- **Observability & Grafana dashboard**: Consult [docs/observability/README.md](docs/observability/README.md).
