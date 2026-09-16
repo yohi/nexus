@@ -38,7 +38,7 @@ Nexus stores project-local index data under `<projectRoot>/.nexus` by default.
 
 ### Verify the index
 
-Connect your MCP client to the `nexus` command, then call `index_status`.
+Configure your MCP client with the mode-specific command in [Setup](docs/setup.md), then call `index_status`.
 
 A usable index has a non-null `indexStats.lastIndexedAt` and no `pipelineProgress.lastError`. Initial indexing runs in the background; searches can run while indexing is in progress, but results may be incomplete.
 
@@ -63,7 +63,7 @@ Repository-wide AI-agent behavior belongs in [AGENTS.md](AGENTS.md). The canonic
 Copy and paste the prompt below into an AI coding agent (Claude Code, Cursor, OpenCode, etc.). The agent will inspect the repository and your environment, then run the appropriate setup steps.
 
 ```text
-Set up the `yohi/nexus` repository (https://github.com/yohi/nexus) for local development. Read and follow https://raw.githubusercontent.com/yohi/nexus/master/AGENTS.md first, then use https://raw.githubusercontent.com/yohi/nexus/master/docs/setup.md as the canonical setup source.
+Set up the `yohi/nexus` repository (https://github.com/yohi/nexus). Read and follow https://raw.githubusercontent.com/yohi/nexus/master/AGENTS.md first, use https://raw.githubusercontent.com/yohi/nexus/master/docs/setup.md as the canonical setup source, and load https://raw.githubusercontent.com/yohi/nexus/master/.agents/skills/code-search.md as the repository Skill. Configure and verify the MCP connection and Skill availability separately; report setup complete only when both pass.
 ```
 
 For a typical search:

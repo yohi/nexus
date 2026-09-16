@@ -32,6 +32,13 @@ When asked to set up the repository:
 5. After the environment is ready, use `repository_inspection` to check `.agents/skills/` and load any skill relevant to the task at hand. The canonical code-search workflow is in `.agents/skills/code-search.md`.
 6. Verify setup by running the repository-defined test command (`npm test`), then follow [Verify the Installation](docs/setup.md#verify-the-installation) in the canonical setup guide. If a step fails, report the non-secret output and next safe action.
 
+Setup has two independent completion gates:
+
+- **MCP gate**: the selected MCP client starts Nexus, `index_status` succeeds, and a small `grep_search` or `hybrid_search` query returns project results. Report this as `MCP: connected` only after all checks pass.
+- **Skill gate**: `.agents/skills/code-search.md` is available from the checkout or its GitHub Raw URL, is loaded into the current agent context, and its workflow is available for use. Report this as `Skill: loaded`; do not claim vendor-global installation for a generic agent.
+
+Setup is complete only when both gates pass. If either gate fails, report the failed gate, non-secret output, current repository state, and next safe action.
+
 Do not commit, push, or open a pull request unless the user explicitly asks.
 
 ## Repository Map
