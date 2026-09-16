@@ -200,7 +200,7 @@ GIT_MASTER=1 git add AGENTS.md docs/setup.md tests/unit/docs/structured-retrieva
 GIT_MASTER=1 git commit -m "test: MCP と Skill の検証ゲートを追加"
 ```
 
-### Task 5: Final verification and PR update
+### Task 5: Final verification and handoff
 
 **Files:**
 - Verify: `README.md`, `README.ja.md`, `AGENTS.md`, `docs/setup.md`, `scripts/stage-plugin-dist.sh`, `docs/distribution.md`
@@ -227,11 +227,8 @@ GIT_MASTER=1 git log --oneline master..HEAD
 
 Expected: only the MCP + Skill setup changes are present and the worktree is clean.
 
-- [ ] **Step 3: Push and update the existing PR**
+- [ ] **Step 3: Prepare handoff evidence**
 
-```bash
-GIT_MASTER=1 git push
-gh pr view 315 --web
-```
-
-Expected: PR #315 contains the dual-gate setup implementation and its verification evidence.
+Expected: the local verification evidence is ready to hand off. Pushing changes
+or opening/updating a pull request is outside this plan and requires explicit
+user authorization.

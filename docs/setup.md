@@ -77,10 +77,19 @@ Example shape:
 
 Do not copy example paths literally; use the project you intend to index.
 
-For stdio-only clients that need to connect through local HTTP, use:
+For stdio-only clients that need to connect through local HTTP, use the command
+for the installation mode you selected.
+
+Source Build:
 
 ```bash
-nexus http-bridge
+node dist/bin/nexus.js http-bridge
+```
+
+Package Usage:
+
+```bash
+npx @yohi/nexus http-bridge
 ```
 
 The bridge discovers or starts the project-scoped local HTTP server and forwards JSON-RPC over Streamable HTTP.

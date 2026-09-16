@@ -32,6 +32,7 @@ const GUIDANCE_FILES = {
   agents: "AGENTS.md",
   mcpTools: "docs/mcp-tools.md",
   setup: "docs/setup.md",
+  setupPlan: "docs/superpowers/plans/2026-09-16-mcp-skill-setup.md",
   skill: ".agents/skills/code-search.md",
 } as const;
 
@@ -43,6 +44,7 @@ describe("documentation architecture and structured retrieval guidance", () => {
   const agents = readGuidanceFile(GUIDANCE_FILES.agents);
   const mcpTools = readGuidanceFile(GUIDANCE_FILES.mcpTools);
   const setup = readGuidanceFile(GUIDANCE_FILES.setup);
+  const setupPlan = readGuidanceFile(GUIDANCE_FILES.setupPlan);
   const skill = readGuidanceFile(GUIDANCE_FILES.skill);
 
   it("routes readers from the README instead of duplicating canonical references", () => {
@@ -121,6 +123,16 @@ describe("documentation architecture and structured retrieval guidance", () => {
     expect(setup).toContain("MCP: connected");
     expect(setup).toContain("Skill:");
     expect(setup).toContain("both gates pass");
+  });
+
+  it("keeps bridge commands mode-specific and repository writes out of the setup plan", () => {
+    expect(setup).toContain("node dist/bin/nexus.js http-bridge");
+    expect(setup).toContain("npx @yohi/nexus http-bridge");
+    expect(setup).not.toMatch(/^nexus http-bridge$/m);
+    expect(setupPlan).not.toContain("GIT_MASTER=1 git push");
+    expect(setupPlan).not.toContain("gh pr view");
+    expect(setupPlan).toContain("outside this plan");
+    expect(setupPlan).toMatch(/explicit\s+user authorization/);
   });
 
   it("preserves structured retrieval invariants in SPEC.md", () => {
