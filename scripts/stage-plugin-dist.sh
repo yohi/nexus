@@ -36,7 +36,7 @@ cp scripts/setup-plugin.sh "$STAGING_DIR/scripts/"
 cp LICENSE NOTICE "$STAGING_DIR/"
 
 # Generate the Claude Code plugin Skill from the repository source of truth.
-cp .agents/skills/code-search.md "$STAGING_DIR/skills/code-search/SKILL.md"
+cp skills/code-search/SKILL.md "$STAGING_DIR/skills/code-search/SKILL.md"
 
 # Transform plugin.json: strip userConfig, inject fixed env
 STAGING_DIR="$STAGING_DIR" REGION="$REGION" MODEL="$MODEL" DIMENSIONS="$DIMENSIONS" PROFILE="$PROFILE" \

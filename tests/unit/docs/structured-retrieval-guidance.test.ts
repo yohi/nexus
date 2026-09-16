@@ -33,7 +33,7 @@ const GUIDANCE_FILES = {
   mcpTools: "docs/mcp-tools.md",
   setup: "docs/setup.md",
   setupPlan: "docs/superpowers/plans/2026-09-16-mcp-skill-setup.md",
-  skill: ".agents/skills/code-search.md",
+  skill: "skills/code-search/SKILL.md",
 } as const;
 
 describe("documentation architecture and structured retrieval guidance", () => {
@@ -84,6 +84,12 @@ describe("documentation architecture and structured retrieval guidance", () => {
     expect(skill).toContain("stale_identity");
   });
 
+  it("uses the official Agent Skills metadata format", () => {
+    expect(skill).toMatch(
+      /^---\nname: code-search\ndescription: [^\n]+\n---\n/m,
+    );
+  });
+
   it("keeps repository-wide agent behavior out of human setup guidance", () => {
     expect(agents).toContain("Source Build");
     expect(agents).toContain("Package Usage");
@@ -106,14 +112,14 @@ describe("documentation architecture and structured retrieval guidance", () => {
         "https://raw.githubusercontent.com/yohi/nexus/master/docs/setup.md",
       );
       expect(prompt).toContain(
-        "https://raw.githubusercontent.com/yohi/nexus/master/.agents/skills/code-search.md",
+        "https://raw.githubusercontent.com/yohi/nexus/master/skills/code-search/SKILL.md",
       );
     }
 
     expect(agents).toContain("MCP gate");
     expect(agents).toContain("Skill gate");
     expect(setup).toContain("Verify the Skill");
-    expect(setup).toContain("code-search.md");
+    expect(setup).toContain("code-search/SKILL.md");
     expect(setup).toContain("loaded");
   });
 

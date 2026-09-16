@@ -11,5 +11,5 @@ test -f "$STAGING_DIR/.claude-plugin/plugin.json"
 test -f "$STAGING_DIR/scripts/setup-plugin.sh"
 test -f "$STAGING_DIR/src/index.ts"
 test -f "$STAGING_DIR/skills/code-search/SKILL.md"
-cmp "$PROJECT_ROOT/.agents/skills/code-search.md" \
+cmp "$PROJECT_ROOT/skills/code-search/SKILL.md" \
   "$STAGING_DIR/skills/code-search/SKILL.md"

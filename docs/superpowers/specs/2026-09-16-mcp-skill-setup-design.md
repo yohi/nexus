@@ -12,7 +12,7 @@ distribution without introducing agent-specific global installation steps.
 
 ## Scope and Boundaries
 
-`.agents/skills/code-search.md` remains the single source of truth for the
+`skills/code-search/SKILL.md` remains the single source of truth for the
 repository Skill. Generic agents load that file from the checked-out repository
 or its GitHub Raw URL; the setup flow does not modify a user's global agent
 configuration.
@@ -28,7 +28,7 @@ and report client configuration separately from server build success.
 ## Setup Flow
 
 The README prompt references the repository URL and Raw URLs for `AGENTS.md`,
-`docs/setup.md`, and `.agents/skills/code-search.md`.
+`docs/setup.md`, and `skills/code-search/SKILL.md`.
 
 `AGENTS.md` defines two independent setup gates:
 
@@ -45,7 +45,7 @@ loaded, it reports the exact failed gate and a safe next action.
 
 ## Claude Code Plugin Distribution
 
-The staging script copies `.agents/skills/code-search.md` to the plugin-native
+The staging script copies `skills/code-search/SKILL.md` to the plugin-native
 `skills/code-search/SKILL.md` path. The plugin source mirror therefore contains
 both the existing MCP manifest and the Skill consumed by Claude Code.
 

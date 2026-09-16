@@ -56,14 +56,14 @@ MCP クライアントを [Setup](docs/setup.md) にあるモード別のコマ�
 
 ## Agent Setup
 
-リポジトリ全体の AI agent ルールの正本は [AGENTS.md](AGENTS.md)、コード検索ワークフローの正本は [.agents/skills/code-search.md](.agents/skills/code-search.md) です。
+リポジトリ全体の AI agent ルールの正本は [AGENTS.md](AGENTS.md)、コード検索ワークフローの正本は [skills/code-search/SKILL.md](skills/code-search/SKILL.md) です。
 
 ### AI コーディングエージェントでセットアップする
 
 以下のプロンプトを AI コーディングエージェント（Claude Code、Cursor、OpenCode など）に貼り付けてください。エージェントがリポジトリと環境を確認し、適切なセットアップ手順を実行します。
 
 ```text
-Set up the `yohi/nexus` repository (https://github.com/yohi/nexus). Read and follow https://raw.githubusercontent.com/yohi/nexus/master/AGENTS.md first, use https://raw.githubusercontent.com/yohi/nexus/master/docs/setup.md as the canonical setup source, and load https://raw.githubusercontent.com/yohi/nexus/master/.agents/skills/code-search.md as the repository Skill. Configure and verify the MCP connection and Skill availability separately; report setup complete only when both pass.
+Set up the `yohi/nexus` repository (https://github.com/yohi/nexus). Read and follow https://raw.githubusercontent.com/yohi/nexus/master/AGENTS.md first, use https://raw.githubusercontent.com/yohi/nexus/master/docs/setup.md as the canonical setup source, and load https://raw.githubusercontent.com/yohi/nexus/master/skills/code-search/SKILL.md as the repository Skill. Configure and verify the MCP connection and Skill availability separately; report setup complete only when both pass.
 ```
 
 典型的な検索フロー:
@@ -150,7 +150,7 @@ Nexus は `.nexus.json` を読み込み、対応する設定は環境変数で o
 | --- | --- |
 | 現行 architecture、invariant、compatibility、transport behavior | [SPEC.md](SPEC.md) |
 | AI agent の repository instructions | [AGENTS.md](AGENTS.md) |
-| Code-search agent workflow | [.agents/skills/code-search.md](.agents/skills/code-search.md) |
+| Code-search agent workflow | [skills/code-search/SKILL.md](skills/code-search/SKILL.md) |
 | MCP tools / inputs / outputs / statuses | [docs/mcp-tools.md](docs/mcp-tools.md) |
 | Installation / client setup | [docs/setup.md](docs/setup.md) |
 | Runtime configuration | [docs/configuration.md](docs/configuration.md) |

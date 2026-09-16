@@ -1,3 +1,8 @@
+---
+name: code-search
+description: Use Nexus code search tools when investigating, tracing, or retrieving verified context from a codebase.
+---
+
 # Code Search Skill
 
 ## When to load

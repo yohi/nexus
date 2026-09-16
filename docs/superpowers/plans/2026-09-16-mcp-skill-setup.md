@@ -4,13 +4,13 @@
 
 **Goal:** Make generic-agent and Claude Code plugin setup provision and independently verify both the Nexus MCP server and the repository code-search Skill.
 
-**Architecture:** Keep `.agents/skills/code-search.md` as the single Skill source. Generic agents load and verify that source through the repository checkout or GitHub Raw URL, while the plugin staging script generates `skills/code-search/SKILL.md` for Claude Code. The setup protocol reports MCP and Skill gates separately and never treats one successful gate as completion of both.
+**Architecture:** Keep `skills/code-search/SKILL.md` as the single Skill source. Generic agents load and verify that source through the repository checkout or GitHub Raw URL, while the plugin staging script generates `skills/code-search/SKILL.md` for Claude Code. The setup protocol reports MCP and Skill gates separately and never treats one successful gate as completion of both.
 
 **Tech Stack:** Markdown, Bash, Node.js, npm, Vitest, Claude Code plugin staging.
 
 ## Global Constraints
 
-- Keep `.agents/skills/code-search.md` as the only committed Skill source of truth.
+- Keep `skills/code-search/SKILL.md` as the only committed Skill source of truth.
 - Do not install files into vendor-specific global agent directories.
 - Preserve Source Build and Package Usage manual setup paths.
 - Source Build requires Node.js 24 or later and the repository lockfile.
@@ -27,7 +27,7 @@
 - Test: `tests/unit/docs/structured-retrieval-guidance.test.ts`
 
 **Interfaces:**
-- Consumes: `README.md`, `README.ja.md`, `AGENTS.md`, `docs/setup.md`, and `.agents/skills/code-search.md`.
+- Consumes: `README.md`, `README.ja.md`, `AGENTS.md`, `docs/setup.md`, and `skills/code-search/SKILL.md`.
 - Produces: Regression assertions for the repository URL, three Raw URLs, independent MCP/Skill gates, and separate verification language.
 
 - [ ] **Step 1: Write failing assertions**
@@ -38,13 +38,13 @@ Add a test that reads both README variants and asserts each contains:
 expect(readme).toContain("https://github.com/yohi/nexus");
 expect(readme).toContain("https://raw.githubusercontent.com/yohi/nexus/master/AGENTS.md");
 expect(readme).toContain("https://raw.githubusercontent.com/yohi/nexus/master/docs/setup.md");
-expect(readme).toContain("https://raw.githubusercontent.com/yohi/nexus/master/.agents/skills/code-search.md");
-expect(readmeJa).toContain("https://raw.githubusercontent.com/yohi/nexus/master/.agents/skills/code-search.md");
+expect(readme).toContain("https://raw.githubusercontent.com/yohi/nexus/master/skills/code-search/SKILL.md");
+expect(readmeJa).toContain("https://raw.githubusercontent.com/yohi/nexus/master/skills/code-search/SKILL.md");
 expect(agents).toContain("MCP gate");
 expect(agents).toContain("Skill gate");
 ```
 
-Add assertions that `setup.md` contains both MCP verification (`index_status` and `grep_search` or `hybrid_search`) and Skill verification (`code-search.md` and `loaded`).
+Add assertions that `setup.md` contains both MCP verification (`index_status` and `grep_search` or `hybrid_search`) and Skill verification (`skills/code-search/SKILL.md` and `loaded`).
 
 - [ ] **Step 2: Run the focused test and confirm failure**
 
@@ -68,7 +68,7 @@ GIT_MASTER=1 git commit -m "test: MCP と Skill のセットアップ契約を�
 - Modify: `docs/setup.md:12-93`
 
 **Interfaces:**
-- Consumes: Raw URLs in the README prompt and `.agents/skills/code-search.md` as the Skill source.
+- Consumes: Raw URLs in the README prompt and `skills/code-search/SKILL.md` as the Skill source.
 - Produces: A setup flow with explicit MCP and Skill gates, mode selection, safe failure reporting, and separate verification.
 
 - [ ] **Step 1: Update both README prompts**
@@ -76,7 +76,7 @@ GIT_MASTER=1 git commit -m "test: MCP と Skill のセットアップ契約を�
 Use the same English prompt in both README files:
 
 ```text
-Set up the `yohi/nexus` repository (https://github.com/yohi/nexus). Read and follow https://raw.githubusercontent.com/yohi/nexus/master/AGENTS.md first, use https://raw.githubusercontent.com/yohi/nexus/master/docs/setup.md as the canonical setup source, and load https://raw.githubusercontent.com/yohi/nexus/master/.agents/skills/code-search.md as the repository Skill. Configure and verify the MCP connection and Skill availability separately; report setup complete only when both pass.
+Set up the `yohi/nexus` repository (https://github.com/yohi/nexus). Read and follow https://raw.githubusercontent.com/yohi/nexus/master/AGENTS.md first, use https://raw.githubusercontent.com/yohi/nexus/master/docs/setup.md as the canonical setup source, and load https://raw.githubusercontent.com/yohi/nexus/master/skills/code-search/SKILL.md as the repository Skill. Configure and verify the MCP connection and Skill availability separately; report setup complete only when both pass.
 ```
 
 - [ ] **Step 2: Add explicit MCP and Skill gates to `AGENTS.md`**
@@ -111,7 +111,7 @@ GIT_MASTER=1 git commit -m "docs: MCP と Skill のセットアップ手順を�
 - Create: `tests/unit/scripts/stage-plugin-dist.test.sh`
 
 **Interfaces:**
-- Consumes: `.agents/skills/code-search.md`.
+- Consumes: `skills/code-search/SKILL.md`.
 - Produces: A staged plugin mirror containing `skills/code-search/SKILL.md` generated from the canonical Skill source.
 
 - [ ] **Step 1: Write the failing staging test**
@@ -123,7 +123,7 @@ test -f "$STAGING_DIR/.claude-plugin/plugin.json"
 test -f "$STAGING_DIR/scripts/setup-plugin.sh"
 test -f "$STAGING_DIR/dist/bin/nexus.js" || test -f "$STAGING_DIR/src/index.ts"
 test -f "$STAGING_DIR/skills/code-search/SKILL.md"
-cmp "$PROJECT_ROOT/.agents/skills/code-search.md" "$STAGING_DIR/skills/code-search/SKILL.md"
+cmp "$PROJECT_ROOT/skills/code-search/SKILL.md" "$STAGING_DIR/skills/code-search/SKILL.md"
 ```
 
 Expected before implementation: FAIL because the staged Skill path does not exist.
@@ -136,7 +136,7 @@ Expected: FAIL at the staged Skill file assertion.
 
 - [ ] **Step 3: Copy the canonical Skill during staging**
 
-Create `$STAGING_DIR/skills/code-search` and copy `.agents/skills/code-search.md` to `$STAGING_DIR/skills/code-search/SKILL.md` in `scripts/stage-plugin-dist.sh`. Do not add a second committed Skill source.
+Create `$STAGING_DIR/skills/code-search` and copy `skills/code-search/SKILL.md` to `$STAGING_DIR/skills/code-search/SKILL.md` in `scripts/stage-plugin-dist.sh`. Do not add a second committed Skill source.
 
 - [ ] **Step 4: Run the staging test and confirm it passes**
 
@@ -146,7 +146,7 @@ Expected: PASS with the generated Skill content byte-for-byte equal to the canon
 
 - [ ] **Step 5: Document the plugin artifact**
 
-Update `docs/distribution.md` so the source mirror contents state that the staging process generates `skills/code-search/SKILL.md` from `.agents/skills/code-search.md`, alongside the existing MCP manifest and runtime.
+Update `docs/distribution.md` so the source mirror contents state that the staging process generates `skills/code-search/SKILL.md` from `skills/code-search/SKILL.md`, alongside the existing MCP manifest and runtime.
 
 - [ ] **Step 6: Commit the plugin flow**
 
@@ -172,7 +172,7 @@ Document the required result as two independent records:
 
 ```text
 MCP: connected, index_status passed, and a small search returned results.
-Skill: code-search.md fetched/read and its workflow available to the agent.
+Skill: skills/code-search/SKILL.md fetched/read and its workflow available to the agent.
 ```
 
 The agent must report the failed gate, non-secret output, current state, and next safe action when either check fails.
