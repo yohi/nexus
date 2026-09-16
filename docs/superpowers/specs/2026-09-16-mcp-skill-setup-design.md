@@ -14,8 +14,8 @@ distribution without introducing agent-specific global installation steps.
 
 `.agents/skills/code-search.md` remains the single source of truth for the
 repository Skill. Generic agents load that file from the checked-out repository
-or its pinned GitHub Raw URL; the setup flow does not modify a user's global
-agent configuration.
+or its GitHub Raw URL; the setup flow does not modify a user's global agent
+configuration.
 
 The Claude Code plugin staging flow generates the plugin-native Skill path from
 the same source file. The generated staging copy is an artifact, not a second

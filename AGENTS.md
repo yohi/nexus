@@ -30,7 +30,7 @@ When asked to set up the repository:
 3. Use `command_execution` (a terminal command runner) to run the setup commands defined by the canonical source. After that selection and approval, reversible, repository-local commands such as `npm ci`, `npm run build`, `npm run lint`, and `npm test` may run without an additional approval.
 4. Use `secret_input` (masked input, a trusted terminal, or a credential store fallback) for any required secret, such as GitHub Packages credentials for `@yohi/nexus` package mode. Never request or print secret values in normal chat.
 5. After the environment is ready, use `repository_inspection` to check `.agents/skills/` and load any skill relevant to the task at hand. The canonical code-search workflow is in `.agents/skills/code-search.md`.
-6. Verify setup by running the repository-defined test command (`npm test`), then follow [Verify the Installation](docs/setup.md#verify-the-installation) in the canonical setup guide. If a step fails, report the non-secret output and next safe action.
+6. Verify setup by running the repository-defined test command (`npm test`), then follow [Verify the Installation](docs/setup.md#verify-the-installation) and [Verify the Skill](docs/setup.md#verify-the-skill) in the canonical setup guide. If a step fails, report the non-secret output and next safe action.
 
 Setup has two independent completion gates:
 
