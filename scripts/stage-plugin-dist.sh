@@ -20,7 +20,7 @@ DIMENSIONS="${NEXUS_EMBEDDING_DIMENSIONS:-1024}"
 PROFILE="${NEXUS_EMBEDDING_PROFILE:-}"
 
 rm -rf "$STAGING_DIR"
-mkdir -p "$STAGING_DIR/.claude-plugin" "$STAGING_DIR/scripts" "$STAGING_DIR/packages/dashboard"
+mkdir -p "$STAGING_DIR/.claude-plugin" "$STAGING_DIR/scripts" "$STAGING_DIR/packages/dashboard" "$STAGING_DIR/skills/code-search"
 
 # Package manifests + lockfile, TS build config, root source
 cp package.json package-lock.json "$STAGING_DIR/"
@@ -34,6 +34,9 @@ cp -r packages/dashboard/src "$STAGING_DIR/packages/dashboard/"
 # Runtime setup hook + license files
 cp scripts/setup-plugin.sh "$STAGING_DIR/scripts/"
 cp LICENSE NOTICE "$STAGING_DIR/"
+
+# Generate the Claude Code plugin Skill from the repository source of truth.
+cp .agents/skills/code-search.md "$STAGING_DIR/skills/code-search/SKILL.md"
 
 # Transform plugin.json: strip userConfig, inject fixed env
 STAGING_DIR="$STAGING_DIR" REGION="$REGION" MODEL="$MODEL" DIMENSIONS="$DIMENSIONS" PROFILE="$PROFILE" \

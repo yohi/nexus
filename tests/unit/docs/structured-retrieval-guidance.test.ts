@@ -32,6 +32,7 @@ const GUIDANCE_FILES = {
   agents: "AGENTS.md",
   mcpTools: "docs/mcp-tools.md",
   setup: "docs/setup.md",
+  setupPlan: "docs/superpowers/plans/2026-09-16-mcp-skill-setup.md",
   skill: ".agents/skills/code-search.md",
 } as const;
 
@@ -43,6 +44,7 @@ describe("documentation architecture and structured retrieval guidance", () => {
   const agents = readGuidanceFile(GUIDANCE_FILES.agents);
   const mcpTools = readGuidanceFile(GUIDANCE_FILES.mcpTools);
   const setup = readGuidanceFile(GUIDANCE_FILES.setup);
+  const setupPlan = readGuidanceFile(GUIDANCE_FILES.setupPlan);
   const skill = readGuidanceFile(GUIDANCE_FILES.skill);
 
   it("routes readers from the README instead of duplicating canonical references", () => {
@@ -92,6 +94,45 @@ describe("documentation architecture and structured retrieval guidance", () => {
     expect(setup).toContain("Source Build");
     expect(setup).toContain("Package Usage");
     expect(setup).toContain("GitHub Packages");
+  });
+
+  it("requires the AI setup prompt and protocol to cover MCP and Skill separately", () => {
+    for (const prompt of [readme, readmeJa]) {
+      expect(prompt).toContain("https://github.com/yohi/nexus");
+      expect(prompt).toContain(
+        "https://raw.githubusercontent.com/yohi/nexus/master/AGENTS.md",
+      );
+      expect(prompt).toContain(
+        "https://raw.githubusercontent.com/yohi/nexus/master/docs/setup.md",
+      );
+      expect(prompt).toContain(
+        "https://raw.githubusercontent.com/yohi/nexus/master/.agents/skills/code-search.md",
+      );
+    }
+
+    expect(agents).toContain("MCP gate");
+    expect(agents).toContain("Skill gate");
+    expect(setup).toContain("Verify the Skill");
+    expect(setup).toContain("code-search.md");
+    expect(setup).toContain("loaded");
+  });
+
+  it("requires setup completion to report both verification gates", () => {
+    expect(agents).toContain("MCP: connected");
+    expect(agents).toContain("Skill:");
+    expect(setup).toContain("MCP: connected");
+    expect(setup).toContain("Skill:");
+    expect(setup).toContain("both gates pass");
+  });
+
+  it("keeps bridge commands mode-specific and repository writes out of the setup plan", () => {
+    expect(setup).toContain("node dist/bin/nexus.js http-bridge");
+    expect(setup).toContain("npx @yohi/nexus http-bridge");
+    expect(setup).not.toMatch(/^nexus http-bridge$/m);
+    expect(setupPlan).not.toContain("GIT_MASTER=1 git push");
+    expect(setupPlan).not.toContain("gh pr view");
+    expect(setupPlan).toContain("outside this plan");
+    expect(setupPlan).toMatch(/explicit\s+user authorization/);
   });
 
   it("preserves structured retrieval invariants in SPEC.md", () => {
