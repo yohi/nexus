@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.4.0](https://github.com/yohi/nexus/compare/v2.3.0...v2.4.0) (2026-09-16)
+
+
+### Features
+
+* Claude Code プラグインへ Skill を同梱 ([3445a08](https://github.com/yohi/nexus/commit/3445a08348ca59a831b44ec0199790c15107ef17))
+
 ## [2.3.0](https://github.com/yohi/nexus/compare/v2.2.2...v2.3.0) (2026-09-15)
 
 
