@@ -94,6 +94,35 @@ describe("documentation architecture and structured retrieval guidance", () => {
     expect(setup).toContain("GitHub Packages");
   });
 
+  it("requires the AI setup prompt and protocol to cover MCP and Skill separately", () => {
+    for (const prompt of [readme, readmeJa]) {
+      expect(prompt).toContain("https://github.com/yohi/nexus");
+      expect(prompt).toContain(
+        "https://raw.githubusercontent.com/yohi/nexus/master/AGENTS.md",
+      );
+      expect(prompt).toContain(
+        "https://raw.githubusercontent.com/yohi/nexus/master/docs/setup.md",
+      );
+      expect(prompt).toContain(
+        "https://raw.githubusercontent.com/yohi/nexus/master/.agents/skills/code-search.md",
+      );
+    }
+
+    expect(agents).toContain("MCP gate");
+    expect(agents).toContain("Skill gate");
+    expect(setup).toContain("Verify the Skill");
+    expect(setup).toContain("code-search.md");
+    expect(setup).toContain("loaded");
+  });
+
+  it("requires setup completion to report both verification gates", () => {
+    expect(agents).toContain("MCP: connected");
+    expect(agents).toContain("Skill:");
+    expect(setup).toContain("MCP: connected");
+    expect(setup).toContain("Skill:");
+    expect(setup).toContain("both gates pass");
+  });
+
   it("preserves structured retrieval invariants in SPEC.md", () => {
     expect(spec).toContain("Logical symbols are independent of search chunks");
     expect(spec).toContain("complete verified logical declaration");

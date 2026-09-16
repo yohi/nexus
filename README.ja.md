@@ -38,7 +38,7 @@ node dist/bin/nexus.js
 
 ### インデックスを確認
 
-MCP クライアントを `nexus` コマンドへ接続し、`index_status` を呼び出します。
+MCP クライアントを [Setup](docs/setup.md) にあるモード別のコマンドへ接続し、`index_status` を呼び出します。
 
 利用可能なインデックスでは `indexStats.lastIndexedAt` が non-null で、`pipelineProgress.lastError` がありません。初回インデックスはバックグラウンドで進み、処理中でも検索できますが結果が不完全な場合があります。
 
@@ -63,7 +63,7 @@ MCP クライアントを `nexus` コマンドへ接続し、`index_status` を�
 以下のプロンプトを AI コーディングエージェント（Claude Code、Cursor、OpenCode など）に貼り付けてください。エージェントがリポジトリと環境を確認し、適切なセットアップ手順を実行します。
 
 ```text
-Set up this repository for local development. Read and follow AGENTS.md, then use docs/setup.md as the canonical setup source.
+Set up the `yohi/nexus` repository (https://github.com/yohi/nexus). Read and follow https://raw.githubusercontent.com/yohi/nexus/master/AGENTS.md first, use https://raw.githubusercontent.com/yohi/nexus/master/docs/setup.md as the canonical setup source, and load https://raw.githubusercontent.com/yohi/nexus/master/.agents/skills/code-search.md as the repository Skill. Configure and verify the MCP connection and Skill availability separately; report setup complete only when both pass.
 ```
 
 典型的な検索フロー:

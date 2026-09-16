@@ -96,9 +96,9 @@ If Bitbucket is already at the latest release tag, the workflow exits without re
 
 ## Source mirror contents
 
-The source mirror is intentionally self-contained for plugin setup and rebuilds. It contains the plugin manifest, package metadata/lockfile, TypeScript configuration, source tree, dashboard source needed by the package, plugin setup script, and license/notice files.
+The source mirror is intentionally self-contained for plugin setup and rebuilds. It contains the plugin manifest, package metadata/lockfile, TypeScript configuration, source tree, dashboard source needed by the package, plugin setup script, the Claude Code Skill at `skills/code-search/SKILL.md`, and license/notice files. The staging script generates that Skill from the repository's single source of truth at `.agents/skills/code-search.md`.
 
-Development-only and repository-maintenance material is not part of the plugin source mirror, including CI configuration, tests, local build output, local Nexus state, repository documentation, and agent/specification documents.
+Development-only and repository-maintenance material is not part of the plugin source mirror, including CI configuration, tests, local build output, local Nexus state, repository documentation, and agent/specification documents other than the generated `skills/code-search/SKILL.md` plugin Skill.
 
 The exact staging policy is implemented by `scripts/stage-plugin-dist.sh`; treat that script, not a copied file list in this guide, as the machine-executable source of truth.
 
