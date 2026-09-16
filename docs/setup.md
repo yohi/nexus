@@ -109,10 +109,10 @@ Initial indexing runs in the background. Searches remain available while it is r
 
 ## Verify the Skill
 
-The repository Skill is `.agents/skills/code-search.md`. Confirm that the file
+The repository Skill is `skills/code-search/SKILL.md`. Confirm that the file
 is available from the checkout or fetch it from:
 
-`https://raw.githubusercontent.com/yohi/nexus/master/.agents/skills/code-search.md`
+`https://raw.githubusercontent.com/yohi/nexus/master/skills/code-search/SKILL.md`
 
 Read the file into the current agent context and confirm that its code-search
 workflow is available for the setup task. Record this gate as `Skill: loaded`.

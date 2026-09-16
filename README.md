@@ -56,14 +56,14 @@ For client-specific setup and the Source Build / Package Usage choice, see [Setu
 
 ## Agent Setup
 
-Repository-wide AI-agent behavior belongs in [AGENTS.md](AGENTS.md). The canonical code-search workflow is [.agents/skills/code-search.md](.agents/skills/code-search.md).
+Repository-wide AI-agent behavior belongs in [AGENTS.md](AGENTS.md). The canonical code-search workflow is [skills/code-search/SKILL.md](skills/code-search/SKILL.md).
 
 ### Set up with an AI coding agent
 
 Copy and paste the prompt below into an AI coding agent (Claude Code, Cursor, OpenCode, etc.). The agent will inspect the repository and your environment, then run the appropriate setup steps.
 
 ```text
-Set up the `yohi/nexus` repository (https://github.com/yohi/nexus). Read and follow https://raw.githubusercontent.com/yohi/nexus/master/AGENTS.md first, use https://raw.githubusercontent.com/yohi/nexus/master/docs/setup.md as the canonical setup source, and load https://raw.githubusercontent.com/yohi/nexus/master/.agents/skills/code-search.md as the repository Skill. Configure and verify the MCP connection and Skill availability separately; report setup complete only when both pass.
+Set up the `yohi/nexus` repository (https://github.com/yohi/nexus). Read and follow https://raw.githubusercontent.com/yohi/nexus/master/AGENTS.md first, use https://raw.githubusercontent.com/yohi/nexus/master/docs/setup.md as the canonical setup source, and load https://raw.githubusercontent.com/yohi/nexus/master/skills/code-search/SKILL.md as the repository Skill. Configure and verify the MCP connection and Skill availability separately; report setup complete only when both pass.
 ```
 
 For a typical search:
@@ -150,7 +150,7 @@ Do not treat this table as the complete configuration contract. See [Configurati
 | --- | --- |
 | Current architecture, invariants, compatibility, transport behavior | [SPEC.md](SPEC.md) |
 | AI-agent repository instructions | [AGENTS.md](AGENTS.md) |
-| Code-search agent workflow | [.agents/skills/code-search.md](.agents/skills/code-search.md) |
+| Code-search agent workflow | [skills/code-search/SKILL.md](skills/code-search/SKILL.md) |
 | MCP tools, inputs, outputs, and status values | [docs/mcp-tools.md](docs/mcp-tools.md) |
 | Installation and client setup | [docs/setup.md](docs/setup.md) |
 | Runtime configuration | [docs/configuration.md](docs/configuration.md) |
