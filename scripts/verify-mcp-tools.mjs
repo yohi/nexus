@@ -13,6 +13,25 @@ export const EXPECTED_TOOL_NAMES = Object.freeze([
 const asRecord = (value) => value !== null && typeof value === 'object' && !Array.isArray(value) ? value : {};
 const textOf = (value) => typeof value === 'string' ? value : JSON.stringify(value);
 const hasMarker = (value, marker) => marker === undefined || textOf(value).includes(marker);
+const isValidTimestamp = (value) => typeof value === 'string' && value.trim().length > 0 && Number.isFinite(Date.parse(value));
+const isEmptyError = (value) => value === undefined || value === null || value === '';
+const isNonNegativeInteger = (value) => Number.isSafeInteger(value) && value >= 0;
+const isIndexReady = (data) => {
+  const pipelineProgress = asRecord(data.pipelineProgress);
+  const indexStats = asRecord(data.indexStats);
+  return pipelineProgress.status === 'idle'
+    && isValidTimestamp(indexStats.lastIndexedAt)
+    && isEmptyError(pipelineProgress.lastError)
+    && isEmptyError(indexStats.lastError)
+    && data.skippedFiles === 0;
+};
+
+const sanitizeFatalError = (error) => {
+  const message = error instanceof Error ? error.message : String(error);
+  const isNetworkError = /fetch failed|ECONNREFUSED|ECONNRESET|ETIMEDOUT|http:\/\/|https:\/\//i.test(message);
+  const hasSensitivePath = /(\/(home|Users|tmp|var|etc|opt)\/|[a-z]:\\|\.\.\/)/i.test(message);
+  return !isNetworkError && hasSensitivePath ? 'Verification failed (potential path leak prevented)' : message;
+};
 
 export const validateToolList = (actualNames) => {
   const missing = EXPECTED_TOOL_NAMES.filter((name) => !actualNames.includes(name));
@@ -35,10 +54,16 @@ export const validateToolResult = (toolName, result, marker) => {
       return typeof data.content === 'string' && hasMarker(data.content, marker)
         ? { ok: true } : { ok: false, reason: 'get_context did not return the fixture marker' };
     case 'index_status':
-      return asRecord(data.pipelineProgress).status === 'idle' && asRecord(data.indexStats).lastIndexedAt !== null
+      return isIndexReady(data)
         ? { ok: true } : { ok: false, reason: 'index_status did not reach an idle indexed state' };
     case 'reindex':
-      return typeof data.startedAt === 'string' && typeof data.finishedAt === 'string' && typeof data.durationMs === 'number'
+      return typeof data.startedAt === 'string'
+        && typeof data.finishedAt === 'string'
+        && typeof data.durationMs === 'number'
+        && Number.isFinite(data.durationMs)
+        && data.durationMs >= 0
+        && isNonNegativeInteger(data.chunksIndexed)
+        && ['added', 'modified', 'deleted', 'unchanged'].every((field) => isNonNegativeInteger(asRecord(data.reconciliation)[field]))
         ? { ok: true } : { ok: false, reason: 'reindex did not return a completed result' };
     case 'get_file_outline':
       return data.status === 'ok' && Array.isArray(data.symbols) && data.symbols.length > 0
@@ -109,7 +134,7 @@ const waitForIndex = async (client) => {
   while (Date.now() < deadline) {
     const result = await callTool(client, 'index_status', {});
     last = asRecord(result.data);
-    if (asRecord(last.pipelineProgress).status === 'idle' && asRecord(last.indexStats).lastIndexedAt !== null) return last;
+    if (result.error === undefined && isIndexReady(last)) return last;
     await new Promise((resolve) => setTimeout(resolve, 500));
   }
   return last;
@@ -160,6 +185,8 @@ export const runVerification = async ({ cliPath, json = false } = {}) => {
     await record(records, 'cold-start', 'get_context', first.client, { filePath: 'fixture.ts', startLine: 1, endLine: 1, mode: 'eager' }, fixture.marker);
     await record(records, 'cold-start', 'get_file_outline', first.client, { filePath: 'fixture.ts' }, fixture.marker);
     await record(records, 'cold-start', 'reindex', first.client, { fullRebuild: true, reason: 'manual' }, fixture.marker);
+    const postReindexStatus = await waitForIndex(first.client);
+    records.push(summarizeToolResult('post-reindex', 'index_status', { data: postReindexStatus }));
     await closeClient(first, fixture.lockPath);
     first = undefined;
 
@@ -193,7 +220,9 @@ if (isMain) {
     const summary = await runVerification({ json });
     process.exitCode = summary.ok ? 0 : 1;
   } catch (error) {
-    console.error(error instanceof Error ? error.message : String(error));
+    const summary = { ok: false, error: sanitizeFatalError(error) };
+    if (json) console.log(JSON.stringify(summary));
+    else console.error(summary.error);
     process.exitCode = 1;
   }
 }
