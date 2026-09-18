@@ -121,6 +121,22 @@ describe('managed-http-server', () => {
     await expect(readProjectEndpoint(storageDir)).resolves.toBeUndefined();
   });
 
+  it('shuts down immediately after the final session closes when idleShutdownMs is zero', async () => {
+    const server = await trackServer({
+      ...options,
+      idleShutdownMs: 0,
+    });
+
+    await connectAndCloseClient(server.url);
+    await expect(
+      Promise.race([
+        server.closed.then(() => true as const),
+        new Promise<false>((resolve) => setTimeout(() => resolve(false), 250)),
+      ]),
+    ).resolves.toBe(true);
+    await expect(readProjectEndpoint(storageDir)).resolves.toBeUndefined();
+  });
+
   it('completes shutdown when runtime close rejects', async () => {
     const runtime = createMockRuntime();
     runtime.close = async () => {

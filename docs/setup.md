@@ -107,6 +107,24 @@ Record this gate as `MCP: connected` only after all four checks pass.
 
 Initial indexing runs in the background. Searches remain available while it is running, but may be incomplete.
 
+## Verify All MCP Tools
+
+Source Build contributors can run the repository's direct tool verifier after
+installing dependencies:
+
+```bash
+npm run verify:mcp-tools
+```
+
+The verifier builds the CLI, creates an isolated temporary project, and invokes
+all nine registered tools through the stdio MCP transport. It requires a local
+Ollama service with the `bge-m3` model. Use `node scripts/verify-mcp-tools.mjs
+--json` after a build for machine-readable output.
+
+The command returns a non-zero exit status when a tool fails or when a lifecycle
+assertion detects an incomplete index. It does not modify the project being
+indexed or retain its temporary project.
+
 ## Verify the Skill
 
 The repository Skill is `skills/code-search/SKILL.md`. Confirm that the file

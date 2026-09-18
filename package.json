@@ -45,6 +45,7 @@
     "lint": "eslint src/**/*.ts vitest.config.ts",
     "test": "vitest run --passWithNoTests && bash tests/unit/scripts/setup-plugin.test.sh && bash tests/unit/scripts/stage-plugin-dist.test.sh",
     "test:e2e": "npm run build && NEXUS_E2E=1 vitest run",
+    "verify:mcp-tools": "npm run build && node scripts/verify-mcp-tools.mjs",
     "test:bench": "vitest bench tests/benchmarks",
     "doctor": "node scripts/doctor.mjs",
     "license:check": "node scripts/license-check.mjs",
