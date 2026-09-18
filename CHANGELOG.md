@@ -1,5 +1,23 @@
 # Changelog
 
+## [2.5.0](https://github.com/yohi/nexus/compare/v2.4.0...v2.5.0) (2026-09-18)
+
+
+### Features
+
+* Agent Skillsの正規レイアウトへ移行 ([1cd3374](https://github.com/yohi/nexus/commit/1cd33742559a6774526ceb60ef5317fa48791c1a))
+* Agent Skillsの正規レイアウトへ移行 ([3a4206a](https://github.com/yohi/nexus/commit/3a4206a4e81da2648f75e477818186f59747f070))
+* MCPツール検証コマンドを追加 ([6e89923](https://github.com/yohi/nexus/commit/6e899239c4058c99ec08d42352e2ae56be54739e))
+* MCPツール検証とE2E CIを追加 ([192cfc4](https://github.com/yohi/nexus/commit/192cfc48bdc6a5b60cbccfdc09ad469bf43f5764))
+
+
+### Bug Fixes
+
+* MCPセッション終了処理を修正 ([af9be19](https://github.com/yohi/nexus/commit/af9be194549b62bb204e059180d8f423fe06f13a))
+* MCPツール検証の完了判定を厳格化 ([1ae0551](https://github.com/yohi/nexus/commit/1ae055144b4755870312a05b107eda9aca723df3))
+* 削除済みセットアップ計画書への参照を除去 ([0e150e7](https://github.com/yohi/nexus/commit/0e150e7d01758cef2b8b360d7a9edbf506facf0e))
+* 構造化indexの完了状態を同期 ([304a367](https://github.com/yohi/nexus/commit/304a36772e7fcf7b591861d925a7f9a9edf420fe))
+
 ## [2.4.0](https://github.com/yohi/nexus/compare/v2.3.0...v2.4.0) (2026-09-16)
 
 
