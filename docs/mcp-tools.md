@@ -77,6 +77,17 @@ A stale or retired identity must not be silently mapped to a similar symbol.
 
 `reindex` accepts optional `fullRebuild` and `reason` (`manual`, `overflow-recovery`, or `startup-reconciliation`). If indexing is already running, it reports that state instead of starting a second pipeline. A full rebuild is not successfully complete while unresolved dead-letter work remains.
 
+## Direct Verification
+
+Run `npm run verify:mcp-tools` from a Source Build checkout to invoke every
+registered tool against an isolated temporary fixture. The verifier checks
+search results, line context, reindex completion, and structured symbol source
+and context. It returns non-zero when any tool or lifecycle assertion fails.
+
+Use `node scripts/verify-mcp-tools.mjs --json` after `npm run build` when a
+machine-readable summary is needed. A cold-start structured-index failure is
+reported explicitly rather than being treated as a skipped structured tool.
+
 ## HTTP Bridge
 
 `nexus http-bridge` adapts stdio-only MCP clients to a Nexus Streamable HTTP endpoint. Without an explicit URL it discovers or starts the project-scoped loopback server. Transport and managed-server safety invariants are defined in [SPEC.md](../SPEC.md).
