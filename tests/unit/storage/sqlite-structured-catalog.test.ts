@@ -182,6 +182,28 @@ describe('SQLite structured catalog', () => {
     )).toEqual([]);
   });
 
+  it('marks the structured schema usable after a fresh full rebuild', async () => {
+    await store.bootstrapStructuredSchema();
+    const rebuildEpoch = await store.incrementRebuildEpoch();
+    const activation: StructuredFullRebuildActivation = {
+      rebuildEpoch,
+      files: [{ filePath: 'src/a.ts', generationId: 'g1', expectedActiveGeneration: null }],
+      retiredFiles: [],
+    };
+
+    await store.prepareFullRebuild(activation, []);
+    await store.stageGeneration({ ...stage('src/a.ts', 'g1', 'new'), rebuildEpoch });
+    await store.activateFullRebuild(activation);
+    await store.setStructuredRebuildState({ rebuildState: 'idle' });
+    await store.finalizeFullRebuild(activation);
+
+    await expect(store.getStructuredIndexState()).resolves.toMatchObject({
+      schemaVersion: 1,
+      rebuildState: 'idle',
+      reindexRequired: false,
+    });
+  });
+
   it('does not roll back a finalized generation when cleanup left backup rows', async () => {
     const databasePath = path.join(dir, 'metadata.db');
     await store.initialize();

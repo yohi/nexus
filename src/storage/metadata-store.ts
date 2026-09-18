@@ -734,6 +734,7 @@ export class SqliteMetadataStore implements IMetadataStore, IStructuredCatalog {
       this.db.prepare('DELETE FROM structured_rebuild_backup_tombstones WHERE rebuild_epoch = ?').run(input.rebuildEpoch);
       this.db.prepare('DELETE FROM structured_rebuild_backup_vectors WHERE rebuild_epoch = ?').run(input.rebuildEpoch);
     });
+    await this.reconcileStructuredState();
   }
 
   private readFullRebuildRecovery(): FullRebuildRecovery | null {
