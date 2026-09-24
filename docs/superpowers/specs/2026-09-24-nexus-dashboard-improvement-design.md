@@ -89,10 +89,11 @@ interface PollResult<T> {
   error: string | null;
   lastSuccessAt: number | null;
   lastErrorAt: number | null;
+  generation: number;
 }
 ```
 
-`current` holds the most recent successful response for this route and is `null` after a poll failure or when no request has succeeded. `stale` holds the previous `current` value at the moment the route transitions to `unavailable`; it is cleared on port change or when the route recovers to `connected`. `lastSuccessAt` and `lastErrorAt` are Unix millisecond timestamps for the latest successful and the latest failed fetch respectively. `waiting` is the initial pending state; `unavailable` is emitted after the first failed retry so a discovered port whose runtime is dead can transition to `runtime_unavailable` instead of staying in `waiting` forever. Views render `current` only; Diagnostics renders `current` plus explicitly labeled `stale` values with their last-success timestamp.
+`current` holds the most recent successful response for this route and is `null` after a poll failure or when no request has succeeded. `stale` holds the previous `current` value at the moment the route transitions to `unavailable`; it is cleared on port change or when the route recovers to `connected`. `lastSuccessAt` and `lastErrorAt` are Unix millisecond timestamps for the latest successful and the latest failed fetch respectively. `generation` is a monotonic integer incremented on every completed fetch attempt (success or failure) and reset on port change; it lets downstream history buffers detect missing polls even when the response payload is unchanged. `waiting` is the initial pending state; `unavailable` is emitted after the first failed retry so a discovered port whose runtime is dead can transition to `runtime_unavailable` instead of staying in `waiting` forever. Views render `current` only; Diagnostics renders `current` plus explicitly labeled `stale` values with their last-success timestamp.
 
 ## Views And Narrow Terminal Behavior
 
@@ -135,7 +136,7 @@ Store timestamped samples in per-series in-memory buffers for a rolling five-min
 
 These logical names correspond to the runtime's `nexus_`-prefixed prom-client metric names. Identify a histogram series by its base `metricName` and listed labels; store `_sum`, `_count`, and each `_bucket` independently under that base `metricName`, with `le` added as a bucket dimension. Never collapse histogram components or buckets into a single value. Compute interval means from deltas of `_sum` and `_count` only when both deltas exist and count delta is positive; otherwise return `Waiting` or `Unavailable`. Queue size uses its observed gauge, not a counter delta. Render ASCII sparklines from valid samples, without adding a charting dependency.
 
-For each counter and histogram component, the first sample establishes a baseline and has no rate. For consecutive samples, nondecreasing values contribute `current - previous`. A lower value indicates a reset: discard the old baseline, start at the lower value, and contribute **no** delta across that interval. Sum only valid interval deltas whose endpoints are inside the five-minute window; keep the preceding sample solely to establish a baseline for the first in-window interval. A missing sample breaks consecutive intervals for that series; the next observation establishes a new baseline without a delta. A new series does not inherit another series' baseline. Derive request success/error and the telemetry Attention rule from these window deltas; never interpret a missing series as zero.
+For each counter and histogram component, the first sample establishes a baseline and has no rate. For consecutive samples, nondecreasing values contribute `current - previous`. A lower value indicates a reset: discard the old baseline, start at the lower value, and contribute **no** delta across that interval. Sum only valid interval deltas whose endpoints are inside the five-minute window; keep the preceding sample solely to establish a baseline for the first in-window interval. A missing poll (detected by `generation` gap) breaks consecutive intervals for every series; the next observation establishes a new baseline without a delta. A new series does not inherit another series' baseline. Derive request success/error and the telemetry Attention rule from these window deltas; never interpret a missing series as zero.
 
 ## Error Handling And Missing Data
 
@@ -185,8 +186,6 @@ npm run build
 
 Root `npm run lint` and `npx tsc --noEmit` **do not cover Dashboard TSX**; the dashboard-specific type check, workspace build, and Vitest configuration above are mandatory. Run the focused endpoint and CLI tests as well as the full suites and verify the real dashboard CLI against a stopped runtime and a restarted runtime on a changed port.
 
-## File Map And Repository Integration
-
 | Area | Responsibility |
 | --- | --- |
 | `src/server/tools/index-status.ts`, `src/plugins/registry.ts` | Reuse the shared non-provider fields; preserve MCP probing; expose cached runtime-known provider state without dashboard probes. |
@@ -196,6 +195,8 @@ Root `npm run lint` and `npx tsc --noEmit` **do not cover Dashboard TSX**; the d
 | `packages/dashboard/src/hooks/use-canonical-status.ts`, `packages/dashboard/src/hooks/use-metrics-history.ts` | **References for future implementation only:** independent status polling and per-series five-minute telemetry history; keep both on the selected port. |
 | `packages/dashboard/` views, utilities and tests | Implement presentation state, navigation, diagnostics, layout, and regressions without a new router or chart dependency. |
 | `docs/superpowers/specs/2026-09-24-nexus-dashboard-improvement-design.md`, `docs/superpowers/plans/2026-09-24-nexus-dashboard-improvement.md` | The two documentation artifacts associated with this review; reconcile the plan to this design before coding. |
+| `eslint.config.mjs` | Dashboard-specific lint block referenced in the plan; must exist in the File Map and verification gate. |
+| `packages/dashboard/tests/integration/helpers.ts` | Integration test helper referenced in the plan; must exist in the File Map. |
 
 No additional new source-file paths are prescribed here. Under the single-file edit constraint, this review writes **only this design document**; it identifies the corresponding plan as the second documentation artifact to reconcile, but does not change the plan or any source files. Future implementation must keep the status route internal, project-scoped, read-only and loopback-only; create no agent configuration, commit no local port files, credentials, or machine-specific absolute paths.
 
@@ -209,12 +210,13 @@ No additional new source-file paths are prescribed here. Under the single-file e
 - [ ] Missing metrics are not zero; readiness, histogram labels, counter baselines and resets are defined.
 - [ ] RED tests cover side effects, absent/restarted runtime, missing metrics, and narrow width.
 - [ ] Dashboard-specific verification complements root checks; the implementation plan is reconciled before implementation.
+
 | Review Finding | Plan task / test that covers it |
 | --- | --- |
-| RG-001: side-effect-free status boundary, provider tri-state, MCP compatibility | Replace plan Tasks 1–3 active-probe snapshot design with shared non-provider collector, `buildDashboardIndexStatusSnapshot`, registry known-state cache and endpoint RED no-probe/Bedrock tests. |
-| RG-002: endpoint discovery, port-null disabling, rediscovery, changed-port reconnection, explicit port, current/stale route state | Update plan CLI and status-hook tasks; hook state contract with `waiting`/`unavailable`/`connected`; `current`/`stale` separation and `lastSuccessAt`/`lastErrorAt` timestamps; CLI fake-clock startup/restart/new-port and fixed-port integration tests. |
-| RG-003: labeled five-minute telemetry, bounded history, histogram components, counter reset, baseline, gap handling, histogram mean | Update plan metrics-history task; per-label `_sum`/`_count`/`_bucket`, `SERIES_DIMENSIONS` ignoring `project`/`pid`, generation tracking for missing polls, partial-label aggregation, baseline/reset, `getHistogramMean`, and window-delta unit tests. |
-| RG-004: unavailable data, canonical readiness, diagnostics, Attention provenance, narrow layout, endpoint URL provenance | Update plan presentation/diagnostics tasks; nullable `indexStats`, `ValueState` model, readiness precedence, discriminated Attention provenance with actual endpoint URLs, Queue-before-Provider layout priority, sparkline-first degradation tests. |
-| RG-005: concrete Attention items, telemetry independence, queue overflow, DLQ, embedding errors | Update plan Attention task; canonical/connectivity/telemetry provenance, queue-overflow and DLQ rules, five-minute embedding-error delta tests. |
-| RG-006: navigation and narrow terminal | Update plan view/navigation tasks; Ink keyboard and resize component tests verify digit keys, arrows, ignored `h`/`l`, and sparkline-first degradation. |
-| RG-007: complete verification and review scope | Update plan verification gate with dashboard-specific type check, build, lint config (Task 5a before first dashboard lint), tests; verify both documentation artifacts are reconciled before future coding and this review changes no source files. |
+| RG-001: side-effect-free provider/status boundary, provider tri-state, MCP compatibility | Replace plan Tasks 1–3 active-probe snapshot design with shared non-provider collector, `buildDashboardIndexStatusSnapshot`, registry known-state cache and endpoint RED no-probe/Bedrock tests. |
+| RG-002: runtime discovery, route state, current-vs-stale | Update plan CLI and status-hook tasks; hook state contract with `waiting`/`unavailable`/`connected`; `current`/`stale` separation and `lastSuccessAt`/`lastErrorAt` timestamps; CLI fake-clock startup/restart/new-port and fixed-port integration tests. |
+| RG-003: metrics history, labels, histogram, counter delta | Update plan metrics-history task; per-label `_sum`/`_count`/`_bucket`, `SERIES_DIMENSIONS` ignoring `project`/`pid`, generation tracking for missing polls, partial-label aggregation, baseline/reset, `getHistogramMean`, and window-delta unit tests. |
+| RG-004: missing data, readiness, Attention provenance, Diagnostics, narrow layout | Update plan presentation/diagnostics tasks; nullable `indexStats`, `ValueState` model, readiness precedence, discriminated Attention provenance with actual endpoint URLs, Queue-before-Provider layout priority, sparkline-first degradation tests. |
+| RG-005: implementation-plan correctness, types, paths, TDD executability, undefined helpers, placeholder | Update plan Task 1 syntax/import/path corrections, integration helper ESM safety, no-probe/Bedrock regression coverage, and Task 5/5a/5b boundary clarity. |
+| RG-006: verification gate, Dashboard lint, typecheck, test config | Update plan verification gate with dashboard-specific type check, build, lint config (Task 5a before first dashboard lint), tests; verify both documentation artifacts are reconciled before future coding and this review changes no source files. |
+| RG-007: navigation contract | Update plan view/navigation tasks; Ink keyboard and resize component tests verify digit keys, arrows, ignored `h`/`l`, and sparkline-first degradation. |
