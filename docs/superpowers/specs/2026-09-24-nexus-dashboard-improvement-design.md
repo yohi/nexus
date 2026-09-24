@@ -75,6 +75,17 @@ The CLI uses the selected project's existing `storageDir` resolution; `src/serve
 
 Connection states are `runtime_unavailable`, `metrics_unavailable`, `status_unavailable`, and `connected`. `runtime_unavailable` means no valid discovered port, or both endpoints on the selected port are unreachable; `metrics_unavailable` means status works but metrics does not; `status_unavailable` means metrics works but status does not. `connected` requires fresh successful responses from **both** endpoints. If both are individually reachable but fail application-level validation, classify by failed route, giving `status_unavailable` precedence when both responses are invalid; Diagnostics records both errors. Initial pending requests display `Waiting`, not a false connected state. On port change, cancel the old pollers, invalidate their in-flight results, clear current snapshots and metric baselines, and fetch both new URLs immediately. On individual route failure, the unaffected poller continues on the same port; the failed poller retries at its own cadence. On transport loss in discovery mode, reread `metrics.port` immediately, then every five seconds while unavailable and while recovering; follow changed ports. Also reread the port file every five seconds while connected to detect a changed port without waiting for a failure. A stale port file never triggers a runtime launch. An absent runtime must leave the TUI running with `Runtime unavailable`. Explicit `--port P` fixes P for the entire session: retry there, never read `metrics.port`, and never rediscover. Clear timers and abort pending requests on exit.
 
+### Polling Hook State Contract
+
+Each HTTP polling hook accepts `port: number | null` plus an `enabled` boolean
+derived from `port !== null`. When disabled the hook emits `waiting` and never
+issues a request, so `port = null` never falls back to `9464` or any other port.
+The hook state machine has three observable states: `waiting` for the initial
+pending request, `unavailable` once a request has been attempted and failed,
+and `connected` after a valid response. `unavailable` is emitted after the first
+failed retry so that a discovered port whose runtime is dead can transition to
+`runtime_unavailable` instead of staying in `waiting` forever.
+
 ## Views And Narrow Terminal Behavior
 
 | View | Required main content |
@@ -195,10 +206,10 @@ No additional new source-file paths are prescribed here. Under the single-file e
 
 | Issue #321 / Design requirement | Plan task / test that covers it |
 | --- | --- |
-| RG-001: side-effect-free status boundary, provider tri-state, MCP compatibility | Replace plan Tasks 1–2 active-probe snapshot design with shared non-provider collector, `buildDashboardIndexStatusSnapshot`, registry known-state cache and endpoint RED no-probe/Bedrock tests. |
-| RG-002: startup, rediscovery, changed-port reconnection, explicit port | Update plan CLI and status-hook tasks; CLI fake-clock startup/restart/new-port and fixed-port integration tests. |
-| RG-003: navigation and narrow terminal | Update plan view/navigation tasks; Ink keyboard and resize component tests verify digit keys, arrows, and sparkline-first degradation. |
-| RG-004: unavailable data, canonical readiness and diagnostics | Update plan presentation/diagnostics tasks; missing-metric helper, readiness precedence and stale-state component tests. |
-| RG-005: labeled five-minute telemetry, histogram and counter reset | Update plan metrics-history task; per-label `_sum`/`_count`/`_bucket`, baseline/reset and window-delta unit tests. |
-| RG-006: concrete Attention and provenance | Update plan Attention task; canonical/connectivity/telemetry provenance and five-minute embedding-error delta tests. |
-| RG-007: complete verification and review scope | Update plan verification gate with dashboard-specific commands; verify both documentation artifacts are reconciled before future coding and this review changes no source files. |
+| RG-001: side-effect-free status boundary, provider tri-state, MCP compatibility | Replace plan Tasks 1–3 active-probe snapshot design with shared non-provider collector, `buildDashboardIndexStatusSnapshot`, registry known-state cache and endpoint RED no-probe/Bedrock tests. |
+| RG-002: endpoint discovery, port-null disabling, rediscovery, changed-port reconnection, explicit port | Update plan CLI and status-hook tasks; hook state contract with `waiting`/`unavailable`/`connected`; CLI fake-clock startup/restart/new-port and fixed-port integration tests. |
+| RG-003: labeled five-minute telemetry, bounded history, histogram components, counter reset, baseline | Update plan metrics-history task; per-label `_sum`/`_count`/`_bucket`, partial-label aggregation, baseline/reset and window-delta unit tests. |
+| RG-004: unavailable data, canonical readiness, diagnostics, Attention provenance | Update plan presentation/diagnostics tasks; nullable `indexStats`, `ValueState` model, readiness precedence, discriminated Attention provenance, and stale-state component tests. |
+| RG-005: concrete Attention items, telemetry independence, queue overflow, DLQ, embedding errors | Update plan Attention task; canonical/connectivity/telemetry provenance, queue-overflow and DLQ rules, and five-minute embedding-error delta tests. |
+| RG-006: navigation and narrow terminal | Update plan view/navigation tasks; Ink keyboard and resize component tests verify digit keys, arrows, ignored `h`/`l`, and sparkline-first degradation. |
+| RG-007: complete verification and review scope | Update plan verification gate with dashboard-specific type check, build, lint config and tests; verify both documentation artifacts are reconciled before future coding and this review changes no source files. |

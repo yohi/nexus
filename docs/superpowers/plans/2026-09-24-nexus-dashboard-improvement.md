@@ -26,7 +26,7 @@
 ## File Map
 
 | File | Responsibility |
-|---|---|
+| --- | --- |
 | `src/server/tools/build-shared-index-status.ts` | New. Side-effect-free collector for `indexStats`, `vectorStats`, `skippedFiles`, `pipelineProgress`, and `structuredIndex` shared by the MCP tool and the dashboard. |
 | `src/server/tools/build-dashboard-index-status-snapshot.ts` | New. Dashboard-only builder that wraps the shared collector and attaches `providerStatus` from the registry's runtime-known health cache without probing. |
 | `src/server/tools/index-status.ts` | Modify. Refactor `executeIndexStatus()` to call the shared collector and attach the probed `pluginHealth`. Keep `IndexStatusResult` and `StructuredIndexStatus` exports. |
@@ -56,7 +56,7 @@
 | `packages/dashboard/src/components/compact-queue-panel.tsx` | New. Compact queue/DLQ summary for Overview. |
 | `packages/dashboard/src/app.tsx` | Modify. Hold view state, wire navigation, discovery, status, metrics, history, and Attention. |
 | `packages/dashboard/src/cli.ts` | Modify. Pass fixed port or storage directory to `App`; do not exit when the port file is missing. |
-| `packages/dashboard/src/hooks/use-metrics.ts` | No change; reused for `/metrics/json` polling. |
+| `packages/dashboard/src/hooks/use-metrics.ts` | Modify. Accept `port` (`number` or `null`) and `enabled` (`boolean`); disable polling when `port` is `null`. |
 | `packages/dashboard/src/components/queue-panel.tsx` | Delete. Replaced by compact/detail views. |
 | `packages/dashboard/src/components/throughput-panel.tsx` | Delete. Replaced by compact/detail views. |
 | `packages/dashboard/src/components/dlq-panel.tsx` | Delete. Replaced by compact/detail views. |
@@ -82,11 +82,13 @@
 ### Task 1: Extract The Shared Non-Provider Snapshot Collector
 
 **Files:**
+
 - Create: `src/server/tools/build-shared-index-status.ts`
 - Modify: `src/server/tools/index-status.ts`
 - Test: `tests/unit/server/tools/build-shared-index-status.test.ts`
 
 **Interfaces:**
+
 - Consumes: `IMetadataStore`, `IVectorStore`, `IIndexPipeline`, and the existing `StructuredIndexState` type.
 - Produces: `buildSharedIndexStatus(metadataStore, vectorStore, pipeline): Promise<SharedIndexStatus>` where `SharedIndexStatus` contains `indexStats`, `vectorStats`, `skippedFiles`, `pipelineProgress`, and `structuredIndex`.
 
@@ -141,8 +143,8 @@ Expected: FAIL — module not found.
 `src/server/tools/build-shared-index-status.ts`:
 
 ```ts
-import type { IMetadataStore, IVectorStore, PipelineProgress, IIndexPipeline } from "../types/index.js";
-import type { StructuredIndexState } from "../storage/interfaces/structured-catalog.js";
+import type { IMetadataStore, IVectorStore, PipelineProgress, IIndexPipeline } from "../../types/index.js";
+import type { StructuredIndexState } from "../../storage/interfaces/structured-catalog.js";
 
 export interface StructuredIndexStatus {
   schemaVersion: number | null;
@@ -223,8 +225,8 @@ export const buildSharedIndexStatus = async (
 `src/server/tools/index-status.ts` becomes:
 
 ```ts
-import type { PluginRegistry } from "../plugins/registry.js";
-import type { IMetadataStore, IVectorStore, IIndexPipeline } from "../types/index.js";
+import type { PluginRegistry } from "../../plugins/registry.js";
+import type { IMetadataStore, IVectorStore, IIndexPipeline } from "../../types/index.js";
 import { buildSharedIndexStatus, type StructuredIndexStatus } from "./build-shared-index-status.js";
 
 export interface IndexStatusResult {
@@ -274,10 +276,12 @@ git commit -m "refactor: 非プロバイダー snapshot 収集を shared collect
 ### Task 2: Add Runtime-Known Provider Health Cache To PluginRegistry
 
 **Files:**
+
 - Modify: `src/plugins/registry.ts`
 - Test: `tests/unit/plugins/registry-health-cache.test.ts`
 
 **Interfaces:**
+
 - Consumes: Existing `PluginRegistry.healthCheck()` and `EmbeddingProviderRegistry`.
 - Produces: `getEmbeddingProviderHealth(name: string): KnownHealthEntry | undefined`; internal cache updated only by `healthCheck()` with in-flight attribution guard.
 
@@ -466,11 +470,13 @@ git commit -m "feat: PluginRegistry にランタイム既知のヘルスキャ�
 ### Task 3: Build The Dashboard Snapshot And Refactor MCP `index_status`
 
 **Files:**
+
 - Create: `src/server/tools/build-dashboard-index-status-snapshot.ts`
 - Modify: `src/server/tools/index-status.ts` (add re-export of dashboard types)
 - Test: `tests/unit/server/tools/build-dashboard-index-status-snapshot.test.ts`
 
 **Interfaces:**
+
 - Consumes: `buildSharedIndexStatus` from Task 1; `PluginRegistry.getActiveEmbeddingProviderName()` and `getEmbeddingProviderHealth(name)` from Task 2.
 - Produces: `buildDashboardIndexStatusSnapshot(metadataStore, vectorStore, pluginRegistry, pipeline): Promise<DashboardIndexStatusResult>`; `DashboardIndexStatusResult = Omit<IndexStatusResult, "pluginHealth"> & { providerStatus: DashboardProviderStatus }`.
 
@@ -519,8 +525,8 @@ Expected: FAIL — module not found.
 `src/server/tools/build-dashboard-index-status-snapshot.ts`:
 
 ```ts
-import type { IMetadataStore, IVectorStore, IIndexPipeline } from "../types/index.js";
-import type { PluginRegistry, RuntimeKnownHealth } from "../plugins/registry.js";
+import type { IMetadataStore, IVectorStore, IIndexPipeline } from "../../types/index.js";
+import type { PluginRegistry, RuntimeKnownHealth } from "../../plugins/registry.js";
 import { buildSharedIndexStatus, type SharedIndexStatus } from "./build-shared-index-status.js";
 
 export type { RuntimeKnownHealth };
@@ -594,12 +600,14 @@ git commit -m "feat: dashboard 用 side-effect-free snapshot ビルダーを追�
 ### Task 4: Add The Dashboard `/status` Endpoint And Wire It
 
 **Files:**
+
 - Create: `src/observability/dashboard-status-endpoint.ts`
 - Modify: `src/observability/metrics-server.ts`
 - Modify: `src/server/index.ts`
 - Test: `tests/unit/observability/dashboard-status-endpoint.test.ts`
 
 **Interfaces:**
+
 - Consumes: `buildDashboardIndexStatusSnapshot()` from Task 3; existing `MetricsHttpServer` loopback server.
 - Produces: `createDashboardStatusEndpoint(buildSnapshot): { handler(req, res): Promise<void> }`; `MetricsHttpServer` constructor accepts optional `dashboardStatusEndpoint` and routes `/status` before 404.
 
@@ -865,6 +873,7 @@ git commit -m "feat: dashboard /status エンドポイントをループバッ�
 ### Task 5: Add Dashboard-side Types And Endpoint Discovery Hook
 
 **Files:**
+
 - Create: `packages/dashboard/src/types/dashboard-index-status.ts`
 - Create: `packages/dashboard/src/hooks/use-dashboard-status.ts`
 - Create: `packages/dashboard/src/hooks/use-dashboard-endpoint-discovery.ts`
@@ -873,7 +882,9 @@ git commit -m "feat: dashboard /status エンドポイントをループバッ�
 - Test: `packages/dashboard/tests/unit/hooks/use-dashboard-endpoint-discovery.test.tsx`
 
 **Interfaces:**
-- Consumes: `/status` JSON contract from Task 4; `useMetrics()` from existing `use-metrics.ts`.
+
+- Consumes: `/status` JSON contract from Task 4; `useMetrics()` after modifying it to accept `port: number | null` and `enabled: boolean`.
+- Produces: `useDashboardStatus({ port, enabled, interval }): UseDashboardStatusResult`; `useDashboardEndpointDiscovery({ fixedPort, storageDir }): UseDashboardEndpointDiscoveryResult` with combined connection state and selected port.
 - Produces: `useDashboardStatus({ port, interval }): UseDashboardStatusResult`; `useDashboardEndpointDiscovery({ fixedPort, storageDir }): UseDashboardEndpointDiscoveryResult` with combined connection state and selected port.
 
 - [ ] **Step 1: Write the failing tests**
@@ -882,7 +893,7 @@ git commit -m "feat: dashboard /status エンドポイントをループバッ�
 
 ```ts
 import { describe, it, expect } from "vitest";
-import type { DashboardIndexStatusResult, DashboardProviderStatus } from "../../src/types/dashboard-index-status.js";
+import type { DashboardIndexStatusResult, DashboardProviderStatus } from "../../../src/types/dashboard-index-status.js";
 
 describe("dashboard-index-status types", () => {
   it("accepts a minimal dashboard result", () => {
@@ -905,7 +916,7 @@ describe("dashboard-index-status types", () => {
 import { describe, it, expect, vi, afterEach, afterAll } from "vitest";
 import { render, cleanup } from "@testing-library/react";
 import React from "react";
-import { useDashboardStatus } from "../../src/hooks/use-dashboard-status.js";
+import { useDashboardStatus } from "../../../src/hooks/use-dashboard-status.js";
 
 function Probe(props: Parameters<typeof useDashboardStatus>[0]) {
   const result = useDashboardStatus(props);
@@ -938,7 +949,7 @@ describe("useDashboardStatus", () => {
 import { describe, it, expect, vi, afterEach, afterAll } from "vitest";
 import { render, cleanup, waitFor } from "@testing-library/react";
 import React from "react";
-import { useDashboardEndpointDiscovery } from "../../src/hooks/use-dashboard-endpoint-discovery.js";
+import { useDashboardEndpointDiscovery } from "../../../src/hooks/use-dashboard-endpoint-discovery.js";
 
 function Probe(props: { fixedPort?: number }) {
   const result = useDashboardEndpointDiscovery({ fixedPort: props.fixedPort });
@@ -1022,7 +1033,7 @@ export interface DashboardStructuredIndex {
 }
 
 export interface DashboardIndexStatusResult {
-  indexStats: DashboardIndexStats;
+  indexStats: DashboardIndexStats | null;
   vectorStats: DashboardVectorStats;
   skippedFiles: number;
   pipelineProgress: DashboardPipelineProgress;
@@ -1031,7 +1042,107 @@ export interface DashboardIndexStatusResult {
 }
 ```
 
-- [ ] **Step 4: Implement `useDashboardStatus`**
+- [ ] **Step 4: Implement the polling hooks**
+
+Modify `packages/dashboard/src/hooks/use-metrics.ts` so that `port` may be `null` and polling is skipped when `enabled` is `false`. Its observable states are `waiting`, `unavailable`, and `connected`. The first failed request moves the hook from `waiting` to `unavailable`; later failures stay `unavailable`.
+
+`packages/dashboard/src/hooks/use-metrics.ts`:
+
+```ts
+import { useState, useEffect, useRef } from "react";
+
+export type MetricsStatus = "waiting" | "unavailable" | "connected";
+
+export interface MetricsJSON {
+  name: string;
+  help?: string;
+  type?: string;
+  values?: MetricValue[];
+  labels?: Record<string, string>;
+}
+
+export interface MetricValue {
+  metricName?: string;
+  labels?: Record<string, string>;
+  value: number;
+  timestamp?: number;
+}
+
+export interface UseMetricsOptions {
+  port?: number | null;
+  enabled?: boolean;
+  interval?: number;
+}
+
+export interface UseMetricsResult {
+  status: MetricsStatus;
+  data: MetricsJSON[] | null;
+  error: string | null;
+}
+
+export function useMetrics(options: UseMetricsOptions = {}): UseMetricsResult {
+  const { port = null, enabled = false, interval = 2000 } = options;
+  const [status, setStatus] = useState<MetricsStatus>("waiting");
+  const [data, setData] = useState<MetricsJSON[] | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const attempted = useRef(false);
+
+  useEffect(() => {
+    setStatus("waiting");
+    setData(null);
+    setError(null);
+    attempted.current = false;
+    if (!enabled || port === null) {
+      return;
+    }
+    const abortController = new AbortController();
+    const url = `http://127.0.0.1:${port}/metrics/json`;
+
+    const poll = async () => {
+      try {
+        const res = await fetch(url, { signal: abortController.signal });
+        attempted.current = true;
+        if (!res.ok) {
+          setError(`HTTP ${res.status}`);
+          setStatus("unavailable");
+          return;
+        }
+        const contentType = res.headers.get("content-type") ?? "";
+        if (!contentType.includes("application/json")) {
+          setError("Invalid JSON");
+          setStatus("unavailable");
+          return;
+        }
+        const json = await res.json();
+        if (!Array.isArray(json)) {
+          setError("Invalid response shape: expected array");
+          setStatus("unavailable");
+          return;
+        }
+        setData(json as MetricsJSON[]);
+        setError(null);
+        setStatus("connected");
+      } catch (err) {
+        if (abortController.signal.aborted) return;
+        attempted.current = true;
+        const msg = err instanceof Error ? err.message : String(err);
+        setError(msg);
+        setStatus("unavailable");
+      }
+    };
+
+    void poll();
+    const id = setInterval(() => void poll(), interval);
+    return () => {
+      attempted.current = false;
+      abortController.abort();
+      clearInterval(id);
+    };
+  }, [port, enabled, interval]);
+
+  return { status, data, error };
+}
+```
 
 `packages/dashboard/src/hooks/use-dashboard-status.ts`:
 
@@ -1042,7 +1153,8 @@ import type { DashboardIndexStatusResult } from "../types/dashboard-index-status
 export type DashboardStatusConnectionState = "waiting" | "unavailable" | "connected";
 
 export interface UseDashboardStatusOptions {
-  port?: number;
+  port?: number | null;
+  enabled?: boolean;
   interval?: number;
 }
 
@@ -1054,60 +1166,67 @@ export interface UseDashboardStatusResult {
 }
 
 export function useDashboardStatus(options: UseDashboardStatusOptions = {}): UseDashboardStatusResult {
-  const { port = 9464, interval = 10_000 } = options;
+  const { port = null, enabled = false, interval = 10_000 } = options;
   const [status, setStatus] = useState<DashboardStatusConnectionState>("waiting");
   const [snapshot, setSnapshot] = useState<DashboardIndexStatusResult | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [lastUpdatedAt, setLastUpdatedAt] = useState<number | null>(null);
-  const hadConnection = useRef(false);
+  const attempted = useRef(false);
 
   useEffect(() => {
-    hadConnection.current = false;
     setStatus("waiting");
+    setSnapshot(null);
+    setError(null);
+    setLastUpdatedAt(null);
+    attempted.current = false;
+    if (!enabled || port === null) {
+      return;
+    }
     const abortController = new AbortController();
     const url = `http://127.0.0.1:${port}/status`;
 
     const poll = async () => {
       try {
         const res = await fetch(url, { signal: abortController.signal });
+        attempted.current = true;
         if (!res.ok) {
           setError(`HTTP ${res.status}`);
-          setStatus(hadConnection.current ? "unavailable" : "waiting");
+          setStatus("unavailable");
           return;
         }
         const contentType = res.headers.get("content-type") ?? "";
         if (!contentType.includes("application/json")) {
           setError("Invalid JSON");
-          setStatus(hadConnection.current ? "unavailable" : "waiting");
+          setStatus("unavailable");
           return;
         }
         const json = await res.json();
         if (json?.status !== "ok" || !json.snapshot) {
           setError(json?.error ?? "Invalid status response");
-          setStatus(hadConnection.current ? "unavailable" : "waiting");
+          setStatus("unavailable");
           return;
         }
         setSnapshot(json.snapshot as DashboardIndexStatusResult);
         setError(null);
         setStatus("connected");
         setLastUpdatedAt(Date.now());
-        hadConnection.current = true;
       } catch (err) {
         if (abortController.signal.aborted) return;
+        attempted.current = true;
         const msg = err instanceof Error ? err.message : String(err);
         setError(msg);
-        setStatus(hadConnection.current ? "unavailable" : "waiting");
+        setStatus("unavailable");
       }
     };
 
     void poll();
     const id = setInterval(() => void poll(), interval);
     return () => {
-      hadConnection.current = false;
+      attempted.current = false;
       abortController.abort();
       clearInterval(id);
     };
-  }, [port, interval]);
+  }, [port, enabled, interval]);
 
   return { status, snapshot, error, lastUpdatedAt };
 }
@@ -1115,10 +1234,8 @@ export function useDashboardStatus(options: UseDashboardStatusOptions = {}): Use
 
 - [ ] **Step 5: Implement `useDashboardEndpointDiscovery`**
 
-`packages/dashboard/src/hooks/use-dashboard-endpoint-discovery.ts`:
-
 ```ts
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useCallback } from "react";
 import * as fsPromises from "node:fs/promises";
 import * as path from "node:path";
 import { useMetrics } from "./use-metrics.js";
@@ -1156,34 +1273,50 @@ async function readMetricsPort(storageDir: string): Promise<number | null> {
   return null;
 }
 
-export function useDashboardEndpointDiscovery(options: UseDashboardEndpointDiscoveryOptions = {}): UseDashboardEndpointDiscoveryResult {
+export function useDashboardEndpointDiscovery(
+  options: UseDashboardEndpointDiscoveryOptions = {},
+): UseDashboardEndpointDiscoveryResult {
   const { fixedPort, storageDir, metricsInterval = 2000, statusInterval = 10_000 } = options;
+  const isDiscovery = fixedPort === undefined;
   const [port, setPort] = useState<number | null>(fixedPort ?? null);
   const [connectionState, setConnectionState] = useState<DashboardConnectionState>("waiting");
   const discoveryRef = useRef<ReturnType<typeof setInterval> | undefined>(undefined);
 
+  const discover = useCallback(async () => {
+    if (!isDiscovery || !storageDir) return;
+    const discovered = await readMetricsPort(storageDir);
+    setPort((prev) => (discovered !== null ? discovered : prev));
+  }, [isDiscovery, storageDir]);
+
   useEffect(() => {
-    if (fixedPort !== undefined) {
-      setPort(fixedPort);
+    if (!isDiscovery) {
+      setPort(fixedPort ?? null);
       return;
     }
     if (!storageDir) {
       setPort(null);
       return;
     }
-    const discover = async () => {
-      const discovered = await readMetricsPort(storageDir);
-      setPort((prev) => (discovered !== null ? discovered : prev));
-    };
     void discover();
     discoveryRef.current = setInterval(discover, 5000);
     return () => {
       if (discoveryRef.current) clearInterval(discoveryRef.current);
     };
-  }, [fixedPort, storageDir]);
+  }, [isDiscovery, fixedPort, storageDir, discover]);
 
-  const metrics = useMetrics({ port: port ?? 9464, interval: metricsInterval });
-  const status = useDashboardStatus({ port: port ?? 9464, interval: statusInterval });
+  const metrics = useMetrics({ port, enabled: port !== null, interval: metricsInterval });
+  const status = useDashboardStatus({ port, enabled: port !== null, interval: statusInterval });
+
+  useEffect(() => {
+    if (!isDiscovery || port === null) return;
+    if (metrics.status === "unavailable" && status.status === "unavailable") {
+      void discover();
+      if (discoveryRef.current) {
+        clearInterval(discoveryRef.current);
+        discoveryRef.current = setInterval(discover, 5000);
+      }
+    }
+  }, [isDiscovery, port, metrics.status, status.status, discover]);
 
   useEffect(() => {
     if (port === null) {
@@ -1194,7 +1327,7 @@ export function useDashboardEndpointDiscovery(options: UseDashboardEndpointDisco
       setConnectionState("waiting");
       return;
     }
-    if (metrics.status !== "connected" && status.status !== "connected") {
+    if (metrics.status === "unavailable" && status.status === "unavailable") {
       setConnectionState("runtime_unavailable");
       return;
     }
@@ -1237,6 +1370,7 @@ git commit -m "feat(dashboard): 型定義とエンドポイント discovery hook
 ### Task 6: Add The Five-Minute Metrics History Ring Buffer
 
 **Files:**
+
 - Create: `packages/dashboard/src/utils/metrics-history.ts`
 - Create: `packages/dashboard/src/hooks/use-metrics-history.ts`
 - Create: `packages/dashboard/src/utils/sparkline.ts`
@@ -1244,8 +1378,9 @@ git commit -m "feat(dashboard): 型定義とエンドポイント discovery hook
 - Test: `packages/dashboard/tests/unit/utils/sparkline.test.ts`
 
 **Interfaces:**
+
 - Consumes: `MetricsJSON[]` from `useMetrics`; metric name + label dimensions as series identity.
-- Produces: `MetricsHistory` class with `ingest(data)`, `getSeries(name, labels?)`, `getDelta(name, labels?, windowMs?)`; `useMetricsHistory({ data, port, windowMs? }): { history: MetricsHistory }`; `renderSparkline(series, width)`.
+- Produces: `MetricsHistory` class with bounded retention, `ingest(data)`, `getSeriesExact(name, labels?)`, `getDeltaExact(name, labels?, windowMs?)`, `sumDeltaMatching(name, partialLabels?, windowMs?)`; `useMetricsHistory({ data, port, windowMs? }): { history: MetricsHistory }`; `renderSparkline(series, width)`.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -1253,7 +1388,7 @@ git commit -m "feat(dashboard): 型定義とエンドポイント discovery hook
 
 ```ts
 import { describe, it, expect } from "vitest";
-import { renderSparkline } from "../../src/utils/sparkline.js";
+import { renderSparkline } from "../../../src/utils/sparkline.js";
 
 describe("renderSparkline", () => {
   it("renders a flat line for an empty series", () => {
@@ -1268,21 +1403,40 @@ describe("renderSparkline", () => {
 });
 ```
 
-`packages/dashboard/tests/unit/hooks/use-metrics-history.test.tsx`:
-
 ```tsx
 import { describe, it, expect } from "vitest";
 import { renderHook } from "@testing-library/react";
-import { useMetricsHistory } from "../../src/hooks/use-metrics-history.js";
-import type { MetricsJSON } from "../../src/hooks/use-metrics.js";
+import { useMetricsHistory } from "../../../src/hooks/use-metrics-history.js";
+import type { MetricsJSON } from "../../../src/hooks/use-metrics.js";
 
 describe("useMetricsHistory", () => {
-  it("keeps the last N samples for a metric", () => {
-    const data: MetricsJSON[] = [{ name: "nexus_event_queue_dropped_total", values: [{ value: 1, labels: { queue_id: "q1" } }] }];
+  it("keeps per-label series inside a bounded window", () => {
+    const data: MetricsJSON[] = [
+      { name: "nexus_event_queue_dropped_total", values: [{ value: 1, labels: { queue_id: "q1" } }] },
+      { name: "nexus_event_queue_dropped_total", values: [{ value: 2, labels: { queue_id: "q2" } }] },
+    ];
     const { result, rerender } = renderHook(({ data }) => useMetricsHistory({ data, windowMs: 5000 }), { initialProps: { data } });
-    expect(result.current.history.getSeries("nexus_event_queue_dropped_total", { queue_id: "q1" })).toHaveLength(1);
+    expect(result.current.history.getSeriesExact("nexus_event_queue_dropped_total", { queue_id: "q1" })).toHaveLength(1);
     rerender({ data });
-    expect(result.current.history.getSeries("nexus_event_queue_dropped_total", { queue_id: "q1" })).toHaveLength(2);
+    expect(result.current.history.getSeriesExact("nexus_event_queue_dropped_total", { queue_id: "q1" })).toHaveLength(2);
+  });
+
+  it("sums deltas across matching labels", () => {
+    const history = renderHook(() => useMetricsHistory({ data: null, windowMs: 5000 })).result.current.history;
+    const t0 = Date.now();
+    history.ingest([
+      { name: "nexus_embedding_requests_total", values: [
+        { value: 10, labels: { provider: "ollama", status: "error" } },
+        { value: 5, labels: { provider: "bedrock", status: "error" } },
+      ] },
+    ], t0);
+    history.ingest([
+      { name: "nexus_embedding_requests_total", values: [
+        { value: 12, labels: { provider: "ollama", status: "error" } },
+        { value: 6, labels: { provider: "bedrock", status: "error" } },
+      ] },
+    ], t0 + 1000);
+    expect(history.sumDeltaMatching("nexus_embedding_requests_total", { status: "error" })).toBe(3);
   });
 });
 ```
@@ -1315,10 +1469,6 @@ export function renderSparkline(series: number[], width = 10): string {
 }
 ```
 
-- [ ] **Step 4: Implement the metrics history helpers**
-
-`packages/dashboard/src/utils/metrics-history.ts`:
-
 ```ts
 import type { MetricsJSON } from "../hooks/use-metrics.js";
 
@@ -1327,7 +1477,11 @@ export interface MetricSample {
   value: number;
 }
 
-function seriesKey(name: string, labels: Record<string, string> | undefined): string {
+export interface MetricsHistoryOptions {
+  windowMs?: number;
+}
+
+function seriesKey(name: string, labels?: Record<string, string>): string {
   const sorted = Object.entries(labels ?? {})
     .sort(([a], [b]) => a.localeCompare(b))
     .map(([k, v]) => `${k}=${v}`)
@@ -1335,40 +1489,122 @@ function seriesKey(name: string, labels: Record<string, string> | undefined): st
   return sorted ? `${name}{${sorted}}` : name;
 }
 
+function matchesPartial(
+  labels: Record<string, string> | undefined,
+  partial: Record<string, string> | undefined,
+): boolean {
+  if (!partial) return true;
+  return Object.entries(partial).every(([k, v]) => labels?.[k] === v);
+}
+
 export class MetricsHistory {
   private readonly series = new Map<string, MetricSample[]>();
+  private readonly windowMs: number;
 
-  ingest(data: MetricsJSON[]): void {
-    const now = Date.now();
+  constructor(options: MetricsHistoryOptions = {}) {
+    this.windowMs = options.windowMs ?? 300_000;
+  }
+
+  ingest(data: MetricsJSON[], now = Date.now()): void {
     for (const family of data) {
       if (!family.values) continue;
       for (const value of family.values) {
-        const key = seriesKey(family.name, value.labels);
+        const name = value.metricName ?? family.name;
+        const key = seriesKey(name, value.labels);
         const samples = this.series.get(key) ?? [];
         samples.push({ timestamp: now, value: value.value });
         this.series.set(key, samples);
       }
     }
+    this.evictOldSamples(now);
   }
 
-  getSeries(name: string, labels?: Record<string, string>): number[] {
+  private evictOldSamples(now: number): void {
+    const cutoff = now - this.windowMs;
+    for (const [key, samples] of this.series) {
+      let baselineIndex = -1;
+      for (let i = 0; i < samples.length; i++) {
+        if (samples[i].timestamp <= cutoff) baselineIndex = i;
+        else break;
+      }
+      const start = baselineIndex > 0 ? baselineIndex : 0;
+      if (start > 0) {
+        const trimmed = samples.slice(start);
+        if (trimmed.length === 0) {
+          this.series.delete(key);
+        } else {
+          this.series.set(key, trimmed);
+        }
+      }
+    }
+  }
+
+  getSeriesExact(name: string, labels?: Record<string, string>): number[] {
     const key = seriesKey(name, labels);
     const samples = this.series.get(key);
     if (!samples) return [];
     return samples.map((s) => s.value);
   }
 
-  getDelta(name: string, labels?: Record<string, string>, windowMs = 300_000): number | null {
+  getDeltaExact(name: string, labels?: Record<string, string>, windowMs?: number): number | null {
     const key = seriesKey(name, labels);
     const samples = this.series.get(key);
     if (!samples || samples.length < 2) return null;
+    return this.computeDelta(samples, windowMs ?? this.windowMs);
+  }
+
+  sumDeltaMatching(name: string, partialLabels?: Record<string, string>, windowMs?: number): number | null {
+    let total: number | null = null;
+    const ms = windowMs ?? this.windowMs;
+    for (const [key, samples] of this.series) {
+      if (!key.startsWith(name)) continue;
+      const labels = this.parseLabels(key, name);
+      if (!matchesPartial(labels, partialLabels)) continue;
+      const delta = this.computeDelta(samples, ms);
+      if (delta !== null) {
+        total = total === null ? delta : total + delta;
+      }
+    }
+    return total;
+  }
+
+  private parseLabels(key: string, name: string): Record<string, string> | undefined {
+    const labelPart = key.slice(name.length);
+    if (!labelPart.startsWith("{") || !labelPart.endsWith("}")) return undefined;
+    const inner = labelPart.slice(1, -1);
+    if (!inner) return undefined;
+    const labels: Record<string, string> = {};
+    for (const pair of inner.split(",")) {
+      const [k, v] = pair.split("=");
+      labels[k] = v;
+    }
+    return labels;
+  }
+
+  private computeDelta(samples: MetricSample[], windowMs: number): number | null {
     const cutoff = Date.now() - windowMs;
-    const windowed = samples.filter((s) => s.timestamp >= cutoff);
-    if (windowed.length < 2) return null;
-    const first = windowed[0].value;
-    const last = windowed[windowed.length - 1].value;
-    if (last < first) return null;
-    return last - first;
+    let baselineIndex = -1;
+    for (let i = 0; i < samples.length; i++) {
+      if (samples[i].timestamp <= cutoff) baselineIndex = i;
+      else break;
+    }
+    let total = 0;
+    let hasDelta = false;
+    let prev = baselineIndex >= 0 ? samples[baselineIndex] : null;
+    for (let i = Math.max(0, baselineIndex + 1); i < samples.length; i++) {
+      const curr = samples[i];
+      if (prev === null) {
+        prev = curr;
+        continue;
+      }
+      if (curr.value >= prev.value) {
+        total += curr.value - prev.value;
+        hasDelta = true;
+      }
+      // Reset: start a fresh baseline at curr; do not count the drop as a delta.
+      prev = curr;
+    }
+    return hasDelta ? total : null;
   }
 
   clear(): void {
@@ -1376,10 +1612,6 @@ export class MetricsHistory {
   }
 }
 ```
-
-- [ ] **Step 5: Implement `useMetricsHistory`**
-
-`packages/dashboard/src/hooks/use-metrics-history.ts`:
 
 ```ts
 import { useState, useEffect } from "react";
@@ -1397,7 +1629,7 @@ export interface UseMetricsHistoryResult {
 }
 
 export function useMetricsHistory({ data, port, windowMs = 300_000 }: UseMetricsHistoryOptions): UseMetricsHistoryResult {
-  const [history] = useState(() => new MetricsHistory());
+  const [history] = useState(() => new MetricsHistory({ windowMs }));
 
   useEffect(() => {
     history.clear();
@@ -1437,6 +1669,7 @@ git commit -m "feat(dashboard): 5分間メトリクス履歴リングバッフ�
 ### Task 7: Add ValueState, Readiness, And Attention Utilities
 
 **Files:**
+
 - Create: `packages/dashboard/src/utils/value-state.ts`
 - Create: `packages/dashboard/src/utils/readiness.ts`
 - Create: `packages/dashboard/src/utils/attention.ts`
@@ -1445,8 +1678,9 @@ git commit -m "feat(dashboard): 5分間メトリクス履歴リングバッフ�
 - Test: `packages/dashboard/tests/unit/utils/attention.test.ts`
 
 **Interfaces:**
+
 - Consumes: `DashboardIndexStatusResult` mirror; `MetricsHistory`; `DashboardConnectionState`.
-- Produces: `ValueState<T>` helpers; `deriveMainReadiness(snapshot)`, `deriveStructuredReadiness(structuredIndex)`; `deriveAttention({ snapshot, connectionState, metrics, history })` returning `AttentionItem[]`.
+- Produces: `ValueState<T>` helpers; `deriveMainReadiness(snapshot)`, `deriveStructuredReadiness(structuredIndex)`; `deriveAttention({ snapshot, connectionState, metrics, history })` returning a discriminated `AttentionItem` union with `fieldPath`, `endpointUrl`, or `metricSeries` provenance.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -1454,7 +1688,7 @@ git commit -m "feat(dashboard): 5分間メトリクス履歴リングバッフ�
 
 ```ts
 import { describe, it, expect } from "vitest";
-import { valueFromMetric } from "../../src/utils/value-state.js";
+import { valueFromMetric } from "../../../src/utils/value-state.js";
 
 describe("valueFromMetric", () => {
   it("returns unavailable when metric is absent", () => {
@@ -1468,8 +1702,8 @@ describe("valueFromMetric", () => {
 
 ```ts
 import { describe, it, expect } from "vitest";
-import { deriveMainReadiness } from "../../src/utils/readiness.js";
-import type { DashboardIndexStatusResult } from "../../src/types/dashboard-index-status.js";
+import { deriveMainReadiness } from "../../../src/utils/readiness.js";
+import type { DashboardIndexStatusResult } from "../../../src/types/dashboard-index-status.js";
 
 describe("deriveMainReadiness", () => {
   it("returns Ready when lastIndexedAt is present and no errors", () => {
@@ -1483,9 +1717,9 @@ describe("deriveMainReadiness", () => {
 
 ```ts
 import { describe, it, expect } from "vitest";
-import { deriveAttention } from "../../src/utils/attention.js";
-import type { DashboardIndexStatusResult } from "../../src/types/dashboard-index-status.js";
-import { MetricsHistory } from "../../src/utils/metrics-history.js";
+import { deriveAttention } from "../../../src/utils/attention.js";
+import type { DashboardIndexStatusResult } from "../../../src/types/dashboard-index-status.js";
+import { MetricsHistory } from "../../../src/utils/metrics-history.js";
 
 describe("deriveAttention", () => {
   it("reports index build failed from canonical snapshot", () => {
@@ -1563,6 +1797,12 @@ export type StructuredReadiness = "Ready" | "Indexing" | "Failed" | "Reindex req
 
 export function deriveMainReadiness(snapshot: DashboardIndexStatusResult | null): MainReadiness {
   if (!snapshot) return "Unavailable";
+  if (snapshot.indexStats?.lastError != null || snapshot.pipelineProgress.lastError != null) return "Failed";
+  if (snapshot.pipelineProgress.status === "running") return "Indexing";
+  if (snapshot.indexStats?.lastIndexedAt != null) return "Ready";
+  return "Not ready";
+}
+  if (!snapshot) return "Unavailable";
   if (snapshot.indexStats.lastError != null || snapshot.pipelineProgress.lastError != null) return "Failed";
   if (snapshot.pipelineProgress.status === "running") return "Indexing";
   if (snapshot.indexStats.lastIndexedAt != null) return "Ready";
@@ -1584,23 +1824,22 @@ export function deriveStructuredReadiness(structuredIndex: DashboardIndexStatusR
 
 - [ ] **Step 5: Implement Attention derivation**
 
-`packages/dashboard/src/utils/attention.ts`:
-
 ```ts
 import type { DashboardIndexStatusResult } from "../types/dashboard-index-status.js";
 import type { DashboardConnectionState } from "../hooks/use-dashboard-endpoint-discovery.js";
+import type { MetricsJSON } from "../hooks/use-metrics.js";
 import { MetricsHistory } from "./metrics-history.js";
+import { valueFromMetric } from "./value-state.js";
 
-export interface AttentionItem {
-  source: "canonical" | "connectivity" | "telemetry";
-  reason: string;
-  detail?: string;
-}
+export type AttentionItem =
+  | { source: "canonical"; reason: string; fieldPath: string; detail?: string }
+  | { source: "connectivity"; reason: string; endpointUrl: string | null; detail?: string }
+  | { source: "telemetry"; reason: string; metricSeries: string; detail?: string };
 
 export interface DeriveAttentionInput {
   snapshot: DashboardIndexStatusResult | null;
   connectionState: DashboardConnectionState;
-  metrics: import("../hooks/use-metrics.js").MetricsJSON[] | null;
+  metrics: MetricsJSON[] | null;
   history: MetricsHistory;
 }
 
@@ -1608,39 +1847,47 @@ export function deriveAttention({ snapshot, connectionState, metrics, history }:
   const items: AttentionItem[] = [];
 
   if (connectionState === "runtime_unavailable") {
-    items.push({ source: "connectivity", reason: "Runtime unavailable", detail: "metrics.port not found or both endpoints unreachable" });
+    items.push({ source: "connectivity", reason: "Runtime unavailable", endpointUrl: null, detail: "metrics.port not found or both endpoints unreachable" });
   } else if (connectionState === "metrics_unavailable") {
-    items.push({ source: "connectivity", reason: "Metrics unavailable", detail: "/metrics/json unreachable" });
+    items.push({ source: "connectivity", reason: "Metrics unavailable", endpointUrl: "/metrics/json", detail: "unreachable" });
   } else if (connectionState === "status_unavailable") {
-    items.push({ source: "connectivity", reason: "Status unavailable", detail: "/status unreachable" });
+    items.push({ source: "connectivity", reason: "Status unavailable", endpointUrl: "/status", detail: "unreachable" });
   }
 
-  if (!snapshot) return items;
-
-  if (snapshot.indexStats.lastError != null) {
-    items.push({ source: "canonical", reason: "Index build failed", detail: "indexStats.lastError" });
-  }
-  if (snapshot.pipelineProgress.lastError != null) {
-    items.push({ source: "canonical", reason: "Indexing pipeline failed", detail: "pipelineProgress.lastError" });
-  }
-  if (snapshot.structuredIndex?.status === "failed") {
-    items.push({ source: "canonical", reason: "Structured index build failed", detail: "structuredIndex.status" });
-  }
-  if (snapshot.structuredIndex?.reindexRequired) {
-    items.push({ source: "canonical", reason: "Structured index requires rebuild", detail: "structuredIndex.reindexRequired" });
-  }
-  if (snapshot.providerStatus.health === "unhealthy") {
-    items.push({ source: "canonical", reason: "Embedding provider unhealthy", detail: snapshot.providerStatus.lastError ?? "providerStatus.health" });
+  if (snapshot) {
+    if (snapshot.indexStats?.lastError != null) {
+      items.push({ source: "canonical", reason: "Index build failed", fieldPath: "indexStats.lastError", detail: snapshot.indexStats.lastError });
+    }
+    if (snapshot.pipelineProgress.lastError != null) {
+      items.push({ source: "canonical", reason: "Indexing pipeline failed", fieldPath: "pipelineProgress.lastError", detail: snapshot.pipelineProgress.lastError });
+    }
+    if (snapshot.structuredIndex?.status === "failed") {
+      items.push({ source: "canonical", reason: "Structured index build failed", fieldPath: "structuredIndex.status" });
+    }
+    if (snapshot.structuredIndex?.reindexRequired) {
+      items.push({ source: "canonical", reason: "Structured index requires rebuild", fieldPath: "structuredIndex.reindexRequired" });
+    }
+    if (snapshot.providerStatus.health === "unhealthy") {
+      items.push({ source: "canonical", reason: "Embedding provider unhealthy", fieldPath: "providerStatus.health", detail: snapshot.providerStatus.lastError ?? undefined });
+    }
   }
 
   if (metrics) {
-    const droppedDelta = history.getDelta("nexus_event_queue_dropped_total", undefined, 300_000) ?? 0;
-    if (droppedDelta > 0) {
-      items.push({ source: "telemetry", reason: "Dropped events observed", detail: "nexus_event_queue_dropped_total window delta > 0" });
+    const overflow = valueFromMetric("nexus_event_queue_state", metrics, "state", "overflow");
+    if (overflow.kind === "available" && overflow.value === 1) {
+      items.push({ source: "telemetry", reason: "Queue overflow", metricSeries: "nexus_event_queue_state{state=\"overflow\"}" });
     }
-    const embeddingErrorDelta = history.getDelta("nexus_embedding_requests_total", { status: "error" }, 300_000) ?? 0;
-    if (embeddingErrorDelta > 0) {
-      items.push({ source: "telemetry", reason: "Embedding errors observed in the recent window", detail: "nexus_embedding_requests_total{status='error'} window delta > 0" });
+    const dlq = valueFromMetric("nexus_dlq_size", metrics);
+    if (dlq.kind === "available" && dlq.value > 0) {
+      items.push({ source: "telemetry", reason: "DLQ entries detected", metricSeries: "nexus_dlq_size", detail: String(dlq.value) });
+    }
+    const droppedDelta = history.sumDeltaMatching("nexus_event_queue_dropped_total", undefined, 300_000);
+    if (droppedDelta !== null && droppedDelta > 0) {
+      items.push({ source: "telemetry", reason: "Dropped events observed", metricSeries: "nexus_event_queue_dropped_total", detail: "window delta > 0" });
+    }
+    const embeddingErrorDelta = history.sumDeltaMatching("nexus_embedding_requests_total", { status: "error" }, 300_000);
+    if (embeddingErrorDelta !== null && embeddingErrorDelta > 0) {
+      items.push({ source: "telemetry", reason: "Embedding errors observed in the recent window", metricSeries: "nexus_embedding_requests_total{status=\"error\"}", detail: "window delta > 0" });
     }
   }
 
@@ -1672,6 +1919,7 @@ git commit -m "feat(dashboard): ValueState、Readiness、Attention 導出ユー�
 ### Task 8: Implement Ink Views, Navigation, And Narrow-Terminal Layout
 
 **Files:**
+
 - Create: `packages/dashboard/src/components/navigation.tsx`
 - Create: `packages/dashboard/src/components/attention-panel.tsx`
 - Create: `packages/dashboard/src/components/overview-view.tsx`
@@ -1688,6 +1936,7 @@ git commit -m "feat(dashboard): ValueState、Readiness、Attention 導出ユー�
 - Test: `packages/dashboard/tests/unit/overview-view.test.tsx`
 
 **Interfaces:**
+
 - Consumes: `useDashboardEndpointDiscovery` result, `MetricsHistory`, `deriveAttention`, `deriveMainReadiness`, `deriveStructuredReadiness`, `ValueState` helpers.
 - Produces: Rendered TUI with five views, digit/Tab/arrow navigation, `q` exit, and narrow-terminal degradation.
 
@@ -1712,8 +1961,6 @@ describe("Navigation", () => {
 });
 ```
 
-`packages/dashboard/tests/unit/overview-view.test.tsx`:
-
 ```tsx
 import { describe, it, expect } from "vitest";
 import { render, cleanup } from "@testing-library/react";
@@ -1731,6 +1978,7 @@ describe("OverviewView", () => {
         snapshot={null}
         metrics={null}
         history={new MetricsHistory()}
+        layout={{ showSparklines: true, showSupplemental: true, showSecondary: true, showDecorations: true, showProviderPanel: true, showQueuePanel: true }}
       />,
     );
     expect(container.textContent).toContain("Waiting");
@@ -1777,15 +2025,29 @@ export const Navigation: React.FC<NavigationProps> = ({ activeIndex }) => {
 };
 ```
 
-- [ ] **Step 4: Implement view stubs**
+- [ ] **Step 4: Implement the views and compact panels**
 
-Create `packages/dashboard/src/components/attention-panel.tsx`, `packages/dashboard/src/components/compact-index-panel.tsx`, `packages/dashboard/src/components/compact-retrieval-panel.tsx`, `packages/dashboard/src/components/compact-provider-panel.tsx`, and `packages/dashboard/src/components/compact-queue-panel.tsx`. Each renders a minimal Ink `Box`/`Text` with read-only content.
+Implement `AttentionPanel`, the four compact panels, and the five main views as deterministic, read-only components. None of them are stubs.
+
+`AttentionPanel` accepts `items: AttentionItem[]` and renders each item with `source`, `reason`, and provenance field (`fieldPath`, `endpointUrl`, or `metricSeries`). Critical items use `red`, warning items use `yellow`, and an empty list renders `<Text dimColor>No issues</Text>`.
+
+Compact panels accept the same `LayoutPolicy` as the views and omit sparklines or supplemental values when the corresponding flag is `false`.
+
+`OverviewView` props include `connectionState`, `snapshot`, `metrics`, `history`, and `layout`. It renders `AttentionPanel`, then a row of compact panels guarded by `layout.showProviderPanel` and `layout.showQueuePanel`.
+
+`IndexView` props: `{ snapshot: DashboardIndexStatusResult | null; }`. Render Main/Vector readiness, `indexStats` counts, `lastIndexedAt`, `lastError`, pipeline progress, skipped files, and structured index details. Handle `indexStats === null` as `Not ready`, not as numeric zero.
+
+`RetrievalView` props: `{ metrics: MetricsJSON[] | null; history: MetricsHistory; layout: LayoutPolicy; }`. Render `grep`/`semantic`/`hybrid`/`structured` rows with calls, errors, average latency, hits, and sparklines guarded by `layout.showSparklines`.
+
+`ProviderView` props: `{ snapshot: DashboardIndexStatusResult | null; history: MetricsHistory; layout: LayoutPolicy; }`. Render provider name, runtime-known health, last error, request/error delta, latency, batch size, and sparklines guarded by `layout.showSparklines`.
+
+`DiagnosticsView` props: `{ connectionState; metrics: UseMetricsResult; status: UseDashboardStatusResult; attentionInput: DeriveAttentionInput; layout: LayoutPolicy; }`. Render connection state, both endpoint URLs, last fetch errors with timestamps, the Attention list with provenance, `providerStatus.lastError`, `indexStats?.lastError`, `pipelineProgress.lastError`, and the stale snapshot timestamp when status is unavailable.
 
 `packages/dashboard/src/components/overview-view.tsx`:
 
 ```tsx
 import React from "react";
-import { Box, Text } from "ink";
+import { Box } from "ink";
 import type { DashboardIndexStatusResult } from "../types/dashboard-index-status.js";
 import type { DashboardConnectionState } from "../hooks/use-dashboard-endpoint-discovery.js";
 import type { MetricsJSON } from "../hooks/use-metrics.js";
@@ -1797,30 +2059,40 @@ import { CompactRetrievalPanel } from "./compact-retrieval-panel.js";
 import { CompactProviderPanel } from "./compact-provider-panel.js";
 import { CompactQueuePanel } from "./compact-queue-panel.js";
 
+export interface LayoutPolicy {
+  showSparklines: boolean;
+  showSupplemental: boolean;
+  showSecondary: boolean;
+  showDecorations: boolean;
+  showProviderPanel: boolean;
+  showQueuePanel: boolean;
+}
+
 export interface OverviewViewProps {
   connectionState: DashboardConnectionState;
   snapshot: DashboardIndexStatusResult | null;
   metrics: MetricsJSON[] | null;
   history: MetricsHistory;
+  layout: LayoutPolicy;
 }
 
-export const OverviewView: React.FC<OverviewViewProps> = ({ connectionState, snapshot, metrics, history }) => {
+export const OverviewView: React.FC<OverviewViewProps> = ({ connectionState, snapshot, metrics, history, layout }) => {
   const attention = deriveAttention({ snapshot, connectionState, metrics, history });
   return (
     <Box flexDirection="column">
       <AttentionPanel items={attention} />
       <Box flexDirection="row" flexWrap="wrap">
-        <CompactIndexPanel snapshot={snapshot} />
-        <CompactRetrievalPanel metrics={metrics} history={history} />
-        <CompactProviderPanel snapshot={snapshot} />
-        <CompactQueuePanel metrics={metrics} />
+        <CompactIndexPanel snapshot={snapshot} layout={layout} />
+        <CompactRetrievalPanel metrics={metrics} history={history} layout={layout} />
+        {layout.showProviderPanel && <CompactProviderPanel snapshot={snapshot} layout={layout} />}
+        {layout.showQueuePanel && <CompactQueuePanel metrics={metrics} layout={layout} />}
       </Box>
     </Box>
   );
 };
 ```
 
-Create `index-view.tsx`, `retrieval-view.tsx`, `provider-view.tsx`, and `diagnostics-view.tsx` with matching props and read-only rendering of the snapshot, metrics, and history.
+Create the remaining view files with the contracts above and matching TypeScript props. Each must handle `snapshot === null` and missing metrics without rendering numeric zero for absent data.
 
 - [ ] **Step 5: Implement `app.tsx` with navigation and narrow-terminal handling**
 
@@ -1828,9 +2100,10 @@ Create `index-view.tsx`, `retrieval-view.tsx`, `provider-view.tsx`, and `diagnos
 
 ```tsx
 import React, { useState } from "react";
-import { Box, useApp, useInput, useStdout } from "ink";
+import { Box, Text, useApp, useInput, useStdout } from "ink";
 import { useDashboardEndpointDiscovery } from "./hooks/use-dashboard-endpoint-discovery.js";
 import { useMetricsHistory } from "./hooks/use-metrics-history.js";
+import type { LayoutPolicy } from "./components/overview-view.js";
 import { Navigation } from "./components/navigation.js";
 import { OverviewView } from "./components/overview-view.js";
 import { IndexView } from "./components/index-view.js";
@@ -1876,17 +2149,23 @@ export const App: React.FC<AppProps> = ({
     if (key.tab || key.rightArrow) { setActiveView((i) => (i + 1) % 5); return; }
     if (key.leftArrow) { setActiveView((i) => (i + 4) % 5); return; }
   });
+
   const width = stdout?.columns ?? 80;
-  const showSparklines = width >= 80;
-  const showSupplemental = width >= 70;
-  const showSecondary = width >= 60;
+  const layout: LayoutPolicy = {
+    showSparklines: width >= 80,
+    showSupplemental: width >= 70,
+    showSecondary: width >= 60,
+    showDecorations: width >= 50,
+    showProviderPanel: width >= 40,
+    showQueuePanel: width >= 30,
+  };
 
   const views = [
-    <OverviewView connectionState={connectionState} snapshot={status.snapshot} metrics={metrics.data} history={history} />,
+    <OverviewView connectionState={connectionState} snapshot={status.snapshot} metrics={metrics.data} history={history} layout={layout} />,
     <IndexView snapshot={status.snapshot} />,
-    <RetrievalView metrics={metrics.data} history={history} showSparklines={showSparklines} showSupplemental={showSupplemental} />,
-    <ProviderView snapshot={status.snapshot} history={history} showSparklines={showSparklines} />,
-    <DiagnosticsView connectionState={connectionState} metrics={metrics} status={status} attentionInput={{ snapshot: status.snapshot, connectionState, metrics: metrics.data, history }} />,
+    <RetrievalView metrics={metrics.data} history={history} layout={layout} />,
+    <ProviderView snapshot={status.snapshot} history={history} layout={layout} />,
+    <DiagnosticsView connectionState={connectionState} metrics={metrics} status={status} attentionInput={{ snapshot: status.snapshot, connectionState, metrics: metrics.data, history }} layout={layout} />,
   ];
 
   return (
@@ -1942,6 +2221,7 @@ git commit -m "feat(dashboard): 5ビュー、ナビゲーション、狭幅レ�
 ### Task 9: Remove Old Panels, Add Integration Tests, And Run Verification Gate
 
 **Files:**
+
 - Delete: `packages/dashboard/src/components/queue-panel.tsx`
 - Delete: `packages/dashboard/src/components/throughput-panel.tsx`
 - Delete: `packages/dashboard/src/components/dlq-panel.tsx`
@@ -1951,6 +2231,7 @@ git commit -m "feat(dashboard): 5ビュー、ナビゲーション、狭幅レ�
 - Modify: `packages/dashboard/tests/integration/cli.test.ts`
 
 **Interfaces:**
+
 - No new interfaces; removal and integration coverage only.
 
 - [ ] **Step 1: Delete obsolete components**
@@ -1969,12 +2250,56 @@ Remove any helpers in `packages/dashboard/src/utils/metrics.ts` that are no long
 
 ```ts
 import { describe, it, expect } from "vitest";
-
+import { spawn } from "node:child_process";
 describe("nexus dashboard integration", () => {
   it("starts and shows Runtime unavailable when the server is not running", async () => {
-    // Spawn the dashboard CLI against a fresh temp project with no server.
-    // Assert the output contains "Runtime unavailable" and the process exits on 'q'.
-    expect(true).toBe(true);
+    const projectRoot = await makeTempProject(); // helper that creates an empty dir
+    const proc = spawn("node", [path.resolve("dist/dashboard/cli.js"), "--project-root", projectRoot], {
+      cwd: process.cwd(),
+      env: { ...process.env, FORCE_COLOR: "0" },
+    });
+
+    let output = "";
+    proc.stdout.on("data", (chunk) => { output += chunk.toString(); });
+    proc.stderr.on("data", (chunk) => { output += chunk.toString(); });
+
+    await waitForOutput(output, "Runtime unavailable", 5000);
+    proc.stdin.write("q");
+    proc.stdin.end();
+
+    const exitCode = await new Promise<number>((resolve) => proc.on("close", resolve));
+    expect(output).toContain("Runtime unavailable");
+    expect(exitCode).toBe(0);
+    await cleanupTempProject(projectRoot);
+  });
+
+  it("reconnects after the runtime restarts on a changed port", async () => {
+    const projectRoot = await makeTempProject();
+    // Start server on an ephemeral port, then stop it.
+    const firstServer = await startNexusServer(projectRoot);
+    const firstPort = firstServer.metricsPort;
+    await firstServer.close();
+
+    // Start dashboard in discovery mode.
+    const proc = spawn("node", [path.resolve("dist/dashboard/cli.js"), "--project-root", projectRoot]);
+    let output = "";
+    proc.stdout.on("data", (chunk) => { output += chunk.toString(); });
+    proc.stderr.on("data", (chunk) => { output += chunk.toString(); });
+
+    await waitForOutput(output, "Runtime unavailable", 5000);
+
+    // Restart server on a different port.
+    const secondServer = await startNexusServer(projectRoot, { preferredPort: firstPort + 1 });
+    await waitForOutput(output, "connected", 15000);
+
+    proc.stdin.write("q");
+    proc.stdin.end();
+    const exitCode = await new Promise<number>((resolve) => proc.on("close", resolve));
+    expect(output).toContain("connected");
+    expect(exitCode).toBe(0);
+
+    await secondServer.close();
+    await cleanupTempProject(projectRoot);
   });
 });
 ```
@@ -1994,13 +2319,38 @@ npm run build
 npm run test:e2e
 ```
 
-- [ ] **Step 5: Run the dashboard-specific lint check**
+- [ ] **Step 5: Configure dashboard ESLint coverage**
+
+Root `npm run lint` and `npx tsc --noEmit` do not cover Dashboard TSX. Add a dashboard-specific block to `eslint.config.mjs` **before** implementation.
+
+```js
+  {
+    // Root source and tests
+    files: ['src/**/*.ts', 'tests/**/*.ts'],
+    ...
+  },
+  {
+    // Dashboard package
+    files: ['packages/dashboard/src/**/*.{ts,tsx}'],
+    languageOptions: {
+      parserOptions: {
+        project: './packages/dashboard/tsconfig.json',
+        tsconfigRootDir: import.meta.dirname,
+      },
+    },
+    rules: {
+      '@typescript-eslint/consistent-type-imports': 'error',
+    },
+  },
+```
+
+Then run the dashboard-only lint command during verification:
 
 ```bash
 npx eslint packages/dashboard/src --ext .ts,.tsx
 ```
 
-Expected: PASS. Note that root `npm run lint` and `npx tsc --noEmit` do not cover Dashboard TSX; the commands above are mandatory.
+Expected: PASS. This command is mandatory because root lint excludes dashboard files.
 
 - [ ] **Step 6: Commit**
 
@@ -2016,7 +2366,7 @@ git commit -m "refactor(dashboard): 旧パネルを削除し統合テストを�
 **Spec coverage check:**
 
 | Spec requirement | Task that implements it |
-|---|---|
+| --- | --- |
 | Side-effect-free status boundary, provider tri-state, shared non-provider fields | Tasks 1, 2, 3, 4 |
 | `/status` is GET-only on loopback metrics port and never probes | Task 4 |
 | Startup, rediscovery, changed-port reconnection, explicit port | Task 5 |
@@ -2029,6 +2379,7 @@ git commit -m "refactor(dashboard): 旧パネルを削除し統合テストを�
 **Placeholder scan:** No TBD, TODO, fill-in-details, "write tests for the above", or "similar to Task X" patterns remain.
 
 **Type consistency:**
+
 - `buildSharedIndexStatus()` returns `Promise<SharedIndexStatus>` everywhere.
 - `buildDashboardIndexStatusSnapshot()` returns `Promise<DashboardIndexStatusResult>` everywhere.
 - `DashboardIndexStatusResult` omits `pluginHealth` and adds `providerStatus`.
