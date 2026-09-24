@@ -77,14 +77,22 @@ Connection states are `runtime_unavailable`, `metrics_unavailable`, `status_unav
 
 ### Polling Hook State Contract
 
-Each HTTP polling hook accepts `port: number | null` plus an `enabled` boolean
-derived from `port !== null`. When disabled the hook emits `waiting` and never
-issues a request, so `port = null` never falls back to `9464` or any other port.
-The hook state machine has three observable states: `waiting` for the initial
-pending request, `unavailable` once a request has been attempted and failed,
-and `connected` after a valid response. `unavailable` is emitted after the first
-failed retry so that a discovered port whose runtime is dead can transition to
-`runtime_unavailable` instead of staying in `waiting` forever.
+Each HTTP polling hook accepts `port: number | null` plus an `enabled` boolean derived from `port !== null`. When disabled the hook emits `waiting` and never issues a request, so `port = null` never falls back to `9464` or any other port.
+
+The hook result for a route is represented by a uniform `PollResult<T>` discriminated model:
+
+```ts
+interface PollResult<T> {
+  status: "waiting" | "unavailable" | "connected";
+  current: T | null;
+  stale: T | null;
+  error: string | null;
+  lastSuccessAt: number | null;
+  lastErrorAt: number | null;
+}
+```
+
+`current` holds the most recent successful response for this route and is `null` after a poll failure or when no request has succeeded. `stale` holds the previous `current` value at the moment the route transitions to `unavailable`; it is cleared on port change or when the route recovers to `connected`. `lastSuccessAt` and `lastErrorAt` are Unix millisecond timestamps for the latest successful and the latest failed fetch respectively. `waiting` is the initial pending state; `unavailable` is emitted after the first failed retry so a discovered port whose runtime is dead can transition to `runtime_unavailable` instead of staying in `waiting` forever. Views render `current` only; Diagnostics renders `current` plus explicitly labeled `stale` values with their last-success timestamp.
 
 ## Views And Narrow Terminal Behavior
 
@@ -201,15 +209,12 @@ No additional new source-file paths are prescribed here. Under the single-file e
 - [ ] Missing metrics are not zero; readiness, histogram labels, counter baselines and resets are defined.
 - [ ] RED tests cover side effects, absent/restarted runtime, missing metrics, and narrow width.
 - [ ] Dashboard-specific verification complements root checks; the implementation plan is reconciled before implementation.
-
-## Design → Requirement Traceability
-
-| Issue #321 / Design requirement | Plan task / test that covers it |
+| Review Finding | Plan task / test that covers it |
 | --- | --- |
 | RG-001: side-effect-free status boundary, provider tri-state, MCP compatibility | Replace plan Tasks 1–3 active-probe snapshot design with shared non-provider collector, `buildDashboardIndexStatusSnapshot`, registry known-state cache and endpoint RED no-probe/Bedrock tests. |
-| RG-002: endpoint discovery, port-null disabling, rediscovery, changed-port reconnection, explicit port | Update plan CLI and status-hook tasks; hook state contract with `waiting`/`unavailable`/`connected`; CLI fake-clock startup/restart/new-port and fixed-port integration tests. |
-| RG-003: labeled five-minute telemetry, bounded history, histogram components, counter reset, baseline | Update plan metrics-history task; per-label `_sum`/`_count`/`_bucket`, partial-label aggregation, baseline/reset and window-delta unit tests. |
-| RG-004: unavailable data, canonical readiness, diagnostics, Attention provenance | Update plan presentation/diagnostics tasks; nullable `indexStats`, `ValueState` model, readiness precedence, discriminated Attention provenance, and stale-state component tests. |
-| RG-005: concrete Attention items, telemetry independence, queue overflow, DLQ, embedding errors | Update plan Attention task; canonical/connectivity/telemetry provenance, queue-overflow and DLQ rules, and five-minute embedding-error delta tests. |
+| RG-002: endpoint discovery, port-null disabling, rediscovery, changed-port reconnection, explicit port, current/stale route state | Update plan CLI and status-hook tasks; hook state contract with `waiting`/`unavailable`/`connected`; `current`/`stale` separation and `lastSuccessAt`/`lastErrorAt` timestamps; CLI fake-clock startup/restart/new-port and fixed-port integration tests. |
+| RG-003: labeled five-minute telemetry, bounded history, histogram components, counter reset, baseline, gap handling, histogram mean | Update plan metrics-history task; per-label `_sum`/`_count`/`_bucket`, `SERIES_DIMENSIONS` ignoring `project`/`pid`, generation tracking for missing polls, partial-label aggregation, baseline/reset, `getHistogramMean`, and window-delta unit tests. |
+| RG-004: unavailable data, canonical readiness, diagnostics, Attention provenance, narrow layout, endpoint URL provenance | Update plan presentation/diagnostics tasks; nullable `indexStats`, `ValueState` model, readiness precedence, discriminated Attention provenance with actual endpoint URLs, Queue-before-Provider layout priority, sparkline-first degradation tests. |
+| RG-005: concrete Attention items, telemetry independence, queue overflow, DLQ, embedding errors | Update plan Attention task; canonical/connectivity/telemetry provenance, queue-overflow and DLQ rules, five-minute embedding-error delta tests. |
 | RG-006: navigation and narrow terminal | Update plan view/navigation tasks; Ink keyboard and resize component tests verify digit keys, arrows, ignored `h`/`l`, and sparkline-first degradation. |
-| RG-007: complete verification and review scope | Update plan verification gate with dashboard-specific type check, build, lint config and tests; verify both documentation artifacts are reconciled before future coding and this review changes no source files. |
+| RG-007: complete verification and review scope | Update plan verification gate with dashboard-specific type check, build, lint config (Task 5a before first dashboard lint), tests; verify both documentation artifacts are reconciled before future coding and this review changes no source files. |
