@@ -46,6 +46,40 @@
 | `packages/dashboard/src/utils/metrics-history.ts` | New. Pure `MetricsHistory` class with per-label series, histogram components, baselines, reset handling, and `observePoll` generation gaps. |
 | `eslint.config.mjs` | Modify. Dashboard-specific lint block before first dashboard lint. |
 | `packages/dashboard/tests/integration/helpers.ts` | New. ESM-safe integration test helper for spawning the root Nexus CLI and reading `metrics.port`. |
+| `packages/dashboard/src/components/navigation.tsx` | New. Keyboard navigation. |
+| `packages/dashboard/src/components/attention-panel.tsx` | New. Attention rendering. |
+| `packages/dashboard/src/components/overview-view.tsx` | New. Overview view and `LayoutPolicy` type. |
+| `packages/dashboard/src/components/index-view.tsx` | New. Index view. |
+| `packages/dashboard/src/components/retrieval-view.tsx` | New. Retrieval view. |
+| `packages/dashboard/src/components/provider-view.tsx` | New. Provider view. |
+| `packages/dashboard/src/components/diagnostics-view.tsx` | New. Diagnostics view. |
+| `packages/dashboard/src/components/compact-index-panel.tsx` | New. Compact index panel. |
+| `packages/dashboard/src/components/compact-retrieval-panel.tsx` | New. Compact retrieval panel. |
+| `packages/dashboard/src/components/compact-provider-panel.tsx` | New. Compact provider panel. |
+| `packages/dashboard/src/components/compact-queue-panel.tsx` | New. Compact queue/DLQ panel. |
+| `packages/dashboard/src/app.tsx`, `packages/dashboard/src/cli.ts` | Modify. Wire discovery, polling, history, views, navigation, and CLI startup behavior. |
+| `packages/dashboard/src/components/queue-panel.tsx` | Delete. Superseded queue panel. |
+| `packages/dashboard/src/components/throughput-panel.tsx` | Delete. Superseded throughput panel. |
+| `packages/dashboard/src/components/dlq-panel.tsx` | Delete. Superseded DLQ panel. |
+| `packages/dashboard/src/components/metric-panel.tsx` | Delete. Superseded metric panel. |
+| `packages/dashboard/src/utils/metrics.ts` | Modify; delete if empty. Remove helpers made unused by the new views. |
+| `tests/unit/server/tools/build-shared-index-status.test.ts` | New shared snapshot collector test. |
+| `tests/unit/plugins/registry-health-cache.test.ts` | New provider health cache test. |
+| `tests/unit/server/tools/build-dashboard-index-status-snapshot.test.ts` | New snapshot builder and no-probe regression test. |
+| `tests/unit/observability/dashboard-status-endpoint.test.ts` | New endpoint semantics test. |
+| `packages/dashboard/tests/unit/types/dashboard-index-status.test.ts` | New Dashboard status type test. |
+| `packages/dashboard/tests/unit/use-metrics.test.tsx` | Modify polling contract regression tests. |
+| `packages/dashboard/tests/unit/hooks/use-dashboard-status.test.tsx` | New status polling contract tests. |
+| `packages/dashboard/tests/unit/hooks/use-dashboard-endpoint-discovery.test.tsx` | New discovery and fixed-port tests. |
+| `packages/dashboard/tests/unit/hooks/use-metrics-history.test.tsx` | New bounded history and port-isolation tests. |
+| `packages/dashboard/tests/unit/utils/sparkline.test.ts` | New sparkline tests. |
+| `packages/dashboard/tests/unit/utils/value-state.test.ts` | New missing-metric extraction tests. |
+| `packages/dashboard/tests/unit/utils/readiness.test.ts` | New canonical readiness tests. |
+| `packages/dashboard/tests/unit/utils/attention.test.ts` | New Attention derivation tests. |
+| `packages/dashboard/tests/unit/navigation.test.tsx` | New keyboard navigation tests. |
+| `packages/dashboard/tests/unit/overview-view.test.tsx` | New overview and layout degradation tests. |
+| `packages/dashboard/tests/unit/throughput-panel.test.tsx` | Delete if present; Task 9 records whether it exists before removal. |
+| `packages/dashboard/tests/integration/cli.test.ts` | Modify. Cover no-runtime startup and reconnect after a runtime restart on a changed port. |
 
 ---
 
@@ -459,7 +493,8 @@ GIT_MASTER=1 git commit -m "feat: PluginRegistry にランタイム既知のヘ�
 import { describe, it, expect, vi } from "vitest";
 import { buildDashboardIndexStatusSnapshot } from "../../../../src/server/tools/build-dashboard-index-status-snapshot.js";
 import type { IMetadataStore, IVectorStore, IIndexPipeline } from "../../../../src/types/index.js";
-import type { PluginRegistry } from "../../../../src/plugins/registry.js";
+import { PluginRegistry } from "../../../../src/plugins/registry.js";
+import { BedrockEmbeddingProvider } from "../../../../src/plugins/embeddings/bedrock.js";
 
 describe("buildDashboardIndexStatusSnapshot", () => {
   it("does not call pluginRegistry.healthCheck and returns unknown when no observation exists", async () => {
@@ -472,16 +507,31 @@ describe("buildDashboardIndexStatusSnapshot", () => {
     } as unknown as IMetadataStore;
     const vectorStore = { getStats: vi.fn().mockResolvedValue({ totalChunks: 0, totalFiles: 0, dimensions: 0, fragmentationRatio: 0 }) } as unknown as IVectorStore;
     const pipeline = { getProgress: vi.fn().mockReturnValue({ totalFiles: 0, processedFiles: 0, status: "idle" }) } as unknown as IIndexPipeline;
-    const pluginRegistry = {
-      getActiveEmbeddingProviderName: vi.fn().mockReturnValue("ollama"),
-      getEmbeddingProviderHealth: vi.fn().mockReturnValue(undefined),
-      healthCheck: vi.fn().mockRejectedValue(new Error("should not be called")),
-    } as unknown as PluginRegistry;
+    const pluginRegistry = new PluginRegistry();
+    const bedrockSend = vi.fn().mockResolvedValue({
+      body: new TextEncoder().encode(JSON.stringify({ embedding: [0], inputTextTokenCount: 1 })),
+    });
+    const provider = new BedrockEmbeddingProvider(
+      {
+        model: "amazon.titan-embed-text-v2:0",
+        dimensions: 1,
+        maxConcurrency: 1,
+        retryCount: 0,
+        retryBaseDelayMs: 0,
+      },
+      { client: { send: bedrockSend }, sleep: vi.fn().mockResolvedValue(undefined) },
+    );
+    const providerHealthCheck = vi.spyOn(provider, "healthCheck");
+    pluginRegistry.registerEmbeddingProvider("bedrock", provider);
+    pluginRegistry.setActiveEmbeddingProvider("bedrock");
+    const registryHealthCheck = vi.spyOn(pluginRegistry, "healthCheck");
 
     const result = await buildDashboardIndexStatusSnapshot(metadataStore, vectorStore, pluginRegistry, pipeline);
 
-    expect(pluginRegistry.healthCheck).not.toHaveBeenCalled();
-    expect(result.providerStatus).toEqual({ providerName: "ollama", health: "unknown", lastError: null });
+    expect(registryHealthCheck).not.toHaveBeenCalled();
+    expect(providerHealthCheck).not.toHaveBeenCalled();
+    expect(bedrockSend).not.toHaveBeenCalled();
+    expect(result.providerStatus).toEqual({ providerName: "bedrock", health: "unknown", lastError: null });
     expect(result).not.toHaveProperty("pluginHealth");
   });
 });
@@ -635,24 +685,6 @@ describe("createDashboardStatusEndpoint", () => {
     expect(JSON.parse(stub.body)).toEqual({ status: "ok", snapshot });
   });
 
-  it("does not call PluginRegistry.healthCheck, embeddingProvider.healthCheck, or Bedrock InvokeModel", async () => {
-    const builder = vi.fn().mockResolvedValue({
-      indexStats: { id: "primary", totalFiles: 0, totalChunks: 0, lastIndexedAt: null, lastFullScanAt: null, overflowCount: 0, lastError: null },
-      vectorStats: { totalChunks: 0, totalFiles: 0, dimensions: 0, fragmentationRatio: 0 },
-      skippedFiles: 0,
-      pipelineProgress: { totalFiles: 0, processedFiles: 0, status: "idle" },
-      providerStatus: { providerName: "bedrock", health: "unknown", lastError: null },
-    });
-    const pluginRegistry = { healthCheck: vi.fn() };
-    const bedrockSend = vi.fn().mockResolvedValue({});
-
-    const endpoint = createDashboardStatusEndpoint(builder);
-    const stub = createStubRes();
-    await endpoint.handler({ method: "GET", url: "/status" } as IncomingMessage, stub.res);
-
-    expect(pluginRegistry.healthCheck).not.toHaveBeenCalled();
-    expect(bedrockSend).not.toHaveBeenCalled();
-  });
 });
 ```
 
@@ -817,13 +849,11 @@ export class MetricsHttpServer {
 
 - [ ] **Step 5: Wire the builder in `src/server/index.ts`**
 
-At line ~161, replace the existing `MetricsHttpServer` construction with:
+Add the imports to the module's top-level import block. At the existing metrics-server initialization near line 161, replace the `MetricsHttpServer` construction with the following runtime code:
 
 ```ts
 import { createDashboardStatusEndpoint } from "../observability/dashboard-status-endpoint.js";
 import { buildDashboardIndexStatusSnapshot } from "../server/tools/build-dashboard-index-status-snapshot.js";
-
-// ...
 
 const preferredPort = options.metricsPort ?? 0;
 const dashboardStatusEndpoint = createDashboardStatusEndpoint(() =>
@@ -1085,13 +1115,13 @@ GIT_MASTER=1 git commit -m "chore(dashboard): ESLint config を dashboard packag
 
 ```tsx
 import { describe, it, expect, vi, afterEach, afterAll } from "vitest";
-import { render, cleanup } from "@testing-library/react";
+import { render, cleanup, waitFor } from "@testing-library/react";
 import React from "react";
 import { useDashboardStatus } from "../../../src/hooks/use-dashboard-status.js";
 
 function Probe(props: Parameters<typeof useDashboardStatus>[0]) {
   const result = useDashboardStatus(props);
-  return <div data-testid="status">{result.status}</div>;
+  return <div data-testid="status" data-stale={result.stale ? "yes" : "no"}>{result.status}</div>;
 }
 
 describe("useDashboardStatus", () => {
@@ -1110,6 +1140,29 @@ describe("useDashboardStatus", () => {
     expect(getByTestId("status").textContent).toBe("waiting");
     await new Promise((r) => setTimeout(r, 50));
     expect(getByTestId("status").textContent).toBe("connected");
+  });
+
+  it("keeps the last successful snapshot stale through consecutive failures", async () => {
+    const snapshot = { skippedFiles: 0, providerStatus: { providerName: null, health: "unknown" } };
+    let call = 0;
+    globalThis.fetch = vi.fn().mockImplementation(() => {
+      call += 1;
+      if (call === 1) {
+        return Promise.resolve({
+          ok: true,
+          headers: new Headers({ "content-type": "application/json" }),
+          json: async () => ({ status: "ok", snapshot }),
+        } as unknown as Response);
+      }
+      return Promise.reject(new Error("ECONNREFUSED"));
+    });
+
+    const { getByTestId } = render(<Probe port={9464} enabled={true} interval={25} />);
+    await waitFor(() => {
+      expect(call).toBeGreaterThanOrEqual(3);
+      expect(getByTestId("status").textContent).toBe("unavailable");
+    });
+    expect(getByTestId("status").getAttribute("data-stale")).toBe("yes");
   });
 });
 ```
@@ -1133,11 +1186,24 @@ describe("useDashboardEndpointDiscovery", () => {
   afterAll(() => { globalThis.fetch = originalFetch; });
 
   it("connects to a fixed port", async () => {
-    globalThis.fetch = vi.fn().mockResolvedValue({
-      ok: true,
-      headers: new Headers({ "content-type": "application/json" }),
-      json: async () => ({ status: "ok", snapshot: { providerStatus: { providerName: null, health: "unknown" } } }),
-    } as unknown as Response);
+    globalThis.fetch = vi.fn().mockImplementation(async (input) => {
+      const url = String(input);
+      if (url.endsWith("/metrics/json")) {
+        return {
+          ok: true,
+          headers: new Headers({ "content-type": "application/json" }),
+          json: async () => [{ name: "nexus_event_queue_size", values: [{ value: 0 }] }],
+        } as unknown as Response;
+      }
+      if (url.endsWith("/status")) {
+        return {
+          ok: true,
+          headers: new Headers({ "content-type": "application/json" }),
+          json: async () => ({ status: "ok", snapshot: { providerStatus: { providerName: null, health: "unknown" } } }),
+        } as unknown as Response;
+      }
+      throw new Error(`Unexpected URL: ${url}`);
+    });
 
     const { getByTestId } = render(<Probe fixedPort={9464} />);
     await waitFor(() => expect(getByTestId("state").textContent).toBe("connected"));
@@ -1221,7 +1287,8 @@ export function useMetrics(options: UseMetricsOptions = {}): UseMetricsResult {
 
     const markUnavailable = (msg: string) => {
       const now = Date.now();
-      setStale(currentRef.current);
+      const previousCurrent = currentRef.current;
+      setStale((previousStale) => previousCurrent ?? previousStale);
       setCurrent(null);
       currentRef.current = null;
       setError(msg);
@@ -1281,6 +1348,7 @@ export function useMetrics(options: UseMetricsOptions = {}): UseMetricsResult {
 ```ts
 import { useState, useEffect, useRef } from "react";
 import type { DashboardIndexStatusResult } from "../types/dashboard-index-status.js";
+import type { PollResult } from "./use-metrics.js";
 
 export type DashboardStatusConnectionState = "waiting" | "unavailable" | "connected";
 
@@ -1320,7 +1388,8 @@ export function useDashboardStatus(options: UseDashboardStatusOptions = {}): Use
 
     const markUnavailable = (msg: string) => {
       const now = Date.now();
-      setStale(currentRef.current);
+      const previousCurrent = currentRef.current;
+      setStale((previousStale) => previousCurrent ?? previousStale);
       setCurrent(null);
       currentRef.current = null;
       setError(msg);
@@ -1531,7 +1600,7 @@ describe("useMetrics", () => {
     expect(result.current.lastSuccessAt).not.toBeNull();
   });
 
-  it("invalidates current value and preserves stale value on next failure", async () => {
+  it("keeps the last successful value stale through consecutive failures", async () => {
     let call = 0;
     globalThis.fetch = vi.fn().mockImplementation(() => {
       call++;
@@ -1544,9 +1613,10 @@ describe("useMetrics", () => {
       }
       return Promise.reject(new Error("ECONNREFUSED"));
     });
-    const { result } = renderHook(() => useMetrics({ port: 9464, enabled: true, interval: 1000 }));
+    const { result } = renderHook(() => useMetrics({ port: 9464, enabled: true, interval: 25 }));
     await waitFor(() => expect(result.current.status).toBe("connected"));
     await waitFor(() => expect(result.current.status).toBe("unavailable"));
+    await waitFor(() => expect(call).toBeGreaterThanOrEqual(3));
     expect(result.current.current).toBeNull();
     expect(result.current.stale).toHaveLength(1);
   });
@@ -1627,24 +1697,25 @@ import { describe, it, expect } from "vitest";
 import { renderHook } from "@testing-library/react";
 import { useMetricsHistory } from "../../../src/hooks/use-metrics-history.js";
 import type { MetricsJSON } from "../../../src/hooks/use-metrics.js";
+import { MetricsHistory } from "../../../src/utils/metrics-history.js";
 
 describe("useMetricsHistory", () => {
-  it("keeps per-label series inside a bounded window", () => {
-    const data: MetricsJSON[] = [
-      { name: "nexus_event_queue_dropped_total", values: [{ value: 1, labels: { queue_id: "q1" } }] },
-      { name: "nexus_event_queue_dropped_total", values: [{ value: 2, labels: { queue_id: "q2" } }] },
+  it("evicts expired samples but retains the preceding delta baseline", () => {
+    const history = new MetricsHistory({ windowMs: 5000 });
+    const now = Date.now();
+    const data = (value: number): MetricsJSON[] => [
+      { name: "nexus_event_queue_dropped_total", values: [{ value, labels: { queue_id: "q1" } }] },
     ];
-    const { result, rerender } = renderHook(
-      ({ data, generation }) => useMetricsHistory({ data, generation, windowMs: 5000 }),
-      { initialProps: { data, generation: 1 } },
-    );
-    expect(result.current.history.getSeriesExact("nexus_event_queue_dropped_total", { queue_id: "q1" })).toHaveLength(1);
-    rerender({ data, generation: 2 });
-    expect(result.current.history.getSeriesExact("nexus_event_queue_dropped_total", { queue_id: "q1" })).toHaveLength(2);
+    history.observePoll({ generation: 1, data: data(1), timestamp: now - 7000 });
+    history.observePoll({ generation: 2, data: data(2), timestamp: now - 6000 });
+    history.observePoll({ generation: 3, data: data(5), timestamp: now });
+
+    expect(history.getSeriesExact("nexus_event_queue_dropped_total", { queue_id: "q1" })).toEqual([2, 5]);
+    expect(history.getDeltaExact("nexus_event_queue_dropped_total", { queue_id: "q1" }, 5000)).toBe(3);
   });
 
   it("sums deltas across matching labels", () => {
-    const history = renderHook(() => useMetricsHistory({ data: null, generation: 0, windowMs: 5000 })).result.current.history;
+    const history = renderHook(() => useMetricsHistory({ data: null, port: null, generation: 0, windowMs: 5000 })).result.current.history;
     const t0 = Date.now();
     history.observePoll({
       generation: 1,
@@ -1670,7 +1741,7 @@ describe("useMetricsHistory", () => {
   });
 
   it("ignores default project and pid labels for identity", () => {
-    const history = renderHook(() => useMetricsHistory({ data: null, generation: 0, windowMs: 5000 })).result.current.history;
+    const history = renderHook(() => useMetricsHistory({ data: null, port: null, generation: 0, windowMs: 5000 })).result.current.history;
     const t0 = Date.now();
     history.observePoll({
       generation: 1,
@@ -1681,7 +1752,7 @@ describe("useMetricsHistory", () => {
   });
 
   it("does not count a missing poll as a counter interval", () => {
-    const history = renderHook(() => useMetricsHistory({ data: null, generation: 0, windowMs: 5000 })).result.current.history;
+    const history = renderHook(() => useMetricsHistory({ data: null, port: null, generation: 0, windowMs: 5000 })).result.current.history;
     const t0 = Date.now();
     history.observePoll({
       generation: 1,
@@ -1707,7 +1778,7 @@ describe("useMetricsHistory", () => {
   });
 
   it("resets baseline on counter reset", () => {
-    const history = renderHook(() => useMetricsHistory({ data: null, generation: 0, windowMs: 5000 })).result.current.history;
+    const history = renderHook(() => useMetricsHistory({ data: null, port: null, generation: 0, windowMs: 5000 })).result.current.history;
     const t0 = Date.now();
     history.observePoll({
       generation: 1,
@@ -1728,7 +1799,7 @@ describe("useMetricsHistory", () => {
   });
 
   it("preserves histogram _sum and _count components", () => {
-    const history = renderHook(() => useMetricsHistory({ data: null, generation: 0, windowMs: 5000 })).result.current.history;
+    const history = renderHook(() => useMetricsHistory({ data: null, port: null, generation: 0, windowMs: 5000 })).result.current.history;
     const t0 = Date.now();
     history.observePoll({
       generation: 1,
@@ -1745,7 +1816,7 @@ describe("useMetricsHistory", () => {
   });
 
   it("computes histogram mean from _sum/_count deltas", () => {
-    const history = renderHook(() => useMetricsHistory({ data: null, generation: 0, windowMs: 5000 })).result.current.history;
+    const history = renderHook(() => useMetricsHistory({ data: null, port: null, generation: 0, windowMs: 5000 })).result.current.history;
     const t0 = Date.now();
     history.observePoll({
       generation: 1,
@@ -1766,18 +1837,17 @@ describe("useMetricsHistory", () => {
     expect(history.getHistogramMean("nexus_tool_duration_seconds", { tool_name: "grep" }, 5000)).toBe(0.5);
   });
 
-  it("clears history on port change", () => {
+  it("discards the old port payload and accepts generation one on the new port", () => {
     const { result, rerender } = renderHook(
-      ({ port, generation }) => useMetricsHistory({ data: null, port, generation, windowMs: 5000 }),
-      { initialProps: { port: 9464, generation: 0 } },
+      ({ port, data, generation }) => useMetricsHistory({ data, port, generation, windowMs: 5000 }),
+      { initialProps: { port: 9464, generation: 0, data: null } },
     );
-    result.current.history.observePoll({
-      generation: 1,
-      data: [{ name: "nexus_event_queue_dropped_total", values: [{ value: 1, labels: { queue_id: "q1" } }] }],
-      timestamp: Date.now(),
-    });
-    rerender({ port: 9465, generation: 0 });
+    result.current.history.observePoll({ generation: 7, data: [{ name: "nexus_event_queue_dropped_total", values: [{ value: 70, labels: { queue_id: "q1" } }] }], timestamp: Date.now() });
+    rerender({ port: 9465, generation: 7, data: [{ name: "nexus_event_queue_dropped_total", values: [{ value: 70, labels: { queue_id: "q1" } }] }] });
     expect(result.current.history.getSeriesExact("nexus_event_queue_dropped_total", { queue_id: "q1" })).toHaveLength(0);
+    rerender({ port: 9465, generation: 0, data: null });
+    rerender({ port: 9465, generation: 1, data: [{ name: "nexus_event_queue_dropped_total", values: [{ value: 2, labels: { queue_id: "q1" } }] }] });
+    expect(result.current.history.getSeriesExact("nexus_event_queue_dropped_total", { queue_id: "q1" })).toEqual([2]);
   });
 });
 ```
@@ -2023,19 +2093,21 @@ export interface UseMetricsHistoryResult {
 
 export function useMetricsHistory({ data, port, generation, windowMs = 300_000 }: UseMetricsHistoryOptions): UseMetricsHistoryResult {
   const [history] = useState(() => new MetricsHistory({ windowMs }));
+  const lastPortRef = useRef<number | null>(port);
   const lastGenerationRef = useRef<number>(0);
 
   useEffect(() => {
-    history.clear();
-    lastGenerationRef.current = 0;
-  }, [port, history]);
-
-  useEffect(() => {
+    if (port !== lastPortRef.current) {
+      history.clear();
+      lastGenerationRef.current = 0;
+      lastPortRef.current = port;
+      return;
+    }
     if (generation > lastGenerationRef.current) {
       lastGenerationRef.current = generation;
       history.observePoll({ generation, data, timestamp: Date.now() });
     }
-  }, [data, generation, history]);
+  }, [port, data, generation, history]);
 
   return { history };
 }
@@ -2548,12 +2620,13 @@ export const OverviewView: React.FC<OverviewViewProps> = ({ connectionState, sna
 - [ ] **Step 5: Update `packages/dashboard/src/app.tsx`**
 
 ```tsx
-import React, { useState, useEffect } from "react";
+import React, { useState } from "react";
 import { Box, Text, useApp, useInput, useStdout } from "ink";
 import { useDashboardEndpointDiscovery } from "./hooks/use-dashboard-endpoint-discovery.js";
 import { useMetricsHistory } from "./hooks/use-metrics-history.js";
 import { Navigation } from "./components/navigation.js";
 import { OverviewView } from "./components/overview-view.js";
+import type { LayoutPolicy } from "./components/overview-view.js";
 import { IndexView } from "./components/index-view.js";
 import { RetrievalView } from "./components/retrieval-view.js";
 import { ProviderView } from "./components/provider-view.js";
@@ -2677,7 +2750,7 @@ GIT_MASTER=1 git commit -m "feat(dashboard): 5ビュー、ナビゲーション�
 - Delete: `packages/dashboard/src/components/dlq-panel.tsx`
 - Delete: `packages/dashboard/src/components/metric-panel.tsx`
 - Delete: `packages/dashboard/tests/unit/throughput-panel.test.tsx` (if it exists)
-- Modify: `packages/dashboard/src/utils/metrics.ts` (remove unused helpers)
+- Modify: `packages/dashboard/src/utils/metrics.ts` (remove unused helpers; delete if empty)
 - Modify: `packages/dashboard/tests/integration/cli.test.ts`
 - Create: `packages/dashboard/tests/integration/helpers.ts`
 
@@ -2688,7 +2761,10 @@ GIT_MASTER=1 git commit -m "feat(dashboard): 5ビュー、ナビゲーション�
 - [ ] **Step 1: Delete obsolete components**
 
 ```bash
-GIT_MASTER=1 git rm packages/dashboard/src/components/queue-panel.tsx packages/dashboard/src/components/throughput-panel.tsx packages/dashboard/src/components/dlq-panel.tsx packages/dashboard/src/components/metric-panel.tsx packages/dashboard/tests/unit/throughput-panel.test.tsx
+GIT_MASTER=1 git rm packages/dashboard/src/components/queue-panel.tsx packages/dashboard/src/components/throughput-panel.tsx packages/dashboard/src/components/dlq-panel.tsx packages/dashboard/src/components/metric-panel.tsx
+if [ -e packages/dashboard/tests/unit/throughput-panel.test.tsx ]; then
+  GIT_MASTER=1 git rm packages/dashboard/tests/unit/throughput-panel.test.tsx
+fi
 ```
 
 - [ ] **Step 2: Clean up unused metrics helpers**
@@ -2874,11 +2950,11 @@ GIT_MASTER=1 git commit -m "refactor(dashboard): 旧パネルを削除し統合�
 
 | Review Finding | Plan task / test that covers it |
 | --- | --- |
-| RG-001: side-effect-free status boundary, provider tri-state, MCP compatibility | Tasks 1–4; `GET /status` no-probe/Bedrock regression tests. |
-| RG-002: runtime discovery, route state, current-vs-stale | Task 5b; `useMetrics`/`useDashboardStatus` `PollResult<T>` contract with `generation`; integration helpers. |
-| RG-003: metrics history, labels, histogram, counter delta | Task 6; `MetricsHistory` `SERIES_DIMENSIONS`, `observePoll` generation tracking, `getHistogramMean`. |
+| RG-001: side-effect-free status boundary, provider tri-state, MCP compatibility | Tasks 1–4; Task 3 builder regression test uses real `PluginRegistry`, `BedrockEmbeddingProvider`, and injected client spy; Task 4 tests endpoint semantics. |
+| RG-002: runtime discovery, route state, current-vs-stale | Task 5b; both hooks preserve stale through consecutive failures and clear on recovery/port change; `PollResult<T>` and CLI integration coverage. |
+| RG-003: metrics history, labels, histogram, counter delta | Task 6; atomic port reset/generation observation, stale-port payload discard, new-port generation 1, missing-poll gaps, bounded eviction with preceding baseline, and `getHistogramMean`. |
 | RG-004: missing data, readiness, diagnostics, Attention provenance, narrow layout | Task 8; `deriveAttention` endpoint URLs; Queue-before-Provider layout thresholds; direct sparkline-first assertions. |
-| RG-005: implementation-plan correctness, types, paths, TDD executability, undefined helpers, placeholder | Task 1 syntax/import/path corrections, Task 5a ESLint config boundary, Task 5b/9 integration helper ESM safety, no-probe/Bedrock regression coverage. |
+| RG-005: implementation-plan correctness, types, paths, TDD executability, undefined helpers, placeholder | Tasks 3–9 include connected no-probe/Bedrock seams, `PollResult` and `LayoutPolicy` imports, route-specific fetch fixtures, unused-import removal, required `port` arguments, ESM-safe helper, and complete File Map coverage. |
 | RG-006: verification gate, Dashboard lint, typecheck, test config | Task 5a (ESLint config before first dashboard lint), Task 9 verification gate with root build before dashboard integration tests and Dashboard lint in final gate. |
 | RG-007: navigation contract | Task 8; digit/Tab/arrow/`q` navigation tests, ignored `h`/`l`. |
 
@@ -2891,8 +2967,11 @@ GIT_MASTER=1 git commit -m "refactor(dashboard): 旧パネルを削除し統合�
 - `DashboardIndexStatusResult` omits `pluginHealth` and adds `providerStatus`.
 - `PluginRegistry.getEmbeddingProviderHealth(name)` returns `KnownHealthEntry | undefined`.
 - `useMetrics` and `useDashboardStatus` expose `PollResult<T>` with `current`/`stale`/`lastSuccessAt`/`lastErrorAt`/`generation`.
+- Both polling hooks preserve the last successful `stale` value over repeated failures and clear it only on recovery or port change.
 - `MetricsHistory` ignores `project`/`pid` for series identity and uses `observePoll({ generation, data, timestamp })` for gap handling.
-- `useMetricsHistory` receives `generation` from `useMetrics` so missing polls propagate even when `current` is null.
+- `useMetricsHistory` resets on port change and returns before observing any payload from that render; a subsequent new-port generation 1 is accepted.
+- Every `useMetricsHistory` call supplies the required `port`; direct history retention tests use `MetricsHistory` with explicit timestamps.
+- Plan File Map enumerates the Create/Modify/Delete/Test paths listed in Tasks 1–9.
 
 ---
 
