@@ -3005,7 +3005,7 @@ GIT_MASTER=1 git commit -m "refactor(dashboard): 旧パネルを削除し統合�
 | RG-002: runtime discovery, route state, current-vs-stale | Task 5b; both hooks preserve stale through consecutive failures and clear on recovery/port change; `PollResult<T>` and CLI integration coverage. |
 | RG-003: metrics history, labels, histogram, counter delta | Task 6; atomic port reset/generation observation, stale-port payload discard, new-port generation 1, missing-poll gaps, bounded eviction with preceding baseline, and `getHistogramMean`. |
 | RG-004: missing data, readiness, diagnostics, Attention provenance, narrow layout | Task 8; `deriveAttention` endpoint URLs; Queue-before-Provider layout thresholds; direct sparkline-first assertions. |
-| RG-005: implementation-plan correctness, types, paths, TDD executability, undefined helpers, placeholder | Tasks 3–9 include connected no-probe/Bedrock seams, `PollResult` and `LayoutPolicy` imports, route-specific fetch fixtures, unused-import removal, required `port` arguments, ESM-safe helper, and complete File Map coverage. |
+| RG-005: implementation-plan correctness, types, paths, TDD executability, undefined helpers, placeholder | Task 2 covers invocation-local provider name/object identity attribution, concurrent-switch and same-name re-registration regressions; Tasks 3–9 cover the remaining no-probe seams, imports, fixtures, required arguments, ESM-safe helpers, and File Map consistency. |
 | RG-006: verification gate, Dashboard lint, typecheck, test config | Task 5a (ESLint config before first dashboard lint), Task 9 verification gate with root build before dashboard integration tests and Dashboard lint in final gate. |
 | RG-007: navigation contract | Task 8; digit/Tab/arrow/`q` navigation tests, ignored `h`/`l`. |
 
