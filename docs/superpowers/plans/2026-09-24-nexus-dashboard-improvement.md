@@ -30,7 +30,7 @@
 | `src/server/tools/build-shared-index-status.ts` | New. Side-effect-free collector for `indexStats`, `vectorStats`, `skippedFiles`, `pipelineProgress`, and `structuredIndex` shared by the MCP tool and the dashboard. |
 | `src/server/tools/build-dashboard-index-status-snapshot.ts` | New. Dashboard-only builder that wraps the shared collector and attaches `providerStatus` from the registry's runtime-known health cache without probing. |
 | `src/server/tools/index-status.ts` | Modify. Refactor `executeIndexStatus()` to call the shared collector and attach the probed `pluginHealth`. Keep `IndexStatusResult` and `StructuredIndexStatus` exports. |
-| `src/plugins/registry.ts` | Modify. Add runtime-known health cache, in-flight probe attribution guard, `getEmbeddingProviderHealth(name)`, and invalidation on provider re-registration or active-provider switch. |
+| `src/plugins/registry.ts` | Modify. Add runtime-known health cache, per-invocation local probe attribution guarded by active provider name and object identity, `getEmbeddingProviderHealth(name)`, and invalidation on provider re-registration or active-provider switch. |
 | `src/observability/dashboard-status-endpoint.ts` | New. `createDashboardStatusEndpoint(buildSnapshot)` returning a `GET /status` handler that returns JSON `{ status: "ok", snapshot }` or `{ status: "error", error }`. |
 | `src/observability/metrics-server.ts` | Modify. Accept an optional `dashboardStatusEndpoint` and route `/status` before the 404 handler on the existing loopback listener. |
 | `src/server/index.ts` | Modify. Wire `buildDashboardIndexStatusSnapshot(...)` into `MetricsHttpServer` at line ~161. |
@@ -290,7 +290,7 @@ GIT_MASTER=1 git commit -m "refactor: 非プロバイダー snapshot 収集を s
 **Interfaces:**
 
 - Consumes: Existing `PluginRegistry.healthCheck()` and `EmbeddingProviderRegistry`.
-- Produces: `getEmbeddingProviderHealth(name: string): KnownHealthEntry | undefined`; internal cache updated only by `healthCheck()` with in-flight attribution guard.
+- Produces: `getEmbeddingProviderHealth(name: string): KnownHealthEntry | undefined`; internal cache updated only by `healthCheck()` when the provider name and provider object captured by that invocation are still active after the probe completes.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -335,6 +335,57 @@ describe("PluginRegistry runtime-known health cache", () => {
     registry.setActiveEmbeddingProvider("bedrock");
     expect(registry.getEmbeddingProviderHealth("ollama")).toBeUndefined();
   });
+
+  it("does not restore provider A health when A completes after a concurrent B probe starts", async () => {
+    let resolveA: ((healthy: boolean) => void) | undefined;
+    const providerA = {
+      dimensions: 384,
+      embed: vi.fn(),
+      healthCheck: vi.fn(() => new Promise<boolean>((resolve) => { resolveA = resolve; })),
+    };
+    const registry = new PluginRegistry();
+    registry.registerEmbeddingProvider("A", providerA);
+    registry.registerEmbeddingProvider("B", {
+      dimensions: 1024,
+      embed: vi.fn(),
+      healthCheck: vi.fn().mockResolvedValue(true),
+    });
+
+    const probeA = registry.healthCheck();
+    registry.setActiveEmbeddingProvider("B");
+    const probeB = registry.healthCheck();
+    await probeB;
+    resolveA?.(false);
+    await probeA;
+
+    expect(registry.getEmbeddingProviderHealth("A")).toBeUndefined();
+    expect(registry.getEmbeddingProviderHealth("B")).toEqual({ health: "healthy", lastError: null });
+  });
+
+  it("does not cache an old provider object's result after same-name re-registration", async () => {
+    let resolveOld: ((healthy: boolean) => void) | undefined;
+    const oldProvider = {
+      dimensions: 384,
+      embed: vi.fn(),
+      healthCheck: vi.fn(() => new Promise<boolean>((resolve) => { resolveOld = resolve; })),
+    };
+    const newProvider = {
+      dimensions: 384,
+      embed: vi.fn(),
+      healthCheck: vi.fn().mockResolvedValue(true),
+    };
+    const registry = new PluginRegistry();
+    registry.registerEmbeddingProvider("A", oldProvider);
+
+    const oldProbe = registry.healthCheck();
+    registry.registerEmbeddingProvider("A", newProvider);
+    resolveOld?.(true);
+    await oldProbe;
+
+    expect(registry.getEmbeddingProviderHealth("A")).toBeUndefined();
+    await registry.healthCheck();
+    expect(registry.getEmbeddingProviderHealth("A")).toEqual({ health: "healthy", lastError: null });
+  });
 });
 ```
 
@@ -346,7 +397,7 @@ Expected: FAIL — `getEmbeddingProviderHealth` not found.
 
 - [ ] **Step 3: Implement the cache and attribution guard**
 
-Replace the `PluginRegistry` class in `src/plugins/registry.ts` with:
+Update `PluginRegistry` in `src/plugins/registry.ts`. Do not add a shared mutable field such as `activeProbeName`; capture both the probed name and provider object in each `healthCheck()` invocation's local scope. The relevant class fields and probe implementation are:
 
 ```ts
 export type RuntimeKnownHealth = "healthy" | "unhealthy" | "unknown";
@@ -360,7 +411,6 @@ export class PluginRegistry {
   private readonly languages = new LanguageRegistry();
   private readonly embeddings = new EmbeddingProviderRegistry();
   private readonly knownHealth = new Map<string, KnownHealthEntry>();
-  private activeProbeName: string | null = null;
 
   registerLanguage(plugin: LanguagePlugin): void {
     this.languages.register(plugin);
@@ -399,7 +449,6 @@ export class PluginRegistry {
   async healthCheck(): Promise<HealthCheckResult> {
     const activeProvider = this.embeddings.getActive();
     const activeProviderName = this.embeddings.getActiveName();
-    this.activeProbeName = activeProviderName ?? null;
     let embeddingHealthy = false;
     let probeError: string | null = null;
 
@@ -422,13 +471,15 @@ export class PluginRegistry {
       }
     }
 
-    if (this.embeddings.getActiveName() === this.activeProbeName) {
-      if (activeProviderName !== undefined) {
-        if (embeddingHealthy) {
-          this.knownHealth.set(activeProviderName, { health: "healthy", lastError: null });
-        } else {
-          this.knownHealth.set(activeProviderName, { health: "unhealthy", lastError: probeError });
-        }
+    const stillCurrent =
+      this.embeddings.getActiveName() === activeProviderName &&
+      this.embeddings.getActive() === activeProvider;
+
+    if (stillCurrent && activeProviderName !== undefined) {
+      if (embeddingHealthy) {
+        this.knownHealth.set(activeProviderName, { health: "healthy", lastError: null });
+      } else {
+        this.knownHealth.set(activeProviderName, { health: "unhealthy", lastError: probeError });
       }
     }
 

@@ -36,7 +36,21 @@ type DashboardIndexStatusResult = Omit<IndexStatusResult, 'pluginHealth'> & {
 
 The canonical dashboard builder is `buildDashboardIndexStatusSnapshot(metadataStore, vectorStore, pluginRegistry, pipeline): Promise<DashboardIndexStatusResult>`. A shared side-effect-free collector obtains `indexStats` from `metadataStore.getIndexStats()`, `vectorStats` from `vectorStore.getStats()`, `skippedFiles` from dead-letter entry count, `pipelineProgress` from `pipeline.getProgress()`, and `structuredIndex` from the existing structured-state derivation. Both callers use that collector. The dashboard builder reads `pluginRegistry.getActiveEmbeddingProviderName()` and the registry's last-known health for **that same provider name**. It **does not** call `pluginRegistry.healthCheck()` or any provider method. If there is no active provider, set `providerName: null`; if no matching runtime-known health exists, set `health: 'unknown'` and `lastError: null`. Re-registering a provider invalidates its cached health; switching the active provider clears the active observation, so a previously cached observation cannot silently become current again. Registration alone does not prove health.
 
-The optional last-known health cache lives in `PluginRegistry`, initially absent, and may be updated by initialization when it already knows an outcome and by the existing MCP active-probe path after a completed check. The cache records provider name, tri-state result, and last error; it never initiates a probe, and dashboard reads never mutate it. On MCP probe failure, cache `unhealthy` for the probed provider; on successful probe, cache `healthy` and clear its prior error. If the active provider changes while an asynchronous probe is in flight, the completed outcome must not be attributed to the new provider. Without an observation, dashboard UI displays `Unknown` for health and `Unavailable` for provider health detail, not `healthy` by default.
+The optional last-known health cache lives in `PluginRegistry`, initially absent,
+and may be updated by initialization when it already knows an outcome and by
+the existing MCP active-probe path after a completed check. The cache records
+provider name, tri-state result, and last error; it never initiates a probe, and
+dashboard reads never mutate it. On MCP probe failure, cache `unhealthy` for
+the probed provider; on successful probe, cache `healthy` and clear its prior
+error. Each `healthCheck()` invocation captures the active provider name and
+provider object in local variables before awaiting its probe. It may update the
+cache only if, after completion, both the active provider name and active
+provider object still match those captured values. No shared mutable in-flight
+attribution field is used. This identity check prevents results from concurrent
+probes, an active-provider switch, or same-name provider re-registration from
+restoring stale health. Without an observation, dashboard UI displays `Unknown`
+for health and `Unavailable` for provider health detail, not `healthy` by
+default.
 
 MCP `index_status` continues to call `executeIndexStatus()` and its active `PluginRegistry.healthCheck()` for backward compatibility. Refactor that function to reuse the non-provider collector and attach the probed `pluginHealth`. **`PluginRegistry.healthCheck()` MUST NOT be called on the dashboard code path**, including request handling, startup, refresh, and error recovery. No dashboard request invokes `embeddingProvider.healthCheck()`, `embedOne()`, or Bedrock `InvokeModel`. The shared fields are `indexStats`, `vectorStats`, `skippedFiles`, `pipelineProgress`, `structuredIndex`; the two provider-health representations remain separate.
 
@@ -163,7 +177,16 @@ Diagnostics displays every Attention item with source, reason, and canonical fie
 
 Write failing RED tests before implementation and retain them as regression tests:
 
-1. `GET /status` returns the dashboard result without `pluginHealth`; spies verify `PluginRegistry.healthCheck()` is **not called**, `embeddingProvider.healthCheck()` is **not called**, and Bedrock `InvokeModel` is **not called**. A registered provider without a runtime-known observation returns `health: 'unknown'` and renders `Unknown` / `Unavailable`. Confirm a cached MCP probe belongs only to the matching provider and switching providers invalidates the observed state.
+1. `GET /status` returns the dashboard result without `pluginHealth`; spies
+   verify `PluginRegistry.healthCheck()` is **not called**,
+   `embeddingProvider.healthCheck()` is **not called**, and Bedrock
+   `InvokeModel` is **not called**. A registered provider without a
+   runtime-known observation returns `health: 'unknown'` and renders `Unknown` /
+   `Unavailable`. Registry tests confirm a cached MCP probe belongs only to
+   the matching provider, active-provider switching invalidates the observed
+   state, an A probe completing after a B probe has started cannot restore A's
+   stale state, and an old provider object completing after same-name
+   re-registration cannot populate the new registration's health.
 2. Starting the CLI without a runtime renders `Runtime unavailable` without starting Nexus. Fake-clock tests prove rediscovery every five seconds, a runtime restart on a **new port**, rerouting both endpoints, and reconnecting. Explicit `--port` tests prove there is no file rediscovery.
 3. A missing metric helper returns `{ kind: 'unavailable', reason: ... }`, never numeric zero; first sample and counter reset do not create spurious five-minute embedding-error Attention.
 4. A narrow-width component test proves sparklines degrade **first**, while primary state and Attention remain visible.
@@ -218,6 +241,6 @@ No additional new source-file paths are prescribed here. This review gate reconc
 | RG-002: runtime discovery, route state, current-vs-stale | Plan Task 5b; uniform hook contract; stale survives consecutive failures in both hooks; port-change clearing; CLI fake-clock startup/restart/new-port and fixed-port integration tests. |
 | RG-003: metrics history, labels, histogram, counter delta | Plan Task 6; per-label `_sum`/`_count`/`_bucket`, `SERIES_DIMENSIONS` ignoring `project`/`pid`, generation tracking for missing polls, atomic port reset/observation, partial-label aggregation, preceding-baseline eviction, reset, `getHistogramMean`, and window-delta tests. |
 | RG-004: missing data, readiness, Attention provenance, Diagnostics, narrow layout | Plan Tasks 7–8 cover nullable `indexStats`, `ValueState`, readiness precedence, discriminated Attention provenance with actual endpoint URLs, Queue-before-Provider layout priority, and sparkline-first degradation tests. |
-| RG-005: implementation-plan correctness, types, paths, TDD executability, undefined helpers, placeholder | Plan tasks provide complete imports, route-specific fixtures, required `port` arguments, ESM-safe helper, connected no-probe/Bedrock regression coverage, and a File Map synchronized with every Task 1–9 Create/Modify/Delete/Test path. |
+| RG-005: implementation-plan correctness, types, paths, TDD executability, undefined helpers, placeholder | Plan tasks provide complete imports, route-specific fixtures, required `port` arguments, ESM-safe helper, connected no-probe/Bedrock regression coverage, File Map coverage, and Task 2 local probe identity capture with concurrent-switch and same-name re-registration regression tests. |
 | RG-006: verification gate, Dashboard lint, typecheck, test config | Plan Task 5a adds Dashboard lint configuration before its first lint; Task 9 runs the Dashboard typecheck, lint, build, tests, then root checks with root build before Dashboard integration tests. This review changes documentation only. |
 | RG-007: navigation contract | Plan Task 8 preserves the Ink keyboard contract; component tests verify digit keys, arrows, ignored `h`/`l`, `q`, and sparkline-first degradation. |
