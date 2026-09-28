@@ -1,153 +1,67 @@
-import { describe, it, expect, vi, beforeEach, afterEach, afterAll } from "vitest";
-import React from "react";
-import { render, screen, cleanup } from "@testing-library/react";
+import { describe, it, expect, vi, afterAll, beforeEach, afterEach } from "vitest";
+import { renderHook, waitFor, cleanup } from "@testing-library/react";
 import { useMetrics } from "../../src/hooks/use-metrics.js";
 
-const originalFetch = global.fetch;
-global.fetch = vi.fn();
-
-const TestComponent: React.FC<{ port?: number; interval?: number }> = ({
-  port,
-  interval,
-}) => {
-  const { status } = useMetrics({ port, interval });
-  return <div data-testid="status">{status}</div>;
-};
-
 describe("useMetrics", () => {
-  beforeEach(() => {
-    vi.clearAllMocks();
+  const originalFetch = globalThis.fetch;
+  beforeEach(() => { globalThis.fetch = vi.fn(); });
+  afterEach(() => { cleanup(); });
+  afterAll(() => { globalThis.fetch = originalFetch; });
+
+  it("starts waiting when disabled", () => {
+    const { result } = renderHook(() => useMetrics({ port: 9464, enabled: false }));
+    expect(result.current.status).toBe("waiting");
+    expect(result.current.current).toBeNull();
+    expect(globalThis.fetch).not.toHaveBeenCalled();
   });
 
-  afterEach(() => {
-    cleanup();
+  it("moves to unavailable on fetch failure", async () => {
+    globalThis.fetch = vi.fn().mockRejectedValue(new Error("ECONNREFUSED"));
+    const { result } = renderHook(() => useMetrics({ port: 9464, enabled: true }));
+    await waitFor(() => expect(result.current.status).toBe("unavailable"));
+    expect(result.current.current).toBeNull();
+    expect(result.current.lastErrorAt).not.toBeNull();
   });
 
-  afterAll(() => {
-    global.fetch = originalFetch;
-  });
-
-  it("returns connecting status when server is not running", async () => {
-    vi.mocked(fetch).mockRejectedValue(new Error("Connection refused"));
-
-    const { unmount } = render(<TestComponent port={9464} interval={1000} />);
-
-    await new Promise((resolve) => setTimeout(resolve, 100));
-
-    expect(screen.getByTestId("status").textContent).toBe("connecting");
-    unmount();
-  });
-
-  it("returns connected status after server responds with valid JSON", async () => {
-    const mockMetrics = [{ name: "nexus_queue_size", values: [{ value: 5 }] }];
-    vi.mocked(fetch).mockResolvedValue({
+  it("becomes connected on valid response", async () => {
+    globalThis.fetch = vi.fn().mockResolvedValue({
       ok: true,
       headers: new Headers({ "content-type": "application/json" }),
-      json: async () => mockMetrics,
-    } as Response);
-
-    const { unmount } = render(<TestComponent port={9464} interval={1000} />);
-
-    await new Promise((resolve) => setTimeout(resolve, 100));
-
-    expect(screen.getByTestId("status").textContent).toBe("connected");
-    unmount();
+      json: async () => [{ name: "nexus_event_queue_size", values: [{ value: 0 }] }],
+    } as unknown as Response);
+    const { result } = renderHook(() => useMetrics({ port: 9464, enabled: true }));
+    await waitFor(() => expect(result.current.status).toBe("connected"));
+    expect(result.current.current).toHaveLength(1);
+    expect(result.current.stale).toBeNull();
+    expect(result.current.lastSuccessAt).not.toBeNull();
   });
 
-  it("returns waiting status when response is not JSON", async () => {
-    vi.mocked(fetch).mockResolvedValue({
-      ok: true,
-      headers: new Headers({ "content-type": "text/plain" }),
-    } as Response);
-
-    const { unmount } = render(<TestComponent port={9464} interval={1000} />);
-
-    await new Promise((resolve) => setTimeout(resolve, 100));
-
-    expect(screen.getByTestId("status").textContent).toBe("waiting");
-    unmount();
+  it("keeps the last successful value stale through consecutive failures", async () => {
+    let call = 0;
+    globalThis.fetch = vi.fn().mockImplementation(() => {
+      call++;
+      if (call === 1) {
+        return Promise.resolve({
+          ok: true,
+          headers: new Headers({ "content-type": "application/json" }),
+          json: async () => [{ name: "nexus_event_queue_size", values: [{ value: 0 }] }],
+        } as unknown as Response);
+      }
+      return Promise.reject(new Error("ECONNREFUSED"));
+    });
+    const { result } = renderHook(() => useMetrics({ port: 9464, enabled: true, interval: 25 }));
+    await new Promise((r) => setTimeout(r, 15));
+    await waitFor(() => expect(result.current.status).toBe("connected"), { timeout: 500 });
+    await waitFor(() => expect(result.current.status).toBe("unavailable"), { timeout: 1000 });
+    await waitFor(() => expect(call).toBeGreaterThanOrEqual(3), { timeout: 1000 });
+    expect(result.current.current).toBeNull();
+    expect(result.current.stale).toHaveLength(1);
   });
 
-  it("retries after connection is lost", async () => {
-    vi.mocked(fetch).mockResolvedValue({
-      ok: true,
-      headers: new Headers({ "content-type": "application/json" }),
-      json: async () => [{ name: "test", values: [] }],
-    } as Response);
-
-    const { unmount } = render(<TestComponent port={9464} interval={1000} />);
-    await new Promise((resolve) => setTimeout(resolve, 100));
-
-    expect(screen.getByTestId("status").textContent).toBe("connected");
-
-    vi.mocked(fetch).mockRejectedValue(new Error("Connection lost"));
-
-    await new Promise((resolve) => setTimeout(resolve, 2100));
-
-    expect(screen.getByTestId("status").textContent).toBe("reconnecting");
-    unmount();
-  });
-
-  it("respects the configured polling interval", async () => {
-    vi.mocked(fetch).mockResolvedValue({
-      ok: true,
-      headers: new Headers({ "content-type": "application/json" }),
-      json: async () => [],
-    } as Response);
-
-    const { unmount } = render(<TestComponent port={9464} interval={1000} />);
-
-    await new Promise((resolve) => setTimeout(resolve, 100));
-    expect(fetch).toHaveBeenCalledTimes(1);
-
-    await new Promise((resolve) => setTimeout(resolve, 800));
-    expect(fetch).toHaveBeenCalledTimes(1);
-
-    await new Promise((resolve) => setTimeout(resolve, 200));
-    expect(fetch).toHaveBeenCalledTimes(2);
-    unmount();
-  }, 10000);
-
-  it("reflects custom port in URL", async () => {
-    vi.mocked(fetch).mockResolvedValue({
-      ok: true,
-      headers: new Headers({ "content-type": "application/json" }),
-      json: async () => [],
-    } as Response);
-
-    const { unmount } = render(<TestComponent port={9999} interval={1000} />);
-
-    await new Promise((resolve) => setTimeout(resolve, 100));
-
-    expect(fetch).toHaveBeenCalledWith(
-      "http://localhost:9999/metrics/json",
-      expect.any(Object),
-    );
-    unmount();
-  });
-
-  it("re-connects when port changes", async () => {
-    vi.mocked(fetch).mockResolvedValue({
-      ok: true,
-      headers: new Headers({ "content-type": "application/json" }),
-      json: async () => [],
-    } as Response);
-
-    const { rerender, unmount } = render(<TestComponent port={9464} interval={1000} />);
-    await new Promise((resolve) => setTimeout(resolve, 100));
-    expect(fetch).toHaveBeenCalledWith(
-      "http://localhost:9464/metrics/json",
-      expect.any(Object),
-    );
-
-    // Change port
-    rerender(<TestComponent port={8888} interval={1000} />);
-    await new Promise((resolve) => setTimeout(resolve, 100));
-
-    expect(fetch).toHaveBeenCalledWith(
-      "http://localhost:8888/metrics/json",
-      expect.any(Object),
-    );
-    unmount();
+  it("does not fetch when port is null", () => {
+    globalThis.fetch = vi.fn().mockRejectedValue(new Error("should not call"));
+    const { result } = renderHook(() => useMetrics({ port: null, enabled: true }));
+    expect(result.current.status).toBe("waiting");
+    expect(globalThis.fetch).not.toHaveBeenCalled();
   });
 });

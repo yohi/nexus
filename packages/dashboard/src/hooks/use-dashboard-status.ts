@@ -1,50 +1,27 @@
 import { useState, useEffect, useRef } from "react";
+import type { DashboardIndexStatusResult } from "../types/dashboard-index-status.js";
+import type { PollResult } from "./use-metrics.js";
 
-export type MetricsStatus = "waiting" | "unavailable" | "connected";
+export type DashboardStatusConnectionState = "waiting" | "unavailable" | "connected";
 
-export interface MetricsJSON {
-  name: string;
-  help?: string;
-  type?: string;
-  values?: MetricValue[];
-  labels?: Record<string, string>;
-}
-
-export interface MetricValue {
-  metricName?: string;
-  labels?: Record<string, string>;
-  value: number;
-  timestamp?: number;
-}
-
-export interface UseMetricsOptions {
+export interface UseDashboardStatusOptions {
   port?: number | null;
   enabled?: boolean;
   interval?: number;
 }
 
-export interface PollResult<T> {
-  status: "waiting" | "unavailable" | "connected";
-  current: T | null;
-  stale: T | null;
-  error: string | null;
-  lastSuccessAt: number | null;
-  lastErrorAt: number | null;
-  generation: number;
-}
+export type UseDashboardStatusResult = PollResult<DashboardIndexStatusResult>;
 
-export type UseMetricsResult = PollResult<MetricsJSON[]>;
-
-export function useMetrics(options: UseMetricsOptions = {}): UseMetricsResult {
-  const { port = null, enabled = false, interval = 2000 } = options;
-  const [status, setStatus] = useState<MetricsStatus>("waiting");
-  const [current, setCurrent] = useState<MetricsJSON[] | null>(null);
-  const [stale, setStale] = useState<MetricsJSON[] | null>(null);
+export function useDashboardStatus(options: UseDashboardStatusOptions = {}): UseDashboardStatusResult {
+  const { port = null, enabled = false, interval = 10_000 } = options;
+  const [status, setStatus] = useState<DashboardStatusConnectionState>("waiting");
+  const [current, setCurrent] = useState<DashboardIndexStatusResult | null>(null);
+  const [stale, setStale] = useState<DashboardIndexStatusResult | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [lastSuccessAt, setLastSuccessAt] = useState<number | null>(null);
   const [lastErrorAt, setLastErrorAt] = useState<number | null>(null);
   const [generation, setGeneration] = useState(0);
-  const currentRef = useRef<MetricsJSON[] | null>(null);
+  const currentRef = useRef<DashboardIndexStatusResult | null>(null);
 
   useEffect(() => {
     setStatus("waiting");
@@ -59,7 +36,7 @@ export function useMetrics(options: UseMetricsOptions = {}): UseMetricsResult {
       return;
     }
     const abortController = new AbortController();
-    const url = `http://127.0.0.1:${port}/metrics/json`;
+    const url = `http://127.0.0.1:${port}/status`;
 
     const markUnavailable = (msg: string) => {
       const now = Date.now();
@@ -86,14 +63,15 @@ export function useMetrics(options: UseMetricsOptions = {}): UseMetricsResult {
           setGeneration((g) => g + 1);
           return;
         }
-        const json = (await res.json()) as unknown;
-        if (!Array.isArray(json)) {
-          markUnavailable("Invalid response shape: expected array");
+        const raw = await res.json() as { status?: unknown; error?: unknown; snapshot?: unknown };
+        if (raw.status !== "ok" || !raw.snapshot) {
+          markUnavailable(typeof raw.error === "string" ? raw.error : "Invalid status response");
           setGeneration((g) => g + 1);
           return;
         }
-        currentRef.current = json as MetricsJSON[];
-        setCurrent(json as MetricsJSON[]);
+        const snapshot = raw.snapshot as DashboardIndexStatusResult;
+        currentRef.current = snapshot;
+        setCurrent(snapshot);
         setStale(null);
         setError(null);
         setLastSuccessAt(Date.now());
