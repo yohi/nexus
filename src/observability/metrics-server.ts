@@ -1,11 +1,15 @@
 import { createServer, type Server } from 'node:http';
 import type { Registry } from 'prom-client';
+import type { DashboardStatusEndpoint } from './dashboard-status-endpoint.js';
 
 export class MetricsHttpServer {
   private server: Server | undefined;
   private listening = false;
 
-  constructor(private readonly registry: Registry) {}
+  constructor(
+    private readonly registry: Registry,
+    private readonly dashboardStatusEndpoint?: DashboardStatusEndpoint,
+  ) {}
 
   async start(port: number, host = '127.0.0.1'): Promise<void> {
     if (this.listening || this.server) {
@@ -13,9 +17,14 @@ export class MetricsHttpServer {
     }
 
     const reg = this.registry;
+    const statusEndpoint = this.dashboardStatusEndpoint;
     const server = createServer((req, res) => {
       void (async () => {
         try {
+          if (req.url === '/status' && statusEndpoint) {
+            await statusEndpoint.handler(req, res);
+            return;
+          }
           if (req.url === '/metrics') {
             const metrics = await reg.metrics();
             res.writeHead(200, { 'Content-Type': 'text/plain' });
@@ -28,15 +37,15 @@ export class MetricsHttpServer {
             res.writeHead(200, { 'Content-Type': 'application/json' });
             res.end(JSON.stringify({ status: 'ok' }));
           } else {
-            res.writeHead(404);
-            res.end();
+            res.writeHead(404, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ status: 'error', error: 'Not found' }));
           }
         } catch (err) {
           console.error('[Nexus Metrics] Request failed:', err);
           if (!res.headersSent) {
-            res.writeHead(500);
+            res.writeHead(500, { 'Content-Type': 'application/json' });
           }
-          res.end();
+          res.end(JSON.stringify({ status: 'error', error: 'Internal server error' }));
         }
       })().catch((err) => {
         console.error('[Nexus Metrics] Unhandled request error:', err);
