@@ -24,3 +24,5 @@ export const executeIndexStatus = async (
 };
 
 export type { StructuredIndexStatus };
+
+export type { DashboardIndexStatusResult, DashboardProviderStatus } from "./build-dashboard-index-status-snapshot.js";
