@@ -23,12 +23,13 @@ export async function startNexusServer(
   projectRoot: string,
   options: { preferredPort?: number } = {},
 ): Promise<TestNexusServer> {
-  const proc = spawn("node", [
+  const proc = spawn(process.execPath, [
     join(__dirname, "../../../../dist/bin/nexus.js"),
     "--project-root", projectRoot,
   ], {
     env: {
       ...process.env,
+      PATH: "/usr/bin:/bin",
       NEXUS_METRICS_PORT: String(options.preferredPort ?? 0),
     },
   });
