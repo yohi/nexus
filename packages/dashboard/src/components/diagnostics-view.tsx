@@ -21,12 +21,12 @@ export interface DiagnosticsViewProps {
 
 const time = (value: number | null): string => value === null ? "—" : new Date(value).toISOString();
 
-export const DiagnosticsView: React.FC<DiagnosticsViewProps> = ({ connectionState, metrics, status, metricsEndpointUrl, statusEndpointUrl, attentionInput }) => {
+export const DiagnosticsView: React.FC<DiagnosticsViewProps> = ({ connectionState, metrics, status, metricsEndpointUrl, statusEndpointUrl, attentionInput, layout }) => {
   const attention = deriveAttention(attentionInput);
   const snapshot = status.current;
   return <Box flexDirection="column">
     <AttentionPanel items={attention} />
-    <MetricPanel title="Connection diagnostics" icon="🩺" borderColor="yellow">
+    <MetricPanel title={layout.showDecorations ? "Connection diagnostics" : "Diagnostics"} icon={layout.showDecorations ? "🩺" : undefined} borderColor={layout.showDecorations ? "yellow" : undefined}>
       <Text>Connection: {connectionState}</Text>
       <Text>Metrics endpoint: {metricsEndpointUrl ?? "not discovered"}</Text>
       <Text>Status endpoint: {statusEndpointUrl ?? "not discovered"}</Text>

@@ -10,8 +10,8 @@ export const ProviderView: React.FC<{ readonly snapshot: DashboardIndexStatusRes
     <MetricPanel title="Embedding provider" icon="⚙" borderColor={layout.showDecorations ? "magenta" : undefined}>
       <Text>Name: {snapshot?.providerStatus.providerName ?? "Unavailable"}</Text>
       <Text>Health: {snapshot?.providerStatus.health ?? "unknown"}</Text>
-      <Text>Requests in recent window: {history.sumDeltaMatching("nexus_embedding_requests_total") ?? "—"}</Text>
-      <Text>Average duration: {history.getHistogramMean("nexus_embedding_duration_seconds")?.toFixed(3) ?? "—"}s</Text>
+      {layout.showSecondary && <Text>Requests in recent window: {history.sumDeltaMatching("nexus_embedding_requests_total") ?? "—"}</Text>}
+      {layout.showSupplemental && <Text>Average duration: {history.getHistogramMean("nexus_embedding_duration_seconds")?.toFixed(3) ?? "—"}s</Text>}
       {snapshot?.providerStatus.lastError && <Text color="red">Error: {snapshot.providerStatus.lastError}</Text>}
     </MetricPanel>
   </Box>
