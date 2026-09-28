@@ -1,6 +1,6 @@
 import React from "react";
 import { Box, Text, useInput, useApp } from "ink";
-import { useMetrics, type MetricsStatus, type MetricsJSON } from "./hooks/use-metrics.js";
+import { useMetrics, type MetricsStatus } from "./hooks/use-metrics.js";
 import { QueuePanel } from "./components/queue-panel.js";
 import { ThroughputPanel } from "./components/throughput-panel.js";
 import { DlqPanel } from "./components/dlq-panel.js";
@@ -11,22 +11,20 @@ interface AppProps {
 }
 
 const STATUS_COLORS = new Map<MetricsStatus, string>([
-  ["connecting", "yellow"],
-  ["connected", "green"],
   ["waiting", "magenta"],
-  ["reconnecting", "red"],
+  ["unavailable", "red"],
+  ["connected", "green"],
 ]);
 
 const STATUS_MESSAGES = new Map<MetricsStatus, string>([
-  ["connecting", "● [connecting]  Connecting to metrics server..."],
+  ["waiting", "● [waiting]     Waiting for metrics..."],
+  ["unavailable", "● [unavailable] Metrics endpoint unavailable"],
   ["connected", "● [connected]   Successfully connected"],
-  ["waiting", "● [waiting]     Waiting for valid JSON response..."],
-  ["reconnecting", "● [reconnecting] Reconnecting..."],
 ]);
 
 export const App: React.FC<AppProps> = ({ port = 9464, interval = 2000 }) => {
   const { exit } = useApp();
-  const { status, data, error } = useMetrics({ port, interval });
+  const { status, current, error } = useMetrics({ port, enabled: true, interval });
 
   const statusColor = STATUS_COLORS.get(status) ?? "gray";
   const statusMessage = STATUS_MESSAGES.get(status) ?? status;
@@ -48,9 +46,9 @@ export const App: React.FC<AppProps> = ({ port = 9464, interval = 2000 }) => {
       </Box>
 
       <Box flexDirection="row" gap={1} width="100%" flexWrap="wrap">
-        <QueuePanel data={data} />
-        <ThroughputPanel data={data} />
-        <DlqPanel data={data} />
+        <QueuePanel data={current} />
+        <ThroughputPanel data={current} />
+        <DlqPanel data={current} />
       </Box>
 
       <Box marginTop={1} flexDirection="column">

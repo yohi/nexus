@@ -7,7 +7,7 @@ describe("formatIndexingProgress", () => {
   });
 
   it("shows only processed count when total is zero", () => {
-    expect(formatIndexingProgress(4857, 0)).toBe("Indexing: 4857 files");
+    expect(formatIndexingProgress(4857, 0)).toBe("Indexing: 4857 files (total unknown)");
   });
 
   it("shows only processed count when processed exceeds total", () => {

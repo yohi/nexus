@@ -1,6 +1,6 @@
 import React from "react";
 import { Box, Text } from "ink";
-import type { MetricsJSON, MetricValue } from "../hooks/use-metrics.js";
+import type { MetricsJSON } from "../hooks/use-metrics.js";
 import { getValue, calculateAvgDuration, formatIndexingProgress } from "../utils/metrics.js";
 import { MetricPanel } from "./metric-panel.js";
 

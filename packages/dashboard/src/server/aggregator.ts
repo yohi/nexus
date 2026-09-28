@@ -1,5 +1,4 @@
 import { createServer, type IncomingMessage, type ServerResponse, type Server } from 'node:http';
-import type { AddressInfo } from 'node:net';
 
 export interface RegisteredNode {
   projectId: string;
@@ -116,7 +115,7 @@ export class AggregatorServer {
   get listeningPort(): number | undefined {
     const address = this.server?.address();
     if (address && typeof address === 'object') {
-      return (address as AddressInfo).port;
+      return address.port;
     }
     return undefined;
   }
@@ -146,7 +145,7 @@ export class AggregatorServer {
         // ERR_SERVER_NOT_RUNNING (server not listening yet) is expected
         // if stop() is called after a failed start(), so we ignore it safely.
         // (未listen状態の ERR_SERVER_NOT_RUNNING は正常な cleanup として無視する)
-        this.server!.close((err) => {
+        this.server!.close(() => {
           resolve();
         });
       });
@@ -165,7 +164,7 @@ export class AggregatorServer {
           return;
         }
 
-        const chunkSize = typeof chunk === 'string' ? Buffer.byteLength(chunk) : chunk.length;
+        const chunkSize = typeof chunk === 'string' ? Buffer.byteLength(chunk) : (chunk as Buffer).length;
         bodySize += chunkSize;
 
         if (bodySize > MAX_REGISTER_BODY_BYTES) {
@@ -175,7 +174,7 @@ export class AggregatorServer {
           return;
         }
 
-        body += typeof chunk === 'string' ? chunk : chunk.toString('utf8');
+        body += typeof chunk === 'string' ? chunk : (chunk as Buffer).toString('utf8');
       });
       req.on('end', () => {
         if (res.writableEnded) {
@@ -183,7 +182,7 @@ export class AggregatorServer {
         }
 
         try {
-          const payload = JSON.parse(body);
+          const payload = JSON.parse(body) as Record<string, unknown>;
           if (typeof payload.projectId !== 'string' || typeof payload.metricsPort !== 'number' || typeof payload.pid !== 'number') {
             res.writeHead(400, { 'Content-Type': 'application/json' });
             res.end(JSON.stringify({ error: 'Invalid payload' }));
@@ -243,7 +242,7 @@ export class AggregatorServer {
           signal: controller.signal
         });
         if (!response.ok) throw new Error('Not OK');
-        return await response.json();
+        return await response.json() as unknown;
       } finally {
         clearTimeout(id);
       }

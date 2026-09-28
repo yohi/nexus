@@ -278,7 +278,7 @@ export async function main(args: string[] = process.argv.slice(2)) {
   })();
 
   const interval = (() => {
-    const rawInterval = values.interval as string;
+    const rawInterval = values.interval;
     if (!/^\d+$/.test(rawInterval)) {
       console.warn(`Invalid --interval value "${rawInterval}", falling back to 2000 (min 1000ms)`);
       return 2000;
@@ -306,8 +306,8 @@ export async function main(args: string[] = process.argv.slice(2)) {
   const aggregator = new AggregatorServer();
   try {
     await aggregator.start(aggregatorPort);
-  } catch (err: unknown) {
-    if ((err as NodeJS.ErrnoException).code === 'EADDRINUSE') {
+  } catch (err) {
+    if (err instanceof Error && (err as NodeJS.ErrnoException).code === 'EADDRINUSE') {
       console.warn(`[Nexus Dashboard] Aggregator already running on port ${aggregatorPort}, skipping setup.`);
     } else {
       // Non-fatal: continue with TUI even if aggregator fails (degraded mode).
@@ -324,7 +324,7 @@ export async function main(args: string[] = process.argv.slice(2)) {
   }
 }
 
-async function isMainModule(): Promise<boolean> {
+function isMainModule(): boolean {
   if (!process.argv[1]) return false;
   try {
     const argPath = path.resolve(process.argv[1]);
@@ -335,7 +335,7 @@ async function isMainModule(): Promise<boolean> {
   }
 }
 
-if (await isMainModule()) {
+if (isMainModule()) {
   try {
     await main();
   } catch (err) {
