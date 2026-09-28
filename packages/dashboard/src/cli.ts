@@ -261,21 +261,7 @@ export async function main(args: string[] = process.argv.slice(2)) {
   const autoPort = await readMetricsPortFile(storageDir);
   const configAggregatorPort = readAggregatorPortFromConfig(projectConfig);
 
-  const port = (() => {
-    if (values.port !== undefined) {
-      return parsePortOption(values.port, '--port');
-    }
-    if (autoPort !== undefined) {
-      return autoPort;
-    }
-    console.error(
-      `[Nexus Dashboard] Could not determine metrics port for project: ${projectRoot}\n` +
-      `  Storage dir: ${storageDir}\n` +
-      `  No metrics.port file found. Is the Nexus server running for this project?\n` +
-      `  Hint: Start the server first, or specify the port with --port <number>.`
-    );
-    process.exit(1);
-  })();
+  const port = values.port !== undefined ? parsePortOption(values.port, '--port') : autoPort;
 
   const interval = (() => {
     const rawInterval = values.interval;
@@ -317,7 +303,12 @@ export async function main(args: string[] = process.argv.slice(2)) {
   }
 
   try {
-    const { waitUntilExit } = render(React.createElement(App, { port, interval }));
+    const { waitUntilExit } = render(React.createElement(App, {
+      fixedPort: values.port !== undefined ? port : undefined,
+      storageDir: values.port !== undefined ? undefined : storageDir,
+      metricsInterval: interval,
+      statusInterval: 10_000,
+    }));
     await waitUntilExit();
   } finally {
     await aggregator.stop();
