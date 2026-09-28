@@ -41,9 +41,12 @@ export const App: React.FC<AppProps> = ({ fixedPort, storageDir, metricsInterval
     <DiagnosticsView key="diagnostics" connectionState={connectionState} metrics={metrics} status={status} metricsEndpointUrl={metricsEndpointUrl} statusEndpointUrl={statusEndpointUrl} attentionInput={{ snapshot: status.current, connectionState, metricsEndpointUrl, statusEndpointUrl, metrics: metrics.current, history }} layout={layout} />,
   ];
 
-  useInput((input) => {
-    if (input === "q") { exit(); return; }
-  });
+  useInput(
+    (input) => {
+      if (input === "q") { exit(); return; }
+    },
+    { isActive: process.stdin.isTTY === true },
+  );
 
   return <Box flexDirection="column" padding={1} width="100%">
     <Box justifyContent="center" marginBottom={1}><Text bold color="cyan">Nexus Live Operations Dashboard</Text></Box>

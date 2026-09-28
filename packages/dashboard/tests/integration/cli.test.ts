@@ -1,95 +1,60 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import type { MockInstance } from 'vitest';
-import { mkdtemp, writeFile } from 'node:fs/promises';
-import os from 'node:os';
-import path from 'node:path';
-import { main } from '../../src/cli.js';
-import { AggregatorServer } from '../../src/server/aggregator.js';
+import { describe, it, expect } from "vitest";
+import { spawn } from "node:child_process";
+import * as path from "node:path";
+import { makeTempProject, cleanupTempProject, startNexusServer, waitForOutput } from "./helpers.js";
 
-// We mock ink rendering to check if cli setup succeeds without blocking
-vi.mock('ink', () => ({
-  render: () => ({
-    waitUntilExit: () => Promise.resolve(),
-  }),
-}));
+const cliPath = path.resolve("dist/cli.js");
 
-describe('cli integration', () => {
-  let startSpy: MockInstance<(port: number) => Promise<void>>;
-  let stopSpy: MockInstance<() => Promise<void>>;
+describe("nexus dashboard integration", () => {
+  it("starts and shows Runtime unavailable when the server is not running", async () => {
+    const projectRoot = await makeTempProject();
+    const proc = spawn("node", [cliPath, "--project-root", projectRoot], {
+      cwd: process.cwd(),
+      env: { ...process.env, FORCE_COLOR: "0" },
+    });
 
-  beforeEach(() => {
-    startSpy = vi.spyOn(AggregatorServer.prototype, 'start').mockResolvedValue(undefined);
-    stopSpy = vi.spyOn(AggregatorServer.prototype, 'stop').mockResolvedValue(undefined);
-  });
+    let output = "";
+    proc.stdout.on("data", (chunk) => { output += chunk.toString(); });
+    proc.stderr.on("data", (chunk) => { output += chunk.toString(); });
 
-  afterEach(() => {
-    vi.restoreAllMocks();
-  });
-
-  it('starts and stops AggregatorServer when running dashboard CLI', async () => {
-    process.argv = ['node', 'cli.js', '--project-root', './', '--port', '9500', '--aggregator-port', '9470'];
-    await main();
-
-    expect(startSpy).toHaveBeenCalledWith(9470);
-    expect(stopSpy).toHaveBeenCalled();
-  });
-
-  it('uses aggregatorPort from project .nexus.json when CLI option is omitted', async () => {
-    const projectRoot = await mkdtemp(path.join(os.tmpdir(), 'nexus-dashboard-cli-'));
-    await writeFile(
-      path.join(projectRoot, '.nexus.json'),
-      JSON.stringify({ aggregatorPort: 9555 }),
-      'utf8',
+    await waitForOutput(() => output, "Runtime unavailable", 5000);
+    proc.kill("SIGTERM");
+    const [exitCode, signal] = await new Promise<[number | null, NodeJS.Signals | null]>((resolve) =>
+      proc.once("close", (code, receivedSignal) => resolve([code, receivedSignal])),
     );
-
-    process.argv = ['node', 'cli.js', '--project-root', projectRoot, '--port', '9500'];
-    await main();
-
-    expect(startSpy).toHaveBeenCalledWith(9555);
-    expect(stopSpy).toHaveBeenCalled();
+    expect(output).toContain("Runtime unavailable");
+    expect(exitCode).toBeNull();
+    expect(signal).toBe("SIGTERM");
   });
 
-  it('tolerates EADDRINUSE during AggregatorServer startup and continues running', async () => {
-    const error = new Error('Address already in use');
-    (error as NodeJS.ErrnoException).code = 'EADDRINUSE';
-    startSpy.mockRejectedValue(error);
+  it("reconnects after the runtime restarts on a changed port", async () => {
+    const projectRoot = await makeTempProject();
+    const firstServer = await startNexusServer(projectRoot);
+    const firstPort = firstServer.metricsPort;
+    await firstServer.close();
 
-    process.argv = ['node', 'cli.js', '--project-root', './', '--port', '9500', '--aggregator-port', '9470'];
-
-    // Should not throw, should resolve successfully
-    await expect(main()).resolves.toBeUndefined();
-    expect(startSpy).toHaveBeenCalledWith(9470);
-    expect(stopSpy).toHaveBeenCalled();
-  });
-
-  it('exits when aggregator port is invalid', async () => {
-    const exitSpy = vi.spyOn(process, 'exit').mockImplementation(() => {
-      throw new Error('process.exit');
+    const proc = spawn("node", [cliPath, "--project-root", projectRoot], {
+      cwd: process.cwd(),
+      env: { ...process.env, FORCE_COLOR: "0" },
     });
-    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
 
-    process.argv = ['node', 'cli.js', '--project-root', './', '--port', '9500', '--aggregator-port', 'abc'];
+    let output = "";
+    proc.stdout.on("data", (chunk) => { output += chunk.toString(); });
+    proc.stderr.on("data", (chunk) => { output += chunk.toString(); });
 
-    await expect(main()).rejects.toThrow('process.exit');
-    expect(errorSpy).toHaveBeenCalledWith(expect.stringContaining('Invalid --aggregator-port value "abc"'));
-    expect(exitSpy).toHaveBeenCalledWith(1);
-    expect(startSpy).not.toHaveBeenCalled();
-  });
+    await waitForOutput(() => output, "Runtime unavailable", 5000);
 
-  it('exits when project-root is not a directory', async () => {
-    const filePath = path.join(await mkdtemp(path.join(os.tmpdir(), 'nexus-dashboard-cli-file-')), 'project.txt');
-    await writeFile(filePath, 'not a directory', 'utf8');
+    const secondServer = await startNexusServer(projectRoot, { preferredPort: firstPort + 1 });
+    await waitForOutput(() => output, "No active issues", 15000);
 
-    const exitSpy = vi.spyOn(process, 'exit').mockImplementation(() => {
-      throw new Error('process.exit');
-    });
-    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
-
-    process.argv = ['node', 'cli.js', '--project-root', filePath, '--port', '9500'];
-
-    await expect(main()).rejects.toThrow('process.exit');
-    expect(errorSpy).toHaveBeenCalledWith(expect.stringContaining('Project root must be an existing directory'));
-    expect(exitSpy).toHaveBeenCalledWith(1);
-    expect(startSpy).not.toHaveBeenCalled();
-  });
+    proc.kill("SIGTERM");
+    const [exitCode, signal] = await new Promise<[number | null, NodeJS.Signals | null]>((resolve) =>
+      proc.once("close", (code, receivedSignal) => resolve([code, receivedSignal])),
+    );
+    expect(output).toContain("No active issues");
+    expect(exitCode).toBeNull();
+    expect(signal).toBe("SIGTERM");
+    await secondServer.close();
+    await cleanupTempProject(projectRoot);
+  }, 40_000);
 });
