@@ -25,3 +25,16 @@ root 全体の Vitest は dashboard 検証とは別に実行され、既存の D
 ## コミット
 
 `refactor(dashboard): 旧パネルを削除し統合テストを拡張`
+
+## Task 9 レビュー修正
+
+- brief 指定どおり `metric-panel.tsx` を削除し、同じ Box / Text の構造・枠線・余白・サイズ指定を利用箇所すべて（4 compact panel と Index / Retrieval / Provider / Diagnostics view）へ移植。
+- 両 CLI 統合テストを `try/finally` で囲み、失敗時もプロセスを強制終了し、Nexus 子サーバーと一時 project を片付けるように変更。
+- 統合テストの CLI 成果物 path を package 実行と root Vitest 実行の両方で解決できるよう修正。
+
+修正後の検証:
+
+- `npm run test:e2e` 成功（2 files / 4 tests passed）。
+- Dashboard: tsc、ESLint、build、Vitest 成功（17 files / 70 tests passed）。
+- Root: `npx tsc --noEmit`、`npm run lint` 成功。
+- Root `npx vitest run` 再実行成功（146 files / 1106 tests passed）。以前の実行で一時的に見られた失敗は再現せず、残存失敗なし。
