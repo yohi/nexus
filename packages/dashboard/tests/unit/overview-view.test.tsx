@@ -23,10 +23,10 @@ describe("OverviewView", () => {
 
   it("hides sparklines first on narrow widths", () => {
     const { container: wide } = render(
-      <OverviewView connectionState="connected" snapshot={null} metrics={[{ name: "nexus_search_results_hits", values: [{ value: 1 }, { value: 2 }, { value: 3 }] }]} history={new MetricsHistory()} layout={{ showSparklines: true, showSupplemental: true, showSecondary: true, showDecorations: true, showProviderPanel: true, showQueuePanel: true }} port={null} />
+      <OverviewView connectionState="connected" snapshot={null} metrics={[{ name: "nexus_search_results_hits", values: [{ metricName: "nexus_search_results_hits_sum", labels: { search_type: "grep" }, value: 1 }, { metricName: "nexus_search_results_hits_count", labels: { search_type: "grep" }, value: 2 }] }]} history={new MetricsHistory()} layout={{ showSparklines: true, showSupplemental: true, showSecondary: true, showDecorations: true, showProviderPanel: true, showQueuePanel: true }} port={null} />
     );
     const { container: narrow } = render(
-      <OverviewView connectionState="connected" snapshot={null} metrics={[{ name: "nexus_search_results_hits", values: [{ value: 1 }, { value: 2 }, { value: 3 }] }]} history={new MetricsHistory()} layout={{ showSparklines: false, showSupplemental: true, showSecondary: true, showDecorations: true, showProviderPanel: true, showQueuePanel: true }} port={null} />
+      <OverviewView connectionState="connected" snapshot={null} metrics={[{ name: "nexus_search_results_hits", values: [{ metricName: "nexus_search_results_hits_sum", labels: { search_type: "grep" }, value: 1 }, { metricName: "nexus_search_results_hits_count", labels: { search_type: "grep" }, value: 2 }] }]} history={new MetricsHistory()} layout={{ showSparklines: false, showSupplemental: true, showSecondary: true, showDecorations: true, showProviderPanel: true, showQueuePanel: true }} port={null} />
     );
     expect(wide.textContent).toContain("▁");
     expect(narrow.textContent).not.toContain("▁");

@@ -60,6 +60,7 @@ export function useDashboardEndpointDiscovery(
       setPort(null);
       return;
     }
+    void discover();
     const id = setInterval(() => void discover(), 5000);
     discoveryRef.current = id;
     return () => {

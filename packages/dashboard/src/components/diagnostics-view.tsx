@@ -5,7 +5,6 @@ import type { UseMetricsResult } from "../hooks/use-metrics.js";
 import type { UseDashboardStatusResult } from "../hooks/use-dashboard-status.js";
 import type { DeriveAttentionInput } from "../utils/attention.js";
 import { deriveAttention } from "../utils/attention.js";
-import { AttentionPanel } from "./attention-panel.js";
 import type { LayoutPolicy } from "./overview-view.js";
 
 export interface DiagnosticsViewProps {
@@ -24,7 +23,14 @@ export const DiagnosticsView: React.FC<DiagnosticsViewProps> = ({ connectionStat
   const attention = deriveAttention(attentionInput);
   const snapshot = status.current;
   return <Box flexDirection="column">
-    <AttentionPanel items={attention} />
+    <Box flexDirection="column" marginBottom={1}>
+      <Text bold color={attention.length > 0 ? "yellow" : "green"}>Attention</Text>
+      {attention.length === 0 ? <Text color="green">No active issues</Text> : attention.map((item, index) => {
+        const fieldPath = item.source === "canonical" ? item.fieldPath : "—";
+        const origin = item.source === "connectivity" ? item.endpointUrl ?? "runtime" : item.source === "telemetry" ? item.metricSeries : fieldPath;
+        return <Text key={`${item.reason}-${index}`} color="yellow">• Source: {item.source} · Reason: {item.reason} · Canonical field path: {fieldPath} · Origin: {origin}{item.detail ? ` · ${item.detail}` : ""}</Text>;
+      })}
+    </Box>
     <Box flexDirection="column" borderStyle={layout.showDecorations ? "round" : undefined} borderColor={layout.showDecorations ? "yellow" : undefined} paddingX={layout.showDecorations ? 1 : 0} flexGrow={1} flexBasis="33%" minWidth={30}>
       <Text bold>{layout.showDecorations ? "🩺 Connection diagnostics" : "Diagnostics"}</Text>
       <Box flexDirection="column">
