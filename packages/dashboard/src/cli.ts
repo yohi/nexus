@@ -261,24 +261,10 @@ export async function main(args: string[] = process.argv.slice(2)) {
   const autoPort = await readMetricsPortFile(storageDir);
   const configAggregatorPort = readAggregatorPortFromConfig(projectConfig);
 
-  const port = (() => {
-    if (values.port !== undefined) {
-      return parsePortOption(values.port, '--port');
-    }
-    if (autoPort !== undefined) {
-      return autoPort;
-    }
-    console.error(
-      `[Nexus Dashboard] Could not determine metrics port for project: ${projectRoot}\n` +
-      `  Storage dir: ${storageDir}\n` +
-      `  No metrics.port file found. Is the Nexus server running for this project?\n` +
-      `  Hint: Start the server first, or specify the port with --port <number>.`
-    );
-    process.exit(1);
-  })();
+  const port = values.port !== undefined ? parsePortOption(values.port, '--port') : autoPort;
 
   const interval = (() => {
-    const rawInterval = values.interval as string;
+    const rawInterval = values.interval;
     if (!/^\d+$/.test(rawInterval)) {
       console.warn(`Invalid --interval value "${rawInterval}", falling back to 2000 (min 1000ms)`);
       return 2000;
@@ -306,8 +292,8 @@ export async function main(args: string[] = process.argv.slice(2)) {
   const aggregator = new AggregatorServer();
   try {
     await aggregator.start(aggregatorPort);
-  } catch (err: unknown) {
-    if ((err as NodeJS.ErrnoException).code === 'EADDRINUSE') {
+  } catch (err) {
+    if (err instanceof Error && (err as NodeJS.ErrnoException).code === 'EADDRINUSE') {
       console.warn(`[Nexus Dashboard] Aggregator already running on port ${aggregatorPort}, skipping setup.`);
     } else {
       // Non-fatal: continue with TUI even if aggregator fails (degraded mode).
@@ -317,14 +303,19 @@ export async function main(args: string[] = process.argv.slice(2)) {
   }
 
   try {
-    const { waitUntilExit } = render(React.createElement(App, { port, interval }));
+    const { waitUntilExit } = render(React.createElement(App, {
+      fixedPort: values.port !== undefined ? port : undefined,
+      storageDir: values.port !== undefined ? undefined : storageDir,
+      metricsInterval: interval,
+      statusInterval: 10_000,
+    }));
     await waitUntilExit();
   } finally {
     await aggregator.stop();
   }
 }
 
-async function isMainModule(): Promise<boolean> {
+function isMainModule(): boolean {
   if (!process.argv[1]) return false;
   try {
     const argPath = path.resolve(process.argv[1]);
@@ -335,7 +326,7 @@ async function isMainModule(): Promise<boolean> {
   }
 }
 
-if (await isMainModule()) {
+if (isMainModule()) {
   try {
     await main();
   } catch (err) {

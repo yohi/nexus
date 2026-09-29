@@ -8,6 +8,16 @@ const REGISTRY_TIMEOUT_MS = 5000;
 /**
  * Result of the plugin registry health check.
  */
+export type RuntimeKnownHealth = "healthy" | "unhealthy" | "unknown";
+
+export interface KnownHealthEntry {
+  health: RuntimeKnownHealth;
+  lastError: string | null;
+}
+
+/**
+ * Result of the plugin registry health check.
+ */
 export interface HealthCheckResult {
   /**
    * Details about language plugins.
@@ -109,6 +119,8 @@ export class PluginRegistry {
 
   private readonly embeddings = new EmbeddingProviderRegistry();
 
+  private readonly knownHealth = new Map<string, KnownHealthEntry>();
+
   registerLanguage(plugin: LanguagePlugin): void {
     this.languages.register(plugin);
   }
@@ -119,6 +131,7 @@ export class PluginRegistry {
 
   registerEmbeddingProvider(name: string, provider: EmbeddingProvider): void {
     this.embeddings.register(name, provider);
+    this.knownHealth.delete(name);
   }
 
   getEmbeddingProvider(): EmbeddingProvider | undefined {
@@ -127,6 +140,7 @@ export class PluginRegistry {
 
   setActiveEmbeddingProvider(name: string): void {
     this.embeddings.setActive(name);
+    this.knownHealth.clear();
   }
 
   getActiveEmbeddingProviderName(): string | undefined {
@@ -137,6 +151,10 @@ export class PluginRegistry {
     return this.embeddings.getRegisteredProviderNames();
   }
 
+  getEmbeddingProviderHealth(name: string): KnownHealthEntry | undefined {
+    return this.knownHealth.get(name);
+  }
+
   /**
    * Performs a health check on all registered plugins and providers.
    */
@@ -144,11 +162,11 @@ export class PluginRegistry {
     const activeProvider = this.embeddings.getActive();
     const activeProviderName = this.embeddings.getActiveName();
     let embeddingHealthy = false;
+    let probeError: string | null = null;
 
     if (activeProvider) {
       let timer: ReturnType<typeof setTimeout> | undefined;
       try {
-        // Race the health check against the timeout
         embeddingHealthy = await Promise.race([
           activeProvider.healthCheck(),
           new Promise<boolean>((resolve) => {
@@ -157,10 +175,23 @@ export class PluginRegistry {
             }, REGISTRY_TIMEOUT_MS);
           }),
         ]);
-      } catch {
+      } catch (err) {
         embeddingHealthy = false;
+        probeError = err instanceof Error ? err.message : String(err);
       } finally {
         if (timer) clearTimeout(timer);
+      }
+    }
+
+    const stillCurrent =
+      this.embeddings.getActiveName() === activeProviderName &&
+      this.embeddings.getActive() === activeProvider;
+
+    if (stillCurrent && activeProviderName !== undefined) {
+      if (embeddingHealthy) {
+        this.knownHealth.set(activeProviderName, { health: "healthy", lastError: null });
+      } else {
+        this.knownHealth.set(activeProviderName, { health: "unhealthy", lastError: probeError });
       }
     }
 

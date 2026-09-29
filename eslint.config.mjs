@@ -38,5 +38,17 @@ export default tseslint.config(
       '@typescript-eslint/restrict-template-expressions': 'off',
       '@typescript-eslint/no-unnecessary-condition': 'off',
     },
-  }
+  },
+  {
+    files: ['packages/dashboard/src/**/*.{ts,tsx}'],
+    languageOptions: {
+      parserOptions: {
+        project: './packages/dashboard/tsconfig.json',
+        tsconfigRootDir: import.meta.dirname,
+      },
+    },
+    rules: {
+      '@typescript-eslint/consistent-type-imports': 'error',
+    },
+  },
 );

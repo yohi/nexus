@@ -9,6 +9,8 @@ import { MetricsHttpServer } from "../observability/metrics-server.js";
 import type { Registry } from "prom-client";
 import { writeMetricsPort, removeMetricsPort } from "./metrics-port.js";
 import { RegistrationClient } from "../observability/registration-client.js";
+import { createDashboardStatusEndpoint } from "../observability/dashboard-status-endpoint.js";
+import { buildDashboardIndexStatusSnapshot } from "./tools/build-dashboard-index-status-snapshot.js";
 import { registerV1Tools } from './tools/registry/adapters/v1-adapter.js';
 import { buildToolHandlers } from './tools/tool-support.js';
 import type { NexusServerOptions } from './tools/types.js';
@@ -158,8 +160,16 @@ export const buildNexusRuntime = (
 
         // Use port 0 for auto-assignment, unless explicitly overridden.
         const preferredPort = options.metricsPort ?? 0;
+        const dashboardStatusEndpoint = createDashboardStatusEndpoint(() =>
+          buildDashboardIndexStatusSnapshot(
+            options.metadataStore,
+            options.vectorStore,
+            options.pluginRegistry,
+            options.pipeline,
+          ),
+        );
         metricsServer = options.metricsCollectorRegistry
-          ? new MetricsHttpServer(options.metricsCollectorRegistry)
+          ? new MetricsHttpServer(options.metricsCollectorRegistry, dashboardStatusEndpoint)
           : null;
         if (metricsServer) {
           await metricsServer.start(preferredPort).catch((err) => {
