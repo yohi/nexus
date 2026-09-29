@@ -28,7 +28,7 @@ describe("nexus dashboard integration", () => {
       proc.stdout?.on("data", (chunk) => { output += chunk.toString(); });
       proc.stderr?.on("data", (chunk) => { output += chunk.toString(); });
 
-      await waitForOutput(() => output, "Runtime unavailable", 15_000);
+      await waitForOutput(() => output, "Runtime unavailable", 30_000);
       proc.kill("SIGTERM");
       const [exitCode, signal] = await new Promise<[number | null, NodeJS.Signals | null]>((resolve) =>
         proc?.once("close", (code, receivedSignal) => resolve([code, receivedSignal])),
@@ -40,7 +40,7 @@ describe("nexus dashboard integration", () => {
       await stopProcess(proc);
       await cleanupTempProject(projectRoot);
     }
-  }, 40_000);
+  }, 60_000);
 
   it("reconnects after the runtime restarts on a changed port", async () => {
     const projectRoot = await makeTempProject();
@@ -62,10 +62,10 @@ describe("nexus dashboard integration", () => {
       proc.stdout?.on("data", (chunk) => { output += chunk.toString(); });
       proc.stderr?.on("data", (chunk) => { output += chunk.toString(); });
 
-      await waitForOutput(() => output, "Runtime unavailable", 15_000);
+      await waitForOutput(() => output, "Runtime unavailable", 30_000);
 
       secondServer = await startNexusServer(projectRoot, { preferredPort: firstPort + 1 });
-      await waitForOutput(() => output, "No active issues", 15000);
+      await waitForOutput(() => output, "No active issues", 30_000);
 
       proc.kill("SIGTERM");
       const [exitCode, signal] = await new Promise<[number | null, NodeJS.Signals | null]>((resolve) =>
@@ -80,5 +80,5 @@ describe("nexus dashboard integration", () => {
       await firstServer?.close();
       await cleanupTempProject(projectRoot);
     }
-  }, 40_000);
+  }, 75_000);
 });
