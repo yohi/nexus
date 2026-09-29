@@ -21,7 +21,7 @@ describe("nexus dashboard integration", () => {
     try {
       proc = spawn("node", [cliPath, "--project-root", projectRoot], {
         cwd: process.cwd(),
-        env: { ...process.env, FORCE_COLOR: "0" },
+        env: { ...process.env, CI: "false", FORCE_COLOR: "0" },
       });
 
       let output = "";
@@ -55,7 +55,7 @@ describe("nexus dashboard integration", () => {
 
       proc = spawn("node", [cliPath, "--project-root", projectRoot], {
         cwd: process.cwd(),
-        env: { ...process.env, FORCE_COLOR: "0" },
+        env: { ...process.env, CI: "false", FORCE_COLOR: "0" },
       });
 
       let output = "";
