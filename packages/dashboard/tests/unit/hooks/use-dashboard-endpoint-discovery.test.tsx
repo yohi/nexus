@@ -8,7 +8,11 @@ import { useDashboardEndpointDiscovery } from "../../../src/hooks/use-dashboard-
 
 function Probe(props: { fixedPort?: number; storageDir?: string }) {
   const result = useDashboardEndpointDiscovery({ fixedPort: props.fixedPort, storageDir: props.storageDir });
-  return <div data-testid="state">{result.connectionState}</div>;
+  return (
+    <div data-testid="state">
+      {result.connectionState}:{result.metrics.status}:{result.status.status}
+    </div>
+  );
 }
 
 describe("useDashboardEndpointDiscovery", () => {
@@ -37,7 +41,7 @@ describe("useDashboardEndpointDiscovery", () => {
     });
 
     const { getByTestId } = render(<Probe fixedPort={9464} />);
-    await waitFor(() => expect(getByTestId("state").textContent).toBe("connected"));
+    await waitFor(() => expect(getByTestId("state").textContent).toContain("connected:connected:connected"));
   });
 
   it("discovers an existing runtime immediately on mount", async () => {
@@ -58,6 +62,23 @@ describe("useDashboardEndpointDiscovery", () => {
       render(<Probe storageDir={storageDir} />);
       await waitFor(() => expect(globalThis.fetch).toHaveBeenCalledWith("http://127.0.0.1:9465/metrics/json", expect.anything()), { timeout: 1000 });
     } finally {
+      await rm(storageDir, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps one discovery interval when both endpoints are unavailable", async () => {
+    const storageDir = await mkdtemp(path.join(tmpdir(), "nexus-dashboard-discovery-"));
+    await writeFile(path.join(storageDir, "metrics.port"), "9466\n", "utf8");
+    const setIntervalSpy = vi.spyOn(globalThis, "setInterval");
+    globalThis.fetch = vi.fn().mockRejectedValue(new Error("offline"));
+
+    try {
+      const { getByTestId } = render(<Probe storageDir={storageDir} />);
+      await waitFor(() => expect(getByTestId("state").textContent).toBe("runtime_unavailable:unavailable:unavailable"));
+
+      expect(setIntervalSpy.mock.calls.filter(([, delay]) => delay === 5000)).toHaveLength(1);
+    } finally {
+      setIntervalSpy.mockRestore();
       await rm(storageDir, { recursive: true, force: true });
     }
   });

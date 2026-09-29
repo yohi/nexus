@@ -1,5 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 
+const REQUEST_TIMEOUT_MS = 5000;
+
 export interface PollResult<T> {
   status: "waiting" | "unavailable" | "connected";
   current: T | null;
@@ -41,6 +43,7 @@ export function usePolledEndpoint<T>(options: UsePolledEndpointOptions<T>): Poll
     if (!enabled || port === null) return;
 
     const controller = new AbortController();
+    let inFlight = false;
     const markUnavailable = (message: string) => {
       const previousCurrent = currentRef.current;
       setStale((previousStale) => previousCurrent ?? previousStale);
@@ -51,8 +54,12 @@ export function usePolledEndpoint<T>(options: UsePolledEndpointOptions<T>): Poll
       setStatus("unavailable");
     };
     const poll = async () => {
+      if (inFlight) return;
+      inFlight = true;
       try {
-        const response = await fetch(`http://127.0.0.1:${port}${path}`, { signal: controller.signal });
+        const timeoutSignal = AbortSignal.timeout(REQUEST_TIMEOUT_MS);
+        const signal = AbortSignal.any([controller.signal, timeoutSignal]);
+        const response = await fetch(`http://127.0.0.1:${port}${path}`, { signal });
         if (!response.ok) throw new Error(`HTTP ${response.status}`);
         if (!(response.headers.get("content-type") ?? "").includes("application/json")) {
           throw new Error("Invalid JSON");
@@ -68,6 +75,8 @@ export function usePolledEndpoint<T>(options: UsePolledEndpointOptions<T>): Poll
       } catch (err) {
         if (controller.signal.aborted) return;
         markUnavailable(err instanceof Error ? err.message : String(err));
+      } finally {
+        inFlight = false;
       }
       setGeneration((value) => value + 1);
     };

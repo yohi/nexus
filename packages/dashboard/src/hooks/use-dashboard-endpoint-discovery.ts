@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback } from "react";
+import { useState, useEffect, useCallback } from "react";
 import * as fsPromises from "node:fs/promises";
 import * as path from "node:path";
 import { useMetrics } from "./use-metrics.js";
@@ -43,8 +43,6 @@ export function useDashboardEndpointDiscovery(
   const isDiscovery = fixedPort === undefined;
   const [port, setPort] = useState<number | null>(fixedPort ?? null);
   const [connectionState, setConnectionState] = useState<DashboardConnectionState>("waiting");
-  const discoveryRef = useRef<ReturnType<typeof setInterval> | undefined>(undefined);
-
   const discover = useCallback(async () => {
     if (!isDiscovery || !storageDir) return;
     const discovered = await readMetricsPort(storageDir);
@@ -62,7 +60,6 @@ export function useDashboardEndpointDiscovery(
     }
     void discover();
     const id = setInterval(() => void discover(), 5000);
-    discoveryRef.current = id;
     return () => {
       clearInterval(id);
     };
@@ -75,11 +72,6 @@ export function useDashboardEndpointDiscovery(
     if (!isDiscovery || port === null) return;
     if (metrics.status === "unavailable" && status.status === "unavailable") {
       void discover();
-      const previousId = discoveryRef.current;
-      if (previousId) {
-        clearInterval(previousId);
-      }
-      discoveryRef.current = setInterval(() => void discover(), 5000);
     }
   }, [isDiscovery, port, metrics.status, status.status, discover]);
 
