@@ -1,5 +1,29 @@
 # Changelog
 
+## [2.6.0](https://github.com/yohi/nexus/compare/v2.5.0...v2.6.0) (2026-09-29)
+
+
+### Features
+
+* dashboard /status エンドポイントをループバック metrics サーバーに追加 ([65992e4](https://github.com/yohi/nexus/commit/65992e4baf123c86c622043f909a5d981842220b))
+* dashboard 用 side-effect-free snapshot ビルダーを追加 ([7f37ab2](https://github.com/yohi/nexus/commit/7f37ab2ca45be53c049a7fda824231265304c7d0))
+* **dashboard:** 5ビュー、ナビゲーション、狭幅レイアウトを実装 ([34f91c8](https://github.com/yohi/nexus/commit/34f91c82d6ed0e3da3f5153f31781d3239610464))
+* **dashboard:** 5分間メトリクス履歴リングバッファと sparkline を追加 ([62f0484](https://github.com/yohi/nexus/commit/62f04840e992f19306be73a229064d6cbb009968))
+* **dashboard:** dashboard 用 status 型定義を追加 ([a1b847d](https://github.com/yohi/nexus/commit/a1b847dbe66226f6e03d4122916d5f3dfca490cd))
+* **dashboard:** ValueState, readiness, Attention ユーティリティを追加 ([0bf7cc9](https://github.com/yohi/nexus/commit/0bf7cc91f6d26ffe85ee7f1005506da023a07ee0))
+* **dashboard:** ポーリング hook とエンドポイント discovery を追加 ([c861a91](https://github.com/yohi/nexus/commit/c861a91577b887406268c25388d87d8e3783adfa))
+* PluginRegistry にランタイム既知のヘルスキャッシュを追加 ([35704bc](https://github.com/yohi/nexus/commit/35704bcc3cff497949bf9cd5746c69e6d3f4938d))
+* ダッシュボードの可視性と指標表示を改善 ([f8c1c6b](https://github.com/yohi/nexus/commit/f8c1c6b117945f4aad7790aabdb6efaec8460058))
+
+
+### Bug Fixes
+
+* **dashboard:** Task 8 レビュー指摘を修正（layout 利用、MetricPanel 装飾抑制、ナビゲーションテスト強化） ([b3ff8fe](https://github.com/yohi/nexus/commit/b3ff8fef2c617492960f3323e7a44f3bec6a306a))
+* **dashboard:** エンドポイント再検出とポーリングを安定化 ([78b1fab](https://github.com/yohi/nexus/commit/78b1fab376ef6f792299294d375dc86e7685ef2d))
+* **dashboard:** 新しい useMetrics 契約と ESLint ルールに合わせて既存ファイルを修正 ([2fe4c0b](https://github.com/yohi/nexus/commit/2fe4c0bc82fdf9b6f5e379e96e7bec8e4ee5cc25))
+* SonarのPATH脆弱性指摘に対応 ([45dcf25](https://github.com/yohi/nexus/commit/45dcf25341327526fa43cae5c1c20bcbb19647dc))
+* ダッシュボードの指標表示と初期探索を修正 ([85ac3f6](https://github.com/yohi/nexus/commit/85ac3f6ef2da742e0d18a4777f14bbaa92d712e6))
+
 ## [2.5.0](https://github.com/yohi/nexus/compare/v2.4.0...v2.5.0) (2026-09-18)
 
 
