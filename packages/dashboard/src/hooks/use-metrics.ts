@@ -1,4 +1,6 @@
-import { useState, useEffect, useRef } from "react";
+import { usePolledEndpoint } from "./use-polled-endpoint.js";
+import type { PollResult } from "./use-polled-endpoint.js";
+export type { PollResult } from "./use-polled-endpoint.js";
 
 export type MetricsStatus = "waiting" | "unavailable" | "connected";
 
@@ -23,97 +25,20 @@ export interface UseMetricsOptions {
   interval?: number;
 }
 
-export interface PollResult<T> {
-  status: "waiting" | "unavailable" | "connected";
-  current: T | null;
-  stale: T | null;
-  error: string | null;
-  lastSuccessAt: number | null;
-  lastErrorAt: number | null;
-  generation: number;
-}
-
 export type UseMetricsResult = PollResult<MetricsJSON[]>;
 
+async function parseMetrics(response: Response): Promise<MetricsJSON[]> {
+  const json: unknown = await response.json();
+  if (!Array.isArray(json)) throw new Error("Invalid response shape: expected array");
+  return json as MetricsJSON[];
+}
+
 export function useMetrics(options: UseMetricsOptions = {}): UseMetricsResult {
-  const { port = null, enabled = false, interval = 2000 } = options;
-  const [status, setStatus] = useState<MetricsStatus>("waiting");
-  const [current, setCurrent] = useState<MetricsJSON[] | null>(null);
-  const [stale, setStale] = useState<MetricsJSON[] | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [lastSuccessAt, setLastSuccessAt] = useState<number | null>(null);
-  const [lastErrorAt, setLastErrorAt] = useState<number | null>(null);
-  const [generation, setGeneration] = useState(0);
-  const currentRef = useRef<MetricsJSON[] | null>(null);
-
-  useEffect(() => {
-    setStatus("waiting");
-    setCurrent(null);
-    setStale(null);
-    setError(null);
-    setLastSuccessAt(null);
-    setLastErrorAt(null);
-    setGeneration(0);
-    currentRef.current = null;
-    if (!enabled || port === null) {
-      return;
-    }
-    const abortController = new AbortController();
-    const url = `http://127.0.0.1:${port}/metrics/json`;
-
-    const markUnavailable = (msg: string) => {
-      const now = Date.now();
-      const previousCurrent = currentRef.current;
-      setStale((previousStale) => previousCurrent ?? previousStale);
-      setCurrent(null);
-      currentRef.current = null;
-      setError(msg);
-      setLastErrorAt(now);
-      setStatus("unavailable");
-    };
-
-    const poll = async () => {
-      try {
-        const res = await fetch(url, { signal: abortController.signal });
-        if (!res.ok) {
-          markUnavailable(`HTTP ${res.status}`);
-          setGeneration((g) => g + 1);
-          return;
-        }
-        const contentType = res.headers.get("content-type") ?? "";
-        if (!contentType.includes("application/json")) {
-          markUnavailable("Invalid JSON");
-          setGeneration((g) => g + 1);
-          return;
-        }
-        const json = (await res.json()) as unknown;
-        if (!Array.isArray(json)) {
-          markUnavailable("Invalid response shape: expected array");
-          setGeneration((g) => g + 1);
-          return;
-        }
-        currentRef.current = json as MetricsJSON[];
-        setCurrent(json as MetricsJSON[]);
-        setStale(null);
-        setError(null);
-        setLastSuccessAt(Date.now());
-        setLastErrorAt(null);
-        setStatus("connected");
-        setGeneration((g) => g + 1);
-      } catch (err) {
-        if (abortController.signal.aborted) return;
-        markUnavailable(err instanceof Error ? err.message : String(err));
-        setGeneration((g) => g + 1);
-      }
-    };
-
-    void poll();
-    const id = setInterval(() => void poll(), interval);
-    return () => {
-      abortController.abort();
-      clearInterval(id);
-    };
-  }, [port, enabled, interval]);
-
-  return { status, current, stale, error, lastSuccessAt, lastErrorAt, generation };
+  const { interval = 2000, ...endpointOptions } = options;
+  return usePolledEndpoint({
+    ...endpointOptions,
+    interval,
+    path: "/metrics/json",
+    parse: parseMetrics,
+  });
 }
