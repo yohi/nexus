@@ -24,6 +24,10 @@ declarations and imports are produced only when the parser actually extracts
 them from the file; not every supported file necessarily contributes
 structured records.
 
+Language adapters are limited to declaration discovery, identity, range, and
+coverage concerns. They do not resolve compilation semantics, build a reference
+graph, or reimplement a language server.
+
 ## Structured index vs vector index
 
 Files with supported extensions may contribute to both the structured index

@@ -34,7 +34,9 @@ line-oriented / non-symbol hit
   -> get_context
 ```
 
-Search chunks and logical symbols are different retrieval units. Prefer exact structured retrieval when a usable `symbolId` exists.
+Search chunks and logical symbols are different retrieval units with different correctness contracts. A chunk is a ranking/retrieval unit; a logical symbol is a verified declaration identity. Prefer exact structured retrieval when a usable `symbolId` exists.
+
+LSP-backed semantic navigation (where implemented) is a live observation of the current working tree and is not persisted as an authoritative reference/call/type graph.
 
 ## Search Tools
 

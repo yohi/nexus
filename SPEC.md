@@ -37,7 +37,7 @@ File watcher
                        -> SQLite metadata / structured catalog
 ```
 
-Search combines semantic and/or textual retrieval through the search orchestrator. Structured retrieval uses the structured catalog to identify logical declarations and the current working tree to return verified source.
+Search combines semantic and/or textual retrieval through the search orchestrator. Structured retrieval uses the structured catalog to identify logical declarations and the current working tree to return verified source. The retrieval-layer contracts in §6 define which layers are authoritative and which are derived caches.
 
 Runtime storage resources are shared within a runtime rather than recreated for each MCP request.
 
@@ -101,15 +101,66 @@ A clean full rebuild (`nexus --reindex --full`) enforces an all-or-nothing trans
 
 `get_context` retrieves an explicit file range or, when no range is supplied in eager mode, the file content according to the tool contract. Its deferred mode provides a bounded preview and a hint for subsequent range retrieval.
 
-## 6. Structured Symbol Retrieval
+## 6. Retrieval Architecture Boundaries
 
-### 6.1 Logical symbols are independent of search chunks
+Nexus exposes multiple retrieval layers with distinct correctness contracts. The current working tree is the only authoritative source of truth; every other layer is derived data.
+
+### 6.1 Layer responsibilities
+
+| Layer | Role | Source of truth | Contract |
+| --- | --- | --- | --- |
+| Semantic index | Meaning-based approximate discovery | Derived cache (`LanceDB` vectors) | Returns ranked candidates; not authoritative source content |
+| Text search (`grep_search`) | Exact string/regex discovery | Source files via ripgrep | Reads current source directly |
+| Structured Catalog | Persistent symbol locator and identity catalog | Derived catalog (`SQLite`) plus current source | Resolves `symbolId` to a declaration range and verifies the requested identity against current source |
+| Current working tree | Authoritative source content | Source files | Exact/current source |
+| LSP | On-demand semantic relationships | Current working tree | Live observations; not persisted as authoritative graphs |
+
+### 6.2 Retrieval correctness principles
+
+- Derived indexes may identify candidates, but they are not authoritative source content.
+- Exact/structured retrieval must verify the requested identity against current source before returning it as fresh/current.
+- When current-source correctness cannot be established, the response reports an explicit stale, degraded, unsupported, or not-indexed status rather than presenting guessed or stale source as current.
+- Search chunks and logical symbols serve different purposes; chunk boundaries must not become the authoritative declaration boundary.
+- LSP results are live semantic observations and must not be persisted as authoritative reference/call/type graphs.
+
+### 6.3 Structured Catalog ownership
+
+The Structured Catalog owns:
+
+- stable `symbolId`;
+- language, kind, logical name, and qualified name;
+- file and declaration range;
+- declaration/file hashes;
+- generation and retirement state;
+- parser coverage/status.
+
+### 6.4 Structured Catalog non-goals
+
+The Structured Catalog must not become the source of truth for:
+
+- references;
+- definition edges;
+- implementations;
+- caller/callee graph;
+- inheritance/type hierarchy;
+- resolved import graph;
+- inferred type information.
+
+These relationships must be derived from the current worktree through LSP or other live analysis when needed.
+
+### 6.5 Language adapter expectations
+
+Language adapters are limited to declaration discovery, identity, range, and coverage concerns. They are not language-server reimplementations and must not silently expand into duplicate semantic-analysis engines.
+
+## 7. Structured Symbol Retrieval
+
+### 7.1 Logical symbols are independent of search chunks
 
 A logical declaration and a search chunk are separate retrieval units. Large declarations can be split into multiple search chunks for ranking while remaining one logical symbol in the structured catalog.
 
 Exact symbol retrieval returns the complete verified logical declaration, not the search chunk that happened to identify it.
 
-### 6.2 Supported languages and extensions
+### 7.2 Supported languages and extensions
 
 The structured parser supports:
 
@@ -124,7 +175,7 @@ The structured parser supports:
 
 Unsupported or partially parsed files must report explicit status rather than being presented as exact structured coverage.
 
-### 6.3 Symbol identity and AST parsing contracts
+### 7.3 Symbol identity and AST parsing contracts
 
 `symbolId` is a stable logical identity generated from declaration identity inputs (`filePath`, `qualifiedName`, `kind`, `signatureDiscriminator`, `occurrence`) rather than body text or source line numbers. Moving a declaration without changing its logical identity does not by itself require a new ID; identity-changing signature/name changes can.
 
@@ -138,7 +189,7 @@ AST traversal guarantees:
 
 Retired identities are tracked so stale IDs fail explicitly rather than resolving to a guessed replacement.
 
-### 6.4 Freshness and fail-closed verification
+### 7.4 Freshness and fail-closed verification
 
 Structured retrieval compares the indexed file identity/hash with the current working-tree file before returning exact source. It also verifies the requested symbol slice against the indexed symbol hash.
 
@@ -146,37 +197,37 @@ If the current file, structured generation, parser coverage, or symbol hash does
 
 For example, a current file hash mismatch returns `stale` with reason code `INDEX_FILE_HASH_MISMATCH`, while a retired symbol identity returns `stale_identity` with reason code `SYMBOL_RETIRED`.
 
-### 6.5 Embedding independence
+### 7.5 Embedding independence
 
 Once a structured catalog generation exists, `get_file_outline`, `get_symbol_source`, and `get_symbol_context` do not require semantic-search or embedding availability to retrieve structured data. They use the structured catalog plus the current working tree.
 
-### 6.6 Repository scope and exclusions
+### 7.6 Repository scope and exclusions
 
 Structured indexing follows the same project scope and exclusion policy as the main Nexus indexing pipeline. Paths excluded from indexing are not independently indexed for structured retrieval and are reported as excluded when queried.
 
-### 6.7 Context token budget
+### 7.7 Context token budget
 
 `get_symbol_context` always preserves the complete symbol source. Its token budget is used to select related validated imports/context; budget pressure may omit related imports but does not truncate the symbol declaration itself. The response reports requested/actual budget usage and whether related context was omitted for budget.
 
-## 7. Local HTTP v2
+## 8. Local HTTP v2
 
 `nexus serve` exposes Streamable HTTP MCP using the v2 protocol implementation.
 
-### 7.1 Loopback-only binding
+### 8.1 Loopback-only binding
 
 The server accepts loopback hosts only (`127.0.0.1`, `localhost`, or `::1`). Non-loopback binding fails closed. Hostname input is resolved/validated so a non-loopback address cannot bypass this restriction.
 
 Origin and Host validation is enforced in the application layer as protection against DNS rebinding.
 
-### 7.2 Stateless transport
+### 8.2 Stateless transport
 
 Direct `nexus serve` requests use stateless v2 handling and do not keep legacy server-side MCP session maps. Each HTTP request can create the request-scoped MCP transport/server state needed to process that request while sharing the project runtime.
 
-### 7.3 Health
+### 8.3 Health
 
 The server exposes health/readiness endpoints as implemented by the current HTTP transport. Readiness reflects whether required runtime storage is available rather than pretending an unavailable runtime is healthy.
 
-## 8. HTTP Bridge and Managed Project Server
+## 9. HTTP Bridge and Managed Project Server
 
 `nexus http-bridge` is a stdio-facing MCP bridge for clients that cannot connect directly to Streamable HTTP.
 
@@ -186,13 +237,13 @@ Multiple bridge clients for the same project can share the managed runtime while
 
 Managed servers can shut down automatically after the configured idle period when no clients remain.
 
-## 9. Process Coordination
+## 10. Process Coordination
 
 Nexus uses project-level process locking to prevent conflicting runtime/index writers for the same project.
 
 Ollama embedding calls use a machine-global lock to prevent multiple Nexus processes from oversubscribing the same local provider. Lock acquisition supports cancellation and bounded waiting according to configuration, and lock release is guaranteed on success and failure paths.
 
-## 10. Package Mode
+## 11. Package Mode
 
 `packageMode` / `NEXUS_PACKAGE_MODE=1` enables distribution-specific constraints.
 
@@ -205,19 +256,19 @@ In package mode:
 
 The operational packaging workflow and deployment prerequisites are documented in [docs/distribution.md](docs/distribution.md).
 
-## 11. Observability
+## 12. Observability
 
 Nexus records MCP tool calls, latency, search hit counts, context lines, embedding requests, and structured-retrieval outcomes through the metrics collector.
 
 A metrics HTTP server exposes Prometheus and JSON metrics. The dashboard/aggregator can discover and aggregate multiple Nexus processes. See [docs/observability/README.md](docs/observability/README.md) for operational setup.
 
-## 12. Security and Path Handling
+## 13. Security and Path Handling
 
 Tool paths are sanitized against project boundaries and symlink traversal. Source retrieval must not traverse outside the configured project root.
 
 Secrets and credentials are configuration inputs and must not be written into repository documentation, generated index data, or logs.
 
-## 13. Compatibility and Source of Truth
+## 14. Compatibility and Source of Truth
 
 - Current public MCP schemas and response fields: [docs/mcp-tools.md](docs/mcp-tools.md)
 - Structured index languages and limitations: [docs/structured-index.md](docs/structured-index.md)
