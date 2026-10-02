@@ -1,10 +1,14 @@
 # Nexus Technical Specification
 
-This document is the canonical source for **current** Nexus architecture invariants and behavioral contracts. It does not define future roadmap targets; see [ROADMAP.md](ROADMAP.md) for planned work. Detailed MCP tool inputs, outputs, and status fields belong in [docs/mcp-tools.md](docs/mcp-tools.md).
+This document is the canonical source for **current** Nexus architecture
+invariants and behavioral contracts. It does not define future roadmap targets;
+see [ROADMAP.md](ROADMAP.md) for planned work. Detailed MCP tool inputs,
+outputs, and status fields belong in [docs/mcp-tools.md](docs/mcp-tools.md).
 
 ## 1. Product Boundary
 
-Nexus is a local-first code indexing and retrieval service exposed through Model Context Protocol (MCP). It combines:
+Nexus is a local-first code indexing and retrieval service exposed through Model
+Context Protocol (MCP). It combines:
 
 - file watching and incremental indexing;
 - semantic vector search;
@@ -19,13 +23,19 @@ The default storage root is project-local (`<projectRoot>/.nexus`).
 
 ## 2. Data and Provider Boundary
 
-With a local-only embedding provider such as Ollama, source-derived index data remains on the host. Configuring an external embedding provider such as `openai-compat` or `bedrock` can transmit source-derived text to that configured service.
+With a local-only embedding provider such as Ollama, source-derived index data
+remains on the host. Configuring an external embedding provider such as
+`openai-compat` or `bedrock` can transmit source-derived text to that configured
+service.
 
-Local HTTP v2 rejects external embedding providers through the transport constraint checks. Do not infer that all Nexus operating modes are zero-transmission when an external provider is configured.
+Local HTTP v2 rejects external embedding providers through the transport
+constraint checks. Do not infer that all Nexus operating modes are
+zero-transmission when an external provider is configured.
 
 ## 3. Runtime Architecture
 
-A Nexus runtime owns the indexing/search state for a project. The principal data flow is:
+A Nexus runtime owns the indexing/search state for a project. The principal data
+flow is:
 
 ```text
 File watcher
@@ -37,15 +47,116 @@ File watcher
                        -> SQLite metadata / structured catalog
 ```
 
-Search combines semantic and/or textual retrieval through the search orchestrator. Structured retrieval uses the structured catalog to identify logical declarations and the current working tree to return verified source.
+Search combines semantic and/or textual retrieval through the search
+orchestrator. Structured retrieval uses the structured catalog to identify
+logical declarations and the current working tree to return verified source.
 
-Runtime storage resources are shared within a runtime rather than recreated for each MCP request.
+Runtime storage resources are shared within a runtime rather than recreated for
+each MCP request.
+
+## 3.5 Retrieval Architecture Boundaries and Source of Truth
+
+Nexus separates approximate discovery from verified/current-source retrieval.
+Each layer has a distinct responsibility and correctness contract.
+
+### 3.5.1 Retrieval layers and their responsibilities
+
+- **Semantic/vector index** — derived cache for meaning-based discovery. It
+  returns ranked search chunks and must not be treated as authoritative source
+  content or complete logical declarations.
+- **Text search (ripgrep)** — exact string/regex discovery against source files.
+  Results are line-oriented matches, not verified declarations.
+- **Structured Catalog** — persistent symbol locator and identity catalog. It
+  stores stable `symbolId`, language, kind, logical name, qualified name, file
+  and declaration range, declaration/file hashes, generation and retirement
+  state, and parser coverage/status.
+- **Current working tree** — the authoritative source of truth. Exact/current-source
+  structured retrieval (`get_symbol_source`, `get_symbol_context`) must verify the
+  requested identity against current source bytes before returning them as
+  fresh/current.
+- **LSP** — on-demand semantic relationships derived from the current working
+  tree. Nexus does not currently integrate an LSP client; this layer is a future
+  consideration for live semantic navigation (see [ROADMAP.md](ROADMAP.md) and
+  issue #298).
+
+### 3.5.2 Source of truth
+
+Source files in the current working tree are the single source of truth. All
+indexes — vector, structured catalog, search chunks, and Merkle metadata — are
+derived data. A derived index may identify candidates, but it is not
+authoritative source content.
+
+### 3.5.3 Discovery vs verified retrieval
+
+- **Approximate discovery** (`semantic_search`, `grep_search`, `hybrid_search`)
+  produces candidates and rankings. Search chunks are retrieval/ranking units
+  and must not be treated as complete logical declarations.
+- **Verified/current-source retrieval** (`get_symbol_source`,
+  `get_symbol_context`) returns content read from the current working tree.
+  Structured retrieval verifies the indexed file hash and symbol hash against
+  current source before returning exact source.
+- **`get_context`** reads an explicit file range or, in eager mode, the file
+  content according to its tool contract. It is a current-working-tree read,
+  not a structured-symbol identity or hash verification.
+
+### 3.5.4 Structured Catalog persistence boundaries
+
+The Structured Catalog persists:
+
+- stable `symbolId`;
+- language, kind, logical name, and qualified name;
+- file and declaration range;
+- declaration and file hashes;
+- generation and retirement state;
+- parser coverage/status.
+
+The Structured Catalog does not persist and must not become the source of truth
+for:
+
+- references;
+- definition edges;
+- implementations;
+- caller/callee graph;
+- inheritance/type hierarchy;
+- resolved import graph;
+- inferred type information.
+
+These semantic relationships should be derived from the current working tree
+through LSP or other live analysis when needed.
+
+### 3.5.5 Architecture non-goals
+
+Nexus rejects persistent reference/call/type graphs unless future evidence
+justifies them. The project remains a thin, composable code-retrieval runtime
+rather than a persistent semantic graph or language-server reimplementation.
+
+Language adapters are limited to declaration discovery, identity, range, and
+coverage concerns. They must not grow into duplicate semantic-analysis engines.
+
+### 3.5.6 Failure semantics
+
+When current-source correctness cannot be established, structured retrieval
+(`get_symbol_source` and `get_symbol_context`) returns an explicit failure or
+uncertainty status from the public structured-retrieval status set rather than
+silently returning guessed or stale source as current. The public status set is
+divided into two groups:
+
+- **Verified success**: `ok` — returned only when the requested identity is
+  resolved and the current working tree content is successfully verified as
+  fresh.
+- **Failure or uncertainty statuses**: `not_found`, `stale_identity`,
+  `not_indexed`, `excluded`, `unsupported`, `degraded`, `stale`,
+  `index_incomplete`.
+
+Exact/structured retrieval must not represent unverified source as fresh/current.
 
 ## 4. Indexing Invariants
 
 ### 4.1 Background initial indexing
 
-Normal server startup begins a full scan in the background when no completed usable index exists. Runtime initialization does not wait for the full scan before accepting tool requests.
+Normal server startup begins a full scan in the background when no completed
+usable index exists. Runtime initialization does not wait for the full scan before
+accepting tool requests.
 
 `index_status` is the canonical public way to observe indexing state.
 
@@ -54,36 +165,61 @@ A completed usable index requires:
 - `indexStats.lastIndexedAt` to be non-null; and
 - `pipelineProgress.lastError` to be absent.
 
-A stale but previously successful index is not automatically rebuilt solely because it is old.
+A stale but previously successful index is not automatically rebuilt solely
+because it is old.
 
 ### 4.2 Event queue and recovery
 
-File-system changes are buffered and debounced. Overflow/reconciliation paths preserve eventual consistency instead of silently dropping changes. Dead-letter/recovery state prevents retry exhaustion from stopping the indexing pipeline.
+File-system changes are buffered and debounced. Overflow/reconciliation paths
+preserve eventual consistency instead of silently dropping changes.
+Dead-letter/recovery state prevents retry exhaustion from stopping the indexing
+pipeline.
 
-A full reindex is not considered successful while unresolved dead-letter work remains.
+A full reindex is not considered successful while unresolved dead-letter work
+remains.
 
 ### 4.3 Storage
 
-SQLite is the metadata and structured-catalog store. LanceDB stores vector-search data. Batch mutation paths use transactional/atomic activation boundaries where required so readers do not observe partially activated structured generations.
+SQLite is the metadata and structured-catalog store. LanceDB stores vector-search
+data. Batch mutation paths use transactional/atomic activation boundaries where
+required so readers do not observe partially activated structured generations.
 
 ### 4.4 Full rebuild commit protocol and crash recovery
 
-A clean full rebuild (`nexus --reindex --full`) enforces an all-or-nothing transactional boundary across SQLite metadata, LanceDB vector storage, and the Merkle tree:
+A clean full rebuild (`nexus --reindex --full`) enforces an all-or-nothing
+transactional boundary across SQLite metadata, LanceDB vector storage, and the
+Merkle tree:
 
-- During full rebuild, legacy chunks and path deletions are staged in a legacy shadow table (`legacy_shadow_*`) and Merkle tree mutations are deferred. Any structured parse failure immediately aborts the rebuild, discarding staged shadow data and leaving live vector tables, Merkle metadata, and active structured catalog generations unchanged.
-- Multi-store commits follow a durable six-phase journal in SQLite (`structured_rebuild_backup_runs` and `structured_rebuild_backup_vectors`):
-  1. `building` (`prepared`): catalog backup and pre-rebuild Merkle snapshot are persisted.
-  2. `legacy-swapped`: live legacy `chunks` are backed up (`legacy_bak_*`) and the atomic replacement is promoted.
-  3. `structured-swapped`: live `structured_chunks` are backed up (`struct_bak_*`) and the atomic replacement is promoted.
+- During full rebuild, legacy chunks and path deletions are staged in a legacy
+  shadow table (`legacy_shadow_*`) and Merkle tree mutations are deferred. Any
+  structured parse failure immediately aborts the rebuild, discarding staged
+  shadow data and leaving live vector tables, Merkle metadata, and active
+  structured catalog generations unchanged.
+- Multi-store commits follow a durable six-phase journal in SQLite
+  (`structured_rebuild_backup_runs` and `structured_rebuild_backup_vectors`):
+  1. `building` (`prepared`): catalog backup and pre-rebuild Merkle snapshot are
+     persisted.
+  2. `legacy-swapped`: live legacy `chunks` are backed up (`legacy_bak_*`) and
+     the atomic replacement is promoted.
+  3. `structured-swapped`: live `structured_chunks` are backed up
+     (`struct_bak_*`) and the atomic replacement is promoted.
   4. `catalog-activated`: SQLite active generations are promoted.
-  5. `merkle-activated`: deferred Merkle mutations are committed to the Merkle tree.
+  5. `merkle-activated`: deferred Merkle mutations are committed to the Merkle
+     tree.
   6. `idle` (`finalized`): backup tables and journal records are removed.
-- An interruption before `merkle-activated` triggers a coordinated rollback across all three stores upon startup reconciliation, restoring the SQLite catalog, LanceDB vector tables, and Merkle state from the recorded snapshot.
-- An interruption at or after `merkle-activated` preserves the new generation and finalizes temporary artifact cleanup.
+- An interruption before `merkle-activated` triggers a coordinated rollback across
+  all three stores upon startup reconciliation, restoring the SQLite catalog,
+  LanceDB vector tables, and Merkle state from the recorded snapshot.
+- An interruption at or after `merkle-activated` preserves the new generation and
+  finalizes temporary artifact cleanup.
 - The journal records deterministic names for vector shadow, replacement, and
   backup artifacts. A journal-referenced artifact is retained until coordinated
-  reconciliation completes; standalone cleanup removes only unreferenced artifacts.
-- Startup reconciliation deletes unreferenced shadow (`legacy_shadow_*`, `struct_shadow_*`), replacement (`legacy_rep_*`, `struct_rep_*`), and backup (`legacy_bak_*`, `struct_bak_*`) tables while strictly preserving live `chunks` and `structured_chunks`.
+  reconciliation completes; standalone cleanup removes only unreferenced
+  artifacts.
+- Startup reconciliation deletes unreferenced shadow (`legacy_shadow_*`,
+  `struct_shadow_*`), replacement (`legacy_rep_*`, `struct_rep_*`), and backup
+  (`legacy_bak_*`, `struct_bak_*`) tables while strictly preserving live
+  `chunks` and `structured_chunks`.
 
 ## 5. Search
 
@@ -91,7 +227,9 @@ A clean full rebuild (`nexus --reindex --full`) enforces an all-or-nothing trans
 
 `semantic_search` performs vector similarity search.
 
-`hybrid_search` combines semantic results and ripgrep results using Reciprocal Rank Fusion (RRF). Search chunks are ranking/retrieval units and must not be treated as complete logical declarations.
+`hybrid_search` combines semantic results and ripgrep results using Reciprocal
+Rank Fusion (RRF). Search chunks are ranking/retrieval units and must not be
+treated as complete logical declarations.
 
 ### 5.2 Exact text search
 
@@ -99,64 +237,111 @@ A clean full rebuild (`nexus --reindex --full`) enforces an all-or-nothing trans
 
 ### 5.3 Bounded file context
 
-`get_context` retrieves an explicit file range or, when no range is supplied in eager mode, the file content according to the tool contract. Its deferred mode provides a bounded preview and a hint for subsequent range retrieval.
+`get_context` retrieves an explicit file range or, when no range is supplied in
+eager mode, the file content according to the tool contract. Its deferred mode
+provides a bounded preview and a hint for subsequent range retrieval.
 
 ## 6. Structured Symbol Retrieval
 
 ### 6.1 Logical symbols are independent of search chunks
 
-A logical declaration and a search chunk are separate retrieval units. Large declarations can be split into multiple search chunks for ranking while remaining one logical symbol in the structured catalog.
+A logical declaration and a search chunk are separate retrieval units. Large
+declarations can be split into multiple search chunks for ranking while
+remaining one logical symbol in the structured catalog.
 
-Exact symbol retrieval returns the complete verified logical declaration, not the search chunk that happened to identify it.
+Exact symbol retrieval returns the complete verified logical declaration, not the
+search chunk that happened to identify it.
 
 ### 6.2 Supported languages and extensions
 
 The structured parser supports:
 
-- TypeScript / JavaScript (`.ts`, `.tsx`, `.js`, `.jsx`, `.mjs`, `.cjs`, `.mts`, `.cts`) via the TypeScript compiler API;
+- TypeScript / JavaScript (`.ts`, `.tsx`, `.js`, `.jsx`, `.mjs`, `.cjs`, `.mts`,
+  `.cts`) via the TypeScript compiler API;
 - Python (`.py`, `.pyi`) via tree-sitter;
 - Go (`.go`) via tree-sitter;
 - Rust (`.rs`) via tree-sitter;
 - Java (`.java`) via tree-sitter;
 - C# (`.cs`) via tree-sitter;
 - C (`.c`) via tree-sitter;
-- C++ (`.h`, `.cc`, `.cpp`, `.cxx`, `.hh`, `.hpp`, `.hxx`) via tree-sitter (`.h` is explicitly parsed as C++).
+- C++ (`.h`, `.cc`, `.cpp`, `.cxx`, `.hh`, `.hpp`, `.hxx`) via tree-sitter
+  (`.h` is explicitly parsed as C++).
 
-Unsupported or partially parsed files must report explicit status rather than being presented as exact structured coverage.
+Unsupported or partially parsed files must report explicit status rather than
+being presented as exact structured coverage.
 
 ### 6.3 Symbol identity and AST parsing contracts
 
-`symbolId` is a stable logical identity generated from declaration identity inputs (`filePath`, `qualifiedName`, `kind`, `signatureDiscriminator`, `occurrence`) rather than body text or source line numbers. Moving a declaration without changing its logical identity does not by itself require a new ID; identity-changing signature/name changes can.
+`symbolId` is a stable logical identity generated from declaration identity
+inputs (`filePath`, `qualifiedName`, `kind`, `signatureDiscriminator`,
+`occurrence`) rather than body text or source line numbers. Moving a declaration
+without changing its logical identity does not by itself require a new ID;
+identity-changing signature/name changes can.
 
-Core and additive language-specific `SymbolKind` values are supported (`struct`, `trait`, `impl`, `record`, `field`). The canonical `qualifiedName` uses `.` as the separator across all language catalogs (e.g. Rust `module.Trait`, `Type.method`).
+Core and additive language-specific `SymbolKind` values are supported (`struct`,
+`trait`, `impl`, `record`, `field`). The canonical `qualifiedName` uses `.` as
+the separator across all language catalogs (e.g. Rust `module.Trait`,
+`Type.method`).
 
 AST traversal guarantees:
 
-- **Error isolation:** A declaration is emitted only when its declaration, range, and scope nodes are free of syntax errors (`ERROR` / `MISSING`). Descendants of a broken container are skipped and never flattened into the parent scope.
-- **Lexical ownership:** Parent-child links are established using lexical descriptor keys (`declarationKey` and `ownerKey`) rather than name-based reverse lookup. Rust `impl` method ownership resolves to the uniquely identified target type rather than the `impl` block.
-- **Import-only preservation:** A valid parse with `status === 'ok'`, zero declarations, and non-empty imports preserves its import records in the structured catalog.
+- **Error isolation:** A declaration is emitted only when its declaration,
+  range, and scope nodes are free of syntax errors (`ERROR` / `MISSING`).
+  Descendants of a broken container are skipped and never flattened into the
+  parent scope.
+- **Lexical ownership:** Parent-child links are established using lexical
+  descriptor keys (`declarationKey` and `ownerKey`) rather than name-based
+  reverse lookup. Rust `impl` method ownership resolves to the uniquely
+  identified target type rather than the `impl` block.
+- **Import-only preservation:** A valid parse with `status === 'ok'`, zero
+  declarations, and non-empty imports preserves its import records in the
+  structured catalog.
 
-Retired identities are tracked so stale IDs fail explicitly rather than resolving to a guessed replacement.
+Retired identities are tracked so stale IDs fail explicitly rather than
+resolving to a guessed replacement.
 
 ### 6.4 Freshness and fail-closed verification
 
-Structured retrieval compares the indexed file identity/hash with the current working-tree file before returning exact source. It also verifies the requested symbol slice against the indexed symbol hash.
+Structured retrieval compares the indexed file identity/hash with the current
+working-tree file before returning exact source. It also verifies the requested
+symbol slice against the indexed symbol hash.
 
-If the current file, structured generation, parser coverage, or symbol hash does not satisfy the exactness contract, the request fails closed with an explicit structured status/error. It must not silently return stale or guessed source as exact. During indexing, a degraded parse with zero declarations is classified internally as `StructuredReadResult.kind === 'parse-failed'` regardless of import count. Incremental processing records this through `structuredParseFailed` and routes the file to the dead-letter queue; a full rebuild aborts. This internal marker is not part of the public MCP retrieval contract. The parser result contract uses `status: 'failed'` plus `failure.reasonCode` (including `parse_error` where applicable), while public retrieval tools expose only their documented `status`/`reasonCode` values.
+If the current file, structured generation, parser coverage, or symbol hash does
+not satisfy the exactness contract, the request fails closed with an explicit
+structured status/error. It must not silently return stale or guessed source as
+exact. During indexing, a degraded parse with zero declarations is classified
+internally as `StructuredReadResult.kind === 'parse-failed'` regardless of
+import count. Incremental processing records this through
+`structuredParseFailed` and routes the file to the dead-letter queue; a full
+rebuild aborts. This internal marker is not part of the public MCP retrieval
+contract. The parser result contract uses `status: 'failed'` plus
+`failure.reasonCode` (including `parse_error` where applicable), while public
+retrieval tools expose only their documented `status`/`reasonCode` values.
 
-For example, a current file hash mismatch returns `stale` with reason code `INDEX_FILE_HASH_MISMATCH`, while a retired symbol identity returns `stale_identity` with reason code `SYMBOL_RETIRED`.
+For example, a current file hash mismatch returns `stale` with reason code
+`INDEX_FILE_HASH_MISMATCH`, while a retired symbol identity returns
+`stale_identity` with reason code `SYMBOL_RETIRED`.
 
 ### 6.5 Embedding independence
 
-Once a structured catalog generation exists, `get_file_outline`, `get_symbol_source`, and `get_symbol_context` do not require semantic-search or embedding availability to retrieve structured data. They use the structured catalog plus the current working tree.
+Once a structured catalog generation exists, `get_file_outline`,
+`get_symbol_source`, and `get_symbol_context` do not require semantic-search or
+embedding availability to retrieve structured data. They use the structured
+catalog plus the current working tree.
 
 ### 6.6 Repository scope and exclusions
 
-Structured indexing follows the same project scope and exclusion policy as the main Nexus indexing pipeline. Paths excluded from indexing are not independently indexed for structured retrieval and are reported as excluded when queried.
+Structured indexing follows the same project scope and exclusion policy as the
+main Nexus indexing pipeline. Paths excluded from indexing are not independently
+indexed for structured retrieval and are reported as excluded when queried.
 
 ### 6.7 Context token budget
 
-`get_symbol_context` always preserves the complete symbol source. Its token budget is used to select related validated imports/context; budget pressure may omit related imports but does not truncate the symbol declaration itself. The response reports requested/actual budget usage and whether related context was omitted for budget.
+`get_symbol_context` always preserves the complete symbol source. Its token
+budget is used to select related validated imports/context; budget pressure may
+omit related imports but does not truncate the symbol declaration itself. The
+response reports requested/actual budget usage and whether related context was
+omitted for budget.
 
 ## 7. Local HTTP v2
 
@@ -164,33 +349,50 @@ Structured indexing follows the same project scope and exclusion policy as the m
 
 ### 7.1 Loopback-only binding
 
-The server accepts loopback hosts only (`127.0.0.1`, `localhost`, or `::1`). Non-loopback binding fails closed. Hostname input is resolved/validated so a non-loopback address cannot bypass this restriction.
+The server accepts loopback hosts only (`127.0.0.1`, `localhost`, or `::1`).
+Non-loopback binding fails closed. Hostname input is resolved/validated so a
+non-loopback address cannot bypass this restriction.
 
-Origin and Host validation is enforced in the application layer as protection against DNS rebinding.
+Origin and Host validation is enforced in the application layer as protection
+against DNS rebinding.
 
 ### 7.2 Stateless transport
 
-Direct `nexus serve` requests use stateless v2 handling and do not keep legacy server-side MCP session maps. Each HTTP request can create the request-scoped MCP transport/server state needed to process that request while sharing the project runtime.
+Direct `nexus serve` requests use stateless v2 handling and do not keep legacy
+server-side MCP session maps. Each HTTP request can create the request-scoped
+MCP transport/server state needed to process that request while sharing the
+project runtime.
 
 ### 7.3 Health
 
-The server exposes health/readiness endpoints as implemented by the current HTTP transport. Readiness reflects whether required runtime storage is available rather than pretending an unavailable runtime is healthy.
+The server exposes health/readiness endpoints as implemented by the current HTTP
+transport. Readiness reflects whether required runtime storage is available
+rather than pretending an unavailable runtime is healthy.
 
 ## 8. HTTP Bridge and Managed Project Server
 
-`nexus http-bridge` is a stdio-facing MCP bridge for clients that cannot connect directly to Streamable HTTP.
+`nexus http-bridge` is a stdio-facing MCP bridge for clients that cannot connect
+directly to Streamable HTTP.
 
-Without an explicit URL, the bridge discovers a healthy project-scoped local server from the storage descriptor or launches a managed loopback server. Managed discovery validates project identity and health before reuse.
+Without an explicit URL, the bridge discovers a healthy project-scoped local
+server from the storage descriptor or launches a managed loopback server.
+Managed discovery validates project identity and health before reuse.
 
-Multiple bridge clients for the same project can share the managed runtime while keeping client-side MCP transport state isolated.
+Multiple bridge clients for the same project can share the managed runtime while
+keeping client-side MCP transport state isolated.
 
-Managed servers can shut down automatically after the configured idle period when no clients remain.
+Managed servers can shut down automatically after the configured idle period
+when no clients remain.
 
 ## 9. Process Coordination
 
-Nexus uses project-level process locking to prevent conflicting runtime/index writers for the same project.
+Nexus uses project-level process locking to prevent conflicting runtime/index
+writers for the same project.
 
-Ollama embedding calls use a machine-global lock to prevent multiple Nexus processes from oversubscribing the same local provider. Lock acquisition supports cancellation and bounded waiting according to configuration, and lock release is guaranteed on success and failure paths.
+Ollama embedding calls use a machine-global lock to prevent multiple Nexus
+processes from oversubscribing the same local provider. Lock acquisition
+supports cancellation and bounded waiting according to configuration, and lock
+release is guaranteed on success and failure paths.
 
 ## 10. Package Mode
 
@@ -203,26 +405,38 @@ In package mode:
 - local metrics/dashboard behavior remains available;
 - external aggregator registration is skipped.
 
-The operational packaging workflow and deployment prerequisites are documented in [docs/distribution.md](docs/distribution.md).
+The operational packaging workflow and deployment prerequisites are documented
+in [docs/distribution.md](docs/distribution.md).
 
 ## 11. Observability
 
-Nexus records MCP tool calls, latency, search hit counts, context lines, embedding requests, and structured-retrieval outcomes through the metrics collector.
+Nexus records MCP tool calls, latency, search hit counts, context lines,
+embedding requests, and structured-retrieval outcomes through the metrics
+collector.
 
-A metrics HTTP server exposes Prometheus and JSON metrics. The dashboard/aggregator can discover and aggregate multiple Nexus processes. See [docs/observability/README.md](docs/observability/README.md) for operational setup.
+A metrics HTTP server exposes Prometheus and JSON metrics. The
+ dashboard/aggregator can discover and aggregate multiple Nexus processes. See
+[docs/observability/README.md](docs/observability/README.md) for operational
+setup.
 
 ## 12. Security and Path Handling
 
-Tool paths are sanitized against project boundaries and symlink traversal. Source retrieval must not traverse outside the configured project root.
+Tool paths are sanitized against project boundaries and symlink traversal.
+Source retrieval must not traverse outside the configured project root.
 
-Secrets and credentials are configuration inputs and must not be written into repository documentation, generated index data, or logs.
+Secrets and credentials are configuration inputs and must not be written into
+repository documentation, generated index data, or logs.
 
 ## 13. Compatibility and Source of Truth
 
+- Source files in the current working tree are the single source of truth.
+  Derived indexes and catalogs are caches and locators, not authoritative source
+  content. See the Retrieval Architecture Boundaries section.
 - Current public MCP schemas and response fields: [docs/mcp-tools.md](docs/mcp-tools.md)
 - Structured index languages and limitations: [docs/structured-index.md](docs/structured-index.md)
 - Runtime configuration: [docs/configuration.md](docs/configuration.md)
 - Future target state: [ROADMAP.md](ROADMAP.md)
 - Released history: [CHANGELOG.md](CHANGELOG.md)
 
-When prose conflicts with implementation-backed protocol schemas or tests, fix the prose; do not preserve duplicate normative contracts in multiple documents.
+When prose conflicts with implementation-backed protocol schemas or tests, fix
+the prose; do not preserve duplicate normative contracts in multiple documents.
