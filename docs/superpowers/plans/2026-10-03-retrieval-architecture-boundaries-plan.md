@@ -8,7 +8,7 @@
 
 **Tech Stack:** Markdown, Vitest, TypeScript (for test file only), `npm run lint`, `npx tsc --noEmit`.
 
-**Spec:** [docs/superpowers/specs/2026-10-03-retrieval-architecture-boundaries-design.md](../../../specs/2026-10-03-retrieval-architecture-boundaries-design.md)
+**Spec:** [docs/superpowers/specs/2026-10-03-retrieval-architecture-boundaries-design.md](../specs/2026-10-03-retrieval-architecture-boundaries-design.md)
 
 ## Global Constraints
 
@@ -20,7 +20,7 @@
 
 ## Review Focus
 
-1. **Section renumbering side effects:** Adding a new §6 shifts former §6–§13 to §7–§14. Internal cross-references and README links must remain correct.
+1. **Section renumbering side effects:** Adding a new §6 shifts former §6–§13 to §7–§14. Preserve stable Markdown anchors for unchanged section titles, update internal cross-references, and inspect/update links in `README.md`, `AGENTS.md`, and other docs that reference SPEC.md section numbers or anchors.
 2. **LSP wording over-commitment:** The new section describes an architectural role for LSP (#298), but concrete LSP tools do not exist yet. Wording must avoid documenting specific tool inputs/outputs.
 3. **Non-goals misread as absolute bans:** Non-goals should be phrased as "not pursued unless future evidence justifies" rather than permanent prohibitions.
 4. **Docs consistency test coverage:** The test that checks guidance text in `SPEC.md` must include the new boundary phrases, or acceptance criteria cannot be mechanically verified.
@@ -48,7 +48,8 @@ The new section must contain exactly these subsections in order:
 
 1. **Source files are the only source of truth**
    - State that source files are the authoritative source of truth.
-   - State that semantic index, text search index, structured catalog, and any other derived state are not authoritative source content.
+   - State that semantic index, structured catalog, and any other derived state are not authoritative source content.
+   - State that text search (`grep_search`) operates directly against source files and is not a persistent text search index.
 2. **Retrieval layers and responsibilities**
    - Define semantic index as a derived cache for meaning-based discovery.
    - Define text search (`grep_search`) as exact string/regex discovery against source files.
@@ -81,13 +82,14 @@ The new section must contain exactly these subsections in order:
 
 - [ ] **Step 3: Renumber former §6 "Structured Symbol Retrieval" through §13 to §7–§14**
 
-Update every section number and any internal references to those section numbers.
+Update every section number and any internal references to those section numbers. Where section titles stay the same, keep the old Markdown anchors (e.g., `#structured-symbol-retrieval`) intact so existing deep links continue to resolve to the correct topic.
 
-- [ ] **Step 4: Add cross-references**
+- [ ] **Step 4: Update cross-references and external links**
 
 - In §3 Runtime Architecture, add a forward reference to the new §6 when mentioning retrieval layers.
 - In former §6.4 (now §7.4) Freshness and fail-closed verification, add a backward reference to the new §6.
 - In §13 (now §14) Compatibility and Source of Truth, add a note that data-layer source of truth is covered in §6.
+- Inspect `README.md`, `AGENTS.md`, `docs/mcp-tools.md`, `docs/structured-index.md`, and `docs/configuration.md` for links or section-number references to the renumbered SPEC.md sections, and update them to match the new numbering or stable anchors.
 
 - [ ] **Step 5: Verify no contradictory statements remain**
 
@@ -98,12 +100,16 @@ Read the updated `SPEC.md` once and confirm it does not contradict `docs/mcp-too
 Run: `npm run lint`
 Expected: passes.
 
-- [ ] **Step 7: Commit the SPEC update**
+- [ ] **Step 7: Commit the SPEC update only if explicitly requested**
+
+If the user explicitly asked to commit, run:
 
 ```bash
 git add SPEC.md
 git commit -m "docs: define retrieval architecture boundaries and Structured Catalog non-goals"
 ```
+
+If no explicit request was made, leave the changes uncommitted.
 
 ---
 
@@ -120,20 +126,18 @@ git commit -m "docs: define retrieval architecture boundaries and Structured Cat
 
 Understand the existing assertion pattern (e.g., checking for `stale_identity`, `INDEX_FILE_HASH_MISMATCH`, etc.).
 
-- [ ] **Step 2: Add assertions for the new boundary phrases**
+- [ ] **Step 2: Add assertions scoped to the new §6 boundary phrases**
 
-Add case-insensitive substring checks for at least these phrases in `SPEC.md`:
+Read the updated `SPEC.md`, locate the new §6 "Retrieval Architecture Boundaries and Source of Truth", and add case-insensitive substring checks that verify the *content* of that section, not just the presence of words elsewhere in the document. For each phrase, assert it appears inside §6 or in the specific list/subsection that implements the boundary concept:
 
-- `"source of truth"`
-- `"derived data"` or `"derived index"`
-- `"authoritative source"`
-- `"approximate discovery"`
-- `"verified/current-source retrieval"`
-- `"search chunks"` and `"logical symbols"`
-- `"Structured Catalog"` owns / does not own lists (e.g., `"references"`, `"caller/callee"`, `"type hierarchy"`)
-- `"LSP"`
-- `"non-goal"` or `"non-goals"`
-- `"language adapter"` or `"language adapters"`
+- Subsection 6.1: `source files are the only source of truth`, `derived data`, and `not authoritative source content`.
+- Subsection 6.2: `semantic index` as a derived cache, `grep_search` as direct source-file search, `Structured Catalog` as persistent symbol locator, `current working tree` as authoritative source content, and `LSP` as on-demand semantic relationships.
+- Subsection 6.3: `approximate discovery`, `verified/current-source retrieval`, and an explicit list or sentence showing that unverified source is returned with a status (`stale`, `stale_identity`, `degraded`, `index_incomplete`, `unsupported`, `not_indexed`) rather than as fresh/current.
+- Subsection 6.4: `search chunks` and `logical symbols` as distinct units, plus the requirement that chunk boundaries must not become authoritative declaration boundaries.
+- Subsection 6.5: a list or structure showing what the catalog owns (`stable symbolId`, language/kind, declaration range, hashes, generation/retirement state, parser coverage/status) and what it does not own (`references`, `caller/callee`, `type hierarchy`, `resolved import graph`, `inferred type information`).
+- Subsection 6.6: `LSP results are live semantic observations` and a statement that they are not persisted as authoritative reference/call/type graphs, plus the #298 future-work note.
+- Subsection 6.7: `non-goals` phrased as `not pursued unless future evidence justifies` rather than absolute bans.
+- Subsection 6.8: `language adapters` limited to declaration discovery, stable identity, declaration range, and parser coverage/status, and explicitly not required to resolve references, build call graphs, reconstruct type hierarchies, or infer types.
 
 Keep the existing assertions unless they are superseded.
 
@@ -147,12 +151,16 @@ Expected: passes.
 Run: `npx tsc --noEmit`
 Expected: no errors.
 
-- [ ] **Step 5: Commit the test update**
+- [ ] **Step 5: Commit the test update only if explicitly requested**
+
+If the user explicitly asked to commit, run:
 
 ```bash
 git add tests/unit/docs/structured-retrieval-guidance.test.ts
 git commit -m "test: assert retrieval architecture boundary guidance in SPEC.md"
 ```
+
+If no explicit request was made, leave the changes uncommitted.
 
 ---
 
@@ -202,9 +210,9 @@ For each #296 acceptance criterion, cite the SPEC.md section/paragraph where it 
 | Existing MCP tool contracts and tests remain consistent | Cross-reference checks + unchanged tool definitions |
 | #320 can derive correctness scenarios from documented contracts | New §6.3, §6.4, §6.5, §7.4 |
 
-- [ ] **Step 6: Commit final verification log (optional)**
+- [ ] **Step 6: Commit final verification log only if explicitly requested**
 
-If the report is saved as a file, commit it; otherwise present it in the task completion message.
+If the user explicitly asked to save the report as a committed file, add and commit it. Otherwise, present the coverage table in the task completion message without committing.
 
 ---
 

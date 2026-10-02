@@ -39,13 +39,12 @@ Add a new standalone section to `SPEC.md` rather than scattering the content acr
 The new section will contain the following subsections, scaled to the complexity of each topic:
 
 1. **Source files are the only source of truth**
-   - State that every index and catalog is derived data.
+   - State that every index, catalog, and derived search result is derived data.
+   - State that `grep_search` performs exact string/regex discovery directly against source files and is not a persistent text search index.
    - No derived state silently overrides the current working tree for exact/current-source retrieval.
-
 2. **Retrieval layers and responsibilities**
    - Semantic index: derived cache for meaning-based discovery.
-   - Text search (`grep_search`): exact string/regex discovery against source files.
-   - Structured Catalog: persistent symbol locator and identity catalog.
+   - Text search (`grep_search`): exact string/regex discovery against source files, not a persistent text index.
    - Current working tree: authoritative source content.
    - LSP: on-demand semantic relationships derived from the current working tree.
 
@@ -102,7 +101,7 @@ The new section will contain the following subsections, scaled to the complexity
 
 | Risk | Mitigation |
 |------|------------|
-| Adding a new section renumbers later sections, which may break external deep links. | This is unavoidable for a document change; the content gain outweighs the link cost. Consider keeping section titles stable so anchors still resolve to the right topic. |
+| Adding a new section renumbers later sections, which may break external deep links. | Preserve old Markdown anchors for sections whose titles do not change so existing links resolve to the correct topic. Inspect `README.md`, `AGENTS.md`, `docs/mcp-tools.md`, `docs/structured-index.md`, and `docs/configuration.md` for SPEC.md section-number or anchor references and update them. Where a section title changes and the old anchor cannot be preserved, accept that the corresponding external deep link may break. |
 | The LSP role is described architecturally but the concrete tools are not implemented, which may be read as a commitment. | Use careful wording such as "when provided" and reference #298; avoid documenting specific tool inputs/outputs. |
 | Non-goals could be read as forbidding future work. | Phrase them as "not pursued unless future evidence justifies" rather than absolute bans. |
 
