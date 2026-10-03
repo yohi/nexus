@@ -1,5 +1,13 @@
 # Changelog
 
+## [2.6.1](https://github.com/yohi/nexus/compare/v2.6.0...v2.6.1) (2026-10-03)
+
+
+### Bug Fixes
+
+* implement ([596d643](https://github.com/yohi/nexus/commit/596d643dc6a67aa5fc07be0f072f76ef6e150d5a))
+* issue [#296](https://github.com/yohi/nexus/issues/296) ([df53372](https://github.com/yohi/nexus/commit/df5337273cd06bad066c00b40878863002de5122))
+
 ## [2.6.0](https://github.com/yohi/nexus/compare/v2.5.0...v2.6.0) (2026-09-29)
 
 
