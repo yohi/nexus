@@ -32,7 +32,10 @@ When asked to set up the repository:
 4. Use masked input or trusted credential stores for secrets; never request or print tokens in chat.
 5. Load [skills/code-search/SKILL.md](skills/code-search/SKILL.md) into the current agent context.
 6. Verify against two independent gates:
-   - **MCP gate**: MCP client starts Nexus, `index_status` succeeds, and search returns project results (`MCP: connected`).
+   - **MCP gate**: Report `MCP: connected` only when all five checks pass:
+     the MCP client starts Nexus, `index_status` succeeds, search returns
+     project results, `pipelineProgress.lastError` is absent, and
+     `indexStats.lastIndexedAt` is set.
    - **Skill gate**: `skills/code-search/SKILL.md` is loaded and its workflow is ready (`Skill: loaded`).
    Report complete only when both gates pass; otherwise report the failed gate, non-secret output, and next safe action.
 
