@@ -1,367 +1,178 @@
 # Early structured parse failure abort for full rebuild — Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For agentic workers:** Execute tasks in order. The primary regression test must be observed failing before production code is changed. Do not skip RED verification if implementation already exists; investigate and restore the pre-change baseline in an isolated worktree or equivalent before proceeding. Commit only when explicitly requested by the task owner.
 
-**Goal:** Change `nexus/src/indexer/pipeline.ts` so that a structured full rebuild aborts on the first window containing a structured parse failure, before any embedding calls are made for that window.
+**Goal:** Change `src/indexer/pipeline.ts` so a structured full rebuild aborts on the first window containing a structured parse failure, before embedding that window.
 
-**Architecture:** Add `parseFailures: string[]` and `shouldAbortStructuredFullRebuild: boolean` to `ProcessEventWindowResult`. Populate them inside `processEventWindow` after read-and-chunk. If the caller passed `structuredRebuildFiles` (full-rebuild mode) and the window has parse failures, return immediately before embedding or writes. `processEvents` checks `useStructuredFullRebuild && windowResult.shouldAbortStructuredFullRebuild` after each window and, if true, aborts the legacy shadow table and throws the existing error message.
-
-**Tech Stack:** TypeScript, Node.js >=24, Vitest, `proper-lockfile`, Better-SQLite3.
+**Architecture:** `processEventWindow` detects parse failures after Stage 1 (read and chunk). When `structuredRebuildFiles !== undefined` and failures exist, it returns an explicit early result without entering embedding or write stages. `processEvents` owns legacy shadow abort and throws the unchanged error before aggregating the failed window. Incremental processing continues its existing DLQ behavior.
 
 **Spec:** `docs/superpowers/specs/2026-10-05-index-pipeline-early-parse-failure-design.md`
 
-## Global Constraints
+**Global constraints:** Do not change public interfaces or the final error string. Deduplicate parse-failure paths while preserving encounter order. Do not introduce `as any` or `@ts-ignore`. Do not commit unless explicitly requested.
 
-- Type error suppression (`as any`, `@ts-ignore`) is forbidden.
-- Never leave code in a broken state after failures.
-- Commit only when explicitly requested.
-- Match existing test patterns in `tests/unit/indexer/`.
-
-## Review Focus
-
-- A non-full-rebuild run with the structured index coordinator active still routes parse failures to the DLQ and indexes other files.
-- The final error message remains unchanged: `Structured full rebuild aborted: parsing failed for ...`.
-- The embedding provider is not called for a window that contains a parse failure, and no later windows are processed.
-- Multiple parse failures across one window are deduplicated in the error message.
-- Legacy shadow table is aborted cleanly on early failure.
+**Final error:** `Structured full rebuild aborted: parsing failed for <file>` (comma-and-space separated paths for multiple failures).
 
 ---
 
-### Task 1: Return parse failures from each window
+## Task 1: RED — Add the primary later-window full-rebuild regression test
+
+**Dependency:** None. Must finish RED verification before Task 2 starts.
 
 **Files:**
-- Modify: `src/indexer/pipeline.ts:70-72` (`ProcessEventWindowResult` interface)
-- Modify: `src/indexer/pipeline.ts:561-834` (`processEventWindow`)
-- Modify: `src/indexer/pipeline.ts:348-371` (`processEvents` loop)
 
-**Interfaces:**
-- Consumes: existing `ProcessEventWindowResult` from `processEventWindow`.
-- Produces: `ProcessEventWindowResult` with new fields `parseFailures: string[]` and `shouldAbortStructuredFullRebuild: boolean`.
-
-- [ ] **Step 1: Add `parseFailures: string[]` and `shouldAbortStructuredFullRebuild: boolean` to `ProcessEventWindowResult`**
-
-```typescript
-interface ProcessEventWindowResult {
-  chunksIndexed: number;
-  embeddingFailures: string[];
-  parseFailures: string[];
-  /** Whether any parse failure should abort the full rebuild before embedding. */
-  shouldAbortStructuredFullRebuild: boolean;
-}
-```
-
-- [ ] **Step 2: Collect parse failures inside `processEventWindow`**
-
-After the `works` array is produced, collect any `work.structuredParseFailed` file paths into a deduplicated array. Compute `shouldAbortStructuredFullRebuild` using the full-rebuild signal (`structuredRebuildFiles !== undefined`), not merely the presence of `structuredParseFailures`. If `shouldAbortStructuredFullRebuild` is true, return the window result immediately before building `toEmbed` or performing any embedding or writes. Otherwise continue as today and include the fields in the final return object:
-
-```typescript
-const parseFailures = [...new Set(
-  works.filter((work) => work.structuredParseFailed).map((work) => work.event.filePath)
-)];
-const shouldAbortStructuredFullRebuild = structuredRebuildFiles !== undefined && parseFailures.length > 0;
-const windowResult = {
-  chunksIndexed,
-  embeddingFailures: [...failedFilePaths],
-  parseFailures,
-  shouldAbortStructuredFullRebuild,
-};
-if (shouldAbortStructuredFullRebuild) {
-  return windowResult;
-}
-// existing toEmbed construction, embedding, and writes continue below
-```
-
-- [ ] **Step 3: Update the `processEventWindow` call site in `processEvents`**
-
-Read the new `parseFailures` and `shouldAbortStructuredFullRebuild` fields from `windowResult`.
-
-- [ ] **Step 4: Run the indexer unit tests to confirm existing behavior is intact**
-
-Run: `npx vitest run tests/unit/indexer/pipeline.test.ts tests/unit/indexer/pipeline-structured-lifecycle.test.ts`
-Expected: pass (or existing failures unchanged), especially existing structured parse failure → DLQ tests.
-
-- [ ] **Step 5: Commit when explicitly requested**
-
-If the user explicitly requested a commit for this task, run:
-
-```bash
-git add src/indexer/pipeline.ts
-git commit -m "feat(indexer): return structured parse failures per window"
-```
-
----
-
-### Task 2: Abort full rebuild early on parse failure
-
-**Files:**
-- Modify: `src/indexer/pipeline.ts:348-423` (`processEvents` window loop)
-
-**Interfaces:**
-- Consumes: `ProcessEventWindowResult.shouldAbortStructuredFullRebuild` and `parseFailures` from Task 1.
-- Produces: unchanged public interface; internal early-throw behavior.
-
-- [ ] **Step 1: Insert early-parse-failure check after each window result in `processEvents`**
-
-Immediately after receiving `windowResult` inside the `for` loop, before aggregating per-window counts:
-
-```typescript
-if (useStructuredFullRebuild && windowResult.shouldAbortStructuredFullRebuild) {
-  if (legacyShadow !== undefined) {
-    await this.options.vectorStore.abortLegacyShadowTable(legacyShadow).catch(() => {});
-    legacyShadow = undefined;
-  }
-  const filePaths = [...new Set(windowResult.parseFailures)].join(', ');
-  throw new Error(`Structured full rebuild aborted: parsing failed for ${filePaths}`);
-}
-
-// Existing per-window result aggregation (unchanged):
-chunksIndexed += windowResult.chunksIndexed;
-embeddingFailures.push(...windowResult.embeddingFailures);
-```
-
-- [ ] **Step 2: Keep the existing late parse-failure check as a safety net**
-
-The late check at lines ~372-380 is now unreachable in normal full-rebuild flows, but retaining it prevents a future code path from silently committing a partial structured rebuild if `structuredParseFailures` is populated without the full-rebuild flag. Do not remove it.
-
-- [ ] **Step 3: Run type check and linter**
-
-Run: `npx tsc --noEmit`
-Expected: no type errors.
-Run: `npm run lint`
-Expected: no lint errors.
-
-- [ ] **Step 4: Run the indexer unit tests**
-
-Run: `npx vitest run tests/unit/indexer/pipeline.test.ts tests/unit/indexer/pipeline-structured-lifecycle.test.ts`
-Expected: pass.
-
-- [ ] **Step 5: Commit when explicitly requested**
-
-If the user explicitly requested a commit for this task, run:
-
-```bash
-git add src/indexer/pipeline.ts
-git commit -m "feat(indexer): abort structured full rebuild on first parse failure"
-```
-
----
-
-### Task 3: Add test verifying shadow table discard and no later-window processing
-
-**Files:**
 - Modify: `tests/unit/indexer/pipeline-structured-lifecycle.test.ts`
 
-**Interfaces:**
-- Consumes: existing `createStructuredPipeline`, `CountingEmbeddingProvider`, `indexContent`, `createEvent`, and event helpers from the test file.
-- Produces: a new test case that asserts early abort behavior and shadow table cleanup.
+**Interfaces / types:**
 
-- [ ] **Step 1: Locate the existing test for structured parse failures and full rebuild**
+- Consume existing `IndexPipeline`, `createStructuredPipeline`, `TestEmbeddingProvider`, `Chunker`, `createEvent`, `indexContent`, metadata/vector store APIs, and `vi` from the target test file/imports.
+- Produce a test-local `CountingEmbeddingProvider extends TestEmbeddingProvider` with a `calls` counter and `override async embed(texts: string[]): Promise<number[][]>` that increments once per invocation before delegating to `super.embed(texts)`.
+- Do not rely on the file-local `CountingEmbeddingProvider` in `pipeline.test.ts` or `pipeline-windowed.test.ts`; neither is exported to this test module.
 
-Use grep:
+**RED test:** Add a test that seeds an existing index, then runs a structured full rebuild with `embedBatchWindowSize: 2`: two healthy files occupy the first window, a parse-failing file and a healthy file occupy the failing second window, and another healthy file is in a third window. Track calls to the read callback and spy on `abortLegacyShadowTable`. Assert all of the following:
 
-```bash
-grep -n "structuredParseFailed\|parseFailure\|fullRebuild" tests/unit/indexer/pipeline-structured-lifecycle.test.ts
-```
+- Rejects with the exact error `Structured full rebuild aborted: parsing failed for ${brokenFilePath}`.
+- `embed()` is called exactly once, for the first healthy window; it is not called for the failing window.
+- The third-window file is never read, proving later windows are not processed.
+- `abortLegacyShadowTable` is called exactly once.
+- Pre-existing legacy vectors (`vectorStore.getStats()`), Merkle state (`metadataStore.getAllNodes()`), and active structured generations are unchanged from their seeded snapshots.
 
-- [ ] **Step 2: Write a failing test that asserts the shadow table is discarded for a later-window parse failure**
-
-Seed an existing index first so the test can distinguish between a clean store and a properly aborted shadow table. Use `embedBatchWindowSize: 2` so the first window of healthy files completes and writes to the legacy shadow table, while the parse-failing file lands in a second window and triggers the abort. Ensure there is also a third window by adding one more healthy file after the broken file; that third-window file must remain unread and unembedded. Assert:
-
-- `processEvents` rejects with the exact message `Structured full rebuild aborted: parsing failed for ${brokenFilePath}`.
-- The legacy shadow table is aborted (`abortLegacyShadowTable` is called).
-- The counting embedding provider is called exactly once (for the first healthy window only).
-- The third-window file is never read.
-- The pre-existing index remains unchanged: vector store stats, Merkle state, and active structured generations match the seeded state.
-
-Example:
-
-```typescript
-it('aborts a full rebuild and discards the shadow table when a later window has a parse failure', async () => {
-  const {
-    metadataStore,
-    vectorStore,
-    pluginRegistry,
-    coordinator,
-    pipeline: seedPipeline,
-  } = await createStructuredPipeline();
-  const brokenFilePath = resolve('tests/fixtures/structured/typescript/malformed.ts');
-  const brokenContent = await readFile(brokenFilePath, 'utf8');
-  const stablePath = 'src/stable.ts';
-  const stableContent = 'export function stable(): number { return 1; }\n';
-  const okPath = 'src/ok.ts';
-  const okContent = 'export const ok = 1;\n';
-  const laterPath = 'src/later.ts';
-  const laterContent = 'export const later = 2;\n';
-
-  const plugin = pluginRegistry.getLanguagePlugin(brokenFilePath);
-  if (plugin?.createStructuredParser === undefined) {
-    throw new Error('TypeScript structured parser is unavailable');
-  }
-
-  await indexContent(seedPipeline, 'added', stablePath, stableContent);
-  const statsBefore = await vectorStore.getStats();
-  const merkleBefore = await metadataStore.getAllNodes();
-  const generationsBefore = [...(await metadataStore.getStructuredIndexState()).activeGenerations.entries()];
-  const abortLegacyShadowTableSpy = vi.spyOn(vectorStore, 'abortLegacyShadowTable');
-
-  const countingProvider = new CountingEmbeddingProvider();
-  const customPipeline = new IndexPipeline({
-    metadataStore,
-    vectorStore,
-    chunker: new Chunker(pluginRegistry),
-    embeddingProvider: countingProvider,
-    pluginRegistry,
-    structuredIndexCoordinator: coordinator,
-    embedBatchWindowSize: 2,
-  });
-
-  const readFiles: string[] = [];
-  const readFileForPipeline = async (filePath: string) => {
-    readFiles.push(filePath);
-    if (filePath === brokenFilePath) return brokenContent;
-    if (filePath === stablePath) return stableContent;
-    if (filePath === okPath) return okContent;
-    return laterContent;
-  };
-
-  await expect(
-    customPipeline.processEvents(
-      [
-        createEvent('added', stablePath, stableContent),
-        createEvent('added', okPath, okContent),
-        createEvent('added', brokenFilePath, brokenContent),
-        createEvent('added', laterPath, laterContent),
-        createEvent('added', 'src/after.ts', 'export const after = 3;\n'),
-      ],
-      readFileForPipeline,
-      { fullRebuild: true, trackProgress: false },
-    ),
-  ).rejects.toThrow(`Structured full rebuild aborted: parsing failed for ${brokenFilePath}`);
-
-  expect(abortLegacyShadowTableSpy).toHaveBeenCalledOnce();
-  expect(countingProvider.calls).toBe(1);
-  expect(readFiles).not.toContain('src/after.ts');
-  expect(await vectorStore.getStats()).toEqual(statsBefore);
-  expect(await metadataStore.getAllNodes()).toEqual(merkleBefore);
-  expect([...(await metadataStore.getStructuredIndexState()).activeGenerations.entries()]).toEqual(generationsBefore);
-});
-```
-
-- [ ] **Step 3: Run the new test and verify it fails before Task 2 is implemented (or passes if Task 2 is already done)**
-
-Run: `npx vitest run tests/unit/indexer/pipeline-structured-lifecycle.test.ts -t "aborts a full rebuild and discards the shadow table when a later window has a parse failure"`
-Expected: after Task 2, PASS.
-
-- [ ] **Step 4: Run the full indexer test suite**
-
-Run: `npx vitest run tests/unit/indexer/`
-Expected: all pass.
-
-- [ ] **Step 5: Commit when explicitly requested**
-
-If the user explicitly requested a commit for this task, run:
+**RED command:**
 
 ```bash
-git add tests/unit/indexer/pipeline-structured-lifecycle.test.ts
-git commit -m "test(indexer): full rebuild discards shadow table on later parse failure"
+npx vitest run tests/unit/indexer/pipeline-structured-lifecycle.test.ts -t "aborts a full rebuild and discards the shadow table when a later window has a parse failure"
 ```
+
+**Expected failure:** The current implementation reaches embedding for the parse-failing window (or fails one of the associated assertions); it must fail because the early-abort behavior is absent, not because the test cannot compile or its fixture/setup is invalid. Fix test setup errors until this specific behavioral failure is observed. Record the failure before implementing production changes.
+
+**Minimum GREEN:** None in this task; do not modify production files.
+
+**GREEN command:** The RED command above, rerun after Task 2.
+
+**Expected success:** Task 1 test passes after Task 2 and reports no test compilation/setup errors.
+
+**REFACTOR:** Keep the helper local and minimal; avoid unrelated test cleanup. Any test-only refactor must retain the observed RED evidence and pass the GREEN command.
+
+**Commit boundary:** Test-only commit is optional and only when explicitly requested; otherwise include this test with the implementation commit at Task 2.
 
 ---
 
-### Task 4: Verify non-full-rebuild DLQ behavior still works
+## Task 2: GREEN — Return an explicit early result and abort the structured rebuild
+
+**Dependency:** Task 1 completed with the expected behavioral RED observed.
 
 **Files:**
-- Modify: `tests/unit/indexer/pipeline-structured-lifecycle.test.ts`
 
-**Interfaces:**
-- Consumes: existing DLQ test helpers.
-- Produces: a test asserting incremental path is unchanged.
+- Modify: `src/indexer/pipeline.ts` (`ProcessEventWindowResult`, `processEventWindow`, and `processEvents` window loop)
 
-- [ ] **Step 1: Write a test for the non-full-rebuild path**
+**Interfaces / types:**
 
-Use the same parse-failing fixture but with `fullRebuild: false` (default) and the same structured index coordinator used in full rebuild tests. Assert:
+- Consume the existing `ProcessEventWindowResult`, `structuredRebuildFiles?: FullRebuildFile[]`, `works`, and legacy shadow lifecycle.
+- Add `parseFailures: readonly string[]` and `shouldAbortStructuredFullRebuild: boolean` to the internal `ProcessEventWindowResult`; do not change public interfaces.
+- Produce a result with the new fields on every return path.
 
-- The non-failing file is indexed.
-- The failing file is enqueued to the dead-letter queue because the structured parser detected the parse error.
-- `processEvents` does not throw.
+**Minimum GREEN implementation:**
 
-Example:
+1. Immediately after Stage 1 produces `works`, compute deduplicated parse-failure paths in encounter order and set `shouldAbortStructuredFullRebuild` to `structuredRebuildFiles !== undefined && parseFailures.length > 0`.
+2. If true, return immediately at that point with exactly `chunksIndexed: 0`, `embeddingFailures: []`, `parseFailures`, and `shouldAbortStructuredFullRebuild: true`. Do not reference `chunksIndexed` or `failedFilePaths` here: their declarations occur later in the normal Stage 3 / Stage 2 path.
+3. On the normal path, include `parseFailures` and `shouldAbortStructuredFullRebuild: false` in the final result alongside the existing `chunksIndexed` and `[...failedFilePaths]` values.
+4. Immediately after `processEvents` receives a window result, check `useStructuredFullRebuild && windowResult.shouldAbortStructuredFullRebuild`; on true, abort `legacyShadow` once when present, clear the local shadow reference, and throw the unchanged error using the deduplicated paths. Do this before aggregating the window result or entering any later window.
+5. Preserve the existing late parse-failure safety check.
 
-```typescript
-it('routes parse failure to DLQ in incremental indexing with structured indexing enabled', async () => {
-  const { metadataStore, vectorStore, pluginRegistry, coordinator } = await createStructuredPipeline();
-  const brokenFilePath = resolve('tests/fixtures/structured/typescript/malformed.ts');
-  const brokenContent = await readFile(brokenFilePath, 'utf8');
-  const okFilePath = 'src/ok.ts';
-  const okContent = 'export const ok = 1;\n';
+**RED test:** Task 1 regression test.
 
-  const plugin = pluginRegistry.getLanguagePlugin(brokenFilePath);
-  if (plugin?.createStructuredParser === undefined) {
-    throw new Error('TypeScript structured parser is unavailable');
-  }
+**RED command:** Task 1 focused Vitest command; required observed failure is recorded in Task 1.
 
-  const countingProvider = new CountingEmbeddingProvider();
-  const pipeline = new IndexPipeline({
-    metadataStore,
-    vectorStore,
-    chunker: new Chunker(pluginRegistry),
-    embeddingProvider: countingProvider,
-    pluginRegistry,
-    structuredIndexCoordinator: coordinator,
-    embedBatchWindowSize: 2,
-  });
+**Expected failure:** Before implementation, the test fails because embedding occurs for the parse-failing window or another early-abort assertion fails.
 
-  const result = await pipeline.processEvents(
-    [
-      createEvent('added', okFilePath, okContent),
-      createEvent('added', brokenFilePath, brokenContent),
-    ],
-    async (filePath) => {
-      if (filePath === brokenFilePath) return brokenContent;
-      return okContent;
-    },
-    { fullRebuild: false, trackProgress: false },
-  );
-
-  expect(result.chunksIndexed).toBeGreaterThan(0);
-  expect(countingProvider.calls).toBeGreaterThan(0);
-  const dlq = await metadataStore.getDeadLetterEntries();
-  expect(dlq).toHaveLength(1);
-  expect(dlq[0]?.filePath).toBe(brokenFilePath);
-  expect(dlq[0]?.errorMessage).toMatch(/parsing/i);
-});
-```
-
-- [ ] **Step 2: Run the new test**
-
-Run: `npx vitest run tests/unit/indexer/pipeline-structured-lifecycle.test.ts -t "routes parse failure to DLQ in incremental indexing"`
-Expected: PASS.
-
-- [ ] **Step 3: Run full repository checks**
-
-Run:
-- `npx tsc --noEmit`
-- `npm run lint`
-- `npx vitest run`
-
-Expected: all pass.
-
-- [ ] **Step 4: Commit when explicitly requested**
-
-If the user explicitly requested a commit for this task, run:
+**GREEN command:**
 
 ```bash
-git add tests/unit/indexer/pipeline-structured-lifecycle.test.ts
-git commit -m "test(indexer): incremental path still routes parse failures to DLQ"
+npx vitest run tests/unit/indexer/pipeline-structured-lifecycle.test.ts -t "aborts a full rebuild and discards the shadow table when a later window has a parse failure"
 ```
+
+**Expected success:** The regression test passes; no embedding call occurs for the failing window, later windows are not read, the shadow is aborted, and seeded state remains unchanged.
+
+**REFACTOR:** Once GREEN, simplify only local result construction if it remains explicit about early versus normal values. Preserve the stage boundary, order-preserving deduplication, and safety-net check. Rerun the GREEN command after any refactor.
+
+**Commit boundary:** One implementation-and-regression-test commit, only if explicitly requested. Stage only `src/indexer/pipeline.ts` and `tests/unit/indexer/pipeline-structured-lifecycle.test.ts` for that commit.
+
+---
+
+## Task 3: Verify incremental DLQ behavior with structured indexing enabled
+
+**Dependency:** Task 2 GREEN.
+
+**Files:**
+
+- Modify: `tests/unit/indexer/pipeline-structured-lifecycle.test.ts`
+
+**Interfaces / types:**
+
+- Consume existing `createStructuredPipeline`, `IndexPipeline`, `Chunker`, `TestEmbeddingProvider`, event helpers, and `metadataStore.getDeadLetterEntries()`.
+- Produce an incremental-path regression test; do not add another provider helper unless the assertion needs an embed count.
+
+**RED test:** Run this test against the pre-change baseline before relying on it as regression coverage. If the existing behavior already passes, record the baseline as a passing characterization rather than claiming a RED; Task 1 remains the mandatory RED gate for this behavior change. The test uses a parse-failing fixture and a healthy file with `fullRebuild: false`, and asserts `processEvents` resolves without throwing, the healthy file is indexed, and exactly the failing file is in the DLQ with a parse-related error.
+
+**RED command:**
+
+```bash
+npx vitest run tests/unit/indexer/pipeline-structured-lifecycle.test.ts -t "routes parse failure to DLQ in incremental indexing"
+```
+
+**Expected failure:** If behavior regresses, the test fails on throw, missing healthy indexing, or missing/incorrect DLQ entry. On the current baseline it may pass; that pass is a characterization and does not replace Task 1's required RED.
+
+**Minimum GREEN:** Keep the full-rebuild early-abort condition gated by `structuredRebuildFiles !== undefined`; incremental processing must continue through existing DLQ handling and healthy-file indexing.
+
+**GREEN command:** The same focused command above.
+
+**Expected success:** `processEvents` does not throw, the healthy file is indexed, and the parse-failing file is enqueued to DLQ.
+
+**REFACTOR:** Keep assertions limited to the stated incremental contract; rerun the focused command after changes.
+
+**Commit boundary:** Test-only commit is optional and only when explicitly requested; otherwise include it with the related implementation/test commit. Stage only the target test file.
+
+---
+
+## Task 4: Full verification and final review
+
+**Dependency:** Tasks 1–3 complete; Tasks 1 and 2's RED/GREEN evidence recorded.
+
+**Files:** No additional files; verify the changes from Tasks 1–3.
+
+**Interfaces / types:** Verify internal `ProcessEventWindowResult` fields, unchanged public API, unchanged error contract, and consistent spec/plan terminology and test requirements.
+
+**RED test:** The required RED was observed in Task 1 before production changes. Do not rerun the test against the completed implementation and label a pass as RED.
+
+**RED command:** Task 1 focused Vitest command, as recorded before Task 2.
+
+**Expected failure:** The recorded pre-implementation run fails specifically on the missing early-abort behavior.
+
+**Minimum GREEN:** No further implementation. Run the checks below and correct any failures within the approved source/test scope only when executing the implementation plan; this document-only review task itself must not change source/test files.
+
+**GREEN commands (run all):**
+
+```bash
+npx vitest run tests/unit/indexer/pipeline-structured-lifecycle.test.ts -t "aborts a full rebuild and discards the shadow table when a later window has a parse failure"
+npx vitest run tests/unit/indexer/pipeline-structured-lifecycle.test.ts -t "routes parse failure to DLQ in incremental indexing"
+npx tsc --noEmit
+npm run lint
+npx vitest run tests/unit/indexer/
+npm test
+```
+
+**Expected success:** Each command exits successfully; both focused contracts, the indexer suite, type check, lint, and final repository test command pass.
+
+**REFACTOR:** No further code refactor in this verification task. If implementation refactoring was necessary earlier, rerun the relevant focused tests and all full checks.
+
+**Commit boundary:** After verification, create commits only when explicitly requested. Keep documentation-only review-gate corrections separate from any later source/test implementation commits.
 
 ---
 
 ## Self-review coverage
 
-- Spec requirement "fullRebuild aborts before embedding" → Task 2.
-- Spec requirement "non-full-rebuild behavior unchanged" → Task 4.
-- Spec requirement "shadow table is discarded on later-window parse failure" → Task 3.
-- Spec requirement "no later windows are processed" → Task 3.
-- Spec requirement "error message unchanged" → Task 2 step 1.
-- Spec requirement "lint/type/tests pass" → verification steps in each task.
+- Full-rebuild early return uses only values available after Stage 1 and returns zero indexed chunks with no embedding failures: Task 2.
+- RED observed before production implementation; no optional “already implemented” escape: Task 1, enforced by Task 2 dependency.
+- Failing-window embedding avoidance, no later windows, exact error, shadow abort, legacy vectors, Merkle state, and active generations: Task 1.
+- Incremental parse failure goes to DLQ, healthy file indexes, and `processEvents` does not throw: Task 3.
+- Type check, lint, indexer suite, and final `npm test`: Task 4.
+- Design flow and implementation responsibility agree: spec Data flow and Tasks 1–4.
