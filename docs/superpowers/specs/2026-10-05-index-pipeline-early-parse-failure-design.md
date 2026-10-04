@@ -30,7 +30,7 @@ For `fullRebuild === true` only, make `processEventWindow` return immediately wh
 
 1. Keep `processEventWindow` unchanged for non-full-rebuild cases so incremental indexing continues to route parse failures to the DLQ.
 2. Add a `parseFailures: string[]` field and a `shouldAbortStructuredFullRebuild` flag to `ProcessEventWindowResult`. Populate them from the window's `works` right after read-and-chunk completes. If `useStructuredFullRebuild` is true and the window has parse failures, return from `processEventWindow` immediately, before any embedding or writes.
-3. In `processEvents`, after each window returns, if `useStructuredFullRebuild` and `windowResult.shouldAbortStructuredFullRebuild` are true, abort the legacy shadow table immediately and throw `Structured full rebuild aborted: parsing failed for ...`. No embedding call or later window runs.
+3. In `processEvents`, after each window returns, if the abort signal is not already aborted and `useStructuredFullRebuild` and `windowResult.shouldAbortStructuredFullRebuild` are true, attempt to abort the legacy shadow table once when present. Treat abort rejection as best-effort, clear the local shadow reference, and then throw `Structured full rebuild aborted: parsing failed for ...` using the deduplicated paths. Do this before aggregating the window result or entering another window. If cancellation was requested during Stage 1, skip the early parse-failure throw so `stop()` retains precedence; preserve the existing shadow-abort cleanup for cancellation.
    This avoids throwing inside `processEventWindow` for non-full-rebuild paths and keeps DLQ routing isolated to `processEvents`.
 
 ### Data flow
@@ -52,8 +52,10 @@ processEvents
         perform embedding
         perform vector / structured writes
         return normal window result
-    if useStructuredFullRebuild and windowResult.shouldAbortStructuredFullRebuild:
-      abort legacyShadow -> throw Structured full rebuild aborted
+    if not abortSignal.aborted and useStructuredFullRebuild and windowResult.shouldAbortStructuredFullRebuild:
+      best-effort abort legacyShadow once when present
+      clear local legacyShadow reference
+      throw Structured full rebuild aborted using deduplicated paths
     aggregate successful window result
 ```
 
