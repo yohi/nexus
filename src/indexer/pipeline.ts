@@ -70,6 +70,8 @@ interface ProcessEventsResult {
 interface ProcessEventWindowResult {
   chunksIndexed: number;
   embeddingFailures: readonly string[];
+  parseFailures: readonly string[];
+  shouldAbortStructuredFullRebuild: boolean;
 }
 
 interface StructuredFileWork {
@@ -359,6 +361,18 @@ export class IndexPipeline implements IIndexPipeline {
           useStructuredFullRebuild ? legacyShadow : undefined,
           useStructuredFullRebuild ? deferredMerkleOps : undefined,
         );
+        if (
+          !this.abortController.signal.aborted &&
+          useStructuredFullRebuild &&
+          windowResult.shouldAbortStructuredFullRebuild
+        ) {
+          if (legacyShadow !== undefined) {
+            await this.options.vectorStore.abortLegacyShadowTable(legacyShadow).catch(() => {});
+            legacyShadow = undefined;
+          }
+          const filePaths = windowResult.parseFailures.join(', ');
+          throw new Error(`Structured full rebuild aborted: parsing failed for ${filePaths}`);
+        }
         chunksIndexed += windowResult.chunksIndexed;
         embeddingFailures.push(...windowResult.embeddingFailures);
         if (trackProgress) {
@@ -573,12 +587,26 @@ export class IndexPipeline implements IIndexPipeline {
       window.map((event) => limit(async () => this.readAndChunkFile(event, loadContent))),
     );
 
-    if (structuredParseFailures !== undefined) {
-      for (const work of works) {
-        if (work.structuredParseFailed) {
-          structuredParseFailures.push(work.event.filePath);
-        }
+    const windowParseFailures: string[] = [];
+    for (const work of works) {
+      if (work.structuredParseFailed) {
+        windowParseFailures.push(work.event.filePath);
       }
+    }
+    if (structuredParseFailures !== undefined) {
+      structuredParseFailures.push(...windowParseFailures);
+    }
+    const parseFailures = [...new Set(windowParseFailures)];
+    const shouldAbortStructuredFullRebuild =
+      structuredRebuildFiles !== undefined && parseFailures.length > 0;
+    if (shouldAbortStructuredFullRebuild) {
+      // Structured rebuild with parse failures is doomed: abort before embedding (Stage 2).
+      return {
+        chunksIndexed: 0,
+        embeddingFailures: [],
+        parseFailures,
+        shouldAbortStructuredFullRebuild: true,
+      };
     }
 
     // Stage 2: L1 (memory) + L2 (persistent) cache-aware embed.
@@ -830,7 +858,12 @@ export class IndexPipeline implements IIndexPipeline {
       }
     }
 
-    return { chunksIndexed, embeddingFailures: [...failedFilePaths] };
+    return {
+      chunksIndexed,
+      embeddingFailures: [...failedFilePaths],
+      parseFailures,
+      shouldAbortStructuredFullRebuild: false,
+    };
   }
 
   private async handleDeleteEvent(

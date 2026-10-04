@@ -83,6 +83,15 @@ const expectFullRebuildCommitFailureToRollback = async (
   });
 };
 
+class CountingEmbeddingProvider extends TestEmbeddingProvider {
+  calls = 0;
+
+  override async embed(texts: string[]): Promise<number[][]> {
+    this.calls += 1;
+    return super.embed(texts);
+  }
+}
+
 describe('IndexPipeline structured lifecycle', () => {
   it('routes a structured full rebuild through the coordinator full-rebuild API', async () => {
     const { coordinator, pipeline } = await createStructuredPipeline();
@@ -513,6 +522,144 @@ describe('IndexPipeline structured lifecycle', () => {
     expect(rawByteLoads).toBe(1);
     expect(stringLoader).not.toHaveBeenCalled();
     await expect(fixture.metadataStore.getFileDeclarations(filePath)).resolves.toHaveLength(1);
+  });
+
+  it('aborts a full rebuild and discards the shadow table when a later window has a parse failure', async () => {
+    const { metadataStore, vectorStore, pluginRegistry, coordinator, pipeline } = await createStructuredPipeline();
+
+    // Distinct seeded and rebuilt contents keep every chunk hash unique so the
+    // rebuild cannot be satisfied from the persistent embedding cache.
+    const healthyContent = (functionName: string, returnValue: number): string =>
+      `export function ${functionName}(): number { return ${returnValue}; }\n`;
+    const windowOneA = {
+      filePath: 'src/early-abort-window-one-a.ts',
+      seed: healthyContent('earlyAbortWindowOneA', 1),
+      rebuilt: healthyContent('earlyAbortWindowOneA', 11),
+    };
+    const windowOneB = {
+      filePath: 'src/early-abort-window-one-b.ts',
+      seed: healthyContent('earlyAbortWindowOneB', 1),
+      rebuilt: healthyContent('earlyAbortWindowOneB', 21),
+    };
+    const windowTwoBroken = {
+      filePath: 'src/early-abort-window-two-broken.ts',
+      seed: healthyContent('earlyAbortWindowTwoBroken', 1),
+      rebuilt: 'export function earlyAbortWindowTwoBroken(): number { return (31; }\n',
+    };
+    const windowTwoHealthy = {
+      filePath: 'src/early-abort-window-two-healthy.ts',
+      seed: healthyContent('earlyAbortWindowTwoHealthy', 1),
+      rebuilt: healthyContent('earlyAbortWindowTwoHealthy', 41),
+    };
+    const windowThree = {
+      filePath: 'src/early-abort-window-three.ts',
+      seed: healthyContent('earlyAbortWindowThree', 1),
+      rebuilt: healthyContent('earlyAbortWindowThree', 51),
+    };
+    const rebuildFiles = [windowOneA, windowOneB, windowTwoBroken, windowTwoHealthy, windowThree];
+
+    for (const file of rebuildFiles) {
+      await indexContent(pipeline, 'added', file.filePath, file.seed);
+    }
+
+    const vectorStatsBefore = await vectorStore.getStats();
+    const merkleNodesBefore = await metadataStore.getAllNodes();
+    const generationsBefore = [...(await metadataStore.getStructuredIndexState()).activeGenerations.entries()];
+
+    const embeddingProvider = new CountingEmbeddingProvider();
+    const abortLegacyShadowTableSpy = vi.spyOn(vectorStore, 'abortLegacyShadowTable');
+    const loadContent = vi.fn(async (filePath: string): Promise<string> => {
+      const file = rebuildFiles.find((candidate) => candidate.filePath === filePath);
+      if (file === undefined) {
+        throw new Error(`unexpected content read for ${filePath}`);
+      }
+      return file.rebuilt;
+    });
+
+    const rebuildPipeline = new IndexPipeline({
+      metadataStore,
+      vectorStore,
+      chunker: new Chunker(pluginRegistry),
+      embeddingProvider,
+      pluginRegistry,
+      structuredIndexCoordinator: coordinator,
+      embedBatchWindowSize: 2,
+    });
+
+    await expect(rebuildPipeline.reindex(
+      async () => rebuildFiles.map((file) => createEvent('modified', file.filePath, file.rebuilt)),
+      loadContent,
+      true,
+    )).rejects.toThrow(`Structured full rebuild aborted: parsing failed for ${windowTwoBroken.filePath}`);
+
+    expect(embeddingProvider.calls).toBe(1);
+
+    const readFilePaths = loadContent.mock.calls.map(([filePath]) => filePath);
+    expect(readFilePaths).not.toContain(windowThree.filePath);
+    expect(readFilePaths).toHaveLength(4);
+    expect(readFilePaths).toEqual(
+      expect.arrayContaining([
+        windowOneA.filePath,
+        windowOneB.filePath,
+        windowTwoBroken.filePath,
+        windowTwoHealthy.filePath,
+      ]),
+    );
+
+    expect(abortLegacyShadowTableSpy).toHaveBeenCalledOnce();
+
+    await expect(vectorStore.getStats()).resolves.toEqual(vectorStatsBefore);
+    await expect(metadataStore.getAllNodes()).resolves.toEqual(merkleNodesBefore);
+    expect([...(await metadataStore.getStructuredIndexState()).activeGenerations.entries()]).toEqual(
+      generationsBefore,
+    );
+  });
+
+  it('routes parse failure to DLQ in incremental indexing', async () => {
+    const { metadataStore, vectorStore, pipeline } = await createStructuredPipeline();
+    const seededPath = 'src/dlq-seeded.ts';
+    const seededContent = 'export function seeded(): number { return 1; }\n';
+    await indexContent(pipeline, 'added', seededPath, seededContent);
+
+    const healthyPath = 'src/dlq-healthy.ts';
+    const healthyContent = 'export function healthy(): number { return 1; }\n';
+    const brokenPath = 'src/dlq-broken.ts';
+    const brokenContent = 'export function broken(): number { return (1; }\n';
+
+    const result = await pipeline.processEvents(
+      [
+        createEvent('added', healthyPath, healthyContent),
+        createEvent('added', brokenPath, brokenContent),
+      ],
+      async (filePath) => (filePath === healthyPath ? healthyContent : brokenContent),
+      { fullRebuild: false },
+    );
+
+    expect(result.structuredParseFailures).toEqual([brokenPath]);
+    expect(result.embeddingFailures).toEqual([]);
+    await expect(metadataStore.resolveFile(healthyPath)).resolves.toEqual({
+      kind: 'active',
+      generationId: expect.any(String),
+    });
+    await expect(metadataStore.getFileDeclarations(healthyPath)).resolves.toEqual(
+      expect.arrayContaining([expect.objectContaining({ qualifiedName: 'healthy' })]),
+    );
+    const healthyChunks = await vectorStore.search(new Array(64).fill(0), 100, { filePathPrefix: healthyPath });
+    expect(healthyChunks).toHaveLength(1);
+    await expect(metadataStore.resolveFile(seededPath)).resolves.toEqual({
+      kind: 'active',
+      generationId: expect.any(String),
+    });
+
+    const deadLetters = await metadataStore.getDeadLetterEntries();
+    expect(deadLetters).toHaveLength(1);
+    expect(deadLetters[0]).toMatchObject({
+      filePath: brokenPath,
+      contentHash: sha256Hex(new TextEncoder().encode(brokenContent)),
+      errorMessage: 'Structured parsing failed',
+    });
+    const brokenChunks = await vectorStore.search(new Array(64).fill(0), 100, { filePathPrefix: brokenPath });
+    expect(brokenChunks).toHaveLength(0);
   });
 });
 
