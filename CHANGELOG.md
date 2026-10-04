@@ -1,5 +1,19 @@
 # Changelog
 
+## [2.7.0](https://github.com/yohi/nexus/compare/v2.6.0...v2.7.0) (2026-10-04)
+
+
+### Features
+
+* **indexer:** 構造化フルリビルド時に構文解析エラー発生で早期中断するよう変更 ([5d23982](https://github.com/yohi/nexus/commit/5d23982c6810abda72f1940870a7d103db278a6b))
+* **indexer:** 構造化フルリビルド時の構文解析エラー早期中断とドキュメント最適化 ([f7d9c35](https://github.com/yohi/nexus/commit/f7d9c35b68aa4d22463ced514566b275103a2904))
+
+
+### Bug Fixes
+
+* implement ([596d643](https://github.com/yohi/nexus/commit/596d643dc6a67aa5fc07be0f072f76ef6e150d5a))
+* issue [#296](https://github.com/yohi/nexus/issues/296) ([df53372](https://github.com/yohi/nexus/commit/df5337273cd06bad066c00b40878863002de5122))
+
 ## [2.6.0](https://github.com/yohi/nexus/compare/v2.5.0...v2.6.0) (2026-09-29)
 
 
