@@ -84,7 +84,7 @@ nexus --reindex
 nexus --reindex --full
 ```
 
-`--full` は clean full rebuild を実行します。
+`--full` は clean full rebuild を実行します。フルリビルド時に構文解析エラーが発生した場合は、無駄な埋め込み処理を避けるため早期に中断され、既存のインデックスが保持されます。
 
 ### ローカル HTTP MCP サーバー
 

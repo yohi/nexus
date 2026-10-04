@@ -75,7 +75,7 @@ A stale or retired identity must not be silently mapped to a similar symbol.
 
 `index_status` accepts an empty object. Initial full indexing can run in the background while tools are available. Treat initial indexing as successfully completed only when `indexStats.lastIndexedAt` is non-null and `pipelineProgress.lastError` is absent. A `running` pipeline means search is available but may be incomplete. `structuredIndex` reports schema/generation state and rebuild requirements.
 
-`reindex` accepts optional `fullRebuild` and `reason` (`manual`, `overflow-recovery`, or `startup-reconciliation`). If indexing is already running, it reports that state instead of starting a second pipeline. A full rebuild is not successfully complete while unresolved dead-letter work remains.
+`reindex` accepts optional `fullRebuild` and `reason` (`manual`, `overflow-recovery`, or `startup-reconciliation`). If indexing is already running, it reports that state instead of starting a second pipeline. A full rebuild is not successfully complete while unresolved dead-letter work remains. During a structured full rebuild, any structured parse failure aborts early before embedding runs, leaving existing index state intact, throwing `Structured full rebuild aborted: parsing failed for <file>`, and recording the error in pipeline progress and index stats.
 
 ## Direct Verification
 

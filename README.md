@@ -84,7 +84,7 @@ nexus --reindex
 nexus --reindex --full
 ```
 
-`--full` performs a clean full rebuild.
+`--full` performs a clean full rebuild. If any file fails structured parsing, the rebuild aborts early before embedding to prevent wasted computation and preserve the existing index.
 
 ### Run a local HTTP MCP server
 

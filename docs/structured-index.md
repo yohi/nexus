@@ -77,7 +77,7 @@ nexus --reindex --full
 `--reindex --full` enforces an atomic transaction across the structured catalog (SQLite), vector store (LanceDB), and Merkle tree:
 
 - Legacy chunks and path operations are staged in an isolated shadow table (`legacy_shadow_*`) while structured chunks stage into `struct_shadow_*`.
-- If any file fails structured parsing during the rebuild, the entire operation aborts immediately and all staged shadow data is discarded. Live vector tables, Merkle state, and active structured generations remain untouched.
+- If any file fails structured parsing during the rebuild, the operation aborts early at the window boundary immediately after Stage 1 (read and chunk), before calling the embedding provider or processing subsequent windows. Staged shadow data is discarded, live vector tables, Merkle state, and active structured generations remain untouched, and the rebuild throws `Structured full rebuild aborted: parsing failed for <file>`.
 - Commit transitions follow a durable SQLite journal across six phases (`building` -> `legacy-swapped` -> `structured-swapped` -> `catalog-activated` -> `merkle-activated` -> `idle`). If interrupted, startup reconciliation deterministically rolls back or finalizes all three stores to a consistent generation.
 
 ## Requesting additional languages
