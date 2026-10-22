@@ -1,0 +1,16 @@
+{
+  "status": "VERIFIED_ARCHIVE_INTEGRITY_ONLY",
+  "archive": "nexus305-read005-boundary-evidence.zip",
+  "sha256": "c59563a551a995b04b4e81989e98da014c4e062741d3f142ecc4fa46d90282c2",
+  "crc": "VERIFIED",
+  "internalChecksums": 548,
+  "sources": 110,
+  "changedSources": 23,
+  "frozenFiles": 321,
+  "sourceDiffReproduced": true,
+  "priorSourceManifestStillValid": true,
+  "parentArchiveCRC": "VERIFIED",
+  "submission": "PARTIALLY_INTEGRATED",
+  "experimentsExecuted": false,
+  "testsExecuted": false
+}
