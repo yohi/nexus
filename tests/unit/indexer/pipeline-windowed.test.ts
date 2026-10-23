@@ -404,6 +404,10 @@ describe('IndexPipeline – windowed batching', () => {
 });
 
 describe('IndexPipeline – chunk embedding cache', () => {
+  const embeddingConfig: EmbeddingConfig = {
+    provider: 'test', model: 'deterministic-test', dimensions: 64,
+    maxConcurrency: 1, batchSize: 16, retryCount: 0, retryBaseDelayMs: 0,
+  };
   it('skips embed() on second processEvents call when content is identical', async () => {
     const { metadataStore, vectorStore, chunker, registry } = await createPipeline();
     const embedding = new CountingEmbeddingProvider();
@@ -416,6 +420,7 @@ describe('IndexPipeline – chunk embedding cache', () => {
       pluginRegistry: registry,
       embedBatchWindowSize: 16,
       embeddingCacheSize: 10_000,
+      embeddingConfig,
     });
 
     const content = tsFunctions(2, 'x');
@@ -451,6 +456,7 @@ describe('IndexPipeline – chunk embedding cache', () => {
       pluginRegistry: registry,
       embedBatchWindowSize: 16,
       embeddingCacheSize: 10_000,
+      embeddingConfig,
     });
 
     const original = tsFunctions(2, 'y');
@@ -480,6 +486,7 @@ describe('IndexPipeline – chunk embedding cache', () => {
       pluginRegistry: registry,
       embedBatchWindowSize: 16,
       embeddingCacheSize: 0,
+      embeddingConfig,
     });
 
     const content = tsFunctions(1, 'z');
@@ -511,6 +518,7 @@ describe('IndexPipeline – chunk embedding cache', () => {
       pluginRegistry: registry,
       embedBatchWindowSize: 16,
       embeddingCacheSize: 1,
+      embeddingConfig,
     });
 
     const contentA = tsFunctions(1, 'lru_a');
@@ -546,6 +554,7 @@ describe('IndexPipeline – chunk embedding cache', () => {
       pluginRegistry: registry,
       embedBatchWindowSize: 16,
       embeddingCacheSize: 2,
+      embeddingConfig,
     });
 
     const contentA = tsFunctions(1, 'lru_refresh_a');

@@ -6,8 +6,7 @@ import { describe, expect, it, vi } from 'vitest';
 import type { DeadLetterQueue } from '../../../src/indexer/dead-letter-queue.js';
 import { computeFileHashStreaming } from '../../../src/indexer/hash.js';
 import { IndexPipeline } from '../../../src/indexer/pipeline.js';
-import { RetryExhaustedError } from '../../../src/types/index.js';
-import type { EmbeddingConfig } from '../../../src/types/index.js';
+import { RetryExhaustedError, type EmbeddingConfig } from '../../../src/types/index.js';
 import { createPipeline } from '../../shared/test-helpers.js';
 import { TestEmbeddingProvider } from '../plugins/embeddings/test-embedding-provider.js';
 import { InMemoryVectorStore } from '../storage/in-memory-vector-store.js';
@@ -29,15 +28,6 @@ class CountingEmbeddingProvider extends TestEmbeddingProvider {
 
 const fixturePath = path.join(process.cwd(), 'tests/fixtures/sample-project/src/auth.ts');
 const ONE_HOT_64 = new Array(64).fill(0).map((_, i) => (i === 0 ? 1 : 0));
-const TEST_EMBEDDING_CONFIG: Readonly<EmbeddingConfig> = {
-  provider: 'test',
-  model: 'test-model',
-  dimensions: 64,
-  maxConcurrency: 1,
-  batchSize: 16,
-  retryCount: 0,
-  retryBaseDelayMs: 0,
-};
 
 describe('IndexPipeline', () => {
   it('indexes an added file into merkle metadata and vector storage', async () => {
@@ -671,6 +661,8 @@ describe('IndexPipeline', () => {
   });
 
   it('reuses persistent L2 embedding cache across pipeline instances', async () => {
+    const embeddingConfig: EmbeddingConfig = { provider: 'test', model: 'deterministic-test', dimensions: 64,
+      maxConcurrency: 1, batchSize: 16, retryCount: 0, retryBaseDelayMs: 0 };
     const { metadataStore, chunker, registry } = await createPipeline();
     const vectorStore1 = new InMemoryVectorStore({ dimensions: 64 });
     await vectorStore1.initialize();
@@ -680,7 +672,7 @@ describe('IndexPipeline', () => {
       vectorStore: vectorStore1,
       chunker,
       embeddingProvider: provider1,
-      embeddingConfig: TEST_EMBEDDING_CONFIG,
+      embeddingConfig,
       pluginRegistry: registry,
     });
     const content = await readFile(fixturePath, 'utf8');
@@ -708,7 +700,7 @@ describe('IndexPipeline', () => {
       vectorStore: vectorStore2,
       chunker,
       embeddingProvider: provider2,
-      embeddingConfig: TEST_EMBEDDING_CONFIG,
+      embeddingConfig,
       pluginRegistry: registry,
     });
 
