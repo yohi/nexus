@@ -111,6 +111,7 @@ describe.skipIf(process.env.NEXUS_E2E !== "1")(
     it("requests new embeddings when a restarted CLI changes to a same-dimension model", async () => {
       const first = await reindex("model-a");
       expect(first.code, first.diagnostics).toBe(0);
+      expect(requests.get("model-a")).toBeGreaterThan(0);
       const result = await reindex("model-b");
       expect(result.code, result.diagnostics).toBe(0);
       expect(requests.get("model-b")).toBeGreaterThan(0);
@@ -119,6 +120,7 @@ describe.skipIf(process.env.NEXUS_E2E !== "1")(
     it("keeps a persistent cache hit when restarting the CLI with the same model", async () => {
       const first = await reindex("model-a");
       expect(first.code, first.diagnostics).toBe(0);
+      expect(requests.get("model-a")).toBeGreaterThan(0);
       const original = requests.get("model-a");
       const result = await reindex("model-a");
       expect(result.code, result.diagnostics).toBe(0);
@@ -128,6 +130,7 @@ describe.skipIf(process.env.NEXUS_E2E !== "1")(
     it("reports an unavailable new model instead of hiding the error behind an old cached vector", async () => {
       const first = await reindex("model-a");
       expect(first.code, first.diagnostics).toBe(0);
+      expect(requests.get("model-a")).toBeGreaterThan(0);
       const result = await reindex("rejected-model");
       expect(result.code).not.toBe(0);
       expect(requests.get("rejected-model")).toBeGreaterThan(0);
