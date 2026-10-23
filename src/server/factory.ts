@@ -511,6 +511,7 @@ export class NexusServerFactory {
       vectorStore,
       chunker: new Chunker(pluginRegistry, { maxChunkChars: config.indexing.maxChunkChars }),
       embeddingProvider,
+      embeddingConfig: pluginConfig.embedding,
       pluginRegistry,
       structuredIndexCoordinator,
       loadFileBytes,
