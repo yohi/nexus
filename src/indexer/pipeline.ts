@@ -31,6 +31,8 @@ import {
 import type { StructuredSource, StructuredDeclaration, StructuredImport } from '../structured/contracts.js';
 import type { FullRebuildFile, StructuredIndexCoordinator } from './structured-index-coordinator.js';
 import { decodeUtf8, sha256Hex } from '../structured/hash.js';
+import { createEmbeddingCacheIdentity, type EmbeddingCacheIdentity } from './embedding-cache-identity.js';
+import type { EmbeddingConfig } from '../types/index.js';
 
 type ContentLoader = (filePath: string) => Promise<string>;
 type FileBytesLoader = (filePath: string) => Promise<Uint8Array>;
@@ -40,6 +42,7 @@ interface IndexPipelineOptions {
   vectorStore: IVectorStore;
   chunker: Chunker;
   embeddingProvider: EmbeddingProvider;
+  embeddingConfig?: Readonly<EmbeddingConfig> | undefined;
   pluginRegistry: PluginRegistry;
   structuredIndexCoordinator?: StructuredIndexCoordinator;
   loadFileBytes?: FileBytesLoader;
@@ -128,9 +131,10 @@ export class IndexPipeline implements IIndexPipeline {
   private idleCompactionTimer: NodeJS.Timeout | undefined;
   private readonly chunkConcurrency: number;
   private readonly embedBatchWindowSize: number;
-  /** chunk content-hash → embedding vector (LRU eviction when at capacity) */
+  /** Compatibility-scoped content key → embedding vector (LRU eviction). */
   private readonly embeddingCache: Map<string, number[]>;
   private readonly embeddingCacheSize: number;
+  private readonly embeddingCacheIdentity: EmbeddingCacheIdentity | undefined;
 
   private progress: PipelineProgress = {
     totalFiles: 0,
@@ -144,6 +148,10 @@ export class IndexPipeline implements IIndexPipeline {
     this.embedBatchWindowSize = Math.max(1, options.embedBatchWindowSize ?? 16);
     this.embeddingCacheSize = options.embeddingCacheSize ?? 10_000;
     this.embeddingCache = new Map<string, number[]>();
+    this.embeddingCacheIdentity = options.embeddingConfig !== undefined &&
+      options.embeddingConfig.dimensions === options.embeddingProvider.dimensions
+      ? createEmbeddingCacheIdentity(options.embeddingConfig)
+      : undefined;
     this.completionLock = options.completionLock ?? new Mutex();
     this.eventQueue = options.eventQueue;
     this.deadLetterQueue = new DeadLetterQueue({
@@ -632,23 +640,26 @@ export class IndexPipeline implements IIndexPipeline {
       }
     }
     // L1 cache check.
-    const l1Misses: Array<{ index: number; hash: string; text: string }> = [];
+    const l1Misses: Array<{ index: number; hash: string | undefined; text: string }> = [];
     const resolvedEmbeddings: (number[] | undefined)[] = allChunks.map((chunk, i) => {
-        const cached = this.getL1Cache(chunk.hash);
+        const hash = this.embeddingCacheIdentity?.keyFor(chunk.hash);
+        const cached = hash === undefined ? undefined : this.getL1Cache(hash);
         if (cached !== undefined) {
           return cached;
         }
-      l1Misses.push({ index: i, hash: chunk.hash, text: chunk.content });
+      l1Misses.push({ index: i, hash, text: chunk.content });
       return undefined;
     });
 
     // L2 persistent cache check.
     const trueMisses: typeof l1Misses = [];
     if (l1Misses.length > 0) {
-      const l2Cached = await this.options.metadataStore.getEmbeddings(l1Misses.map((m) => m.hash));
+      const hashes = l1Misses.flatMap(m => m.hash === undefined ? [] : [m.hash]);
+      const l2Cached = hashes.length === 0 ? new Map<string, number[]>()
+        : await this.options.metadataStore.getEmbeddings(hashes);
       for (const miss of l1Misses) {
-        const vector = l2Cached.get(miss.hash);
-        if (vector !== undefined) {
+        const vector = miss.hash === undefined ? undefined : l2Cached.get(miss.hash);
+        if (vector !== undefined && miss.hash !== undefined) {
           resolvedEmbeddings[miss.index] = vector;
           this.setL1Cache(miss.hash, vector);
         } else {
@@ -679,8 +690,10 @@ export class IndexPipeline implements IIndexPipeline {
             continue;
           }
           resolvedEmbeddings[miss.index] = vec;
-          this.setL1Cache(miss.hash, vec);
-          l2Entries.push({ hash: miss.hash, vector: vec });
+          if (miss.hash !== undefined) {
+            this.setL1Cache(miss.hash, vec);
+            l2Entries.push({ hash: miss.hash, vector: vec });
+          }
         }
         if (l2Entries.length > 0) {
           await this.options.metadataStore.setEmbeddings(l2Entries);
