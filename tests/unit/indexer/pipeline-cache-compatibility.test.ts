@@ -161,6 +161,11 @@ describe("pipeline embedding compatibility with real SQLite", () => {
     // Given a pipeline without a trustworthy embedding identity.
     const first = await create(undefined, [1, 0]);
     await index(first.pipeline, "first.txt");
+    // When the same pipeline indexes identical text from another file.
+    await index(first.pipeline, "another-first.txt");
+    // Then L1 is bypassed without a trustworthy embedding identity.
+    expect(first.provider.calls).toBe(2);
+
     const second = await create(undefined, [0, 1]);
     // When a different provider instance indexes identical text.
     await index(second.pipeline, "second.txt");
