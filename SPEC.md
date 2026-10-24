@@ -66,6 +66,41 @@ A full reindex is not considered successful while unresolved dead-letter work re
 
 SQLite is the metadata and structured-catalog store. LanceDB stores vector-search data. Batch mutation paths use transactional/atomic activation boundaries where required so readers do not observe partially activated structured generations.
 
+#### Embedding cache identity
+
+The in-memory L1 and SQLite L2 embedding caches use the same versioned key:
+`embedding:v1:<compatibility-sha256>:<content-hash-sha256>`.
+Dimensions alone never establish compatibility. The deterministic compatibility
+fingerprint includes provider, model, dimensions, endpoint, region/profile,
+API-key and effective header configuration (case-insensitive, last override wins,
+then sorted by name), Ollama thread options, the embedded-text
+identity version (`chunk-content-v1`), and provider request-semantics version.
+Credential-bearing configuration participates only in the hash preimage; raw
+credentials, headers, endpoints, source text, and configuration are not stored in
+cache keys. Retry, timeout, batch scheduling, concurrency, and lock-wait tuning
+are excluded because they do not select a different embedding space.
+
+The runtime supplies the effective provider configuration when constructing the
+pipeline. This identity is a construction-time snapshot: change the configuration
+by constructing a new provider and pipeline. Callers without compatibility
+configuration, or with dimensions inconsistent with the provider, bypass both
+caches. An unchanged configuration preserves L1 hits and persistent L2 hits
+across pipeline restarts.
+
+Legacy `embedding_cache` rows keyed only by content hash remain in SQLite but
+are never looked up or promoted into the versioned namespace. They safely miss
+and can be removed by existing pruning or explicit cache clearing; no destructive
+schema migration is required. The first reindex after this change therefore
+recomputes previously unnamespaced embeddings. Changes to provider request
+normalization/truncation semantics or embedded-text identity must bump the
+corresponding version before cached vectors may be reused. Chunking changes
+that produce different text already change its content hash.
+
+This cache contract does not migrate existing LanceDB search vectors when a model
+changes: rebuild the index with the new configuration. A model ID or endpoint
+that is repointed to different weights also requires an explicit configuration
+or compatibility-version change; the cache cannot discover remote model changes.
+
 ### 4.4 Full rebuild commit protocol and crash recovery
 
 A clean full rebuild (`nexus --reindex --full`) enforces an all-or-nothing transactional boundary across SQLite metadata, LanceDB vector storage, and the Merkle tree:
