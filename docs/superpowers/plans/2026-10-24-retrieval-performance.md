@@ -16,14 +16,17 @@ JSON report through a quiet parent CLI.
 **Tech Stack:** Node.js >=24, TypeScript, npm, Vitest, existing Zod v3,
 SQLite, LanceDB, ripgrep, Git; no new package dependencies.
 
-**Spec:** [Approved R3 design](../specs/2026-10-24-retrieval-performance-design.md).
-The user supplied independent `DESIGN REVIEW PASS` for R3. Preserve that design
-as the baseline; this plan does not claim implementation or runtime validation.
+**Spec:** [R3 design](../specs/2026-10-24-retrieval-performance-design.md).
+Independent R3 design approval is pending: no approval record was located.
+PR #338 records a `CHANGES_REQUESTED` review of the implementation plan, not
+an R3 design approval. Preserve the design as the proposal baseline; this plan
+does not claim implementation or runtime validation.
 
-**Plan revision:** R3. Independent review marked PLAN-299-001 through
+**Plan revision:** R4. Independent review marked PLAN-299-001 through
 PLAN-299-005 resolved in plan. This limited revision addresses
-PLAN-R2-NEW-001 through PLAN-R2-NEW-003; approved R3 design remains unchanged.
-Independent review accepted these corrections as
+PLAN-R2-NEW-001 through PLAN-R2-NEW-003; the R3 design proposal remains
+unchanged.
+The prior independent review accepted these corrections as
 `LIMITED_PASS / IMPLEMENTATION_PLAN_READY`. Execution authorization remains
 separate from plan approval.
 
@@ -102,7 +105,9 @@ exports in that file's export surface.
   `logical-path.ts` owns untimed response-path validation;
   `cache-seed.ts` owns bounded L2 preparation, verification, and diagnostics.
 - `scripts/run-performance.mjs`: parent CLI, worker orchestration, final output.
-- `vitest.performance.config.ts`: only `**/*.perf.ts`, serial, no coverage.
+- `vitest.performance.config.ts`: only
+  `tests/benchmarks/performance/**/*.perf.ts`, serial, no coverage; do not
+  inherit normal or E2E includes.
 - `tests/unit/benchmarks/performance/`: fast contract tests (`*.test.ts`).
 - `tests/integration/performance/`: real-runtime validity and smoke tests.
 - `package.json`, `tsconfig.json`, CI, observability docs: execution/verification.
@@ -241,8 +246,12 @@ Review PASS never authorizes a commit, push, PR, or merge.
   discarding user work. Do not merge/rebase/reset the current master to obtain
   the base. Record the actual execution revision.
 - [ ] Confirm `src/indexer/embedding-cache-identity.ts` and its pipeline/factory
-  wiring exist. Run `npx vitest run tests/e2e/embedding-cache-compatibility.test.ts`
-  with `NEXUS_E2E=1`; require the file to be discovered and its tests to pass.
+  wiring exist. Run `npx --no-install tsc --noEmit -p tsconfig.json` and
+  `NEXUS_E2E=1 npx --no-install vitest run
+  tests/e2e/embedding-cache-compatibility.test.ts`; require the file to be
+  discovered and its tests to pass. These commands must use existing local
+  executables only. If either executable is absent, stop with a prerequisite
+  error; do not let `npx` fetch or install dependencies.
 - [ ] Check Node >=24, `rg --version`, `git --version`, local dependencies, and
   available disk/memory. Prefer an existing devcontainer environment. If an
   initial setup is needed, follow the repository's Source Build/Package Usage
@@ -789,7 +798,17 @@ CLI accepts `--profile smoke|small|medium|large`, optional `--output <file>`,
 Defaults: profile small; deadlines smoke/small 120,000 ms, medium 600,000 ms,
 large 1,800,000 ms per scenario; 2,048 MiB Node heap ceiling. Report overrides.
 The wall deadline starts before fixture/cache setup; it is not reset at t0.
-The same worker heap ceiling covers preparation, indexing, retrieval and audit.
+Derive the worker heap ceiling in MiB from `--memory-limit-mb` (default
+2,048 MiB). Pass it as `--max-old-space-size=<memory-limit-mb>` through
+`NODE_OPTIONS` to every scenario Vitest process and the aggregation Vitest
+process, replacing any inherited `--max-old-space-size` value so the CLI option
+is authoritative. All preparation/cache seeding, indexing, retrieval, and
+audit work runs under that same ceiling. Record the effective ceiling in each
+scenario. A worker that does not receive the configured value, exits from an
+out-of-memory condition, or reports heap use above the configured ceiling makes
+that scenario invalid; never publish it as a successful sample. This heap ceiling
+does not guarantee a whole-process RSS cap; record actual RSS separately as
+specified in Task 12.
 Retain `setup_ms`/`cache_seed_ms` and seeding validation/resource diagnostics
 separately from runtime-ready and handler samples.
 
@@ -798,6 +817,10 @@ separately from runtime-ready and handler samples.
   unwritable output, paths with spaces, and cleanup after failure.
   Include failure during cache batch 2 and setup deadline expiry before t0;
   require invalid `phase: setup`, no warm timing, and no partial target reuse.
+  Verify in `runner.test.ts` that scenario and aggregation workers receive the
+  CLI-derived `--max-old-space-size` through `NODE_OPTIONS`, including when a
+  conflicting inherited value is present; assert that an over-limit/OOM worker
+  yields an invalid scenario.
   Parse success/invalid JSON and assert temporary absolute paths and raw
   grep/Hybrid absolute IDs are absent; worker logs cannot bypass redaction.
 - [ ] Run `npx vitest run tests/integration/performance/runner.test.ts`;
@@ -828,9 +851,11 @@ separately from runtime-ready and handler samples.
 - [ ] Enforce deadlines through abort then child termination with a 5-second
   grace period; reap child process groups on supported platforms and verify
   no ripgrep descendants remain. OS spawn/cleanup limitations fail explicitly.
-- [ ] Configure only `.perf.ts`, no inherited normal/E2E includes, no coverage,
-  no benchmark discovery, no file parallelism. Include the new root config in
-  `tsconfig.json`; ordinary `.test.ts` contracts remain regular tests.
+- [ ] Configure only
+  `tests/benchmarks/performance/**/*.perf.ts`, no inherited normal/E2E includes,
+  no coverage, no benchmark discovery, no file parallelism. Include the new
+  root config in `tsconfig.json`; ordinary `.test.ts` contracts remain regular
+  tests.
 - [ ] Rerun subprocess tests. Parse stdout from both direct Node invocation and
   `npm run --silent test:perf -- --profile smoke`. Document that npm's default
   lifecycle banners require `--silent` for machine-readable stdout; do not
@@ -845,6 +870,8 @@ update `docs/observability/README.md` metric inventory/link.
 - [ ] Write discovery assertions using the four real configurations: normal,
   `NEXUS_E2E=1`, microbench, and perf. Require `.perf.ts` to appear only in perf
   with E2E environment set or unset, and `*.bench.ts` only in microbench.
+  Add a `.perf.ts` fixture outside `tests/benchmarks/performance/` and assert
+  that the performance configuration neither discovers nor executes it.
 - [ ] Run `npx vitest run
   tests/unit/benchmarks/performance/discovery.test.ts`; require failure before
   missing isolation/configuration is implemented and PASS afterward.
@@ -868,7 +895,8 @@ update `docs/observability/README.md` metric inventory/link.
 
 **Files:** Create `docs/observability/performance-benchmarks.md` and
 `docs/observability/benchmarks/{small,medium,large}.json`; update the existing
-observability README link if not already done. Keep the approved R3 spec fixed.
+observability README link if not already done. Keep the R3 design proposal
+fixed pending independent design approval.
 
 - [ ] Document metric reuse/new cache counter, exact invocation, boundaries,
   fixture/provider identity, uncapped grep, external CPU limitations, synthetic
@@ -980,7 +1008,7 @@ three corrections in plan R3. None is a claim of implementation or runtime PASS:
 - **PLAN-R2-NEW-003:** Task 7 checks temporary ownership/non-repository state
   before init, then verifies the actual Git top level before add/commit/worktree.
 
-The tasks cover the approved R3 and its review handoff conditions. Writing this
+The tasks cover the R3 proposal and its review handoff conditions. Writing this
 plan does not authorize implementation or substitute for the base/runtime/CI
 checks. Obtain explicit execution authorization before starting Task 0.
 The agreed workflow is single-implementer sequential execution with the

@@ -5,15 +5,22 @@
 Proposed design for [issue #299](https://github.com/yohi/nexus/issues/299).
 Revision R3 retains the R2 corrections for FND-299-001 through FND-299-007,
 which the independent R2 review marked resolved in design, and addresses
-R2-NEW-001 through R2-NEW-005. The revised document requires independent
-review before implementation planning.
+R2-NEW-001 through R2-NEW-005. No independent R3 design-approval record was
+located. The R3 review status therefore remains pending; independent review
+must pass before implementation planning.
 
 Static reference: `0407c2a688654857fac2d68af6369c3d52a5f399` on upstream
 `master`. The local checkout inspected for this revision is
 `4fd4872d4baa4394dd3828040f4d52ac9cc9e02d`; its relevant differences from the
 reference include the #305 cache-identity module and its pipeline/factory wiring.
-Those relevant differences were inspected explicitly. This revision does not claim
-benchmark execution, CI success, or independent review approval.
+Those relevant differences were inspected explicitly. This revision does not
+claim benchmark execution or CI success.
+
+Review record checked: [PR #338](https://github.com/yohi/nexus/pull/338) records
+a `CHANGES_REQUESTED` review on commit
+`51c0a21d909c65a9e05a21a0fba0d6e8886a2402`. Its comments concern the
+implementation plan and do not establish independent R3 design approval. No
+separate R3 design-review result or approval reference was available.
 
 Establish repeatable repository-scale performance and resource measurements
 before considering indexed text search (#301), cross-worktree cache reuse
