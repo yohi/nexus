@@ -1,5 +1,20 @@
 # Changelog
 
+## [2.7.1](https://github.com/yohi/nexus/compare/v2.7.0...v2.7.1) (2026-10-24)
+
+
+### Bug Fixes
+
+* update gitignore ([7bd27fe](https://github.com/yohi/nexus/commit/7bd27fe97de092eb9ae91b1360b3fd19c37abea2))
+* update gitignore ([373ada2](https://github.com/yohi/nexus/commit/373ada24916dd3b22b28bb7b53f4b685640e1b4e))
+* Vitest関連の依存バージョンを同期 ([45d24f1](https://github.com/yohi/nexus/commit/45d24f1aa37902e9781301af7b93ec5d65c003c3))
+* 埋め込みキャッシュを設定互換性で分離 ([f910558](https://github.com/yohi/nexus/commit/f9105586915f7a99984dff49c5d4dde8d7a4f7f5))
+* 埋め込みキャッシュを設定互換性で分離 ([deaf485](https://github.com/yohi/nexus/commit/deaf485946b0b50a1f18a2d0305ca0d9d50ab0ca))
+* 埋め込みキャッシュを設定互換性で分離 ([6b077d6](https://github.com/yohi/nexus/commit/6b077d622911d6350926e29d01d1f21cf7fc0a32))
+* 埋め込みキャッシュ互換性と境界仕様を更新 ([51c0a21](https://github.com/yohi/nexus/commit/51c0a21d909c65a9e05a21a0fba0d6e8886a2402))
+* 本番依存の脆弱性を修正 ([7c7208a](https://github.com/yohi/nexus/commit/7c7208ad08ce27724521cb40adde3780ec79be7c))
+* 本番依存の脆弱性を解消 ([7c5bcce](https://github.com/yohi/nexus/commit/7c5bcce82a8a49c925b2a6a247f0e3b99d070569))
+
 ## [2.7.0](https://github.com/yohi/nexus/compare/v2.6.0...v2.7.0) (2026-10-04)
 
 
