@@ -51,16 +51,6 @@ const tsFunctions = (n: number, tag: string): string =>
   Array.from({ length: n }, (_, i) => `export function ${tag}_fn${i}(): number {\n  return ${i};\n}`).join('\n\n');
 
 const ZERO_QUERY_64 = new Array(64).fill(0) as number[];
-const TEST_EMBEDDING_CONFIG: Readonly<EmbeddingConfig> = {
-  provider: 'test',
-  model: 'test-model',
-  dimensions: 64,
-  maxConcurrency: 1,
-  batchSize: 16,
-  retryCount: 0,
-  retryBaseDelayMs: 0,
-};
-
 describe('IndexPipeline – windowed batching', () => {
   it('batches chunks across multiple files into ONE embed() call per window', async () => {
     const { metadataStore, vectorStore, chunker, registry } = await createPipeline();
@@ -416,7 +406,6 @@ describe('IndexPipeline – chunk embedding cache', () => {
       vectorStore,
       chunker,
       embeddingProvider: embedding,
-      embeddingConfig: TEST_EMBEDDING_CONFIG,
       pluginRegistry: registry,
       embedBatchWindowSize: 16,
       embeddingCacheSize: 10_000,
@@ -452,7 +441,6 @@ describe('IndexPipeline – chunk embedding cache', () => {
       vectorStore,
       chunker,
       embeddingProvider: embedding,
-      embeddingConfig: TEST_EMBEDDING_CONFIG,
       pluginRegistry: registry,
       embedBatchWindowSize: 16,
       embeddingCacheSize: 10_000,
@@ -482,7 +470,6 @@ describe('IndexPipeline – chunk embedding cache', () => {
       vectorStore,
       chunker,
       embeddingProvider: embedding,
-      embeddingConfig: TEST_EMBEDDING_CONFIG,
       pluginRegistry: registry,
       embedBatchWindowSize: 16,
       embeddingCacheSize: 0,
@@ -514,7 +501,6 @@ describe('IndexPipeline – chunk embedding cache', () => {
       vectorStore,
       chunker,
       embeddingProvider: embedding,
-      embeddingConfig: TEST_EMBEDDING_CONFIG,
       pluginRegistry: registry,
       embedBatchWindowSize: 16,
       embeddingCacheSize: 1,
@@ -550,7 +536,6 @@ describe('IndexPipeline – chunk embedding cache', () => {
       vectorStore,
       chunker,
       embeddingProvider: embedding,
-      embeddingConfig: TEST_EMBEDDING_CONFIG,
       pluginRegistry: registry,
       embedBatchWindowSize: 16,
       embeddingCacheSize: 2,
