@@ -37,3 +37,6 @@ Thumbs.db
 
 # Local agent settings
 .claude/
+
+# Evidence
+evidence/
