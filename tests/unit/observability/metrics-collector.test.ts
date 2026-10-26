@@ -19,6 +19,17 @@ describe('MetricsCollector', () => {
     registry = new Registry();
   });
 
+  it('counts embedding cache terminal outcomes with only bounded outcome and process labels', async () => {
+    const collector = new MetricsCollector({ registry, projectName: 'cache-test' });
+    collector.onEmbeddingCacheLookup('l1_hit', 2);
+    collector.onEmbeddingCacheLookup('l2_hit', 3);
+    collector.onEmbeddingCacheLookup('miss', 4);
+    const metric = (await registry.getMetricsAsJSON()).find((item) => item.name === 'nexus_embedding_cache_lookups_total');
+    expect(metric?.values.map((item) => item.value)).toEqual([2, 3, 4]);
+    expect(metric?.values.map((item) => item.labels.outcome)).toEqual(['l1_hit', 'l2_hit', 'miss']);
+    for (const value of metric?.values ?? []) expect(Object.keys(value.labels).sort()).toEqual(['outcome', 'pid', 'project']);
+  });
+
   it('structured retrieval metrics are emitted', async () => {
     const collector = new MetricsCollector({ registry });
 

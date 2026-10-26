@@ -1,10 +1,14 @@
 import pLimit from 'p-limit';
 
 import type { GrepMatch, GrepParams, IGrepEngine } from '../types/index.js';
+import { emitRuntimeEvent } from '../observability/runtime-observer.js';
+import type { RuntimeObserver } from '../observability/runtime-observer.js';
+import { captureObservedGrep, observeRuntimeWork } from '../observability/runtime-work.js';
 
 export { type IGrepEngine } from '../types/index.js';
 
 interface RipgrepEngineOptions {
+  observer?: RuntimeObserver;
   projectRoot: string;
   grepMaxConcurrency?: number;
   grepTimeoutMs?: number;
@@ -78,7 +82,11 @@ export class RipgrepEngine implements IGrepEngine {
   }
 
   async search(params: GrepParams): Promise<GrepMatch[]> {
-    return this.limit(async () => this.execute(params));
+    return observeRuntimeWork(this.options.observer, 'grep', async () => {
+      const matches = await this.limit(async () => this.execute(params));
+      captureObservedGrep(this.options.observer, matches, 'direct');
+      return matches;
+    }, params.abortSignal);
   }
 
   private async execute(params: GrepParams): Promise<GrepMatch[]> {
@@ -89,6 +97,7 @@ export class RipgrepEngine implements IGrepEngine {
     let escalationId: ReturnType<typeof setTimeout> | undefined;
     const timeoutId = setTimeout(() => {
       timedOut = true;
+      emitRuntimeEvent(this.options.observer, { kind: 'grep_signal', reason: 'timeout' });
       processController?.kill('SIGTERM');
       timeoutController.abort();
 
@@ -103,6 +112,7 @@ export class RipgrepEngine implements IGrepEngine {
       : timeoutController.signal;
 
     if (combinedSignal.aborted) {
+      emitRuntimeEvent(this.options.observer, { kind: 'grep_signal', reason: 'aborted' });
       clearTimeout(timeoutId);
       return [];
     }
@@ -116,6 +126,7 @@ export class RipgrepEngine implements IGrepEngine {
       }
       throw error;
     } finally {
+      if (combinedSignal.aborted) emitRuntimeEvent(this.options.observer, { kind: 'grep_signal', reason: timedOut ? 'timeout' : 'aborted' });
       clearTimeout(timeoutId);
       if (escalationId && !(timedOut && !settledViaAbort)) {
         clearTimeout(escalationId);

@@ -4,6 +4,9 @@ import { mkdir, readFile, writeFile, rename } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { iterateVectorAuditRows } from './vector-audit-reader.js';
+import { VectorAuditReadError } from './interfaces/vector-audit.js';
+import type { VectorAuditOptions, VectorAuditRow } from './interfaces/vector-audit.js';
 import type {
   ActiveGeneration,
   ChunkWithEmbedding,
@@ -1379,6 +1382,13 @@ export class LanceVectorStore implements IVectorStore {
       const keepFilter = conditions.join(' OR ');
       await this.structuredTable.delete(`NOT (${keepFilter})`);
     });
+  }
+
+  /** @internal Read-only paged identity projection; never includes embeddings or source. */
+  iterateAuditRows(options: Readonly<VectorAuditOptions>): AsyncIterable<VectorAuditRow> {
+    if (this.isClosed || this.db === undefined) throw new VectorAuditReadError('audit_reader_unavailable');
+    return iterateVectorAuditRows({ legacy: this.table, structured: this.structuredTable }, options,
+      (operation) => this.trackOp(operation));
   }
 
   async getStats(): Promise<VectorStoreStats> {

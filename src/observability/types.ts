@@ -1,6 +1,9 @@
 import type { BackpressureState } from '../indexer/event-queue.js';
 
+export type EmbeddingCacheOutcome = 'l1_hit' | 'l2_hit' | 'miss';
+
 export interface MetricsHooks {
+  onEmbeddingCacheLookup?(outcome: EmbeddingCacheOutcome, count: number): void;
   onQueueSnapshot(size: number, state: BackpressureState, droppedTotal: number, source?: string): void;
 
   onChunksIndexed(count: number): void;
