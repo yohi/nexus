@@ -15,6 +15,15 @@ export interface ChunkerOptions {
   maxChunkChars?: number;
 }
 
+export type ChunkFallbackReason = 'no_plugin' | 'empty_parse' | 'parser_error';
+export type ChunkFallbackObserver = (reason: ChunkFallbackReason) => void;
+export type ParserOutcome = 'attempted' | 'succeeded' | 'failed';
+export type ParserOutcomeObserver = (outcome: ParserOutcome) => void;
+export type ChunkerDiagnosticObserver = ChunkFallbackObserver | Readonly<{
+  onFallback: ChunkFallbackObserver;
+  onParserOutcome: ParserOutcomeObserver;
+}>;
+
 type GeneratedChunkFields = 'id' | 'content' | 'startLine' | 'endLine' | 'hash';
 
 export class Chunker {
@@ -24,25 +33,41 @@ export class Chunker {
     this.maxChunkChars = options.maxChunkChars ?? 0;
   }
 
-  async chunkFiles(files: FileToChunk[]): Promise<CodeChunk[]> {
+  async chunkFiles(files: FileToChunk[], observer?: ChunkerDiagnosticObserver): Promise<CodeChunk[]> {
     const chunks: CodeChunk[] = [];
+    const fallbackObserver = typeof observer === 'function' ? observer : observer?.onFallback;
+    const parserOutcomeObserver = typeof observer === 'function' ? undefined : observer?.onParserOutcome;
+    const reportFallback = (reason: ChunkFallbackReason): void => {
+      try { fallbackObserver?.(reason); } catch { /* Diagnostic observers cannot affect chunk output. */ }
+    };
+    const reportParserOutcome = (outcome: ParserOutcome): void => {
+      try { parserOutcomeObserver?.(outcome); } catch { /* Diagnostic observers cannot affect chunk output. */ }
+    };
 
     for (const file of files) {
       const plugin = this.pluginRegistry.getLanguagePlugin(file.filePath);
       if (plugin === undefined) {
+        reportFallback('no_plugin');
         chunks.push(...(await this.chunkByFixedLines(file)));
         continue;
       }
 
+      let parserSucceeded = false;
       try {
+        reportParserOutcome('attempted');
         const parser = await plugin.createParser();
         const parsed = await parser.parse(file);
+        parserSucceeded = true;
+        reportParserOutcome('succeeded');
         if (!parsed.declarations || parsed.declarations.length === 0) {
+          reportFallback('empty_parse');
           chunks.push(...(await this.chunkByFixedLines(file)));
         } else {
           chunks.push(...(await this.extractChunksWithYield(parsed, file)));
         }
       } catch (error) {
+        if (!parserSucceeded) reportParserOutcome('failed');
+        reportFallback('parser_error');
         console.warn('Parser failed, falling back to fixed-line chunking', file.filePath, error);
         chunks.push(...(await this.chunkByFixedLines(file)));
       }

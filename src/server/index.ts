@@ -14,6 +14,7 @@ import { buildDashboardIndexStatusSnapshot } from "./tools/build-dashboard-index
 import { registerV1Tools } from './tools/registry/adapters/v1-adapter.js';
 import { buildToolHandlers } from './tools/tool-support.js';
 import type { NexusServerOptions } from './tools/types.js';
+import { createChildRuntimeDiagnosticContext, currentRuntimeDiagnosticContext, withRuntimeDiagnosticContext, withoutRuntimeDiagnosticContext } from '../observability/diagnostic-stage-trace.js';
 
 export { errorResult, toolResult } from './tools/tool-support.js';
 
@@ -140,8 +141,8 @@ export const buildNexusRuntime = (
       }
 
       try {
-        options.pipeline.start();
-        await options.watcher.start().catch((error) => {
+        withoutRuntimeDiagnosticContext(() => options.pipeline.start());
+        await withoutRuntimeDiagnosticContext(async () => await options.watcher.start().catch((error) => {
           const code =
             error !== null && typeof error === "object" && "code" in error
               ? (error as Record<string, unknown>).code
@@ -156,7 +157,7 @@ export const buildNexusRuntime = (
           } else {
             throw error;
           }
-        });
+        }));
 
         // Use port 0 for auto-assignment, unless explicitly overridden.
         const preferredPort = options.metricsPort ?? 0;
@@ -172,19 +173,19 @@ export const buildNexusRuntime = (
           ? new MetricsHttpServer(options.metricsCollectorRegistry, dashboardStatusEndpoint)
           : null;
         if (metricsServer) {
-          await metricsServer.start(preferredPort).catch((err) => {
+          await withoutRuntimeDiagnosticContext(async () => await metricsServer?.start(preferredPort).catch((err) => {
             console.warn("[Nexus] Failed to start metrics HTTP server:", err);
-          });
+          }));
           const resolvedPort = metricsServer.getPort();
           await syncMetricsPortFile(options.storageDir, resolvedPort);
-          registrationClient = options.packageMode
+          registrationClient = withoutRuntimeDiagnosticContext(() => options.packageMode
             ? null
             : createRegistrationClient(
                 options.aggregatorPort ?? 9470,
                 resolvedPort,
                 options.projectRoot,
                 options.projectName,
-              );
+              ));
         }
       } catch (error) {
         await options.pipeline.stop().catch((stopError: unknown) => {
@@ -206,32 +207,36 @@ export const buildNexusRuntime = (
       }
 
       if (needsPostScan) {
-        const startupReindexPromise = options.pipeline
-          .reindex(
+        const startReindex = () => options.pipeline.reindex(
             options.runReindex,
             options.loadFileContent,
             true,
             'startup-reconciliation',
-          )
+          );
+        const diagnosticContext = currentRuntimeDiagnosticContext();
+        const startupReindexPromise = diagnosticContext === undefined
+          ? startReindex()
+          : withRuntimeDiagnosticContext(createChildRuntimeDiagnosticContext(diagnosticContext, 'startup_reindex'), startReindex);
+        const trackedStartupReindex = startupReindexPromise
           .then(async (result) => {
             if ('status' in result && result.status === 'already_running') {
               await options.pipeline.waitForActiveReindex();
             }
             if (!isShuttingDown) {
-              options.eventQueue?.drainPostScanQueue();
+              withoutRuntimeDiagnosticContext(() => options.eventQueue?.drainPostScanQueue());
             }
             return result;
           })
           .catch((error: unknown) => {
             if (!isShuttingDown) {
-              options.eventQueue?.drainPostScanQueue();
+              withoutRuntimeDiagnosticContext(() => options.eventQueue?.drainPostScanQueue());
             }
             console.error('[Nexus] Startup auto Full Index failed:', error);
             return undefined;
           });
-        autoReindexPromise = startupReindexPromise;
-        void startupReindexPromise.finally(() => {
-          if (autoReindexPromise === startupReindexPromise) {
+        autoReindexPromise = trackedStartupReindex;
+        void trackedStartupReindex.finally(() => {
+          if (autoReindexPromise === trackedStartupReindex) {
             autoReindexPromise = null;
           }
         });
@@ -317,7 +322,7 @@ export const buildNexusRuntime = (
     }
   };
 
-  const reindex = async (fullRebuild?: boolean) => {
+  const performReindex = async (fullRebuild?: boolean) => {
     await initialize();
     const result = await options.pipeline.reindex(
       options.runReindex,
@@ -341,6 +346,12 @@ export const buildNexusRuntime = (
         : 'Reindex incomplete: dead-letter queue entries remain';
       throw new Error(message);
     }
+  };
+  const reindex = async (fullRebuild?: boolean) => {
+    const diagnosticContext = currentRuntimeDiagnosticContext();
+    if (diagnosticContext === undefined) return await performReindex(fullRebuild);
+    return await withRuntimeDiagnosticContext(createChildRuntimeDiagnosticContext(diagnosticContext, 'manual_reindex'),
+      async () => await performReindex(fullRebuild));
   };
 
   const createServer = (): McpServer => createNexusServer(options, () => initialize());

@@ -49,7 +49,7 @@ export function createSyntheticProvider(): EmbeddingProvider {
   };
 }
 
-export function validateVectorDistribution(vectors: Iterable<readonly number[]>): void {
+export function validateVectorDistribution(vectors: Iterable<readonly number[]>, onLocalValidated?: () => void): void {
   const digests = new Set<string>();
   const minima = Array.from({ length: 128 }, () => Infinity);
   const maxima = Array.from({ length: 128 }, () => -Infinity);
@@ -57,6 +57,7 @@ export function validateVectorDistribution(vectors: Iterable<readonly number[]>)
     if (vector.length !== 128) throw new SyntheticDistributionError('invalid_dimensions');
     if (!vector.every(Number.isFinite)) throw new SyntheticDistributionError('non_finite_vector');
     if (Math.abs(Math.hypot(...vector) - 1) > 1e-6) throw new SyntheticDistributionError('invalid_norm');
+    onLocalValidated?.();
     const digest = createHash('sha256').update(JSON.stringify(vector)).digest('hex');
     if (digests.has(digest)) throw new SyntheticDistributionError('vector_collision');
     digests.add(digest);
@@ -71,9 +72,15 @@ export function validateVectorDistribution(vectors: Iterable<readonly number[]>)
   }
 }
 
-export function validateSyntheticDistribution(texts: readonly string[]): void {
+export function validateSyntheticDistribution(texts: readonly string[], observer?: Readonly<{
+  onVectorAttempted: () => void;
+  onVectorValidated: () => void;
+}>): void {
   function* vectors() {
-    for (const text of new Set(texts)) yield vectorFor(text);
+    for (const text of new Set(texts)) {
+      observer?.onVectorAttempted();
+      yield vectorFor(text);
+    }
   }
-  validateVectorDistribution(vectors());
+  validateVectorDistribution(vectors(), observer?.onVectorValidated);
 }

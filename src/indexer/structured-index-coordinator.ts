@@ -10,6 +10,7 @@ import type {
 } from '../storage/interfaces/structured-catalog.js';
 import type { StructuredShadowTable } from '../storage/interfaces/vector-store.js';
 import type { ProjectWriteCoordinator } from './project-write-coordinator.js';
+import { incrementRuntimeDiagnosticCounter, markRuntimeDiagnosticStateIntegrity, runRuntimeDiagnosticStage } from '../observability/diagnostic-stage-trace.js';
 
 export interface FullRebuildFile {
   source: StructuredSource;
@@ -39,6 +40,8 @@ export interface StructuredIndexCoordinatorOptions {
 }
 
 export class StructuredIndexCoordinator {
+  private readonly stagedGenerationRowCounts = new Map<string, number>();
+
   constructor(private readonly options: StructuredIndexCoordinatorOptions) {}
 
   async stageFile(input: {
@@ -95,19 +98,44 @@ export class StructuredIndexCoordinator {
       };
 
       try {
-        await this.options.metadataStore.stageGeneration(stage);
-        await this.options.vectorStore.stageGenerationChunks({
-          filePath: input.source.filePath,
-          generationId: input.generationId,
-          chunks,
-          vectors: embeddings,
+        await runRuntimeDiagnosticStage('S08_storage_write', async () => {
+          this.diagnosticCounter('index.sqlite_generation_stage_attempted', 1, 'calls', 'attempted');
+          this.diagnosticCounter('index.sqlite_declaration_rows_attempted', input.declarations.length, 'rows', 'attempted');
+          this.diagnosticCounter('index.sqlite_import_rows_attempted', input.imports.length, 'rows', 'attempted');
+          await this.options.metadataStore.stageGeneration(stage);
+          this.diagnosticCounter('index.sqlite_generation_stage_succeeded', 1, 'calls', 'succeeded');
+          this.diagnosticCounter('index.sqlite_declaration_rows_committed', input.declarations.length, 'rows', 'committed');
+          this.diagnosticCounter('index.sqlite_import_rows_committed', input.imports.length, 'rows', 'committed');
         });
+        await runRuntimeDiagnosticStage('S08_storage_write', async () => {
+          this.diagnosticCounter('index.structured_vector_rows_attempted', chunks.length, 'rows', 'attempted');
+          try {
+            await this.options.vectorStore.stageGenerationChunks({
+              filePath: input.source.filePath,
+              generationId: input.generationId,
+              chunks,
+              vectors: embeddings,
+            });
+          } catch (error) {
+            markRuntimeDiagnosticStateIntegrity('unknown');
+            throw error;
+          }
+          this.diagnosticCounter('index.structured_vector_rows_write_succeeded', chunks.length, 'rows', 'succeeded');
+        });
+        this.stagedGenerationRowCounts.set(this.generationKey(input.source.filePath, input.generationId), chunks.length);
       } catch (error) {
-        await this.options.metadataStore.clearPendingGeneration({
-          filePath: input.source.filePath,
-          expectedActiveGeneration,
-          expectedPendingGeneration: input.generationId,
-          expectedRebuildEpoch: rebuildEpoch,
+        await runRuntimeDiagnosticStage('S08_storage_write', async () => {
+          try {
+            await this.options.metadataStore.clearPendingGeneration({
+              filePath: input.source.filePath,
+              expectedActiveGeneration,
+              expectedPendingGeneration: input.generationId,
+              expectedRebuildEpoch: rebuildEpoch,
+            });
+          } catch (cleanupError) {
+            markRuntimeDiagnosticStateIntegrity('rollback_incomplete');
+            throw cleanupError;
+          }
         });
         throw error;
       }
@@ -132,7 +160,19 @@ export class StructuredIndexCoordinator {
         return;
       }
 
-      await this.options.vectorStore.activateGenerationRows(input.filePath, input.generationId);
+      await runRuntimeDiagnosticStage('S08_storage_write', async () => {
+        try {
+          await this.options.vectorStore.activateGenerationRows(input.filePath, input.generationId);
+        } catch (error) {
+          markRuntimeDiagnosticStateIntegrity('unknown');
+          throw error;
+        }
+        const rowCount = this.stagedGenerationRowCounts.get(this.generationKey(input.filePath, input.generationId));
+        if (rowCount !== undefined) {
+          this.diagnosticCounter('index.structured_vector_rows_activated', rowCount, 'rows', 'succeeded');
+          this.stagedGenerationRowCounts.delete(this.generationKey(input.filePath, input.generationId));
+        }
+      });
 
       if (expectedActiveGeneration !== null) {
         await this.options.vectorStore.removeGenerationRows(input.filePath, expectedActiveGeneration);
@@ -185,6 +225,7 @@ export class StructuredIndexCoordinator {
       let metadataPrepared = false;
       let metadataRollbackCompleted = false;
       const stagedFiles = new Set<string>();
+      let structuredRowsStaged = 0;
 
       try {
         await this.options.metadataStore.prepareFullRebuild(activation, input.merkleSnapshot);
@@ -224,19 +265,49 @@ export class StructuredIndexCoordinator {
             fileHash: file.contentHash,
             fileCompleteness: file.fileCompleteness,
           };
-          await this.options.metadataStore.stageGeneration(stage);
-          stagedFiles.add(file.source.filePath);
-          await this.options.vectorStore.stageGenerationChunks({
-            filePath: file.source.filePath,
-            generationId: file.generationId,
-            chunks,
-            vectors: embeddings,
+          await runRuntimeDiagnosticStage('S08_storage_write', async () => {
+            this.diagnosticCounter('index.sqlite_generation_stage_attempted', 1, 'calls', 'attempted');
+            this.diagnosticCounter('index.sqlite_declaration_rows_attempted', file.declarations.length, 'rows', 'attempted');
+            this.diagnosticCounter('index.sqlite_import_rows_attempted', file.imports.length, 'rows', 'attempted');
+            await this.options.metadataStore.stageGeneration(stage);
+            this.diagnosticCounter('index.sqlite_generation_stage_succeeded', 1, 'calls', 'succeeded');
+            this.diagnosticCounter('index.sqlite_declaration_rows_committed', file.declarations.length, 'rows', 'committed');
+            this.diagnosticCounter('index.sqlite_import_rows_committed', file.imports.length, 'rows', 'committed');
           });
+          stagedFiles.add(file.source.filePath);
+          await runRuntimeDiagnosticStage('S08_storage_write', async () => {
+            this.diagnosticCounter('index.structured_vector_rows_attempted', chunks.length, 'rows', 'attempted');
+            try {
+              await this.options.vectorStore.stageGenerationChunks({
+                filePath: file.source.filePath,
+                generationId: file.generationId,
+                chunks,
+                vectors: embeddings,
+              });
+            } catch (error) {
+              markRuntimeDiagnosticStateIntegrity('unknown');
+              throw error;
+            }
+            this.diagnosticCounter('index.structured_vector_rows_write_succeeded', chunks.length, 'rows', 'succeeded');
+          });
+          structuredRowsStaged += chunks.length;
         }
 
         await input.beforeCommit?.(epoch);
         await this.options.metadataStore.setStructuredRebuildState({ rebuildState: 'legacy-swapped' });
-        await this.options.vectorStore.swapStructuredShadowTable(shadowTable, epoch);
+        const activeShadowTable = shadowTable;
+        if (activeShadowTable === undefined) {
+          throw new Error('Structured shadow table was not created');
+        }
+        await runRuntimeDiagnosticStage('S08_storage_write', async () => {
+          try {
+            await this.options.vectorStore.swapStructuredShadowTable(activeShadowTable, epoch);
+          } catch (error) {
+            markRuntimeDiagnosticStateIntegrity('unknown');
+            throw error;
+          }
+          this.diagnosticCounter('index.structured_vector_rows_activated', structuredRowsStaged, 'rows', 'succeeded');
+        });
         await this.options.metadataStore.setStructuredRebuildState({ rebuildState: 'structured-swapped' });
         await this.options.metadataStore.activateFullRebuild(activation);
         await this.options.metadataStore.setStructuredRebuildState({ rebuildState: 'catalog-activated' });
@@ -245,25 +316,39 @@ export class StructuredIndexCoordinator {
       } catch (error) {
         if (metadataPrepared) {
           try {
-            await this.options.metadataStore.rollbackFullRebuild(activation);
-            metadataRollbackCompleted = true;
+            await runRuntimeDiagnosticStage('S08_storage_write', async () => {
+              await this.options.metadataStore.rollbackFullRebuild(activation);
+              metadataRollbackCompleted = true;
+            });
           } catch (rollbackError) {
+            await this.markStateIntegrity('rollback_incomplete');
             console.error('[StructuredIndexCoordinator] Failed to roll back catalog activation:', rollbackError);
           }
         } else {
           for (const filePath of stagedFiles) {
             const file = input.files.find((candidate) => candidate.source.filePath === filePath);
             if (file === undefined) continue;
-            await this.options.metadataStore.clearPendingGeneration({
-              filePath,
-              expectedActiveGeneration: previousActiveGenerations.get(filePath) ?? null,
-              expectedPendingGeneration: file.generationId,
-              expectedRebuildEpoch: epoch,
+            await runRuntimeDiagnosticStage('S08_storage_write', async () => {
+              try {
+                await this.options.metadataStore.clearPendingGeneration({
+                  filePath,
+                  expectedActiveGeneration: previousActiveGenerations.get(filePath) ?? null,
+                  expectedPendingGeneration: file.generationId,
+                  expectedRebuildEpoch: epoch,
+                });
+              } catch (cleanupError) {
+                markRuntimeDiagnosticStateIntegrity('rollback_incomplete');
+                throw cleanupError;
+              }
             });
           }
         }
         if (shadowTable !== undefined) {
-          await this.options.vectorStore.abortStructuredShadowTable(shadowTable).catch((abortError) => {
+          const tableToAbort = shadowTable;
+          await runRuntimeDiagnosticStage('S08_storage_write', async () => {
+            await this.options.vectorStore.abortStructuredShadowTable(tableToAbort);
+          }).catch(async (abortError) => {
+            await this.markStateIntegrity('rollback_incomplete');
             console.error('[StructuredIndexCoordinator] Failed to roll back structured vectors:', abortError);
           });
         }
@@ -277,12 +362,22 @@ export class StructuredIndexCoordinator {
       }
 
       if (shadowTable !== undefined) {
-        await this.options.vectorStore.finalizeStructuredShadowTable(shadowTable).catch((cleanupError) => {
-          console.error('[StructuredIndexCoordinator] Failed to finalize structured vector backup:', cleanupError);
+        await runRuntimeDiagnosticStage('S08_storage_write', async () => {
+          try {
+            await this.options.vectorStore.finalizeStructuredShadowTable(shadowTable);
+          } catch (cleanupError) {
+            markRuntimeDiagnosticStateIntegrity('backup_cleanup_failed');
+            console.error('[StructuredIndexCoordinator] Failed to finalize structured vector backup:', cleanupError);
+          }
         });
       }
-      await this.options.metadataStore.finalizeFullRebuild(activation).catch((cleanupError) => {
-        console.error('[StructuredIndexCoordinator] Failed to finalize structured catalog backup:', cleanupError);
+      await runRuntimeDiagnosticStage('S08_storage_write', async () => {
+        try {
+          await this.options.metadataStore.finalizeFullRebuild(activation);
+        } catch (cleanupError) {
+          markRuntimeDiagnosticStateIntegrity('backup_cleanup_failed');
+          console.error('[StructuredIndexCoordinator] Failed to finalize structured catalog backup:', cleanupError);
+        }
       });
       await this.options.metadataStore.setStructuredRebuildState({ rebuildState: 'idle', lastErrorCode: null });
     });
@@ -297,5 +392,24 @@ export class StructuredIndexCoordinator {
       await this.options.vectorStore.reconcileStructuredRows(activeGenerations);
       await this.options.metadataStore.reconcileStructuredState();
     });
+  }
+
+  private diagnosticCounter(
+    counterId: string,
+    delta: number,
+    unit: string,
+    semantics: 'attempted' | 'succeeded' | 'committed' | 'failed' | 'returned' | 'classified',
+  ): void {
+    incrementRuntimeDiagnosticCounter({ stageId: 'S08_storage_write', counterId, delta, unit, semantics, sampleReason: 'threshold' });
+  }
+
+  private async markStateIntegrity(
+    stateIntegrity: 'unknown' | 'rollback_incomplete' | 'backup_cleanup_failed',
+  ): Promise<void> {
+    await runRuntimeDiagnosticStage('S08_storage_write', () => markRuntimeDiagnosticStateIntegrity(stateIntegrity));
+  }
+
+  private generationKey(filePath: string, generationId: string): string {
+    return `${filePath}\0${generationId}`;
   }
 }

@@ -4,8 +4,31 @@ import { z } from 'zod';
 import { auditRuntime } from '../../benchmarks/performance/audit.js';
 import { createSyntheticProvider } from '../../benchmarks/performance/synthetic-provider.js';
 import { createAuditFixture, faultChunk, nativeFixturePath } from './audit-fixture.js';
+import { createTraceRecorder } from '../../benchmarks/performance/diagnostics/trace-recorder.js';
+import { createRuntimeDiagnosticContext } from '../../benchmarks/performance/diagnostics/worker-stage-context.js';
+import { withRuntimeDiagnosticContext } from '../../../src/observability/diagnostic-stage-trace.js';
+import type { VectorAuditRow } from '../../../src/storage/interfaces/vector-audit.js';
 
 const fixtures: Awaited<ReturnType<typeof createAuditFixture>>[] = [];
+function createDiagnosticContext() {
+  const workerContext = {
+    recorder: createTraceRecorder({
+      runId: '00000000-0000-4000-8000-000000000001',
+      jobId: 'cold_initial_index',
+      recipeDigest: 'a'.repeat(64),
+      sourceFingerprint: 'b'.repeat(64),
+      pid: 3002,
+      processStartTicks: '4567',
+      ppid: 2000,
+      processRole: 'vitest_worker',
+      clockDomain: 'process_local_monotonic',
+    }, { nowNs: () => process.hrtime.bigint() }),
+    operationId: 'op_0000000000000001',
+    attemptId: 'attempt_1',
+  };
+  return { workerContext, runtimeContext: createRuntimeDiagnosticContext(workerContext) };
+}
+
 async function fixture() {
   const value = await createAuditFixture();
   fixtures.push(value);
@@ -25,6 +48,66 @@ describe('streaming per-path physical audit', () => {
       structuredRows: 100, structuredFiles: 20, declarations: 100, imports: 20, legacyGetStats: 120 } });
     expect(JSON.stringify(result)).not.toContain(current.root);
     expect(JSON.stringify(result)).not.toContain('fault-injected');
+  });
+
+  it('records audit row and catalog progress without changing the audit result', async () => {
+    const current = await fixture();
+    const { workerContext, runtimeContext } = createDiagnosticContext();
+
+    const result = await withRuntimeDiagnosticContext(runtimeContext, () =>
+      auditRuntime(current.assembly.diagnostics, current.manifest, signal()));
+
+    const trace = workerContext.recorder.snapshot().events;
+    const counters = trace.filter((event) => event.event === 'progress');
+    expect(result.status).toBe('valid');
+    expect(counters).toContainEqual(expect.objectContaining({ counterId: 'audit.rows_seen', value: 220 }));
+    expect(counters).toContainEqual(expect.objectContaining({ counterId: 'audit.rows_verified', value: 220 }));
+    expect(counters).toContainEqual(expect.objectContaining({ counterId: 'audit.catalog_files_attempted', value: 20 }));
+    expect(counters).toContainEqual(expect.objectContaining({ counterId: 'audit.catalog_files_verified', value: 20 }));
+    expect(counters).toContainEqual(expect.objectContaining({ counterId: 'audit.declarations_verified', value: 100 }));
+    expect(counters).toContainEqual(expect.objectContaining({ counterId: 'audit.imports_verified', value: 20 }));
+    expect(JSON.stringify(trace)).not.toContain(current.root);
+  });
+
+  it('records bounded validation failures for invalid audit evidence', async () => {
+    const current = await fixture();
+    const file = current.manifest.files[0];
+    const row = file?.legacyRows[0];
+    if (file === undefined || row === undefined) throw new Error('row required');
+    const chunk = { ...faultChunk(file, row), hash: '0'.repeat(16) };
+    await current.assembly.diagnostics.vectorStore.upsertChunks([chunk], await createSyntheticProvider().embed([chunk.content]));
+    const { workerContext, runtimeContext } = createDiagnosticContext();
+
+    const result = await withRuntimeDiagnosticContext(runtimeContext, () =>
+      auditRuntime(current.assembly.diagnostics, current.manifest, signal()));
+
+    expect(result.status).toBe('invalid');
+    const counters = workerContext.recorder.snapshot().events.filter((event) => event.event === 'progress');
+    expect(counters.some((event) => event.counterId === 'audit.validation_failures' && event.value > 0)).toBe(true);
+  });
+
+  it('flushes audit row progress at each 512-row boundary', async () => {
+    const current = await fixture();
+    const vectorStore = current.assembly.diagnostics.vectorStore;
+    const originalIterate = vectorStore.iterateAuditRows.bind(vectorStore);
+    const sourceRows: VectorAuditRow[] = [];
+    for await (const row of originalIterate({ pageSize: 512, signal: signal() })) sourceRows.push(row);
+    if (sourceRows.length === 0) throw new Error('fixture rows required');
+    vi.spyOn(vectorStore, 'iterateAuditRows').mockImplementation(async function* () {
+      for (let index = 0; index < 513; index += 1) {
+        const row = sourceRows[index % sourceRows.length];
+        if (row !== undefined) yield row;
+      }
+      await Promise.resolve();
+    });
+    const { workerContext, runtimeContext } = createDiagnosticContext();
+
+    await withRuntimeDiagnosticContext(runtimeContext, () => auditRuntime(current.assembly.diagnostics, current.manifest, signal()));
+
+    const counters = workerContext.recorder.snapshot().events.filter((event) => event.event === 'progress');
+    const seenValues = counters.filter((event) => event.counterId === 'audit.rows_seen').map((event) => event.value);
+    expect(seenValues).toContain(512);
+    expect(seenValues).toContain(513);
   });
 
   it('pages real live rows without projecting source text or vectors', async () => {

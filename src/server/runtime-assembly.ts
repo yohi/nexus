@@ -26,6 +26,7 @@ import { createGrepEngine } from './runtime/grep-spawn.js';
 import { createRuntimeLogging } from './runtime/logging.js';
 import { EventProcessingManager } from './runtime/events.js';
 import { runtimeStateRevision } from '../observability/runtime-observer.js';
+import { runRuntimeDiagnosticStage, withRuntimeDiagnosticContext, withoutRuntimeDiagnosticContext } from '../observability/diagnostic-stage-trace.js';
 
 async function closeResources(steps: readonly (() => Promise<void>)[]): Promise<void> {
   const errors: unknown[] = [];
@@ -37,6 +38,14 @@ async function closeResources(steps: readonly (() => Promise<void>)[]): Promise<
 }
 
 export async function createRuntimeAssembly(config: Config,
+  dependencies: RuntimeAssemblyDependencies = {}): Promise<RuntimeAssembly> {
+  const diagnosticContext = dependencies.diagnosticTraceContext;
+  if (diagnosticContext === undefined) return await createRuntimeAssemblyCore(config, dependencies);
+  return await withRuntimeDiagnosticContext(diagnosticContext, async () =>
+    await runRuntimeDiagnosticStage('S03_runtime_assembly', async () => await createRuntimeAssemblyCore(config, dependencies)));
+}
+
+async function createRuntimeAssemblyCore(config: Config,
   dependencies: RuntimeAssemblyDependencies = {}): Promise<RuntimeAssembly> {
   const { projectRoot } = config;
   await StorageManager.ensureDirectories(config);
@@ -90,7 +99,9 @@ export async function createRuntimeAssembly(config: Config,
     const ignorePaths = config.watcher.ignorePaths ?? [];
     const eventManager = new EventProcessingManager(config, projectRoot, ignorePaths, pipeline,
       loadFileContent, onLog, metricsCollector, dependencies.observer);
-    const { eventQueue, watcher, onClose } = eventManager.setup();
+    const { eventQueue, watcher, onClose } = dependencies.diagnosticTraceContext === undefined
+      ? eventManager.setup()
+      : withoutRuntimeDiagnosticContext(() => eventManager.setup());
     stopEvents = onClose;
     const sanitizer = await PathSanitizer.create(projectRoot);
     const workspaceId = config.projectName ?? projectRoot.split(/[\\/]/).findLast(Boolean) ?? 'unknown';
@@ -102,6 +113,7 @@ export async function createRuntimeAssembly(config: Config,
       catalog: metadataStore, sanitizer, isExcluded: (filePath) => symbolIgnoreMatcher(filePath),
     });
     let closePromise: Promise<void> | undefined;
+    const runReindex = () => DirectoryScanner.scan(projectRoot, projectRoot, ignorePaths, onLog);
     const options: NexusRuntimeOptions = {
       projectRoot, sanitizer, semanticSearch, grepEngine, orchestrator, vectorStore,
       metadataStore, pipeline, eventQueue, pluginRegistry, watcher, loadFileContent,
@@ -112,9 +124,15 @@ export async function createRuntimeAssembly(config: Config,
         onClose, () => vectorStore.close(), () => metadataStore.close(),
         () => runtimeLogging.close(), () => projectLock.release(),
       ]),
-      runReindex: () => DirectoryScanner.scan(projectRoot, projectRoot, ignorePaths, onLog),
+      runReindex,
     };
     const runtime = buildNexusRuntime(options);
+    const initializationContext = dependencies.diagnosticTraceContext;
+    if (initializationContext !== undefined) {
+      const initialize = runtime.initialize.bind(runtime);
+      runtime.initialize = () => withRuntimeDiagnosticContext(initializationContext,
+        async () => await runRuntimeDiagnosticStage('S04_runtime_initialization', initialize));
+    }
     return {
       runtime, options,
       diagnostics: {

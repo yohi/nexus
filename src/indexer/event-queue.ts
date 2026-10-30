@@ -34,6 +34,8 @@ export class EventQueue {
 
   private droppedEventCount = 0;
 
+  private drainInFlightCount = 0;
+
   private readonly postScanQueue: IndexEvent[] = [];
 
   private postScanActive = false;
@@ -48,6 +50,10 @@ export class EventQueue {
 
   getDroppedEventCount(): number {
     return this.droppedEventCount;
+  }
+
+  getDrainInFlightCount(): number {
+    return this.drainInFlightCount;
   }
 
   getState(): BackpressureState {
@@ -185,7 +191,7 @@ export class EventQueue {
         const settled = await Promise.allSettled(
           events.map((event) =>
             limit(async () => {
-              return handler(event);
+              return await this.runDrainHandler(event, handler);
             })
           )
         );
@@ -223,7 +229,7 @@ export class EventQueue {
         const settled = await Promise.allSettled(
           events.map((event) =>
             limit(async () => {
-              return handler(event);
+              return await this.runDrainHandler(event, handler);
             })
           )
         );
@@ -376,6 +382,15 @@ export class EventQueue {
 
   isOverflowing(): boolean {
     return this.state !== 'normal';
+  }
+
+  private async runDrainHandler<T>(event: QueueEvent, handler: (event: QueueEvent) => Promise<T>): Promise<T> {
+    this.drainInFlightCount += 1;
+    try {
+      return await handler(event);
+    } finally {
+      this.drainInFlightCount -= 1;
+    }
   }
 
   private recordDroppedEvent(): false {

@@ -1,7 +1,7 @@
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import type { FileToChunk, LanguagePlugin } from '../../../src/types/index.js';
 import { Chunker } from '../../../src/indexer/chunker.js';
@@ -12,6 +12,50 @@ import type { StructuredDeclaration } from '../../../src/structured/contracts.js
 const fixturePath = path.join(process.cwd(), 'tests/fixtures/sample-project/src/auth.ts');
 
 describe('Chunker', () => {
+  it('chunkFiles_no_plugin_reports_no_plugin_fallback', async () => {
+    const chunker = new Chunker(new PluginRegistry());
+    const reasons: string[] = [];
+    const chunks = await chunker.chunkFiles([{
+      filePath: 'unsupported.txt', language: 'text', content: 'plain text',
+    }], (reason) => { reasons.push(reason); });
+    expect(reasons).toEqual(['no_plugin']);
+    expect(chunks).toHaveLength(1);
+  });
+
+  it('chunkFiles_empty_parse_reports_empty_parse_fallback', async () => {
+    const registry = new PluginRegistry();
+    registry.registerLanguage({
+      languageId: 'empty', fileExtensions: ['.empty'], supports: (filePath: string) => filePath.endsWith('.empty'),
+      createParser: async () => ({ parse: async () => ({ rootType: 'program', declarations: [] }) }),
+    } satisfies LanguagePlugin);
+    const reasons: string[] = [];
+    const chunks = await new Chunker(registry).chunkFiles([
+      { filePath: 'empty.empty', language: 'empty', content: 'plain text' },
+    ], (reason) => { reasons.push(reason); });
+    expect(reasons).toEqual(['empty_parse']);
+    expect(chunks).toHaveLength(1);
+  });
+
+  it('chunkFiles_parse_exception_reports_parser_error_fallback_and_returns_fixed_chunks', async () => {
+    const registry = new PluginRegistry();
+    registry.registerLanguage({
+      languageId: 'broken', fileExtensions: ['.broken'], supports: (filePath: string) => filePath.endsWith('.broken'),
+      createParser: async () => ({ parse: async () => { throw new Error('private parser detail'); } }),
+    } satisfies LanguagePlugin);
+    const reasons: string[] = [];
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    try {
+      const chunks = await new Chunker(registry).chunkFiles([
+        { filePath: 'private.broken', language: 'broken', content: 'fallback content' },
+      ], (reason) => { reasons.push(reason); });
+      expect(reasons).toEqual(['parser_error']);
+      expect(chunks).toHaveLength(1);
+      expect(JSON.stringify(reasons)).not.toContain('private.broken');
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
   it('creates chunks for imports, interfaces, functions, classes, and methods', async () => {
     const registry = new PluginRegistry();
     registry.registerLanguage(new TypeScriptLanguagePlugin());

@@ -4,8 +4,14 @@ import type { AuditResult, FixtureManifest } from './contracts.js';
 import { AuditFailures, createAuditCounts } from './audit-failures.js';
 import { AuditMembership, physicalFixturePath } from './audit-manifest.js';
 import { auditCatalog } from './audit-catalog.js';
+import { incrementRuntimeDiagnosticCounter, runRuntimeDiagnosticStage } from '../../../src/observability/diagnostic-stage-trace.js';
 
-export async function auditRuntime(reader: RuntimeDiagnostics, manifest: FixtureManifest,
+export function auditRuntime(reader: RuntimeDiagnostics, manifest: FixtureManifest,
+  signal: AbortSignal): Promise<AuditResult> {
+  return runRuntimeDiagnosticStage('S10_manifest_audit', () => auditRuntimeUnstaged(reader, manifest, signal));
+}
+
+async function auditRuntimeUnstaged(reader: RuntimeDiagnostics, manifest: FixtureManifest,
   signal: AbortSignal): Promise<AuditResult> {
   const started = performance.now();
   const counts = createAuditCounts();
@@ -38,13 +44,22 @@ export async function auditRuntime(reader: RuntimeDiagnostics, manifest: Fixture
     if (dlq.length !== 0) failures.add('dlq_not_empty', dlq.length);
     let vectorComplete = false;
     try {
+      let rowsSinceBoundary = 0;
       for await (const row of reader.vectorStore.iterateAuditRows({ pageSize: 512, signal })) {
         signal.throwIfAborted();
+        rowsSinceBoundary += 1;
+        incrementRuntimeDiagnosticCounter({ stageId: 'S10_manifest_audit', counterId: 'audit.rows_seen', delta: 1, unit: 'rows', semantics: 'visited', sampleReason: 'threshold' });
         switch (row.view) {
           case 'legacy': counts.legacyRows += 1; break;
           case 'structured': counts.structuredRows += 1; break;
         }
-        membership.accept(row);
+        if (membership.accept(row)) {
+          incrementRuntimeDiagnosticCounter({ stageId: 'S10_manifest_audit', counterId: 'audit.rows_verified', delta: 1, unit: 'rows', semantics: 'verified', sampleReason: 'threshold' });
+        }
+        if (rowsSinceBoundary === 512) {
+          rowsSinceBoundary = 0;
+          await runRuntimeDiagnosticStage('S10_manifest_audit', () => undefined);
+        }
       }
       vectorComplete = true;
     } catch (error) {
@@ -70,6 +85,8 @@ export async function auditRuntime(reader: RuntimeDiagnostics, manifest: Fixture
     if (reader.stateRevision() !== revision) failures.add('concurrent_mutation');
   }
   const result = { counts, durationMs: performance.now() - started };
+  const validationFailureCount = failures.records().reduce((total, failure) => total + failure.count, 0);
+  incrementRuntimeDiagnosticCounter({ stageId: 'S10_manifest_audit', counterId: 'audit.validation_failures', delta: validationFailureCount, unit: 'failures', semantics: 'failed', sampleReason: 'threshold' });
   return auditResultSchema.parse(failures.invalid ? { status: 'invalid', ...result, failures: failures.records() }
     : { status: 'valid', ...result });
 }

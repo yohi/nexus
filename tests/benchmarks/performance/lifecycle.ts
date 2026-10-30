@@ -15,6 +15,7 @@ import { ReadinessError } from './readiness-error.js';
 import { cacheSeedResultSchema, expectedCacheKeys } from './cache-seed.js';
 import { syntheticEmbeddingConfig } from './synthetic-provider.js';
 import { measureIndexArtifacts } from './resources.js';
+import { runRuntimeDiagnosticStage } from '../../../src/observability/diagnostic-stage-trace.js';
 
 export type { LifecycleContext, OperationKind, StartupKind } from './lifecycle-context.js';
 let operationSequence = 0;
@@ -59,9 +60,10 @@ export async function runStartupScenario(kind: StartupKind, createRuntime: Runti
   try {
     if (manifest.profile !== context.run.profile) throw new LifecycleError('profile_mismatch');
     if (!cacheWasExercised(kind, captured.record.cacheAccounting)) throw new LifecycleError('cache_state_not_exercised');
-    await captured.assembly.runtime.close();
+    await runRuntimeDiagnosticStage('S12_resource_cleanup', () => captured.assembly.runtime.close());
     context.signal.throwIfAborted();
-    const artifactBytes = await measureIndexArtifacts(captured.assembly.diagnostics, context.signal);
+    const artifactBytes = await runRuntimeDiagnosticStage('S12_resource_cleanup', () =>
+      measureIndexArtifacts(captured.assembly.diagnostics, context.signal));
     return scenarioRecordSchema.parse({ ...base, ...captured.record, sampleKind: 'lifecycle',
       artifactBytes,
       indexingMode: kind === 'warm_restart' ? 'startup_reconciliation' : 'full_rebuild',
@@ -73,13 +75,15 @@ export async function runStartupScenario(kind: StartupKind, createRuntime: Runti
   } catch (error) {
     const code = context.signal.aborted ? 'readiness_aborted' : error instanceof LifecycleError ? error.code : 'cleanup_failed';
     const failures = [{ code, count: 1, examples: [] }];
-    try { await captured.assembly.runtime.close(); }
+    try { await runRuntimeDiagnosticStage('S12_resource_cleanup', () => captured.assembly.runtime.close()); }
     catch { failures.push({ code: 'cleanup_failed', count: 1, examples: [] }); }
     return scenarioRecordSchema.parse({ ...base, status: 'invalid', phase: 'worker', elapsedMs: setupMs + clock.now() - captured.startedAt,
       failures,
       ...(seed?.success ? { cacheSeed: seed.data } : {}),
       candidateEndpoints: { ...captured.record.endpoints, setup_ms: setupMs } });
-  } finally { context.collector.release(captured.requestId); }
+  } finally {
+    await runRuntimeDiagnosticStage('S12_resource_cleanup', () => context.collector.release(captured.requestId));
+  }
 }
 
 export async function runExistingRuntimeScenario(kind: OperationKind, assembly: RuntimeAssembly,
@@ -123,7 +127,8 @@ export async function runExistingRuntimeScenario(kind: OperationKind, assembly: 
       const accounting = context.collector.cacheAccounting(requestId);
       if (!cacheWasExercised(kind, accounting)) throw new LifecycleError('cache_state_not_exercised');
       phase = 'worker';
-      await restore?.(); restore = undefined;
+      await runRuntimeDiagnosticStage('S12_resource_cleanup', async () => { await restore?.(); });
+      restore = undefined;
       context.signal.throwIfAborted();
       return scenarioRecordSchema.parse({ ...base, status: 'valid', sampleKind: 'lifecycle', rawSamples: [operationMs],
         fixtureDigest: currentManifest.digest,
@@ -136,12 +141,18 @@ export async function runExistingRuntimeScenario(kind: OperationKind, assembly: 
       const code = context.signal.aborted ? 'readiness_aborted' : error instanceof ReadinessError || error instanceof LifecycleError
         ? error.code : 'operation_failed';
       const failures = [{ code, count: 1, examples: [] }, ...(audit?.status === 'invalid' ? audit.failures : [])];
-      try { await restore?.(); } catch { failures.push({ code: 'cleanup_failed', count: 1, examples: [] }); }
+      try {
+        await runRuntimeDiagnosticStage('S12_resource_cleanup', async () => { await restore?.(); });
+      } catch {
+        failures.push({ code: 'cleanup_failed', count: 1, examples: [] });
+      }
       return scenarioRecordSchema.parse({ ...base, status: 'invalid', phase,
         fixtureDigest: currentManifest.digest,
         elapsedMs: context.setupMs + clock.now() - preparationStart, failures,
         ...(operationMs === undefined ? {} : { candidateEndpoints: { indexing_operation_ms: operationMs, setup_ms: setupMs } }) });
-    } finally { context.collector.release(requestId); }
+    } finally {
+      await runRuntimeDiagnosticStage('S12_resource_cleanup', () => context.collector.release(requestId));
+    }
   });
 }
 import { createHash } from 'node:crypto';

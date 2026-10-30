@@ -5,7 +5,7 @@ import pLimit from 'p-limit';
 import { DeadLetterQueue } from './dead-letter-queue.js';
 import { MerkleTree } from './merkle-tree.js';
 import { computeFileHashStreaming } from './hash.js';
-import type { Chunker } from './chunker.js';
+import type { Chunker, ChunkFallbackReason, ParserOutcome } from './chunker.js';
 import type { PluginRegistry } from '../plugins/registry.js';
 import type { EventQueue } from './event-queue.js';
 import type { MetricsHooks } from '../observability/types.js';
@@ -24,6 +24,7 @@ import {
   type IIndexPipeline,
   type PipelineProgress,
   type RetryExhaustedError,
+  DimensionMismatchError,
   type EmbeddingCacheEntry,
   type IndexStatsRow,
   type ReindexOptions,
@@ -38,9 +39,21 @@ import type { EmbeddingCacheOutcome } from '../observability/types.js';
 import { embeddingInputIdentity, emitCacheLookup, observeEmbeddingBatch } from '../observability/embedding-observer.js';
 import { emitRuntimeEvent } from '../observability/runtime-observer.js';
 import { observeReindex, observeRuntimeWork } from '../observability/runtime-work.js';
+import { currentRuntimeDiagnosticContext, incrementRuntimeDiagnosticCounter, markRuntimeDiagnosticStateIntegrity, recordRuntimeDiagnosticProgress, runRuntimeDiagnosticStage } from '../observability/diagnostic-stage-trace.js';
 
 type ContentLoader = (filePath: string) => Promise<string>;
 type FileBytesLoader = (filePath: string) => Promise<Uint8Array>;
+
+const fallbackCounterIds: Readonly<Record<ChunkFallbackReason, string>> = {
+  no_plugin: 'index.legacy_fallback_no_plugin',
+  empty_parse: 'index.legacy_fallback_empty_parse',
+  parser_error: 'index.legacy_fallback_parser_error',
+};
+const parserOutcomeCounterIds: Readonly<Record<ParserOutcome, string>> = {
+  attempted: 'index.legacy_parser_attempted',
+  succeeded: 'index.legacy_parser_succeeded',
+  failed: 'index.legacy_parser_failed',
+};
 
 interface IndexPipelineOptions {
   observer?: RuntimeObserver;
@@ -347,6 +360,10 @@ export class IndexPipeline implements IIndexPipeline {
         }
       }
 
+      if (renamedEventCount > 0) {
+        await this.recordFileFinalization(renamedEventCount);
+      }
+
       if (trackProgress) {
         this.progress.processedFiles += renamedEventCount;
       }
@@ -362,6 +379,7 @@ export class IndexPipeline implements IIndexPipeline {
             this.progress.currentFile = event.filePath;
           }
           await this.handleDeleteEvent(event.filePath, useStructuredFullRebuild, legacyShadow, useStructuredFullRebuild ? deferredMerkleOps : undefined);
+          await this.recordFileFinalization(1);
           if (trackProgress) {
             this.progress.processedFiles++;
             this.safeNotifyMetrics((h) => { h.onIndexingProgress(this.progress.processedFiles, this.progress.totalFiles, true); });
@@ -506,13 +524,29 @@ export class IndexPipeline implements IIndexPipeline {
     }
 
     const language = this.detectLanguage(event.filePath);
+    this.diagnosticCounter('S06_parse_chunk', 'index.legacy_chunk_files_attempted', 1, 'files', 'attempted');
+    let fallbackCount = 0;
+    const diagnosticObserver = currentRuntimeDiagnosticContext() === undefined ? undefined : {
+      onFallback: (reason: ChunkFallbackReason) => {
+        fallbackCount += 1;
+        this.diagnosticCounter('S06_parse_chunk', 'index.legacy_fixedline_fallback_attempted', 1, 'files', 'attempted');
+        this.diagnosticCounter('S06_parse_chunk', fallbackCounterIds[reason], 1, 'files', 'classified');
+      },
+      onParserOutcome: (outcome: ParserOutcome) => {
+        const semantics = outcome === 'failed' ? 'failed' : outcome === 'succeeded' ? 'succeeded' : 'attempted';
+        this.diagnosticCounter('S06_parse_chunk', parserOutcomeCounterIds[outcome], 1, 'calls', semantics);
+      },
+    };
     const chunks = await this.options.chunker.chunkFiles([
       {
         filePath: event.filePath,
         language,
         content,
       },
-    ]);
+    ], diagnosticObserver);
+    this.diagnosticCounter('S06_parse_chunk', 'index.legacy_chunk_files_succeeded', 1, 'files', 'succeeded');
+    this.diagnosticCounter('S06_parse_chunk', 'index.legacy_chunks_emitted', chunks.length, 'chunks', 'returned');
+    this.diagnosticCounter('S06_parse_chunk', 'index.legacy_fixedline_fallback_succeeded', fallbackCount, 'files', 'succeeded');
 
     let structured: StructuredFileWork | undefined;
     let structuredRetirement = false;
@@ -532,6 +566,39 @@ export class IndexPipeline implements IIndexPipeline {
     return { event, chunks, structured, structuredRetirement, structuredParseFailed, skipped: false };
   }
 
+  private diagnosticCounter(
+    stageId: string,
+    counterId: string,
+    delta: number,
+    unit: string,
+    semantics: 'failed' | 'attempted' | 'succeeded' | 'returned' | 'classified' | 'committed' | 'retained' | 'pending' | 'completed',
+  ): void {
+    incrementRuntimeDiagnosticCounter({ stageId, counterId, delta, unit, semantics, sampleReason: 'threshold' });
+  }
+
+  private async recordFileFinalization(
+    count: number,
+    outcome?: 'indexed_succeeded' | 'skipped_or_dlq',
+  ): Promise<void> {
+    await runRuntimeDiagnosticStage('S09_index_settlement', () => {
+      this.diagnosticCounter('S09_index_settlement', 'index.pipeline_files_finalized', count, 'files', 'completed');
+      if (outcome !== undefined) {
+        this.diagnosticCounter('S09_index_settlement', `index.pipeline_files_${outcome}`, count, 'files', outcome === 'indexed_succeeded' ? 'succeeded' : 'classified');
+      }
+    });
+  }
+
+  private async recordSettlementSnapshot(): Promise<void> {
+    const queue = this.eventQueue;
+    if (queue === undefined) return;
+    await runRuntimeDiagnosticStage('S09_index_settlement', () => {
+      recordRuntimeDiagnosticProgress({ counterId: 'settlement.queue_pending', value: queue.size(), unit: 'items', semantics: 'pending', sampleReason: 'stage_end' });
+      recordRuntimeDiagnosticProgress({ counterId: 'settlement.drain_inflight', value: queue.getDrainInFlightCount(), unit: 'items', semantics: 'pending', sampleReason: 'stage_end' });
+      recordRuntimeDiagnosticProgress({ counterId: 'settlement.postscan_pending', value: queue.getPostScanQueueSize(), unit: 'items', semantics: 'pending', sampleReason: 'stage_end' });
+      recordRuntimeDiagnosticProgress({ counterId: 'settlement.dropped_events', value: queue.getDroppedEventCount(), unit: 'events', semantics: 'failed', sampleReason: 'stage_end' });
+    });
+  }
+
   private async readStructuredFile(
     filePath: string,
     language: string,
@@ -543,11 +610,23 @@ export class IndexPipeline implements IIndexPipeline {
       return undefined;
     }
 
+    let parserAttempted = false;
+    let parserOutcomeRecorded = false;
     try {
       const parser = await plugin.createStructuredParser();
       const source: StructuredSource = { filePath, language, bytes, text: content };
+      this.diagnosticCounter('S06_parse_chunk', 'index.structured_parse_attempted', 1, 'files', 'attempted');
+      parserAttempted = true;
       const result = await parser.parseStructured(source);
-      if (result.status !== 'ok' && result.status !== 'degraded') {
+      if (result.status === 'ok') {
+        this.diagnosticCounter('S06_parse_chunk', 'index.structured_parse_ok', 1, 'files', 'succeeded');
+        parserOutcomeRecorded = true;
+      } else if (result.status === 'degraded') {
+        this.diagnosticCounter('S06_parse_chunk', 'index.structured_parse_degraded', 1, 'files', 'completed');
+        parserOutcomeRecorded = true;
+      } else {
+        this.diagnosticCounter('S06_parse_chunk', 'index.structured_parse_failed', 1, 'files', 'failed');
+        parserOutcomeRecorded = true;
         return { kind: 'parse-failed' };
       }
       if (result.status === 'degraded' && result.declarations.length === 0) {
@@ -567,10 +646,13 @@ export class IndexPipeline implements IIndexPipeline {
         fileCompleteness,
       };
 
+      this.diagnosticCounter('S06_parse_chunk', 'index.structured_chunk_files_attempted', 1, 'files', 'attempted');
       const structuredChunks = await this.options.chunker.chunkStructuredFile(
         { filePath, language, content, bytes },
         { declarations: result.declarations, imports: result.imports },
       );
+      this.diagnosticCounter('S06_parse_chunk', 'index.structured_chunk_files_succeeded', 1, 'files', 'succeeded');
+      this.diagnosticCounter('S06_parse_chunk', 'index.structured_chunks_emitted', structuredChunks.length, 'chunks', 'returned');
 
       return {
         kind: 'work',
@@ -587,6 +669,9 @@ export class IndexPipeline implements IIndexPipeline {
         },
       };
     } catch (error) {
+      if (parserAttempted && !parserOutcomeRecorded) {
+        this.diagnosticCounter('S06_parse_chunk', 'index.structured_parse_failed', 1, 'files', 'failed');
+      }
       this.safeLogProgress(
         `Structured parsing failed for ${filePath}: ${error instanceof Error ? error.message : 'unknown'}`,
         filePath,
@@ -612,9 +697,15 @@ export class IndexPipeline implements IIndexPipeline {
   ): Promise<ProcessEventWindowResult> {
     // Stage 1: bounded-concurrency read + chunk (no Merkle/vector writes here).
     const limit = pLimit(this.chunkConcurrency);
-    const works = await Promise.all(
-      window.map((event) => limit(async () => this.readAndChunkFile(event, loadContent))),
-    );
+    const works = await Promise.all(window.map((event) => limit(async () => {
+      const readAndChunk = () => this.readAndChunkFile(event, loadContent);
+      return currentRuntimeDiagnosticContext() === undefined
+        ? await readAndChunk()
+        : await runRuntimeDiagnosticStage('S06_parse_chunk', async () => {
+          this.diagnosticCounter('S06_parse_chunk', 'index.window_files', 1, 'files', 'attempted');
+          return await readAndChunk();
+        });
+    })));
 
     const windowParseFailures: string[] = [];
     for (const work of works) {
@@ -650,6 +741,12 @@ export class IndexPipeline implements IIndexPipeline {
     ]);
     const cacheLookup = (outcome: EmbeddingCacheOutcome, index: number, key?: string) => {
       this.safeNotifyMetrics((hooks) => { hooks.onEmbeddingCacheLookup?.(outcome, 1); });
+      const counterIds: Readonly<Record<EmbeddingCacheOutcome, string>> = {
+        l1_hit: 'index.embedding_cache_l1_hits',
+        l2_hit: 'index.embedding_cache_l2_hits',
+        miss: 'index.embedding_cache_misses',
+      };
+      this.diagnosticCounter('S07_embedding_cache', counterIds[outcome], 1, 'occurrences', 'classified');
       if (this.options.observer !== undefined) emitCacheLookup(this.options.observer, origins[index], outcome, key);
     };
 
@@ -670,7 +767,7 @@ export class IndexPipeline implements IIndexPipeline {
     }
     // L1 cache check.
     const l1Misses: Array<{ index: number; hash: string | undefined; text: string }> = [];
-    const resolvedEmbeddings: (number[] | undefined)[] = allChunks.map((chunk, i) => {
+    const resolvedEmbeddings: (number[] | undefined)[] = await runRuntimeDiagnosticStage('S07_embedding_cache', () => allChunks.map((chunk, i) => {
         const hash = this.embeddingCacheIdentity?.keyFor(chunk.hash);
         const cached = hash === undefined ? undefined : this.getL1Cache(hash);
         if (cached !== undefined) {
@@ -679,26 +776,29 @@ export class IndexPipeline implements IIndexPipeline {
         }
       l1Misses.push({ index: i, hash, text: chunk.content });
       return undefined;
-    });
+    }));
 
     // L2 persistent cache check.
-    const trueMisses: typeof l1Misses = [];
-    if (l1Misses.length > 0) {
-      const hashes = l1Misses.flatMap(m => m.hash === undefined ? [] : [m.hash]);
-      const l2Cached = hashes.length === 0 ? new Map<string, number[]>()
-        : await this.options.metadataStore.getEmbeddings(hashes);
-      for (const miss of l1Misses) {
-        const vector = miss.hash === undefined ? undefined : l2Cached.get(miss.hash);
-        if (vector !== undefined && miss.hash !== undefined) {
-          cacheLookup('l2_hit', miss.index, miss.hash);
-          resolvedEmbeddings[miss.index] = vector;
-          this.setL1Cache(miss.hash, vector);
-        } else {
-          cacheLookup('miss', miss.index, miss.hash);
-          trueMisses.push(miss);
+    const trueMisses: typeof l1Misses = await runRuntimeDiagnosticStage('S07_embedding_cache', async () => {
+      const misses: typeof l1Misses = [];
+      if (l1Misses.length > 0) {
+        const hashes = l1Misses.flatMap(m => m.hash === undefined ? [] : [m.hash]);
+        const l2Cached = hashes.length === 0 ? new Map<string, number[]>()
+          : await this.options.metadataStore.getEmbeddings(hashes);
+        for (const miss of l1Misses) {
+          const vector = miss.hash === undefined ? undefined : l2Cached.get(miss.hash);
+          if (vector !== undefined && miss.hash !== undefined) {
+            cacheLookup('l2_hit', miss.index, miss.hash);
+            resolvedEmbeddings[miss.index] = vector;
+            this.setL1Cache(miss.hash, vector);
+          } else {
+            cacheLookup('miss', miss.index, miss.hash);
+            misses.push(miss);
+          }
         }
       }
-    }
+      return misses;
+    });
 
     let allEmbeddings: number[][] = [];
     let embedError: RetryExhaustedError | undefined;
@@ -706,9 +806,31 @@ export class IndexPipeline implements IIndexPipeline {
     if (trueMisses.length > 0) {
       try {
         const missTexts = trueMisses.map((m) => m.text);
-        const freshEmbeddings = await observeEmbeddingBatch(this.options.observer,
-          () => trueMisses.map((miss) => embeddingInputIdentity(origins[miss.index], miss.hash)),
-          () => this.options.embeddingProvider.embed(missTexts, this.abortController.signal));
+        const freshEmbeddings = await runRuntimeDiagnosticStage('S07_embedding_cache', async () => {
+          this.diagnosticCounter('S07_embedding_cache', 'index.embedding_batches_attempted', 1, 'batches', 'attempted');
+          this.diagnosticCounter('S07_embedding_cache', 'index.embedding_inputs_submitted', missTexts.length, 'items', 'attempted');
+          let embeddings: number[][];
+          try {
+            embeddings = await observeEmbeddingBatch(this.options.observer,
+              () => trueMisses.map((miss) => embeddingInputIdentity(origins[miss.index], miss.hash)),
+              () => this.options.embeddingProvider.embed(missTexts, this.abortController.signal));
+          } catch (error) {
+            this.diagnosticCounter('S07_embedding_cache', 'index.embedding_batches_failed', 1, 'batches', 'failed');
+            throw error;
+          }
+          this.diagnosticCounter('S07_embedding_cache', 'index.embedding_batches_succeeded', 1, 'batches', 'succeeded');
+          this.diagnosticCounter('S07_embedding_cache', 'index.embedding_vectors_returned', embeddings.length, 'vectors', 'returned');
+          if (embeddings.length === missTexts.length) {
+            const hasInvalidVector = embeddings.some((vector) =>
+              vector.length !== this.options.embeddingProvider.dimensions || !vector.every(Number.isFinite),
+            );
+            if (hasInvalidVector) {
+              throw new DimensionMismatchError('Embedding provider returned a vector with invalid dimensions or values');
+            }
+            this.diagnosticCounter('S07_embedding_cache', 'index.embedding_inputs_completed', missTexts.length, 'items', 'succeeded');
+          }
+          return embeddings;
+        });
         if (freshEmbeddings.length !== missTexts.length) {
           const msg = `Embedding count mismatch: expected ${missTexts.length}, got ${freshEmbeddings.length}`;
           if (trackProgress) {
@@ -792,6 +914,7 @@ export class IndexPipeline implements IIndexPipeline {
         if (trackProgress) {
           this.progress.processedFiles++;
         }
+        await this.recordFileFinalization(1, 'skipped_or_dlq');
         continue;
       }
 
@@ -807,6 +930,7 @@ export class IndexPipeline implements IIndexPipeline {
         if (trackProgress) {
           this.progress.processedFiles++;
         }
+        await this.recordFileFinalization(1, 'skipped_or_dlq');
         continue;
       }
 
@@ -826,6 +950,7 @@ export class IndexPipeline implements IIndexPipeline {
         if (trackProgress) {
           this.progress.processedFiles++;
         }
+        await this.recordFileFinalization(1, 'skipped_or_dlq');
         continue;
       }
 
@@ -838,12 +963,21 @@ export class IndexPipeline implements IIndexPipeline {
       }
 
       if (legacyCount > 0) {
-        if (legacyShadow !== undefined) {
-          const stagedChunks: ChunkWithEmbedding[] = work.chunks.map((chunk, i) => ({ chunk, vector: legacyEmbeddings[i] ?? [] }));
-          await this.options.vectorStore.stageLegacyShadowChunks(legacyShadow, stagedChunks);
-        } else {
-          await this.options.vectorStore.upsertChunks(work.chunks, legacyEmbeddings, [work.event.filePath]);
-        }
+        await runRuntimeDiagnosticStage('S08_storage_write', async () => {
+          this.diagnosticCounter('S08_storage_write', 'index.legacy_vector_rows_attempted', legacyCount, 'rows', 'attempted');
+          try {
+            if (legacyShadow !== undefined) {
+              const stagedChunks: ChunkWithEmbedding[] = work.chunks.map((chunk, i) => ({ chunk, vector: legacyEmbeddings[i] ?? [] }));
+              await this.options.vectorStore.stageLegacyShadowChunks(legacyShadow, stagedChunks);
+            } else {
+              await this.options.vectorStore.upsertChunks(work.chunks, legacyEmbeddings, [work.event.filePath]);
+            }
+          } catch (error) {
+            markRuntimeDiagnosticStateIntegrity('unknown');
+            throw error;
+          }
+          this.diagnosticCounter('S08_storage_write', 'index.legacy_vector_rows_write_succeeded', legacyCount, 'rows', 'succeeded');
+        });
       }
 
       if (work.structured !== undefined && this.options.structuredIndexCoordinator !== undefined) {
@@ -894,6 +1028,7 @@ export class IndexPipeline implements IIndexPipeline {
         if (trackProgress) {
           this.progress.processedFiles++;
         }
+        await this.recordFileFinalization(1, 'skipped_or_dlq');
         continue;
       }
 
@@ -903,6 +1038,7 @@ export class IndexPipeline implements IIndexPipeline {
       if (trackProgress) {
         this.progress.processedFiles++;
       }
+      await this.recordFileFinalization(1, structuredRebuildFiles === undefined ? 'indexed_succeeded' : undefined);
     }
 
     return {
@@ -994,26 +1130,57 @@ export class IndexPipeline implements IIndexPipeline {
     merkleSnapshot: readonly MerkleNodeRow[],
   ): Promise<void> {
     try {
-      await coordinator.runFullRebuild({
-        files: [...files],
-        merkleSnapshot,
-        beforeCommit: async (rebuildEpoch) => {
-          await this.options.vectorStore.swapLegacyShadowTable(legacyShadow, rebuildEpoch);
-        },
-        afterCommit: async () => {
-          await this.applyDeferredMerkleOps(deferredMerkleOps);
-        },
+      const retainedChunks = files.reduce((total, file) => total + (file.chunks?.length ?? 0), 0);
+      const retainedVectors = files.reduce((total, file) => total + (file.embeddings?.length ?? 0), 0);
+      await runRuntimeDiagnosticStage('S08_storage_write', async () => {
+        this.diagnosticCounter('S08_storage_write', 'index.full_rebuild_retained_files', files.length, 'files', 'retained');
+        this.diagnosticCounter('S08_storage_write', 'index.retained_chunks', retainedChunks, 'chunks', 'retained');
+        this.diagnosticCounter('S08_storage_write', 'index.retained_vectors', retainedVectors, 'vectors', 'retained');
+        await coordinator.runFullRebuild({
+          files: [...files],
+          merkleSnapshot,
+          beforeCommit: async (rebuildEpoch) => {
+            await runRuntimeDiagnosticStage('S08_storage_write', async () => {
+              try {
+                await this.options.vectorStore.swapLegacyShadowTable(legacyShadow, rebuildEpoch);
+              } catch (error) {
+                markRuntimeDiagnosticStateIntegrity('unknown');
+                throw error;
+              }
+            });
+          },
+          afterCommit: async () => {
+            await this.applyDeferredMerkleOps(deferredMerkleOps);
+          },
+        });
       });
-      await this.options.vectorStore.finalizeLegacyShadowTable(legacyShadow).catch((error) => {
-        console.error('[IndexPipeline] Failed to finalize legacy vector backup:', error);
+      if (files.length > 0) {
+        await runRuntimeDiagnosticStage('S09_index_settlement', () => {
+          this.diagnosticCounter('S09_index_settlement', 'index.pipeline_files_indexed_succeeded', files.length, 'files', 'succeeded');
+        });
+      }
+      await runRuntimeDiagnosticStage('S08_storage_write', async () => {
+        try {
+          await this.options.vectorStore.finalizeLegacyShadowTable(legacyShadow);
+        } catch (error) {
+          markRuntimeDiagnosticStateIntegrity('backup_cleanup_failed');
+          console.error('[IndexPipeline] Failed to finalize legacy vector backup:', error);
+        }
       });
     } catch (error) {
-      await this.options.vectorStore.abortLegacyShadowTable(legacyShadow).catch((abortError) => {
-        console.error('[IndexPipeline] Failed to roll back legacy vectors:', abortError);
+      await runRuntimeDiagnosticStage('S08_storage_write', async () => {
+        try {
+          await this.options.vectorStore.abortLegacyShadowTable(legacyShadow);
+        } catch (abortError) {
+          markRuntimeDiagnosticStateIntegrity('rollback_incomplete');
+          console.error('[IndexPipeline] Failed to roll back legacy vectors:', abortError);
+        }
       });
       try {
         await this.merkleTree.restore(merkleSnapshot);
       } catch (restoreError) {
+        await runRuntimeDiagnosticStage('S08_storage_write', () =>
+          markRuntimeDiagnosticStateIntegrity('rollback_incomplete'));
         console.error('[IndexPipeline] Failed to restore Merkle metadata:', restoreError);
       }
       throw error;
@@ -1055,6 +1222,7 @@ export class IndexPipeline implements IIndexPipeline {
         this.progress.totalFiles = 0;
         this.progress.lastError = undefined;
         this.safeNotifyMetrics((h) => { h.onIndexingProgress(0, 0, true); });
+        await this.recordSettlementSnapshot();
 
         try {
           await this.clearPersistedError();
@@ -1081,13 +1249,15 @@ export class IndexPipeline implements IIndexPipeline {
           };
 
           try {
-            await this.options.vectorStore.compactAfterReindex();
+            await runRuntimeDiagnosticStage('S09_index_settlement', () =>
+              this.options.vectorStore.compactAfterReindex());
           } catch (compactionError) {
             emitRuntimeEvent(this.options.observer, { kind: 'compaction_failed' });
             console.error('Post-reindex compaction failed (non-fatal):', compactionError);
           }
 
-          const completionRecorded = await this.recordCompletion(fullRebuild, reason, finishedAt);
+          const completionRecorded = await runRuntimeDiagnosticStage('S09_index_settlement', () =>
+            this.recordCompletion(fullRebuild, reason, finishedAt));
 
           if (!completionRecorded) {
             this.progress.status = 'idle';
@@ -1118,6 +1288,7 @@ export class IndexPipeline implements IIndexPipeline {
           if (fullRebuild && this.eventQueue) {
             this.eventQueue.markFullScanComplete();
           }
+          await this.recordSettlementSnapshot();
         }
       });
     } catch (e) {
@@ -1262,8 +1433,10 @@ export class IndexPipeline implements IIndexPipeline {
   }
 
   async waitForActiveReindex(): Promise<void> {
-    const release = await this.mutex.acquire();
-    release();
+    await runRuntimeDiagnosticStage('S09_index_settlement', async () => {
+      const release = await this.mutex.acquire();
+      release();
+    });
   }
 
   setEventQueue(eventQueue: EventQueue): void {

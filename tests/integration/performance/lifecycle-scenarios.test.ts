@@ -9,6 +9,9 @@ import { generateFixture } from '../../benchmarks/performance/fixtures.js';
 import { syntheticEmbeddingConfig } from '../../benchmarks/performance/synthetic-provider.js';
 import { OutcomeCollector } from '../../benchmarks/performance/outcomes.js';
 import { createLifecycleFixture } from './lifecycle-fixture.js';
+import { createTraceRecorder } from '../../benchmarks/performance/diagnostics/trace-recorder.js';
+import { createRuntimeDiagnosticContext } from '../../benchmarks/performance/diagnostics/worker-stage-context.js';
+import { withRuntimeDiagnosticContext } from '../../../src/observability/diagnostic-stage-trace.js';
 
 const fixtures: Awaited<ReturnType<typeof createLifecycleFixture>>[] = [];
 async function fixture() { const value = await createLifecycleFixture(); fixtures.push(value); return value; }
@@ -17,6 +20,35 @@ const run = runOptionsSchema.parse({ profile: 'smoke', outputMode: 'stdout', rev
   timeoutMs: 30_000, auditPageSize: 512, cacheSeedBatchSize: 512, memoryLimitMb: 2_048, sampleMode: 'smoke' });
 
 describe('actual lifecycle scenario records', () => {
+  it('records S12 runtime close and artifact measurement spans', async () => {
+    const current = await fixture();
+    const workerContext = {
+      recorder: createTraceRecorder({
+        runId: '00000000-0000-4000-8000-000000000001',
+        jobId: 'cold_initial_index',
+        recipeDigest: 'a'.repeat(64),
+        sourceFingerprint: 'b'.repeat(64),
+        pid: 3002,
+        processStartTicks: '4567',
+        ppid: 2000,
+        processRole: 'vitest_worker',
+        clockDomain: 'process_local_monotonic',
+      }, { nowNs: () => process.hrtime.bigint() }),
+      operationId: 'op_0000000000000001',
+      attemptId: 'attempt_1',
+    };
+
+    const record = await withRuntimeDiagnosticContext(createRuntimeDiagnosticContext(workerContext), () =>
+      runStartupScenario('cold_initial_index', current.factory, current.manifest,
+        { run, collector: current.collector, signal: new AbortController().signal, setupMs: 0 }));
+
+    expect(record.status).toBe('valid');
+    const s12Spans = workerContext.recorder.snapshot().events.filter(
+      (event) => event.event === 'span_started' && event.stageId === 'S12_resource_cleanup',
+    );
+    expect(s12Spans.length).toBeGreaterThanOrEqual(2);
+  });
+
   it('returns construction-to-ready samples and closes startup-only runtimes', async () => {
     const current = await fixture();
     const record = await runStartupScenario('cold_initial_index', current.factory, current.manifest,

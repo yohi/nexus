@@ -9,6 +9,7 @@ import type { FixtureManifest } from './contracts.js';
 import type { AuditProgress } from './audit-failures.js';
 import { expectedSymbolId, physicalFixturePath } from './audit-manifest.js';
 import { sha256 } from './fixture-recipe.js';
+import { incrementRuntimeDiagnosticCounter } from '../../../src/observability/diagnostic-stage-trace.js';
 
 const importRowSchema = z.object({ id: z.string(), moduleSpecifier: z.string(), bindingName: z.string(),
   startByte: z.number().int(), endByte: z.number().int(), sourceHash: z.string(),
@@ -25,7 +26,9 @@ export async function auditCatalog(reader: RuntimeDiagnostics, manifest: Fixture
       WHERE file_path = ? AND generation = ? ORDER BY id LIMIT ? OFFSET ?`);
     for (const file of manifest.files) {
       signal.throwIfAborted();
+      const failuresBeforeFile = failures.records().reduce((total, failure) => total + failure.count, 0);
       const path = physicalFixturePath(file.path);
+      incrementRuntimeDiagnosticCounter({ stageId: 'S10_manifest_audit', counterId: 'audit.catalog_files_attempted', delta: 1, unit: 'files', semantics: 'attempted', sampleReason: 'threshold' });
       try {
         const generation = await reader.metadataStore.getGeneration(path, file.sourceHash);
         if (generation === null || generation.generationId !== file.sourceHash || generation.fileHash !== file.sourceHash ||
@@ -80,6 +83,12 @@ export async function auditCatalog(reader: RuntimeDiagnostics, manifest: Fixture
       } catch (error) {
         if (signal.aborted) throw error;
         failures.add('source_file_mismatch', 1, file.path);
+      }
+      const failuresAfterFile = failures.records().reduce((total, failure) => total + failure.count, 0);
+      if (failuresAfterFile === failuresBeforeFile) {
+        incrementRuntimeDiagnosticCounter({ stageId: 'S10_manifest_audit', counterId: 'audit.catalog_files_verified', delta: 1, unit: 'files', semantics: 'verified', sampleReason: 'threshold' });
+        incrementRuntimeDiagnosticCounter({ stageId: 'S10_manifest_audit', counterId: 'audit.declarations_verified', delta: file.declarations.length, unit: 'rows', semantics: 'verified', sampleReason: 'threshold' });
+        incrementRuntimeDiagnosticCounter({ stageId: 'S10_manifest_audit', counterId: 'audit.imports_verified', delta: file.imports.length, unit: 'rows', semantics: 'verified', sampleReason: 'threshold' });
       }
     }
   } finally { database.close(); }

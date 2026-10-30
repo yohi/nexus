@@ -7,11 +7,17 @@ import { readinessProbeInfoSchema, validRetrievalValidationSchema } from './cont
 import { expectedSymbolId } from './audit-manifest.js';
 import type { OutcomeCollector } from './outcomes.js';
 import { ReadinessError } from './readiness-error.js';
+import { runRuntimeDiagnosticStage } from '../../../src/observability/diagnostic-stage-trace.js';
 
 let probeSequence = 0;
 const probeResponseSchema = z.object({ status: z.literal('ok'), freshness: z.literal('fresh'),
   reindexRequired: z.literal(false), source: z.string() });
-export async function probeReadiness(assembly: RuntimeAssembly, manifest: FixtureManifest,
+export function probeReadiness(assembly: RuntimeAssembly, manifest: FixtureManifest,
+  collector: OutcomeCollector, signal: AbortSignal): ReturnType<typeof probeReadinessUnstaged> {
+  return runRuntimeDiagnosticStage('S11_readiness_probe', () => probeReadinessUnstaged(assembly, manifest, collector, signal));
+}
+
+async function probeReadinessUnstaged(assembly: RuntimeAssembly, manifest: FixtureManifest,
   collector: OutcomeCollector, signal: AbortSignal) {
   const file = manifest.files.at(-1);
   const declaration = file?.declarations.at(-1);

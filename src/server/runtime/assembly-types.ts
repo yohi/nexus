@@ -5,10 +5,12 @@ import type { LanceVectorStore } from '../../storage/vector-store.js';
 import type { EventQueue } from '../../indexer/event-queue.js';
 import type { EmbeddingProviderFactory } from './plugins.js';
 import type { PathSanitizer } from '../path-sanitizer.js';
+import type { RuntimeDiagnosticContext } from '../../observability/diagnostic-stage-trace.js';
 
 export interface RuntimeAssemblyDependencies {
   readonly createEmbeddingProvider?: EmbeddingProviderFactory;
   readonly observer?: RuntimeObserver;
+  readonly diagnosticTraceContext?: RuntimeDiagnosticContext;
 }
 export interface RuntimeDiagnostics {
   readonly metadataDbPath: string;
