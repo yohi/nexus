@@ -11,33 +11,66 @@ function withProfileRunBudget(runDirectoryFd, profileDirectoryFd, requestedBytes
   const lockFd = fs.openSync(lockPath,
     fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_EXCL | fs.constants.O_NOFOLLOW, 0o600);
   let lockIdentity;
+  let operationFailed = false;
+  let operationError;
+  let result = false;
+  const cleanupErrors = [];
   try {
     lockIdentity = fs.fstatSync(lockFd);
     let usedBytes = 0;
+    let budgetExceeded = false;
     for (const name of fs.readdirSync(directoryPath)) {
       const entry = fs.lstatSync(path.join(directoryPath, name));
       if (!entry.isFile() || !Number.isSafeInteger(entry.size) || entry.size < 0) {
         throw new Error('profile_budget_invalid_entry');
       }
       usedBytes += entry.size;
-      if (!Number.isSafeInteger(usedBytes) || usedBytes > RUN_LIMIT_BYTES) return false;
-    }
-    if (requestedBytes > RUN_LIMIT_BYTES - usedBytes) return false;
-    write();
-    return true;
-  } finally {
-    try {
-      if (lockIdentity !== undefined) {
-        const current = fs.lstatSync(lockPath);
-        if (current.dev !== lockIdentity.dev || current.ino !== lockIdentity.ino) {
-          throw new Error('profile_budget_lock_replaced');
-        }
-        fs.unlinkSync(lockPath);
+      if (!Number.isSafeInteger(usedBytes) || usedBytes > RUN_LIMIT_BYTES) {
+        budgetExceeded = true;
+        break;
       }
-    } finally {
-      fs.closeSync(lockFd);
+    }
+    if (!budgetExceeded && requestedBytes <= RUN_LIMIT_BYTES - usedBytes) {
+      write();
+      result = true;
+    }
+  } catch (error) {
+    operationFailed = true;
+    operationError = error;
+  }
+
+  if (lockIdentity !== undefined) {
+    try {
+      const current = fs.lstatSync(lockPath);
+      if (current.dev !== lockIdentity.dev || current.ino !== lockIdentity.ino) {
+        const error = new Error('profile_budget_lock_replaced');
+        error.code = 'profile_budget_lock_replaced';
+        throw error;
+      }
+      fs.unlinkSync(lockPath);
+    } catch (error) {
+      cleanupErrors.push(error);
     }
   }
+  try {
+    fs.closeSync(lockFd);
+  } catch (error) {
+    cleanupErrors.push(error);
+  }
+
+  if (cleanupErrors.length > 0 && operationFailed) {
+    const error = new AggregateError([operationError, ...cleanupErrors], 'profile_budget_lock_cleanup_failed');
+    error.code = 'profile_budget_lock_cleanup_failed';
+    throw error;
+  }
+  if (cleanupErrors.length > 0) {
+    if (cleanupErrors.length === 1) throw cleanupErrors[0];
+    const error = new AggregateError(cleanupErrors, 'profile_budget_lock_cleanup_failed');
+    error.code = 'profile_budget_lock_cleanup_failed';
+    throw error;
+  }
+  if (operationFailed) throw operationError;
+  return result;
 }
 
 module.exports = { withProfileRunBudget };

@@ -1,37 +1,15 @@
 import { createHash } from 'node:crypto';
 import { computeStringHash } from '../../../src/indexer/hash.js';
 import type { FixtureFile, ExpectedRow } from './contracts.js';
+import { createFixtureRecipe, fixturePath } from '../../../scripts/performance-diagnostics/fixture-recipe.mjs';
+
+export { fixturePath };
 
 export const sha256 = (content: string | Uint8Array): string => createHash('sha256').update(content).digest('hex');
-const padded = (index: number): string => String(index).padStart(5, '0');
-export const fixturePath = (index: number): string =>
-  `packages/package-${padded(Math.floor(index / 20))}/src/file-${padded(index)}.ts`;
 
 export function createRecipe(index: number, fileCount: number, declarationsPerFile: number,
   variant: 'initial' | 'modified' = 'initial') {
-  const moduleSpecifier = `./file-${padded(Math.floor(index / 20) * 20)}.js`;
-  const importText = `import '${moduleSpecifier}';`;
-  let text = `${importText}\n`;
-  const drafts: { readonly name: string; readonly start: number; readonly end: number;
-    readonly fullStart: number; readonly content: string }[] = [];
-  let previousEnd = importText.length;
-  for (let marker = index; marker < 125; marker += fileCount) {
-    text += `// perf_hybrid_125 marker-${marker}\n`;
-  }
-  text += '// perf_early\n';
-  for (let declaration = 0; declaration < declarationsPerFile; declaration += 1) {
-    text += '\n// perf_broad\n// perf_broad\n';
-    const helper = declaration === declarationsPerFile - 1;
-    const name = helper ? 'sharedHelper' : `case${padded(index)}_${declaration}`;
-    const value = helper ? 'shared 日本語' : `${name}-${variant}`;
-    const content = `export function ${name}(): string {\n  return '${value}';\n}`;
-    const start = text.length;
-    text += `${content}\n`;
-    drafts.push({ name, start, end: start + content.length, fullStart: previousEnd, content });
-    previousEnd = start + content.length;
-  }
-  text += '// perf_late\n';
-  return { text, importText, moduleSpecifier, drafts };
+  return createFixtureRecipe({ index, fileCount, declarationsPerFile, variant });
 }
 
 export async function describeRecipe(index: number, fileCount: number, declarationsPerFile: number,

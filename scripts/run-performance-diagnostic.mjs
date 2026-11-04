@@ -3,6 +3,7 @@ import { mkdir, realpath, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { performanceSourceMetadata } from './performance-source.mjs';
+import { diagnosticSourceFingerprint } from './performance-diagnostics/source-fingerprint.mjs';
 
 const repository = fileURLToPath(new URL('../', import.meta.url));
 const timeoutMs = 600_000;
@@ -29,8 +30,12 @@ export async function prepareDiagnosticRun(options, services = {}) {
   if (process.platform !== 'linux' || Number.parseInt(process.versions.node.split('.')[0] ?? '', 10) < 24) {
     throw new Error('diagnostic_platform_not_supported');
   }
-  const source = await (services.sourceMetadata ?? performanceSourceMetadata)(services.repository ?? repository);
-  const sourceFingerprint = source.environment.sourceFingerprint;
+  const repositoryRoot = services.repository ?? repository;
+  const [source, diagnosticSource] = await Promise.all([
+    (services.sourceMetadata ?? performanceSourceMetadata)(repositoryRoot),
+    (services.diagnosticFingerprint ?? diagnosticSourceFingerprint)(repositoryRoot),
+  ]);
+  const sourceFingerprint = diagnosticSource.digest;
   if (typeof sourceFingerprint !== 'string' || !digestPattern.test(sourceFingerprint)) {
     throw new Error('diagnostic_source_identity_unavailable');
   }

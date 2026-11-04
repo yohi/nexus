@@ -52,12 +52,17 @@ export default tseslint.config(
     },
   },
   {
-    files: ['scripts/*performance*.mjs', 'tests/fixtures/performance/*.mjs'],
+    files: ['scripts/*performance*.mjs', 'scripts/performance-diagnostics/**/*.{mjs,cjs}', 'tests/fixtures/performance/*.mjs'],
     extends: [tseslint.configs.disableTypeChecked],
     languageOptions: {
       ecmaVersion: 'latest',
       sourceType: 'module',
       globals: globals.node,
     },
+  },
+  {
+    files: ['scripts/performance-diagnostics/**/*.cjs'],
+    languageOptions: { sourceType: 'commonjs' },
+    rules: { '@typescript-eslint/no-require-imports': 'off' },
   },
 );

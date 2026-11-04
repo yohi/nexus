@@ -1167,6 +1167,7 @@ export class IndexPipeline implements IIndexPipeline {
           console.error('[IndexPipeline] Failed to finalize legacy vector backup:', error);
         }
       });
+      await runRuntimeDiagnosticStage('S08_storage_write', () => markRuntimeDiagnosticStateIntegrity('verified'));
     } catch (error) {
       await runRuntimeDiagnosticStage('S08_storage_write', async () => {
         try {

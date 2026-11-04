@@ -20,6 +20,7 @@ export type DiagnosticPreparationServices = Readonly<{
     revision: Readonly<{ commit: string | null; dirty: boolean | null }>;
     environment: Readonly<{ sourceFingerprint?: string | undefined }>;
   }>>;
+  diagnosticFingerprint?: (repository: string) => Promise<Readonly<{ digest: string }>>;
   nowMs?: () => number;
 }>;
 

@@ -109,7 +109,8 @@ function validInput(overrides: Partial<ProfileCorrelationInput> = {}): ProfileCo
     runId: identity.runId,
     parentPid: 2000,
     clockAlignment: alignedClock(),
-    processSamples: [{ runId: identity.runId, pid: identity.pid, processStartTicks: identity.processStartTicks, ppid: 2000, cpuDeltaUs: 2_000_000 }],
+    processSamples: [{ runId: identity.runId, pid: identity.pid, processStartTicks: identity.processStartTicks,
+      ppid: 2000, cpuDeltaUs: 2_000_000, cpuTicksDelta: 120 }],
     preloadMarkers: [{ runId: identity.runId, pid: identity.pid, processStartTicks: identity.processStartTicks, processRole: 'vitest_worker' }],
     segments: [
       { events: completeSegment('segment_a', 1, 6), profileValid: true },
@@ -135,6 +136,18 @@ describe('profile evidence correlation', () => {
     expect(result.stageOverlaps).toContainEqual({ stageId: 'S06_parse_chunk', overlapNs: '19' });
   });
 
+  it('does_not_prove_a_cpu_active_profile_when_no_profile_segment_overlaps_a_stage', () => {
+    const stages = validInput().stageEvents.map((event) => event.event === 'span_started'
+      ? stageEvent({ ...event, monotonicNs: '1000' })
+      : stageEvent({ ...event, monotonicNs: '1020', endMonotonicNs: '1020' }));
+
+    const result = correlateProfileEvidence(validInput({ stageEvents: stages }));
+
+    expect(result.status).toBe('worker_profile_NOT_PROVEN');
+    expect(result.reasonCodes).toContain('stage_clock_mismatch');
+    expect(result.stageOverlaps).toEqual([]);
+  });
+
   it('rejects a parent-only profile', () => {
     const parent = { ...identity, pid: 2000, ppid: 1, processRole: 'vitest_parent' as const, processStartTicks: '8888' };
     const parentSegments = validInput().segments.map((segment) => ({
@@ -145,7 +158,8 @@ describe('profile evidence correlation', () => {
     }));
     const result = correlateProfileEvidence(validInput({
       segments: parentSegments,
-      processSamples: [{ runId: parent.runId, pid: parent.pid, processStartTicks: parent.processStartTicks, ppid: parent.ppid, cpuDeltaUs: 2_000_000 }],
+      processSamples: [{ runId: parent.runId, pid: parent.pid, processStartTicks: parent.processStartTicks,
+        ppid: parent.ppid, cpuDeltaUs: 2_000_000, cpuTicksDelta: 120 }],
     }));
 
     expect(result.status).toBe('worker_profile_NOT_PROVEN');
@@ -163,7 +177,8 @@ describe('profile evidence correlation', () => {
     const result = correlateProfileEvidence(validInput({
       segments: [...parentSegments, ...validInput().segments],
       processSamples: [
-        { runId: parent.runId, pid: parent.pid, processStartTicks: parent.processStartTicks, ppid: parent.ppid, cpuDeltaUs: 5_000_000 },
+        { runId: parent.runId, pid: parent.pid, processStartTicks: parent.processStartTicks,
+          ppid: parent.ppid, cpuDeltaUs: 5_000_000, cpuTicksDelta: 120 },
         ...validInput().processSamples,
       ],
     }));
@@ -173,14 +188,32 @@ describe('profile evidence correlation', () => {
 
   it('rejects a child that did not exceed the CPU-active threshold', () => {
     const input = validInput({
-      processSamples: [{ runId: identity.runId, pid: identity.pid, processStartTicks: identity.processStartTicks, ppid: 2000, cpuDeltaUs: 1_000_000 }],
+      processSamples: [{ runId: identity.runId, pid: identity.pid, processStartTicks: identity.processStartTicks,
+        ppid: 2000, cpuDeltaUs: 1_000_000, cpuTicksDelta: 120 }],
     });
     expect(correlateProfileEvidence(input).reasonCodes).toContain('cpu_inactive');
   });
 
+  it('requires_supervisor_observed_cpu_tick_progress_for_a_profiled_worker', () => {
+    const processSample = {
+      runId: identity.runId,
+      pid: identity.pid,
+      processStartTicks: identity.processStartTicks,
+      ppid: 2000,
+      cpuDeltaUs: 2_000_000,
+      cpuTicksDelta: 0,
+    };
+
+    const result = correlateProfileEvidence(validInput({ processSamples: [processSample] }));
+
+    expect(result.status).toBe('worker_profile_NOT_PROVEN');
+    expect(result.reasonCodes).toContain('cpu_inactive');
+  });
+
   it('rejects a non-finite CPU observation instead of proving a worker profile', () => {
     const input = validInput({
-      processSamples: [{ runId: identity.runId, pid: identity.pid, processStartTicks: identity.processStartTicks, ppid: 2000, cpuDeltaUs: Number.NaN }],
+      processSamples: [{ runId: identity.runId, pid: identity.pid, processStartTicks: identity.processStartTicks,
+        ppid: 2000, cpuDeltaUs: Number.NaN, cpuTicksDelta: 120 }],
     });
     expect(correlateProfileEvidence(input).status).toBe('worker_profile_NOT_PROVEN');
   });
@@ -265,7 +298,8 @@ describe('profile evidence correlation', () => {
 
   it('rejects reused PIDs whose process start ticks differ', () => {
     const input = validInput({
-      processSamples: [{ runId: identity.runId, pid: identity.pid, processStartTicks: 'different-ticks', ppid: 2000, cpuDeltaUs: 2_000_000 }],
+      processSamples: [{ runId: identity.runId, pid: identity.pid, processStartTicks: 'different-ticks',
+        ppid: 2000, cpuDeltaUs: 2_000_000, cpuTicksDelta: 120 }],
     });
     const result = correlateProfileEvidence(input);
     expect(result.status).toBe('worker_profile_NOT_PROVEN');
@@ -274,7 +308,8 @@ describe('profile evidence correlation', () => {
 
   it('rejects a matching PID/start-tick whose observed parent is not the expected Vitest parent', () => {
     const input = validInput({
-      processSamples: [{ runId: identity.runId, pid: identity.pid, processStartTicks: identity.processStartTicks, ppid: 1999, cpuDeltaUs: 2_000_000 }],
+      processSamples: [{ runId: identity.runId, pid: identity.pid, processStartTicks: identity.processStartTicks,
+        ppid: 1999, cpuDeltaUs: 2_000_000, cpuTicksDelta: 120 }],
     });
     const result = correlateProfileEvidence(input);
     expect(result.status).toBe('worker_profile_NOT_PROVEN');
