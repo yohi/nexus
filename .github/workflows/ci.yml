@@ -80,7 +80,7 @@ jobs:
       run: npm run --silent test:perf -- --profile smoke --output reports/performance-smoke.json
 
     - name: Upload performance smoke report
-      if: always()
+      if: always() && hashFiles('reports/performance-smoke.json') != ''
       uses: actions/upload-artifact@v4
       with:
         name: performance-smoke-node-${{ matrix.node-version }}

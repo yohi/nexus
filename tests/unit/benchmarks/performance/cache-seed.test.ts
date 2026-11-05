@@ -120,7 +120,7 @@ describe('bounded compatible cache seeding', () => {
       expect(result).toMatchObject({ status: 'invalid', phase: 'setup' });
       await expect(access(current.target.databasePath)).rejects.toThrow();
       await expect(access(current.source.databasePath)).resolves.toBeUndefined();
-      expect(() => current.source.metadataStore.getPragmaValue('user_version')).toThrow();
+      expect(current.source.metadataStore.getPragmaValue('user_version')).toBeTypeOf('number');
       expect(() => current.target.metadataStore.getPragmaValue('user_version')).toThrow();
       expect(JSON.stringify(result)).not.toContain('incompatible-model');
     },
@@ -150,5 +150,15 @@ describe('bounded compatible cache seeding', () => {
       expect(store.getPragmaValue('user_version')).toBeTypeOf('number');
       expect(current.source.metadataStore.getPragmaValue('user_version')).toBeTypeOf('number');
     } finally { await store.close(); }
+  });
+
+  it('preserves the cache seed failure when source store cleanup fails', async () => {
+    const current = await fixture(2);
+    vi.spyOn(current.source.metadataStore, 'close').mockRejectedValueOnce(new Error('source_close_failed'));
+    const controller = new AbortController();
+    controller.abort();
+    const result = await seedCompatibleCache(current.source, current.target, current.manifest, controller.signal);
+    expect(result).toMatchObject({ status: 'invalid', code: 'cache_seed_aborted' });
+    expect(current.source.metadataStore.getPragmaValue('user_version')).toBeTypeOf('number');
   });
 });

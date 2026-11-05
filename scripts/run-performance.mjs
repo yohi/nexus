@@ -59,6 +59,7 @@ export async function runPerformance(args = process.argv.slice(2), services = {}
       args: [installedVitest, 'run', '--config', join(repository, 'vitest.performance.config.ts'), '--reporter=dot'], cwd: repository,
       env: { ...process.env, NODE_OPTIONS: workerNodeOptions(process.env.NODE_OPTIONS, cli.memoryLimitMb),
         NEXUS_PERF_REQUEST_FILE: requestFile, TMPDIR: root, TMP: root, TEMP: root }, timeoutMs: Math.max(cli.timeoutMs, 10_000),
+      signal: controller.signal,
       resultFile, phaseFile, diagnostic });
     if (aggregated.exitCode !== 0 || aggregated.timedOut || aggregated.oom || aggregated.cleanupFailed) throw new Error('aggregation_failed');
     const text = await readFile(resultFile, 'utf8');

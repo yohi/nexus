@@ -1,4 +1,4 @@
-import { mkdtemp, mkdir, readFile, rm, symlink, unlink, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, realpath, rm, symlink, unlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { basename, dirname, join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -7,7 +7,7 @@ import { createFixturePathNormalizer } from '../../../benchmarks/performance/log
 
 const directories: string[] = [];
 async function fixture() {
-  const root = await mkdtemp(join(tmpdir(), 'nexus-logical-path-'));
+  const root = await realpath(await mkdtemp(join(tmpdir(), 'nexus-logical-path-')));
   directories.push(root);
   const manifest = await generateFixture(root, 'smoke');
   const file = manifest.files[0];

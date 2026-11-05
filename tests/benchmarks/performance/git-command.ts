@@ -15,7 +15,7 @@ export type GitRunner = (args: readonly string[], context: Readonly<GitCommandCo
 
 export const runGit: GitRunner = (args, context) => new Promise((resolve) => {
   let inputFailed = false;
-  const child = execFile('git', args, { cwd: context.cwd, env: context.env, signal: context.signal,
+  const child = execFile('git', args, { cwd: context.cwd, env: context.env, signal: context.signal, // NOSONAR — PATH comes from the local test runner and is not fixture- or request-controlled.
     encoding: 'utf8', maxBuffer: 16 * 1024 * 1024 }, (error, stdout, stderr) => {
     if (context.signal.aborted) resolve({ status: 'failed', code: 'git_aborted', stdout, stderr });
     else if (inputFailed) resolve({ status: 'failed', code: 'git_stdin_failed', stdout, stderr });
