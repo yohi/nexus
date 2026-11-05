@@ -70,37 +70,42 @@ export async function readPrivateDiagnosticArtifact(path, ownerRoot, maxBytes) {
   }
 }
 
+function parseTraceEvent(line, index, runId, reasons) {
+  let parsed;
+  try {
+    parsed = eventEnvelopeSchema.safeParse(JSON.parse(line));
+  } catch {
+    parsed = undefined;
+  }
+  if (parsed === undefined || !parsed.success || parsed.data.runId !== runId || parsed.data.seq !== index + 1) {
+    reasons.add('trace_event_invalid');
+    return undefined;
+  }
+  return parsed.data;
+}
+
+function recordTraceEvent(event, index, lineCount, state) {
+  const monotonic = BigInt(event.monotonicNs);
+  if (monotonic < state.previousMonotonic) state.reasons.add('trace_sequence_invalid');
+  state.previousMonotonic = monotonic;
+  state.events.push(event);
+  if (event.event !== 'trace_status') return;
+  if (state.terminal !== undefined || index !== lineCount - 1) state.reasons.add('trace_sequence_invalid');
+  const status = traceStatusSchema.safeParse(event);
+  if (!status.success) state.reasons.add('trace_status_invalid');
+  else state.terminal = status.data;
+}
+
 export function parseTraceArtifact(contents, runId) {
   const reasons = new Set();
-  const events = [];
   const lines = contents.toString('utf8').split('\n').filter((line) => line.length > 0);
-  let previousMonotonic = -1n;
-  let terminal;
+  const state = { events: [], previousMonotonic: -1n, reasons, terminal: undefined };
   for (const [index, line] of lines.entries()) {
-    let parsed;
-    try {
-      parsed = eventEnvelopeSchema.safeParse(JSON.parse(line));
-    } catch {
-      parsed = undefined;
-    }
-    if (parsed === undefined || !parsed.success || parsed.data.runId !== runId || parsed.data.seq !== index + 1) {
-      reasons.add('trace_event_invalid');
-      continue;
-    }
-    const event = parsed.data;
-    const monotonic = BigInt(event.monotonicNs);
-    if (monotonic < previousMonotonic) reasons.add('trace_sequence_invalid');
-    previousMonotonic = monotonic;
-    events.push(event);
-    if (event.event === 'trace_status') {
-      if (terminal !== undefined || index !== lines.length - 1) reasons.add('trace_sequence_invalid');
-      const status = traceStatusSchema.safeParse(event);
-      if (!status.success) reasons.add('trace_status_invalid');
-      else terminal = status.data;
-    }
+    const event = parseTraceEvent(line, index, runId, reasons);
+    if (event !== undefined) recordTraceEvent(event, index, lines.length, state);
   }
-  if (terminal === undefined) reasons.add('trace_terminal_missing');
-  return { events, terminal, reasons };
+  if (state.terminal === undefined) reasons.add('trace_terminal_missing');
+  return { events: state.events, terminal: state.terminal, reasons };
 }
 
 export function parseCpuProfileArtifact(contents) {

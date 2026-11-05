@@ -85,6 +85,27 @@ async function readTraceArtifacts(traceDirectory, runId) {
   return { traces, artifacts };
 }
 
+async function readProfile(name, directory, traceDirectory, completedWrites) {
+  const path = join(directory, name);
+  const contents = await readPrivateDiagnosticArtifact(path, traceDirectory, 64 * 1024 * 1024);
+  if (contents === undefined) {
+    return Object.freeze({ kind: 'profile', path, profileValid: false, sampleCount: 0, fileBytes: 0 });
+  }
+  const summary = parseCpuProfileArtifact(contents.bytes);
+  const match = /^profile-([1-9][0-9]*)-([1-9][0-9]*)-(segment_[1-9][0-9]*|seg_[0-9]{6})\.cpuprofile$/.exec(name);
+  const writeEvent = match === null ? undefined : completedWrites.find((event) =>
+    event.pid === Number(match[1]) && event.processStartTicks === match[2] && event.segmentId === match[3]);
+  const sampleCount = summary?.sampleCount ?? 0;
+  const fileBytes = contents.size;
+  const profileValid = summary !== undefined && writeEvent?.sampleCount?.value === sampleCount
+    && writeEvent?.fileBytes?.value === fileBytes;
+  const kind = writeEvent?.processRole === 'vitest_worker' ? 'profile' : 'profile_support';
+  return Object.freeze({
+    kind, path, profileValid, sampleCount, fileBytes,
+    ...(kind === 'profile' && writeEvent !== undefined ? { segmentId: writeEvent.segmentId } : {}),
+  });
+}
+
 async function readProfiles(traceDirectory, runId, events) {
   const directory = join(traceDirectory, 'profiles');
   let names;
@@ -99,25 +120,7 @@ async function readProfiles(traceDirectory, runId, events) {
   const profiles = [];
   for (const name of names) {
     if (!name.endsWith('.cpuprofile')) continue;
-    const path = join(directory, name);
-    const contents = await readPrivateDiagnosticArtifact(path, traceDirectory, 64 * 1024 * 1024);
-    if (contents === undefined) {
-      profiles.push(Object.freeze({ kind: 'profile', path, profileValid: false, sampleCount: 0, fileBytes: 0 }));
-      continue;
-    }
-    const summary = parseCpuProfileArtifact(contents.bytes);
-    const match = /^profile-([1-9][0-9]*)-([1-9][0-9]*)-(segment_[1-9][0-9]*|seg_[0-9]{6})\.cpuprofile$/.exec(name);
-    const writeEvent = match === null ? undefined : completedWrites.find((event) =>
-      event.pid === Number(match[1]) && event.processStartTicks === match[2] && event.segmentId === match[3]);
-    const sampleCount = summary?.sampleCount ?? 0;
-    const fileBytes = contents.size;
-    const profileValid = summary !== undefined && writeEvent?.sampleCount?.value === sampleCount
-      && writeEvent?.fileBytes?.value === fileBytes;
-    const kind = writeEvent?.processRole === 'vitest_worker' ? 'profile' : 'profile_support';
-    profiles.push(Object.freeze({
-      kind, path, profileValid, sampleCount, fileBytes,
-      ...(kind === 'profile' && writeEvent !== undefined ? { segmentId: writeEvent.segmentId } : {}),
-    }));
+    profiles.push(await readProfile(name, directory, traceDirectory, completedWrites));
   }
   return profiles;
 }

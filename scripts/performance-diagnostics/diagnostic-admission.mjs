@@ -109,6 +109,71 @@ function validProcessProfile(profile, runId) {
   return { profile: value, reasons };
 }
 
+function isVerifiedSupervisorFinalization(base, supervisorRunStatus, finalization, worker) {
+  return finalization.success
+    && finalization.data.runId === base.runId
+    && supervisorRunStatus.success
+    && supervisorRunStatus.data.runId === base.runId
+    && supervisorRunStatus.data.sourceFingerprint === finalization.data.sourceFingerprint
+    && supervisorRunStatus.data.recipeDigest === finalization.data.recipeDigest
+    && supervisorRunStatus.data.supervisorPid === finalization.data.finalizedByPid
+    && finalization.data.finalizedByPid === process.pid
+    && worker.success
+    && finalization.data.sourceFingerprint === worker.data.sourceFingerprint
+    && finalization.data.recipeDigest === worker.data.recipeDigest;
+}
+
+function isProvisionalFinalizationOnly(trace, supervisorFinalizationValid, storageIntegrity) {
+  return supervisorFinalizationValid
+    && trace.finalizationState === 'provisional'
+    && trace.traceIncomplete
+    && trace.samplingIncomplete
+    && !trace.traceTruncated
+    && trace.reasonCode === 'finalization_unverified'
+    && trace.reasonCodes.length === 1
+    && trace.reasonCodes[0] === 'finalization_unverified'
+    && trace.eventsDropped === 0
+    && trace.bytesDropped === 0
+    && trace.profilesMissing === 0
+    && trace.profilesMissingExact
+    && trace.stateIntegrity === 'unknown'
+    && storageIntegrity?.status === 'verified';
+}
+
+function validateTraceEvidence(traceValue, runId, supervisorFinalizationValid, storageIntegrity, reasons) {
+  const trace = traceStatusSchema.safeParse(traceValue);
+  if (!trace.success || trace.data.runId !== runId) {
+    reasons.add('trace_status_invalid');
+    return trace;
+  }
+  const provisionalOnly = isProvisionalFinalizationOnly(trace.data, supervisorFinalizationValid, storageIntegrity);
+  if ((trace.data.traceIncomplete || trace.data.traceTruncated || trace.data.samplingIncomplete) && !provisionalOnly) {
+    reasons.add('trace_incomplete');
+  }
+  if (trace.data.eventsDropped > 0 || trace.data.bytesDropped > 0) reasons.add('trace_events_dropped');
+  if (trace.data.profilesMissing > 0 || !trace.data.profilesMissingExact) reasons.add('profiles_missing');
+  if ((trace.data.reasonCode !== undefined || trace.data.reasonCodes.length > 0) && !provisionalOnly) {
+    reasons.add('trace_reason_codes_present');
+  }
+  if (trace.data.stateIntegrity !== 'verified' && !provisionalOnly) reasons.add('storage_integrity_unverified');
+  return trace;
+}
+
+function addWorkerValidationReasons(worker, source, base, supervisorRunStatus, supervisorFinalization, reasons) {
+  if (!worker.success || worker.data.runId !== base.runId || worker.data.status !== 'completed' || worker.data.exitCode !== 0) {
+    reasons.add('worker_result_invalid');
+  }
+  const finalizationValid = isVerifiedSupervisorFinalization(base, supervisorRunStatus, supervisorFinalization, worker);
+  if (!finalizationValid) reasons.add('supervisor_finalization_unverified');
+  if (worker.success && worker.data.scenario.records.some((record) => record.status !== 'valid')) {
+    reasons.add('worker_scenario_invalid');
+  }
+  if (source.success && worker.success && source.data.digest !== worker.data.sourceFingerprint) {
+    reasons.add('source_fingerprint_mismatch');
+  }
+  return finalizationValid;
+}
+
 export async function finalizeDiagnosticRun(evidenceValue, supervisorFinalizationValue) {
   const base = baseEvidenceSchema.parse(evidenceValue);
   await verifyOwnedDirectory(base.runDirectory);
@@ -121,55 +186,13 @@ export async function finalizeDiagnosticRun(evidenceValue, supervisorFinalizatio
     join(base.runDirectory, 'supervisor-status.json'), base.runDirectory,
   ));
   const worker = diagnosticWorkerResultSchema.safeParse(evidenceValue.workerResult);
-  if (!worker.success || worker.data.runId !== base.runId || worker.data.status !== 'completed' || worker.data.exitCode !== 0) {
-    reasons.add('worker_result_invalid');
-  }
   const supervisorFinalization = supervisorFinalizationSchema.safeParse(supervisorFinalizationValue);
-  const supervisorFinalizationValid = supervisorFinalization.success
-    && supervisorFinalization.data.runId === base.runId
-    && supervisorRunStatus.success
-    && supervisorRunStatus.data.runId === base.runId
-    && supervisorRunStatus.data.sourceFingerprint === supervisorFinalization.data.sourceFingerprint
-    && supervisorRunStatus.data.recipeDigest === supervisorFinalization.data.recipeDigest
-    && supervisorRunStatus.data.supervisorPid === supervisorFinalization.data.finalizedByPid
-    && supervisorFinalization.data.finalizedByPid === process.pid
-    && worker.success
-    && supervisorFinalization.data.sourceFingerprint === worker.data.sourceFingerprint
-    && supervisorFinalization.data.recipeDigest === worker.data.recipeDigest;
-  if (!supervisorFinalizationValid) reasons.add('supervisor_finalization_unverified');
-  if (worker.success && worker.data.scenario.records.some((record) => record.status !== 'valid')) {
-    reasons.add('worker_scenario_invalid');
-  }
-  if (source.success && worker.success && source.data.digest !== worker.data.sourceFingerprint) {
-    reasons.add('source_fingerprint_mismatch');
-  }
-  const trace = traceStatusSchema.safeParse(evidenceValue.traceStatus);
-  if (!trace.success || trace.data.runId !== base.runId) {
-    reasons.add('trace_status_invalid');
-  } else {
-    const provisionalFinalizationOnly = supervisorFinalizationValid
-      && trace.data.finalizationState === 'provisional'
-      && trace.data.traceIncomplete
-      && trace.data.samplingIncomplete
-      && !trace.data.traceTruncated
-      && trace.data.reasonCode === 'finalization_unverified'
-      && trace.data.reasonCodes.length === 1
-      && trace.data.reasonCodes[0] === 'finalization_unverified'
-      && trace.data.eventsDropped === 0
-      && trace.data.bytesDropped === 0
-      && trace.data.profilesMissing === 0
-      && trace.data.profilesMissingExact
-      && trace.data.stateIntegrity === 'unknown'
-      && evidenceValue.storageIntegrity?.status === 'verified';
-    if ((trace.data.traceIncomplete || trace.data.traceTruncated || trace.data.samplingIncomplete)
-      && !provisionalFinalizationOnly) reasons.add('trace_incomplete');
-    if (trace.data.eventsDropped > 0 || trace.data.bytesDropped > 0) reasons.add('trace_events_dropped');
-    if (trace.data.profilesMissing > 0 || !trace.data.profilesMissingExact) reasons.add('profiles_missing');
-    if ((trace.data.reasonCode !== undefined || trace.data.reasonCodes.length > 0) && !provisionalFinalizationOnly) {
-      reasons.add('trace_reason_codes_present');
-    }
-    if (trace.data.stateIntegrity !== 'verified' && !provisionalFinalizationOnly) reasons.add('storage_integrity_unverified');
-  }
+  const supervisorFinalizationValid = addWorkerValidationReasons(
+    worker, source, base, supervisorRunStatus, supervisorFinalization, reasons,
+  );
+  const trace = validateTraceEvidence(
+    evidenceValue.traceStatus, base.runId, supervisorFinalizationValid, evidenceValue.storageIntegrity, reasons,
+  );
   const profileResult = validProcessProfile(evidenceValue.profile, base.runId);
   if (profileResult.reason !== undefined) reasons.add(profileResult.reason);
   for (const reason of profileResult.reasons ?? []) reasons.add(reason);

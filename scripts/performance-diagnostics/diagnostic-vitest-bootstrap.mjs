@@ -74,7 +74,7 @@ async function verifySupervisorStart(environment, runId, pid, services) {
   }
 }
 
-export async function runDiagnosticVitestBootstrap(input, services = {}) {
+async function validateBootstrapPaths(input) {
   const { environment, repository, pid, preloadPath, configPath, testEntryPath } = input;
   if (process.platform !== 'linux' || typeof process.getuid !== 'function' || !Number.isSafeInteger(pid) || pid < 1) {
     throw new DiagnosticBootstrapError('diagnostic_platform_or_pid_invalid');
@@ -93,7 +93,10 @@ export async function runDiagnosticVitestBootstrap(input, services = {}) {
   if (!inside(repositoryRoot, config) || !inside(repositoryRoot, testEntry)) {
     throw new DiagnosticBootstrapError('diagnostic_vitest_path_invalid');
   }
+  return { repositoryRoot, preload, config, testEntry };
+}
 
+async function readBootstrapRequests(environment) {
   const scenarioPath = environment.NEXUS_PERF_REQUEST_FILE;
   const diagnosticPath = environment.NEXUS_PERF_WORKER_DIAGNOSTIC_REQUEST_FILE;
   if (scenarioPath === undefined || diagnosticPath === undefined || !isAbsolute(scenarioPath) || !isAbsolute(diagnosticPath)) {
@@ -114,12 +117,15 @@ export async function runDiagnosticVitestBootstrap(input, services = {}) {
   const diagnosticRunDirectory = resolve(diagnosticRequest.runDirectory);
   if (!inside(ownerRoot, diagnosticRunDirectory)) throw new DiagnosticBootstrapError('diagnostic_request_mismatch');
   await verifyOwnedDirectory(diagnosticRunDirectory);
+  return { ownerRoot, scenarioRequest, diagnosticRequest, diagnosticRunDirectory };
+}
 
+async function writeProfilerRequest(environment, pid, ownerRoot, diagnosticRequest, diagnosticRunDirectory) {
   const profilerRequestFile = profileRequestPath(environment);
   if (!inside(diagnosticRunDirectory, profilerRequestFile)) {
     throw new DiagnosticBootstrapError('diagnostic_profile_request_path_invalid');
   }
-  const profilerRequest = {
+  const parsedProfilerRequest = profilerRequestSchema.parse({
     schemaVersion: 1,
     diagnosticOnly: true,
     runId: diagnosticRequest.runId,
@@ -128,22 +134,21 @@ export async function runDiagnosticVitestBootstrap(input, services = {}) {
     sourceFingerprint: diagnosticRequest.sourceFingerprint,
     runDirectory: diagnosticRunDirectory,
     parentPid: pid,
-  };
-  const parsedProfilerRequest = profilerRequestSchema.parse(profilerRequest);
+  });
   const statusFile = join(ownerRoot, 'diagnostic-status.json');
   await ensurePathAbsent(profilerRequestFile);
   await ensurePathAbsent(statusFile);
   await writePrivateJson(profilerRequestFile, diagnosticRunDirectory, parsedProfilerRequest);
+  return { profilerRequestFile, statusFile };
+}
 
-  await verifySupervisorStart(environment, diagnosticRequest.runId, pid, services);
-  environment.NODE_OPTIONS = `--max-old-space-size=2048 --require ${quoteNodeOption(preload)}`;
+async function runVitest(environment, preload, config, testEntry, services) {
   const loadProfiler = services.loadProfiler ?? ((path) => createRequire(import.meta.url)(path));
   await loadProfiler(preload);
   const startVitest = services.startVitest ?? (async (mode, filters, options) => {
     const { startVitest: start } = await import('vitest/node');
     return await start(mode, filters, options);
   });
-  let vitestFailed = false;
   try {
     await startVitest('test', [testEntry], {
       run: true,
@@ -155,28 +160,41 @@ export async function runDiagnosticVitestBootstrap(input, services = {}) {
       isolate: true,
       coverage: { enabled: false },
     });
+    return false;
   } catch (error) {
     if (!(error instanceof Error)) throw error;
-    vitestFailed = true;
+    return true;
   }
+}
+
+export async function runDiagnosticVitestBootstrap(input, services = {}) {
+  const { environment, pid } = input;
+  const paths = await validateBootstrapPaths(input);
+  const requests = await readBootstrapRequests(environment);
+  const files = await writeProfilerRequest(
+    environment, pid, requests.ownerRoot, requests.diagnosticRequest, requests.diagnosticRunDirectory,
+  );
+  await verifySupervisorStart(environment, requests.diagnosticRequest.runId, pid, services);
+  environment.NODE_OPTIONS = `--max-old-space-size=2048 --require ${quoteNodeOption(paths.preload)}`;
+  const vitestFailed = await runVitest(environment, paths.preload, paths.config, paths.testEntry, services);
   const exitCode = services.getExitCode?.() ?? process.exitCode ?? (vitestFailed ? 1 : 0);
   const failed = vitestFailed || exitCode !== 0;
   const result = bootstrapStatusSchema.parse({
     schemaVersion: 1,
     diagnosticOnly: true,
-    runId: diagnosticRequest.runId,
-    jobId: diagnosticRequest.jobId,
+    runId: requests.diagnosticRequest.runId,
+    jobId: requests.diagnosticRequest.jobId,
     status: failed ? 'failed' : 'completed',
     exitCode,
     diagnosticAdmissible: false,
     ...(failed ? { reasonCode: 'vitest_failed' } : {}),
   });
-  await writePrivateJson(statusFile, ownerRoot, result);
+  await writePrivateJson(files.statusFile, requests.ownerRoot, result);
   return Object.freeze({
     status: result.status,
-    runId: diagnosticRequest.runId,
-    profileRequestFile: profilerRequestFile,
-    statusFile,
+    runId: requests.diagnosticRequest.runId,
+    profileRequestFile: files.profilerRequestFile,
+    statusFile: files.statusFile,
     exitCode,
   });
 }

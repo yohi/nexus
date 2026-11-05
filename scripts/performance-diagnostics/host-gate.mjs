@@ -33,31 +33,39 @@ function evaluatePressureAndMemory(snapshot, requiredScratchBytes, reasons) {
   return undefined;
 }
 
+function recordBusyProcessIntervals(interval, busyIntervalsByProcess, reasons) {
+  for (const [identity, cores] of interval.perProcessCores) {
+    const count = cores > MAX_SINGLE_PROCESS_CORES ? (busyIntervalsByProcess.get(identity) ?? 0) + 1 : 0;
+    busyIntervalsByProcess.set(identity, count);
+    if (count >= 2) reasons.add('process_cpu_busy');
+  }
+  for (const identity of busyIntervalsByProcess.keys()) {
+    if (!interval.currentIdentities.has(identity)) busyIntervalsByProcess.set(identity, 0);
+  }
+}
+
+function validateResourceCounters(previous, current, reasons) {
+  if (current.throttledPeriods < previous.throttledPeriods) {
+    return indeterminate(['cpu_throttle_counter_regressed'], ['cpu.stat.nr_throttled']);
+  }
+  if (current.throttledPeriods > previous.throttledPeriods) reasons.add('cpu_throttled');
+  for (const key of ['high', 'max', 'oom', 'oomKill']) {
+    if (current.memoryEvents[key] < previous.memoryEvents[key]) {
+      return indeterminate(['memory_event_counter_regressed'], [`memory.events.${key}`]);
+    }
+    if (current.memoryEvents[key] > previous.memoryEvents[key]) reasons.add('memory_event_increased');
+  }
+  return undefined;
+}
+
 function accumulateProcessInterval(previous, current, busyIntervalsByProcess, state) {
   if (previous === undefined) return undefined;
   const interval = processCpuInterval(previous, current);
   if (!interval.valid) return indeterminate(['process_cpu_counter_regressed'], ['processes.cpuTicks']);
   state.aggregateProcessTicks += interval.processDeltaTicks;
   state.aggregateSystemTicks += interval.aggregateDeltaTicks;
-  for (const [identity, cores] of interval.perProcessCores) {
-    const count = cores > MAX_SINGLE_PROCESS_CORES ? (busyIntervalsByProcess.get(identity) ?? 0) + 1 : 0;
-    busyIntervalsByProcess.set(identity, count);
-    if (count >= 2) state.reasons.add('process_cpu_busy');
-  }
-  for (const identity of busyIntervalsByProcess.keys()) {
-    if (!interval.currentIdentities.has(identity)) busyIntervalsByProcess.set(identity, 0);
-  }
-  if (current.throttledPeriods < previous.throttledPeriods) {
-    return indeterminate(['cpu_throttle_counter_regressed'], ['cpu.stat.nr_throttled']);
-  }
-  if (current.throttledPeriods > previous.throttledPeriods) state.reasons.add('cpu_throttled');
-  for (const key of ['high', 'max', 'oom', 'oomKill']) {
-    if (current.memoryEvents[key] < previous.memoryEvents[key]) {
-      return indeterminate(['memory_event_counter_regressed'], [`memory.events.${key}`]);
-    }
-    if (current.memoryEvents[key] > previous.memoryEvents[key]) state.reasons.add('memory_event_increased');
-  }
-  return undefined;
+  recordBusyProcessIntervals(interval, busyIntervalsByProcess, state.reasons);
+  return validateResourceCounters(previous, current, state.reasons);
 }
 
 function inspectHostSnapshot(snapshot, previous, requiredScratchBytes, state) {
