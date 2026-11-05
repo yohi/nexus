@@ -125,11 +125,9 @@ describe('versioned external diagnostics kit', () => {
   });
 
   it('preserves the profile write error when lock cleanup detects replacement', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'nexus-profile-lock-replaced-'));
+    const { root, runDirectory } = await createProfileRun('nexus-profile-lock-replaced-');
     try {
-      const runDirectory = join(root, 'run');
       const profiles = join(runDirectory, 'profiles');
-      await mkdir(runDirectory, { mode: 0o700 });
       await mkdir(profiles, { mode: 0o700 });
       const budgetPath = join(process.cwd(), 'scripts/performance-diagnostics/v4/profile-run-budget.cjs');
       const script = [
