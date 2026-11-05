@@ -35,7 +35,14 @@ export async function performanceSourceMetadata(repository) {
       ['package.json', 'package-lock.json', 'tsconfig.json', 'vitest.performance.config.ts'].includes(path)))].sort(
         (left, right) => left < right ? -1 : left > right ? 1 : 0,
       )) {
-      hash.update(path).update('\0').update(createHash('sha256').update(await readFile(join(repository, path))).digest()).update('\0');
+      hash.update(path).update('\0');
+      try {
+        hash.update(createHash('sha256').update(await readFile(join(repository, path))).digest());
+      } catch (error) {
+        if (error?.code !== 'ENOENT') throw error;
+        hash.update('deleted');
+      }
+      hash.update('\0');
     }
     sourceFingerprint = hash.digest('hex');
   }

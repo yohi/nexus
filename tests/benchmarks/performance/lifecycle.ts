@@ -14,7 +14,7 @@ import { settleReadiness } from './readiness-settlement.js';
 import { ReadinessError } from './readiness-error.js';
 import { cacheSeedResultSchema, expectedCacheKeys } from './cache-seed.js';
 import { syntheticEmbeddingConfig } from './synthetic-provider.js';
-import { measureIndexArtifacts } from './resources.js';
+import { ArtifactMeasurementError, measureIndexArtifacts } from './resources.js';
 
 export type { LifecycleContext, OperationKind, StartupKind } from './lifecycle-context.js';
 let operationSequence = 0;
@@ -56,10 +56,12 @@ export async function runStartupScenario(kind: StartupKind, createRuntime: Runti
     ...(seed?.success ? { cacheSeed: seed.data } : {}),
     ...(captured.record.candidateEndpoints === undefined ? {} : { candidateEndpoints: {
       ...captured.record.candidateEndpoints, setup_ms: setupMs } }) });
+  let runtimeClosed = false;
   try {
     if (manifest.profile !== context.run.profile) throw new LifecycleError('profile_mismatch');
     if (!cacheWasExercised(kind, captured.record.cacheAccounting)) throw new LifecycleError('cache_state_not_exercised');
     await captured.assembly.runtime.close();
+    runtimeClosed = true;
     context.signal.throwIfAborted();
     const artifactBytes = await measureIndexArtifacts(captured.assembly.diagnostics, context.signal);
     return scenarioRecordSchema.parse({ ...base, ...captured.record, sampleKind: 'lifecycle',
@@ -71,10 +73,13 @@ export async function runStartupScenario(kind: StartupKind, createRuntime: Runti
         benchmark_completion_ms: clock.now() - captured.startedAt,
         ...(seed?.success ? { cache_seed_ms: seed.data.durationMs } : {}) } });
   } catch (error) {
-    const code = context.signal.aborted ? 'readiness_aborted' : error instanceof LifecycleError ? error.code : 'cleanup_failed';
+    const code = context.signal.aborted ? 'readiness_aborted' : error instanceof LifecycleError || error instanceof ArtifactMeasurementError
+      ? error.code : 'cleanup_failed';
     const failures = [{ code, count: 1, examples: [] }];
-    try { await captured.assembly.runtime.close(); }
-    catch { failures.push({ code: 'cleanup_failed', count: 1, examples: [] }); }
+    if (!runtimeClosed) {
+      try { await captured.assembly.runtime.close(); }
+      catch { failures.push({ code: 'cleanup_failed', count: 1, examples: [] }); }
+    }
     return scenarioRecordSchema.parse({ ...base, status: 'invalid', phase: 'worker', elapsedMs: setupMs + clock.now() - captured.startedAt,
       failures,
       ...(seed?.success ? { cacheSeed: seed.data } : {}),

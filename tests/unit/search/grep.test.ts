@@ -60,6 +60,7 @@ describe('RipgrepEngine', () => {
 
   it('returns an empty result when the request times out', async () => {
     vi.useFakeTimers();
+    const reasons: string[] = [];
     const spawnImpl = vi.fn(async (_params, signal: AbortSignal) => {
       await new Promise<void>((resolve) => {
         signal.addEventListener('abort', () => resolve(), { once: true });
@@ -68,6 +69,7 @@ describe('RipgrepEngine', () => {
     });
 
     const engine = new RipgrepEngine({
+      observer: { onEvent: (event) => { if (event.kind === 'grep_signal') reasons.push(event.reason); } },
       projectRoot: process.cwd(),
       grepMaxConcurrency: 1,
       grepTimeoutMs: 50,
@@ -79,9 +81,11 @@ describe('RipgrepEngine', () => {
     await vi.advanceTimersByTimeAsync(50);
 
     await expect(searchPromise).resolves.toEqual([]);
+    expect(reasons).toEqual(['timeout']);
   });
 
   it('propagates client abort signals to the spawned grep process', async () => {
+    const reasons: string[] = [];
     const spawnImpl = vi.fn(async (_params, signal: AbortSignal) => {
       await new Promise<void>((resolve) => {
         signal.addEventListener('abort', () => resolve(), { once: true });
@@ -91,6 +95,7 @@ describe('RipgrepEngine', () => {
     });
 
     const engine = new RipgrepEngine({
+      observer: { onEvent: (event) => { if (event.kind === 'grep_signal') reasons.push(event.reason); } },
       projectRoot: process.cwd(),
       grepMaxConcurrency: 1,
       grepTimeoutMs: 1_000,
@@ -110,5 +115,6 @@ describe('RipgrepEngine', () => {
     await expect(searchPromise).resolves.toEqual([]);
     expect(spawnImpl).toHaveBeenCalledOnce();
     expect(spawnImpl.mock.calls[0]?.[1].aborted).toBe(true);
+    expect(reasons).toEqual(['aborted']);
   });
 });

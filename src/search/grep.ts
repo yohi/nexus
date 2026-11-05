@@ -126,7 +126,7 @@ export class RipgrepEngine implements IGrepEngine {
       }
       throw error;
     } finally {
-      if (combinedSignal.aborted) emitRuntimeEvent(this.options.observer, { kind: 'grep_signal', reason: timedOut ? 'timeout' : 'aborted' });
+      if (combinedSignal.aborted && !timedOut) emitRuntimeEvent(this.options.observer, { kind: 'grep_signal', reason: 'aborted' });
       clearTimeout(timeoutId);
       if (escalationId && !(timedOut && !settledViaAbort)) {
         clearTimeout(escalationId);
