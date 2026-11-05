@@ -97,6 +97,7 @@ export const passedHostGateResultSchema = z.object({
   requiredScratchBytes: z.number().int().positive().refine(Number.isSafeInteger),
   scratchFreeBytes: z.number().int().nonnegative().refine(Number.isSafeInteger),
   effectiveCpuCapacity: z.number().finite().min(4),
+  monotonicNs: z.string().regex(/^(0|[1-9][0-9]*)$/),
 }).strict().refine((result) => result.scratchFreeBytes >= result.requiredScratchBytes);
 
 export function indeterminate(reasonCodes, missingInputs = []) {

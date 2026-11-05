@@ -23,6 +23,7 @@ import {
 
 const repository = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 const bootstrapPath = join(dirname(fileURLToPath(import.meta.url)), 'diagnostic-vitest-bootstrap.mjs');
+const MAX_HOST_SNAPSHOT_AGE_NS = 120_000_000_000n;
 const sourceGateResultSchema = z.object({
   status: z.literal('PASS'),
   digest: z.string().regex(/^[a-f0-9]{64}$/),
@@ -158,8 +159,10 @@ async function finishCompletedWorker(validated, dependencies, clockStart, proces
     });
     return Object.freeze({ status: 'completed', diagnosticSummary });
   } catch (error) {
-    if (!(error instanceof DiagnosticBootstrapError) && !(error instanceof z.ZodError)) throw error;
-    const reasonCode = 'diagnostic_worker_result_invalid';
+    if (!(error instanceof Error)) throw error;
+    const reasonCode = error instanceof DiagnosticBootstrapError || error instanceof z.ZodError
+      ? 'diagnostic_worker_result_invalid'
+      : 'diagnostic_evidence_error';
     const diagnosticSummary = await persistFailure({
       prepared, diagnosticRequest, reasonCode, status: 'failed', workerStatus: 'invalid',
       workerExitCode: 1, cleanupStatus: 'verified', remainingProcessCount: 0,
@@ -242,6 +245,10 @@ export async function defaultStartWorker(validated, dependencies = {}) {
       workerExitCode: null, cleanupStatus: 'verified', remainingProcessCount: 0,
     });
     return Object.freeze({ status: 'gate_blocked', reasonCode, diagnosticSummary });
+  }
+  const snapshotAgeNs = process.hrtime.bigint() - BigInt(dependencies.hostGateResult.monotonicNs);
+  if (snapshotAgeNs < 0n || snapshotAgeNs > MAX_HOST_SNAPSHOT_AGE_NS) {
+    return Object.freeze({ status: 'gate_blocked', reasonCode: 'host_snapshots_stale' });
   }
   const processResult = await superviseProcess({
     command: process.execPath,

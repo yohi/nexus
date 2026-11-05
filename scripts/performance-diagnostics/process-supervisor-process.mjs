@@ -71,16 +71,15 @@ async function scanSession(procRoot, leader, tracked, onIdentityObserved) {
   return state;
 }
 
-function isSafeTrackedIdentity(expected, current, leader, tracked) {
+function isSafeTrackedIdentity(expected, current, leader) {
   return current.status === 'observed' && sameProcess(expected, current.identity)
-    && current.identity.sid === leader.sid && current.identity.pgid === leader.pgid
-    && (expected.pid === leader.pid || current.identity.ppid === 1 || tracked.has(current.identity.ppid));
+    && current.identity.sid === leader.sid && current.identity.pgid === leader.pgid;
 }
 
 async function signalExpectedProcess(expected, signal, leader, tracked, procRoot, sendSignal) {
   const current = await readProcessIdentity(expected.pid, procRoot);
   if (current.status === 'not_collected' && current.reasonCode === 'not_found') return false;
-  if (!isSafeTrackedIdentity(expected, current, leader, tracked)) return true;
+  if (!isSafeTrackedIdentity(expected, current, leader)) return true;
   try {
     await sendSignal(expected, signal);
     return false;

@@ -26,6 +26,7 @@ export function validSupervisorHostGateResult() {
     requiredScratchBytes: 5_000_000_000,
     scratchFreeBytes: 8_000_000_000,
     effectiveCpuCapacity: 4,
+    monotonicNs: process.hrtime.bigint().toString(),
   });
 }
 

@@ -36,7 +36,7 @@ it('preserves_write_and_lock_identity_failures_when_cleanup_detects_replaced_loc
   ].join('\n');
 
   try {
-    const output = execFileSync('node', ['-e', script], { encoding: 'utf8' });
+  const output = execFileSync(process.execPath, ['-e', script], { encoding: 'utf8' });
     const when = z.object({
       name: z.string(),
       message: z.string(),

@@ -32,6 +32,10 @@ const excludedFiles = new Set([
   'scripts/performance-diagnostics/diagnostic-source-pin.json',
 ]);
 const diagnosticKitExtensions = Object.freeze(['.cjs', '.mjs', '.md', '.mts', '.py', '.ts']);
+const sourcePathspecs = Object.freeze([
+  ...includedRoots.map((root) => `:(top,glob)${root}**`),
+  ...includedFiles.map((path) => `:(top,literal)${path}`),
+]);
 const maxCommandOutputBytes = 16 * 1024 * 1024;
 const GIT_EXECUTABLE = '/usr/bin/git';
 
@@ -88,9 +92,9 @@ export async function diagnosticSourceFingerprint(repository, services = {}) {
   const executeGit = services.runGit ?? runGit;
   const [headOutput, filesOutput, ignoredFilesOutput, statusOutput] = await Promise.all([
     executeGit(['rev-parse', 'HEAD'], root),
-    executeGit(['ls-files', '--cached', '--others', '--exclude-standard', '-z'], root),
-    executeGit(['ls-files', '--others', '--ignored', '--exclude-standard', '-z'], root),
-    executeGit(['status', '--porcelain=v1', '--untracked-files=all', '--ignored=matching', '-z'], root),
+    executeGit(['ls-files', '--cached', '--others', '--exclude-standard', '-z', '--', ...sourcePathspecs], root),
+    executeGit(['ls-files', '--others', '--ignored', '--exclude-standard', '-z', '--', ...sourcePathspecs], root),
+    executeGit(['status', '--porcelain=v1', '--untracked-files=all', '--ignored=matching', '-z', '--', ...sourcePathspecs], root),
   ]);
   if (filesOutput === null || ignoredFilesOutput === null || statusOutput === null) {
     throw new Error('diagnostic_source_inventory_unavailable');

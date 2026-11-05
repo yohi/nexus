@@ -23,7 +23,8 @@ export type HostGateReasonCode =
   | 'cpu_throttled'
   | 'memory_event_counter_regressed'
   | 'memory_event_increased'
-  | 'swap_counter_regressed'
+  | 'monotonic_clock_invalid'
+  | 'host_snapshots_stale'
   | 'swap_growth'
   | 'process_cpu_busy'
   | 'aggregate_process_cpu_busy';
@@ -35,10 +36,12 @@ export type HostGateResult = Readonly<{
   requiredScratchBytes?: number;
   scratchFreeBytes?: number;
   effectiveCpuCapacity?: number;
+  monotonicNs?: string;
 }>;
 
 export function evaluateHostGate(
   snapshots: unknown,
   smallReport: unknown,
   mediumFixtureSize: FixtureSizeSummary | unknown,
+  currentMonotonicNs?: string,
 ): HostGateResult;

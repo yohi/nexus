@@ -29,6 +29,7 @@ type ProcessSupervisorModule = Readonly<{
         requiredScratchBytes?: number;
         scratchFreeBytes?: number;
         effectiveCpuCapacity?: number;
+        monotonicNs?: string;
       }>;
       currentSourceFingerprint?: () => Promise<string>;
       startWorker?: () => Promise<DiagnosticRunStatus>;
@@ -111,6 +112,23 @@ it('starts_only_after_explicit_mode_and_both_gates_pass', async () => {
   })).resolves.toEqual({ status: 'completed' });
 
   expect(starts).toBe(1);
+});
+
+it('blocks_worker_start_when_host_snapshot_is_stale_before_spawn', async () => {
+  const module = await loadProcessSupervisorModule();
+  const preparedRun = await createPreparedRun();
+  let starts = 0;
+
+  await expect(module.executeDiagnosticRun(preparedRun, {
+    executionMode: true,
+    sourceGateResult: { status: 'PASS', digest: preparedRun.workerDiagnosticRequest.sourceFingerprint },
+    hostGateResult: { ...passHostGateResult(), monotonicNs: '0' },
+    currentSourceFingerprint: () => Promise.resolve(preparedRun.workerDiagnosticRequest.sourceFingerprint),
+    clockProbe: (phase) => Promise.resolve(supervisorClockProbe(phase)),
+    superviseProcess: () => { starts += 1; return Promise.resolve({ status: 'completed', exitCode: 0 }); },
+  })).resolves.toMatchObject({ status: 'gate_blocked', reasonCode: 'host_snapshots_stale' });
+
+  expect(starts).toBe(0);
 });
 
 it('blocks_worker_start_when_host_gate_pass_lacks_three_clean_snapshots', async () => {

@@ -105,6 +105,7 @@ function hostGateResult(snapshots, requiredScratchBytes, state) {
     requiredScratchBytes,
     scratchFreeBytes: Math.min(...snapshots.map((sample) => sample.scratchFreeBytes)),
     effectiveCpuCapacity: state.minimumEffectiveCpu,
+    monotonicNs: snapshots.at(-1).monotonicNs,
   };
   return reasonCodes.length > 0
     ? Object.freeze({ status: 'HOST_BUSY_STOP', ...common })

@@ -1,6 +1,6 @@
 # R5-03 — Minimal Diagnostic Instrumentation Implementation Plan
 
-> **Implementation status.** Worker-free implementation for Tasks1-8 and 10-16 is present in the current uncommitted worktree. Task9 verification is partial because the standard smoke runner and `test:perf` remain unrun; Task17 review/source-pin requirements remain incomplete. Source-fingerprint and pidfd security subreviews, plus the worker-free goal/constraint review, passed. Full implementation/code-quality and documentation-context review is inconclusive because the retry sessions returned no verdict. There is no diagnostic source pin or current host snapshot. A real worker remains gated on complete review, passing host/source checks, and fresh explicit authorization. See `reports/performance-execution/progress.md` for the evidence and limitations.
+> **Implementation status.** Worker-free implementation for Tasks1-8 and 10-16 is present in the current worktree. Task9 records focused worker-free checks and standard runner integration tests; full `npm test` remains unrun. Task17's prior review and source-pin verification applied to the earlier code state; the changes in this worktree require review and source-pin revalidation. The previously reviewed pin was `c072c7f1724a7fdc9b4b8ebd24951e570f3fa4642b373bcba05f692f948dfc19`. Task18 captured three read-only snapshots, but the latest evaluation returned `HOST_BUSY_STOP` (`aggregate_process_cpu_busy`, `process_cpu_busy`); this is a failed host gate, not a worker execution. No diagnostic worker ran. Execution remains gated on a passing fresh host snapshot, a source pin matching reviewed code, and fresh explicit authorization. See `reports/performance-execution/progress.md` for evidence and limitations.
 
 **Goal:** Add an opt-in, source-free bounded stage trace that distinguishes progress and waits across the medium cold-start path and correlates it to the CPU-active Vitest fork profile.
 
@@ -221,8 +221,8 @@ The following plan expands the Node-only design in R5-05. It keeps the standard 
 
 - [x] Worker-free focused suite after finalization, host-gate, admission-fingerprint and fail-closed summary handling: 31 files / 236 passed; `npx tsc --noEmit -p tsconfig.json`, both linters and `git diff --check` passed; build passed after production-code changes.
 - [x] Sequential broad safe suite with coverage disabled and performance-runner/dashboard-CLI exclusions: 204 files / 1,620 passed / 1 skipped. Dashboard CLI: 2 passed; setup/staging shell checks passed; safe E2E subset: 3 files / 7 passed at the earlier checkpoint. No performance/diagnostic worker was launched.
-- [x] Complete independent worker-free implementation review. Focused reviews of source fingerprinting, pidfd security, strict host-gate evidence, rejected-summary handling, worker-free goal/constraints, and current R5 documentation consistency passed. Standard smoke no-op verification passed in Task9; real R5 diagnostic execution remains gated in Task18.
-- [x] Pin the reviewed diagnostic source fingerprint: `c072c7f1724a7fdc9b4b8ebd24951e570f3fa4642b373bcba05f692f948dfc19`; rechecked against current source and matched. The pin file is excluded from its own diagnostic fingerprint.
+- [x] Complete independent worker-free implementation review for the code state at the time. Focused reviews of source fingerprinting, pidfd security, strict host-gate evidence, rejected-summary handling, worker-free goal/constraints, and R5 documentation consistency passed. Standard smoke no-op verification passed in Task9; real R5 diagnostic execution remains gated in Task18.
+- [ ] Revalidate review and pin after subsequent code changes. The prior pin `c072c7f1724a7fdc9b4b8ebd24951e570f3fa4642b373bcba05f692f948dfc19` matched the code state at the previous verification only; the pin file is excluded from its own diagnostic fingerprint.
 
 ### Task 18 — Host snapshots and final execution gate
 
@@ -242,7 +242,7 @@ T4 contract ──> T14 bootstrap ──> T15 supervisor ──> T16 admission/n
 T17 PASS ──> T18 host snapshots ──> fresh user authorization ──> one diagnostic
 ```
 
-Tasks10-16 implementation and synthetic tests may run without a Nexus benchmark worker; they do not establish real host suitability or runtime cleanup/admission behavior. Task17 review and source pin remain pending. Task18 requires passing host/source gates and fresh explicit authorization; no amount of plan approval or prior VCS permission substitutes for that authorization.
+Tasks10-16 implementation and synthetic tests may run without a Nexus benchmark worker; they do not establish real host suitability or runtime cleanup/admission behavior. Task17 requires review and source-pin revalidation for the current code. Task18 requires passing host/source gates and fresh explicit authorization; no amount of plan approval or prior VCS permission substitutes for that authorization.
 
 ## Runtime evidence still not collected
 

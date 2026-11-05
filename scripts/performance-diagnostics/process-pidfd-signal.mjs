@@ -29,7 +29,7 @@ try:
         signal.pidfd_send_signal(descriptor, getattr(signal, sys.argv[6]))
     finally:
         os.close(descriptor)
-except ProcessLookupError:
+except (ProcessLookupError, FileNotFoundError):
     sys.exit(10)
 except PermissionError:
     sys.exit(12)

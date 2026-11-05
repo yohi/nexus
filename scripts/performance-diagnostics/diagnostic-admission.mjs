@@ -39,6 +39,7 @@ const failureReasonSchema = z.enum([
   'diagnostic_deadline_expired',
   'diagnostic_worker_failed',
   'diagnostic_worker_result_invalid',
+  'diagnostic_evidence_error',
   'diagnostic_worker_timeout',
   'source_fingerprint_mismatch',
 ]);

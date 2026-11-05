@@ -120,7 +120,7 @@ const sourceFingerprint = 'b'.repeat(64);
 const workerIdentity = { pid: 3030, processStartTicks: '9876', ppid: 2020, processRole: 'vitest_worker' } as const;
 const hostGateResult = Object.freeze({
   status: 'PASS', snapshotCount: 3, reasonCodes: Object.freeze([]), requiredScratchBytes: 5_000_000_000,
-  scratchFreeBytes: 8_000_000_000, effectiveCpuCapacity: 4,
+  scratchFreeBytes: 8_000_000_000, effectiveCpuCapacity: 4, monotonicNs: '0',
 });
 const supervisorProcessSamples = [{ pid: workerIdentity.pid, startTicks: workerIdentity.processStartTicks,
   ppid: workerIdentity.ppid, cpuTicksDelta: 120 }] as const;
