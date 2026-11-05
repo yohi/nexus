@@ -38,6 +38,7 @@ except (AttributeError, OSError):
 `;
 
 const HELPER_TIMEOUT_MS = 2_000;
+const PYTHON_EXECUTABLE = '/usr/bin/python3';
 
 export class PidfdSignalError extends Error {
   constructor(code) {
@@ -67,7 +68,8 @@ function helperError(error) {
 
 function runPidfdHelper(args) {
   return new Promise((resolve, reject) => {
-    execFile('python3', ['-I', '-c', PIDFD_HELPER, ...args], {
+    execFile(PYTHON_EXECUTABLE, ['-I', '-c', PIDFD_HELPER, ...args], {
+      env: { PATH: '/usr/bin:/bin' },
       encoding: 'utf8',
       maxBuffer: 1_024,
       timeout: HELPER_TIMEOUT_MS,

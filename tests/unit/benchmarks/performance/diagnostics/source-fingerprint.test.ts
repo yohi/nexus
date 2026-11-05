@@ -1,7 +1,10 @@
+import { execFile } from 'node:child_process';
+import { chmod } from 'node:fs/promises';
 import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
+import { promisify } from 'node:util';
 import { afterEach, expect, it } from 'vitest';
 import { z } from 'zod';
 
@@ -11,7 +14,7 @@ type SourceFingerprintResult = Readonly<{
   digest: string;
 }>;
 type SourceFingerprintModule = Readonly<{
-  diagnosticSourceFingerprint: (repository: string, services: Readonly<{
+  diagnosticSourceFingerprint: (repository: string, services?: Readonly<{
     runGit: (args: readonly string[], cwd: string) => Promise<string | null>;
   }>) => Promise<SourceFingerprintResult>;
 }>;
@@ -22,6 +25,7 @@ const snapshotSchema = z.object({
   digest: z.string().regex(/^[a-f0-9]{64}$/),
 }).strict();
 const roots: string[] = [];
+const runFile = promisify(execFile);
 
 function isSourceFingerprintModule(value: unknown): value is SourceFingerprintModule {
   return typeof value === 'object' && value !== null
@@ -154,4 +158,37 @@ it('fingerprints_diagnostic_sources_and_excludes_user_artifacts_and_ignored_repo
   await writeFile(join(root, 'scripts/performance-diagnostics/diagnostic-source-pin.json'), `${pinContents}changed\n`, 'utf8');
   const changedPinOnly = snapshotSchema.parse(await source.diagnosticSourceFingerprint(root, { runGit: fixture }));
   expect(changedPinOnly.digest).toBe(changed.digest);
+});
+
+it('uses_the_trusted_git_executable_when_PATH_contains_an_untrusted_git', async () => {
+  const { root } = await createSourceTree();
+  const trustedGit = '/usr/bin/git';
+  await runFile(trustedGit, ['init', '--quiet'], { cwd: root });
+  await runFile(trustedGit, ['config', 'user.email', 'test@example.invalid'], { cwd: root });
+  await runFile(trustedGit, ['config', 'user.name', 'Test'], { cwd: root });
+  await runFile(trustedGit, ['add', 'src/indexer/pipeline.ts'], { cwd: root });
+  await runFile(trustedGit, ['commit', '--quiet', '-m', 'fixture'], { cwd: root });
+  const directory = await mkdtemp(join(tmpdir(), 'nexus-untrusted-git-'));
+  roots.push(directory);
+  const marker = join(directory, 'invoked');
+  await writeFile(join(directory, 'git'), '#!/bin/sh\nprintf invoked > "$SONAR_TEST_MARKER"\nexit 1\n', 'utf8');
+  await chmod(join(directory, 'git'), 0o700);
+  const previousPath = process.env.PATH;
+  const previousMarker = process.env.SONAR_TEST_MARKER;
+
+  try {
+    process.env.PATH = directory;
+    process.env.SONAR_TEST_MARKER = marker;
+
+    const source = await loadSourceFingerprintModule();
+    const result = await source.diagnosticSourceFingerprint(root);
+
+    expect(result.commit).toMatch(/^[a-f0-9]{40}$/);
+    await expect(readFile(marker, 'utf8')).rejects.toMatchObject({ code: 'ENOENT' });
+  } finally {
+    if (previousPath === undefined) delete process.env.PATH;
+    else process.env.PATH = previousPath;
+    if (previousMarker === undefined) delete process.env.SONAR_TEST_MARKER;
+    else process.env.SONAR_TEST_MARKER = previousMarker;
+  }
 });

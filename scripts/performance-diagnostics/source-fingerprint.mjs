@@ -2,6 +2,7 @@ import { execFile } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { readFile, realpath } from 'node:fs/promises';
 import { extname, isAbsolute, join, resolve, sep } from 'node:path';
+import { compareStrings } from './diagnostic-string-order.mjs';
 
 const includedRoots = Object.freeze([
   'src/',
@@ -32,10 +33,12 @@ const excludedFiles = new Set([
 ]);
 const diagnosticKitExtensions = Object.freeze(['.cjs', '.mjs', '.md', '.mts', '.py', '.ts']);
 const maxCommandOutputBytes = 16 * 1024 * 1024;
+const GIT_EXECUTABLE = '/usr/bin/git';
 
 function runGit(args, cwd) {
   const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith('GIT_')));
-  return new Promise((resolveOutput) => execFile('git', args, {
+  env.PATH = '/usr/bin:/bin';
+  return new Promise((resolveOutput) => execFile(GIT_EXECUTABLE, args, {
     cwd,
     env,
     encoding: 'utf8',
@@ -67,7 +70,7 @@ function parseStatusPaths(status) {
       index += 1;
     }
   }
-  return [...paths].sort();
+  return [...paths].sort(compareStrings);
 }
 
 function validateRelativeSourcePath(path) {
@@ -94,7 +97,7 @@ export async function diagnosticSourceFingerprint(repository, services = {}) {
   }
 
   const inventoryPaths = [...filesOutput.split('\0'), ...ignoredFilesOutput.split('\0')];
-  const sourcePaths = [...new Set(inventoryPaths.filter(isDiagnosticSourcePath))].sort();
+  const sourcePaths = [...new Set(inventoryPaths.filter(isDiagnosticSourcePath))].sort(compareStrings);
   if (sourcePaths.length === 0) throw new Error('diagnostic_source_inventory_empty');
 
   const hash = createHash('sha256');

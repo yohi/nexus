@@ -5,6 +5,42 @@ const path = require('node:path');
 
 const RUN_LIMIT_BYTES = 512 * 1024 * 1024;
 
+function makeLockError(code) {
+  const error = new Error(code);
+  error.code = code;
+  return error;
+}
+
+function cleanupOwnedLock(lockPath, lockFd, lockIdentity) {
+  try {
+    const current = fs.lstatSync(lockPath);
+    if (current.dev !== lockIdentity.dev || current.ino !== lockIdentity.ino) {
+      const currentFd = fs.openSync(lockPath, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW);
+      let actual;
+      try {
+        actual = fs.fstatSync(currentFd);
+      } finally {
+        fs.closeSync(currentFd);
+      }
+      if (actual.dev !== lockIdentity.dev || actual.ino !== lockIdentity.ino) {
+        return makeLockError('profile_budget_lock_replaced');
+      }
+      return makeLockError('profile_budget_lock_identity_unverified');
+    }
+    fs.unlinkSync(lockPath);
+    return undefined;
+  } catch (error) {
+    return error;
+  }
+}
+
+function throwCleanupErrors(cleanupErrors) {
+  if (cleanupErrors.length === 1) throw cleanupErrors[0];
+  const error = new AggregateError(cleanupErrors, 'profile_budget_lock_cleanup_failed');
+  error.code = 'profile_budget_lock_cleanup_failed';
+  throw error;
+}
+
 function withProfileRunBudget(runDirectoryFd, profileDirectoryFd, requestedBytes, write) {
   const lockPath = `/proc/self/fd/${runDirectoryFd}/profile-budget.lock`;
   const directoryPath = `/proc/self/fd/${profileDirectoryFd}`;
@@ -40,17 +76,8 @@ function withProfileRunBudget(runDirectoryFd, profileDirectoryFd, requestedBytes
   }
 
   if (lockIdentity !== undefined) {
-    try {
-      const current = fs.lstatSync(lockPath);
-      if (current.dev !== lockIdentity.dev || current.ino !== lockIdentity.ino) {
-        const error = new Error('profile_budget_lock_replaced');
-        error.code = 'profile_budget_lock_replaced';
-        throw error;
-      }
-      fs.unlinkSync(lockPath);
-    } catch (error) {
-      cleanupErrors.push(error);
-    }
+    const cleanupError = cleanupOwnedLock(lockPath, lockFd, lockIdentity);
+    if (cleanupError !== undefined) cleanupErrors.push(cleanupError);
   }
   try {
     fs.closeSync(lockFd);
@@ -58,13 +85,13 @@ function withProfileRunBudget(runDirectoryFd, profileDirectoryFd, requestedBytes
     cleanupErrors.push(error);
   }
 
-  if (operationFailed) throw operationError;
-  if (cleanupErrors.length > 0) {
-    if (cleanupErrors.length === 1) throw cleanupErrors[0];
-    const error = new AggregateError(cleanupErrors, 'profile_budget_lock_cleanup_failed');
-    error.code = 'profile_budget_lock_cleanup_failed';
-    throw error;
+  if (operationFailed) {
+    if (cleanupErrors.some((error) => error.code === 'profile_budget_lock_replaced')) {
+      throwCleanupErrors([operationError, ...cleanupErrors]);
+    }
+    throw operationError;
   }
+  if (cleanupErrors.length > 0) throwCleanupErrors(cleanupErrors);
   return result;
 }
 

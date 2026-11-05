@@ -8,6 +8,7 @@ import {
   writePrivateJson,
 } from './diagnostic-vitest-bootstrap-control.mjs';
 import { passedHostGateResultSchema } from './host-gate-inputs.mjs';
+import { compareStrings } from './diagnostic-string-order.mjs';
 
 const digestSchema = z.string().regex(/^[a-f0-9]{64}$/);
 const runIdSchema = z.string().uuid();
@@ -202,7 +203,7 @@ export async function finalizeDiagnosticRun(evidenceValue, supervisorFinalizatio
     supervisorFinalizationValid,
   )) reasons.add(reason);
 
-  const reasonCodes = Object.freeze([...reasons].sort());
+  const reasonCodes = Object.freeze([...reasons].sort(compareStrings));
   const summary = Object.freeze({
     schemaVersion: 1,
     diagnosticOnly: true,

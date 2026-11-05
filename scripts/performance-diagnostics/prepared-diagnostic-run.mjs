@@ -48,6 +48,6 @@ export async function verifyPreparedDiagnosticRun(value) {
     join(prepared.runDirectory, 'clock-end.json'),
     join(prepared.traceDirectory, 'profile-request.json'),
     join(prepared.traceDirectory, 'diagnostic-worker-result.json'),
-  ].map(ensurePathAbsent));
+  ].map((path) => ensurePathAbsent(path)));
   return Object.freeze({ prepared, scenarioRequest, diagnosticRequest });
 }

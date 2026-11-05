@@ -1,6 +1,8 @@
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
-import { resolve } from 'node:path';
+import { chmod, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join, resolve } from 'node:path';
 import { expect, it } from 'vitest';
 import { pathToFileURL } from 'node:url';
 
@@ -12,6 +14,7 @@ type ProcessIdentityModule = Readonly<{
   >;
 }>;
 type PidfdSignalModule = Readonly<{
+  checkPidfdSignalSupport: () => Promise<boolean>;
   sendProcessSignalWithPidfd: (identity: ProcessIdentity, signal: 'SIGTERM' | 'SIGKILL') => Promise<void>;
 }>;
 
@@ -75,5 +78,34 @@ it('signals_only_the_process_whose_pidfd_identity_matches_the_observed_start_tic
     await expect(exitPromise).resolves.toEqual([23, null]);
   } finally {
     if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
+  }
+});
+
+it('does_not_resolve_the_pidfd_helper_from_a_writable_PATH_directory', async () => {
+  const module = await loadModule(
+    'scripts/performance-diagnostics/process-pidfd-signal.mjs',
+    isPidfdSignalModule,
+  );
+  const directory = await mkdtemp(join(tmpdir(), 'nexus-pidfd-path-'));
+  const marker = join(directory, 'invoked');
+  const executable = join(directory, 'python3');
+  const previousPath = process.env.PATH;
+  const previousMarker = process.env.SONAR_TEST_MARKER;
+  await writeFile(executable, '#!/bin/sh\nprintf invoked > "$SONAR_TEST_MARKER"\n', 'utf8');
+  await chmod(executable, 0o700);
+
+  try {
+    process.env.PATH = directory;
+    process.env.SONAR_TEST_MARKER = marker;
+
+    await module.checkPidfdSignalSupport();
+
+    await expect(readFile(marker, 'utf8')).rejects.toMatchObject({ code: 'ENOENT' });
+  } finally {
+    if (previousPath === undefined) delete process.env.PATH;
+    else process.env.PATH = previousPath;
+    if (previousMarker === undefined) delete process.env.SONAR_TEST_MARKER;
+    else process.env.SONAR_TEST_MARKER = previousMarker;
+    await rm(directory, { recursive: true, force: true });
   }
 });

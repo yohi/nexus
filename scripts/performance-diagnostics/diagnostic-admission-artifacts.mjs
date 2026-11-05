@@ -146,117 +146,138 @@ function validateSegmentEvents(events, segment, identity, runId) {
     && written.fileBytes?.status === 'observed' && written.fileBytes.value === segment.fileBytes;
 }
 
-export async function validateDiagnosticArtifacts(
-  value, runDirectory, profileEvidence, expectedWorkerResult, expectedTraceStatus, runId, allowProvisionalFinalization = false,
-) {
-  const parsedArtifacts = z.array(artifactSchema).safeParse(value);
-  if (!parsedArtifacts.success) return ['artifact_ownership_unverified'];
-  const reasons = new Set();
-  const artifacts = parsedArtifacts.data;
-  const traceArtifacts = artifacts.filter((artifact) => artifact.kind === 'trace');
-  const workerResultArtifacts = artifacts.filter((artifact) => artifact.kind === 'worker_result');
-  const profileArtifacts = artifacts.filter((artifact) => artifact.kind === 'profile');
-  if (traceArtifacts.length !== 1 || workerResultArtifacts.length !== 1
-    || profileArtifacts.length !== profileEvidence?.segments.length || profileArtifacts.length < 2) {
+function maxArtifactBytes(kind) {
+  switch (kind) {
+    case 'profile':
+    case 'profile_support':
+      return 64 * 1024 * 1024;
+    case 'trace':
+    case 'profile_events':
+      return 8 * 1024 * 1024;
+    case 'worker_result':
+      return 4 * 1024 * 1024;
+  }
+}
+
+function isValidWorkerArtifact(parsed, expected) {
+  return parsed.success && parsed.data.runId === expected?.runId
+    && parsed.data.recipeDigest === expected?.recipeDigest
+    && parsed.data.sourceFingerprint === expected?.sourceFingerprint
+    && parsed.data.status === expected?.status && parsed.data.exitCode === expected?.exitCode;
+}
+
+function inspectWorkerArtifact(contents, expected, state) {
+  try {
+    const parsed = workerArtifactSchema.safeParse(JSON.parse(contents.bytes.toString('utf8')));
+    if (!isValidWorkerArtifact(parsed, expected)) {
+      state.reasons.add('worker_result_invalid');
+      return;
+    }
+    state.workerArtifact = parsed.data;
+    if (parsed.data.scenario.records.some((record) => record.status !== 'valid')) {
+      state.reasons.add('worker_scenario_invalid');
+    }
+  } catch {
+    state.reasons.add('worker_result_invalid');
+  }
+}
+
+function isProvisionalFinalizationOnly(terminal, allowProvisionalFinalization) {
+  return allowProvisionalFinalization
+    && terminal?.finalizationState === 'provisional'
+    && terminal.traceIncomplete
+    && terminal.samplingIncomplete
+    && !terminal.traceTruncated
+    && terminal.reasonCode === 'finalization_unverified'
+    && terminal.reasonCodes.length === 1
+    && terminal.reasonCodes[0] === 'finalization_unverified'
+    && terminal.eventsDropped === 0
+    && terminal.bytesDropped === 0
+    && terminal.profilesMissing === 0
+    && terminal.profilesMissingExact
+    && terminal.stateIntegrity === 'unknown';
+}
+
+function validateTraceTerminal(parsed, expectedTraceStatus, allowProvisionalFinalization, reasons) {
+  if (!traceStatusMatches(parsed.terminal, expectedTraceStatus)) reasons.add('trace_status_mismatch');
+  const finalizationOnly = isProvisionalFinalizationOnly(parsed.terminal, allowProvisionalFinalization);
+  const terminal = parsed.terminal;
+  if (terminal === undefined || (!finalizationOnly && (terminal.traceIncomplete || terminal.traceTruncated
+    || terminal.samplingIncomplete || terminal.eventsDropped > 0 || terminal.bytesDropped > 0
+    || terminal.profilesMissing > 0 || !terminal.profilesMissingExact))) {
+    reasons.add('trace_incomplete');
+  }
+  if (finalizationOnly) {
+    const integrityEvents = parsed.events.filter((event) => event.event === 'span_finished'
+      && event.stageId === 'S08_storage_write' && event.stateIntegrity !== undefined);
+    if (integrityEvents.length === 0 || integrityEvents.some((event) => event.stateIntegrity !== 'verified')) {
+      reasons.add('storage_integrity_unverified');
+    }
+  } else if (terminal?.stateIntegrity !== 'verified') {
+    reasons.add('storage_integrity_unverified');
+  }
+}
+
+function inspectTraceArtifact(artifact, contents, context) {
+  const parsed = parseTraceArtifact(contents.bytes, context.runId);
+  for (const reason of parsed.reasons) context.reasons.add(reason);
+  if (context.expectedWorkerResult !== undefined && parsed.events.some((event) =>
+    event.jobId !== context.expectedWorkerResult.jobId
+    || event.recipeDigest !== context.expectedWorkerResult.recipeDigest
+    || event.sourceFingerprint !== context.expectedWorkerResult.sourceFingerprint)) {
+    context.reasons.add('trace_identity_mismatch');
+  }
+  if (artifact.kind === 'trace') {
+    validateTraceTerminal(parsed, context.expectedTraceStatus, context.allowProvisionalFinalization, context.reasons);
+  } else if (parsed.terminal?.processRole === 'vitest_worker'
+    && parsed.terminal.pid === context.profileEvidence?.workerIdentity.pid
+    && parsed.terminal.processStartTicks === context.profileEvidence?.workerIdentity.startTicks
+    && (parsed.terminal.traceTruncated || parsed.terminal.eventsDropped > 0 || parsed.terminal.bytesDropped > 0
+      || parsed.terminal.profilesMissing > 0 || !parsed.terminal.profilesMissingExact)) {
+    context.reasons.add('profile_events_incomplete');
+  }
+  context.parsedTraces.push(parsed);
+}
+
+function inspectProfileArtifact(path, contents, context) {
+  const parsed = parseCpuProfileArtifact(contents.bytes);
+  const expected = context.profileEvidence?.segments.find((segment) => resolve(segment.path) === path);
+  if (parsed === undefined || expected === undefined || parsed.sampleCount !== expected.sampleCount
+    || contents.size !== expected.fileBytes || !expected.profileValid) {
+    context.reasons.add('profile_artifact_invalid');
+  } else {
+    context.verifiedProfiles += 1;
+  }
+}
+
+function inspectArtifact(artifact, path, contents, context) {
+  if (artifact.kind === 'worker_result') {
+    inspectWorkerArtifact(contents, context.expectedWorkerResult, context);
+  } else if (artifact.kind === 'trace' || artifact.kind === 'profile_events') {
+    inspectTraceArtifact(artifact, contents, context);
+  } else if (artifact.kind === 'profile') {
+    inspectProfileArtifact(path, contents, context);
+  } else if (parseCpuProfileArtifact(contents.bytes) === undefined) {
+    context.reasons.add('profile_support_artifact_invalid');
+  }
+}
+
+function validateArtifactInventory(artifacts, profileEvidence, reasons) {
+  const traceCount = artifacts.filter((artifact) => artifact.kind === 'trace').length;
+  const workerResultCount = artifacts.filter((artifact) => artifact.kind === 'worker_result').length;
+  const profileCount = artifacts.filter((artifact) => artifact.kind === 'profile').length;
+  if (traceCount !== 1 || workerResultCount !== 1 || profileCount !== profileEvidence?.segments.length || profileCount < 2) {
     reasons.add('artifact_inventory_invalid');
   }
+}
 
-  let workerArtifact;
-  const parsedTraces = [];
-  let verifiedProfiles = 0;
-  for (const artifact of artifacts) {
-    const path = resolve(artifact.path);
-    if (!inside(runDirectory, path)) {
-      reasons.add('artifact_ownership_unverified');
-      continue;
-    }
-    const maxBytes = artifact.kind === 'profile' || artifact.kind === 'profile_support' ? 64 * 1024 * 1024
-      : artifact.kind === 'trace' || artifact.kind === 'profile_events' ? 8 * 1024 * 1024
-        : 4 * 1024 * 1024;
-    const contents = await readPrivateDiagnosticArtifact(path, runDirectory, maxBytes);
-    if (contents === undefined) {
-      reasons.add(artifact.kind === 'worker_result' ? 'worker_result_invalid'
-        : artifact.kind === 'profile' ? 'profile_artifact_invalid' : 'artifact_ownership_unverified');
-      continue;
-    }
-    if (artifact.kind === 'worker_result') {
-      try {
-        const parsed = workerArtifactSchema.safeParse(JSON.parse(contents.bytes.toString('utf8')));
-        if (!parsed.success || parsed.data.runId !== expectedWorkerResult?.runId
-          || parsed.data.recipeDigest !== expectedWorkerResult?.recipeDigest
-          || parsed.data.sourceFingerprint !== expectedWorkerResult?.sourceFingerprint
-          || parsed.data.status !== expectedWorkerResult?.status || parsed.data.exitCode !== expectedWorkerResult?.exitCode) {
-          reasons.add('worker_result_invalid');
-        } else {
-          workerArtifact = parsed.data;
-          if (parsed.data.scenario.records.some((record) => record.status !== 'valid')) {
-            reasons.add('worker_scenario_invalid');
-          }
-        }
-      } catch {
-        reasons.add('worker_result_invalid');
-      }
-    } else if (artifact.kind === 'trace' || artifact.kind === 'profile_events') {
-      const parsed = parseTraceArtifact(contents.bytes, runId);
-      for (const reason of parsed.reasons) reasons.add(reason);
-      if (expectedWorkerResult !== undefined && parsed.events.some((event) =>
-        event.jobId !== expectedWorkerResult.jobId
-        || event.recipeDigest !== expectedWorkerResult.recipeDigest
-        || event.sourceFingerprint !== expectedWorkerResult.sourceFingerprint)) {
-        reasons.add('trace_identity_mismatch');
-      }
-      if (artifact.kind === 'trace') {
-        if (!traceStatusMatches(parsed.terminal, expectedTraceStatus)) reasons.add('trace_status_mismatch');
-        const finalizationOnly = allowProvisionalFinalization
-          && parsed.terminal?.finalizationState === 'provisional'
-          && parsed.terminal.traceIncomplete
-          && parsed.terminal.samplingIncomplete
-          && !parsed.terminal.traceTruncated
-          && parsed.terminal.reasonCode === 'finalization_unverified'
-          && parsed.terminal.reasonCodes.length === 1
-          && parsed.terminal.reasonCodes[0] === 'finalization_unverified'
-          && parsed.terminal.eventsDropped === 0
-          && parsed.terminal.bytesDropped === 0
-          && parsed.terminal.profilesMissing === 0
-          && parsed.terminal.profilesMissingExact
-          && parsed.terminal.stateIntegrity === 'unknown';
-        if (parsed.terminal === undefined || (!finalizationOnly && (parsed.terminal.traceIncomplete || parsed.terminal.traceTruncated
-          || parsed.terminal.samplingIncomplete || parsed.terminal.eventsDropped > 0 || parsed.terminal.bytesDropped > 0
-          || parsed.terminal.profilesMissing > 0 || !parsed.terminal.profilesMissingExact))) reasons.add('trace_incomplete');
-        if (finalizationOnly) {
-          const integrityEvents = parsed.events.filter((event) => event.event === 'span_finished'
-            && event.stageId === 'S08_storage_write' && event.stateIntegrity !== undefined);
-          if (integrityEvents.length === 0 || integrityEvents.some((event) => event.stateIntegrity !== 'verified')) {
-            reasons.add('storage_integrity_unverified');
-          }
-        } else if (parsed.terminal?.stateIntegrity !== 'verified') {
-          reasons.add('storage_integrity_unverified');
-        }
-      } else if (artifact.kind === 'profile_events' && parsed.terminal?.processRole === 'vitest_worker'
-        && parsed.terminal.pid === profileEvidence?.workerIdentity.pid
-        && parsed.terminal.processStartTicks === profileEvidence?.workerIdentity.startTicks
-        && (parsed.terminal.traceTruncated || parsed.terminal.eventsDropped > 0 || parsed.terminal.bytesDropped > 0
-          || parsed.terminal.profilesMissing > 0 || !parsed.terminal.profilesMissingExact)) {
-        reasons.add('profile_events_incomplete');
-      }
-      parsedTraces.push(parsed);
-    } else if (artifact.kind === 'profile') {
-      const parsed = parseCpuProfileArtifact(contents.bytes);
-      const expected = profileEvidence?.segments.find((segment) => resolve(segment.path) === path);
-      if (parsed === undefined || expected === undefined || parsed.sampleCount !== expected.sampleCount
-        || contents.size !== expected.fileBytes || !expected.profileValid) {
-        reasons.add('profile_artifact_invalid');
-      } else {
-        verifiedProfiles += 1;
-      }
-    } else if (artifact.kind === 'profile_support') {
-      if (parseCpuProfileArtifact(contents.bytes) === undefined) reasons.add('profile_support_artifact_invalid');
-    }
-  }
+function validateFinalWorkerEvidence(workerArtifact, reasons) {
   if (workerArtifact === undefined) reasons.add('worker_result_invalid');
   if (workerArtifact?.observerFailure === true) reasons.add('observer_failure');
   if (workerArtifact?.traceIncomplete === true) reasons.add('trace_incomplete');
+}
 
+function validateProfileEvidence(parsedTraces, profileEvidence, runId, verifiedProfiles, reasons) {
   const traceEvents = parsedTraces.flatMap((trace) => trace.events);
   const preloads = traceEvents.filter((event) => event.event === 'preload_started');
   const workerIdentity = profileEvidence?.workerIdentity;
@@ -268,5 +289,42 @@ export async function validateDiagnosticArtifacts(
     if (!validateSegmentEvents(traceEvents, segment, workerIdentity, runId)) reasons.add('profile_segment_evidence_invalid');
   }
   if (verifiedProfiles !== profileEvidence?.segments.length) reasons.add('profile_artifact_invalid');
+}
+
+export async function validateDiagnosticArtifacts(
+  value, runDirectory, profileEvidence, expectedWorkerResult, expectedTraceStatus, runId, allowProvisionalFinalization = false,
+) {
+  const parsedArtifacts = z.array(artifactSchema).safeParse(value);
+  if (!parsedArtifacts.success) return ['artifact_ownership_unverified'];
+  const reasons = new Set();
+  const artifacts = parsedArtifacts.data;
+  validateArtifactInventory(artifacts, profileEvidence, reasons);
+  const context = {
+    expectedTraceStatus,
+    expectedWorkerResult,
+    allowProvisionalFinalization,
+    profileEvidence,
+    parsedTraces: [],
+    reasons,
+    runId,
+    verifiedProfiles: 0,
+    workerArtifact: undefined,
+  };
+  for (const artifact of artifacts) {
+    const path = resolve(artifact.path);
+    if (!inside(runDirectory, path)) {
+      reasons.add('artifact_ownership_unverified');
+      continue;
+    }
+    const contents = await readPrivateDiagnosticArtifact(path, runDirectory, maxArtifactBytes(artifact.kind));
+    if (contents === undefined) {
+      reasons.add(artifact.kind === 'worker_result' ? 'worker_result_invalid'
+        : artifact.kind === 'profile' ? 'profile_artifact_invalid' : 'artifact_ownership_unverified');
+      continue;
+    }
+    inspectArtifact(artifact, path, contents, context);
+  }
+  validateFinalWorkerEvidence(context.workerArtifact, reasons);
+  validateProfileEvidence(context.parsedTraces, profileEvidence, runId, context.verifiedProfiles, reasons);
   return [...reasons];
 }
