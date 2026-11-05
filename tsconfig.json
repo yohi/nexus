@@ -17,6 +17,6 @@
     "noImplicitOverride": true,
     "types": ["node", "vitest/globals"]
   },
-  "include": ["src/**/*.ts", "tests/**/*.ts", "eslint.config.mjs", "vitest.config.ts"],
+  "include": ["src/**/*.ts", "tests/**/*.ts", "eslint.config.mjs", "vitest.config.ts", "vitest.performance.config.ts"],
   "exclude": ["dist", "node_modules", "tests/fixtures/structured/typescript/malformed.ts"]
 }

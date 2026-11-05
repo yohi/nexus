@@ -1,6 +1,6 @@
 import { Registry, Gauge, Counter, Histogram } from 'prom-client';
 import path from 'node:path';
-import type { MetricsHooks } from './types.js';
+import type { EmbeddingCacheOutcome, MetricsHooks } from './types.js';
 import type { BackpressureState } from '../indexer/event-queue.js';
 
 const BACKPRESSURE_STATES = ['normal', 'overflow', 'full_scan'] as const satisfies readonly BackpressureState[];
@@ -19,6 +19,7 @@ export class MetricsCollector implements MetricsHooks {
   private readonly queueStateGauge: Gauge;
   private readonly droppedCounter: Counter;
   private readonly chunksCounter: Counter;
+  private readonly embeddingCacheLookups: Counter<'outcome'>;
   private readonly reindexHistogram: Histogram;
   private readonly dlqSizeGauge: Gauge;
   private readonly recoveryCounter: Counter;
@@ -77,6 +78,13 @@ export class MetricsCollector implements MetricsHooks {
     this.chunksCounter = new Counter({
       name: 'nexus_indexing_chunks_total',
       help: 'Total chunks indexed',
+      registers: [this.registry],
+    });
+
+    this.embeddingCacheLookups = new Counter({
+      name: 'nexus_embedding_cache_lookups_total',
+      help: 'Terminal embedding cache lookup outcomes per chunk occurrence',
+      labelNames: ['outcome'] as const,
       registers: [this.registry],
     });
 
@@ -224,6 +232,10 @@ export class MetricsCollector implements MetricsHooks {
     });
   }
 
+
+  onEmbeddingCacheLookup(outcome: EmbeddingCacheOutcome, count: number): void {
+    this.embeddingCacheLookups.inc({ outcome }, count);
+  }
 
   onQueueSnapshot(size: number, state: BackpressureState, droppedTotal: number, source = 'default'): void {
     const labels = { queue_id: source };

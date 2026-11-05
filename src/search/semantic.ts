@@ -5,6 +5,8 @@ import type {
   VectorFilter,
   VectorSearchResult,
 } from '../types/index.js';
+import type { RuntimeObserver } from '../observability/runtime-observer.js';
+import { observeRuntimeWork } from '../observability/runtime-work.js';
 export interface SemanticSearchParams {
   query: string;
   topK?: number;
@@ -20,6 +22,7 @@ export interface ActiveGenerationResolver {
 }
 
 export interface SemanticSearchOptions {
+  observer?: RuntimeObserver;
   vectorStore: IVectorStore;
   embeddingProvider: EmbeddingProvider;
   activeGenerationResolver?: ActiveGenerationResolver;
@@ -33,6 +36,10 @@ export class SemanticSearch implements ISemanticSearch {
   constructor(private readonly options: SemanticSearchOptions) {}
 
   async search(params: SemanticSearchParams): Promise<SearchResult[]> {
+    return observeRuntimeWork(this.options.observer, 'semantic', () => this.searchUnobserved(params), params.abortSignal);
+  }
+
+  private async searchUnobserved(params: SemanticSearchParams): Promise<SearchResult[]> {
     const topK = params.topK ?? 20;
 
     if (params.abortSignal?.aborted) {

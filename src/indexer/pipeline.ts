@@ -33,11 +33,17 @@ import type { FullRebuildFile, StructuredIndexCoordinator } from './structured-i
 import { decodeUtf8, sha256Hex } from '../structured/hash.js';
 import { createEmbeddingCacheIdentity, type EmbeddingCacheIdentity } from './embedding-cache-identity.js';
 import type { EmbeddingConfig } from '../types/index.js';
+import type { EmbeddingChunkOrigin, RuntimeObserver } from '../observability/runtime-observer.js';
+import type { EmbeddingCacheOutcome } from '../observability/types.js';
+import { embeddingInputIdentity, emitCacheLookup, observeEmbeddingBatch } from '../observability/embedding-observer.js';
+import { emitRuntimeEvent } from '../observability/runtime-observer.js';
+import { observeReindex, observeRuntimeWork } from '../observability/runtime-work.js';
 
 type ContentLoader = (filePath: string) => Promise<string>;
 type FileBytesLoader = (filePath: string) => Promise<Uint8Array>;
 
 interface IndexPipelineOptions {
+  observer?: RuntimeObserver;
   metadataStore: IMetadataStore;
   vectorStore: IVectorStore;
   chunker: Chunker;
@@ -60,6 +66,7 @@ interface IndexPipelineOptions {
     | 'onDlqSnapshot'
     | 'onRecoverySweepComplete'
     | 'onIndexingProgress'
+    | 'onEmbeddingCacheLookup'
   >;
   completionLock?: Mutex;
 }
@@ -220,7 +227,13 @@ export class IndexPipeline implements IIndexPipeline {
 
     this.idleCompactionTimer = this.options.vectorStore.scheduleIdleCompaction(
       async () => {
-        await this.options.vectorStore.compactIfNeeded();
+        await observeRuntimeWork(this.options.observer, 'compaction', async () => {
+          try { await this.options.vectorStore.compactIfNeeded(); }
+          catch (error) {
+            emitRuntimeEvent(this.options.observer, { kind: 'compaction_failed' });
+            throw error;
+          }
+        });
       },
       300_000,
       { waitForUnlock: () => this.mutex.waitForUnlock() },
@@ -261,6 +274,14 @@ export class IndexPipeline implements IIndexPipeline {
   async processEvents(
     events: IndexEvent[],
     loadContent?: ContentLoader,
+    options: { trackProgress?: boolean; fullRebuild?: boolean } = {},
+  ): Promise<ProcessEventsResult> {
+    return observeRuntimeWork(this.options.observer, 'process_events', () =>
+      this.processEventsUnobserved(events, loadContent, options));
+  }
+
+  private async processEventsUnobserved(
+    events: IndexEvent[], loadContent?: ContentLoader,
     options: { trackProgress?: boolean; fullRebuild?: boolean } = {},
   ): Promise<ProcessEventsResult> {
     const structuredIndexCoordinator = this.options.structuredIndexCoordinator;
@@ -619,10 +640,18 @@ export class IndexPipeline implements IIndexPipeline {
 
     // Stage 2: L1 (memory) + L2 (persistent) cache-aware embed.
     const toEmbed = works.filter((work) => !work.skipped && (work.chunks.length > 0 || (work.structured?.chunks.length ?? 0) > 0));
+    const origins: EmbeddingChunkOrigin[] = this.options.observer === undefined ? [] : toEmbed.flatMap((work) => [
+      ...work.chunks.map(() => 'legacy' as const),
+      ...(work.structured?.chunks.map(() => 'structured' as const) ?? []),
+    ]);
     const allChunks = toEmbed.flatMap((work) => [
       ...work.chunks,
       ...(work.structured?.chunks ?? []),
     ]);
+    const cacheLookup = (outcome: EmbeddingCacheOutcome, index: number, key?: string) => {
+      this.safeNotifyMetrics((hooks) => { hooks.onEmbeddingCacheLookup?.(outcome, 1); });
+      if (this.options.observer !== undefined) emitCacheLookup(this.options.observer, origins[index], outcome, key);
+    };
 
     // allChunks index → filePath mapping for precise DLQ routing on embed failure.
     const chunkToFilePath = new Map<number, string>();
@@ -645,6 +674,7 @@ export class IndexPipeline implements IIndexPipeline {
         const hash = this.embeddingCacheIdentity?.keyFor(chunk.hash);
         const cached = hash === undefined ? undefined : this.getL1Cache(hash);
         if (cached !== undefined) {
+          cacheLookup('l1_hit', i, hash);
           return cached;
         }
       l1Misses.push({ index: i, hash, text: chunk.content });
@@ -660,9 +690,11 @@ export class IndexPipeline implements IIndexPipeline {
       for (const miss of l1Misses) {
         const vector = miss.hash === undefined ? undefined : l2Cached.get(miss.hash);
         if (vector !== undefined && miss.hash !== undefined) {
+          cacheLookup('l2_hit', miss.index, miss.hash);
           resolvedEmbeddings[miss.index] = vector;
           this.setL1Cache(miss.hash, vector);
         } else {
+          cacheLookup('miss', miss.index, miss.hash);
           trueMisses.push(miss);
         }
       }
@@ -674,7 +706,9 @@ export class IndexPipeline implements IIndexPipeline {
     if (trueMisses.length > 0) {
       try {
         const missTexts = trueMisses.map((m) => m.text);
-        const freshEmbeddings = await this.options.embeddingProvider.embed(missTexts, this.abortController.signal);
+        const freshEmbeddings = await observeEmbeddingBatch(this.options.observer,
+          () => trueMisses.map((miss) => embeddingInputIdentity(origins[miss.index], miss.hash)),
+          () => this.options.embeddingProvider.embed(missTexts, this.abortController.signal));
         if (freshEmbeddings.length !== missTexts.length) {
           const msg = `Embedding count mismatch: expected ${missTexts.length}, got ${freshEmbeddings.length}`;
           if (trackProgress) {
@@ -1004,6 +1038,13 @@ export class IndexPipeline implements IIndexPipeline {
     fullRebuild?: boolean,
     reason: ReindexOptions['reason'] = 'manual',
   ): Promise<ReindexResult | { status: 'already_running' } | { status: 'incomplete' }> {
+    return observeReindex(this.options.observer, this, () => this.reindexUnobserved(run, loadContent, fullRebuild, reason));
+  }
+
+  private async reindexUnobserved(
+    run: (options?: { fullScan?: boolean; reason?: ReindexOptions['reason'] }) => Promise<IndexEvent[]>,
+    loadContent: ContentLoader, fullRebuild?: boolean, reason: ReindexOptions['reason'] = 'manual',
+  ): Promise<ReindexResult | { status: 'already_running' } | { status: 'incomplete' }> {
     const startedAt = new Date().toISOString();
     const startTime = Date.now();
 
@@ -1042,6 +1083,7 @@ export class IndexPipeline implements IIndexPipeline {
           try {
             await this.options.vectorStore.compactAfterReindex();
           } catch (compactionError) {
+            emitRuntimeEvent(this.options.observer, { kind: 'compaction_failed' });
             console.error('Post-reindex compaction failed (non-fatal):', compactionError);
           }
 

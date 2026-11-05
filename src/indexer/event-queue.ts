@@ -4,8 +4,11 @@ import pLimit from 'p-limit';
 
 import type { IndexEvent, ReindexOptions, ReindexQueueEvent } from '../types/index.js';
 import type { MetricsHooks } from '../observability/types.js';
+import type { RuntimeObserver } from '../observability/runtime-observer.js';
+import { emitRuntimeEvent, markRuntimeMutation, rememberQueuedObservation } from '../observability/runtime-observer.js';
 
 export interface EventQueueOptions {
+  observer?: RuntimeObserver;
   name?: string;
   debounceMs: number;
   maxQueueSize: number;
@@ -52,6 +55,7 @@ export class EventQueue {
   }
 
   enqueue(event: IndexEvent): boolean {
+    if (this.options.observer !== undefined) rememberQueuedObservation(event);
     if (this.postScanActive) {
       if (this.postScanQueue.length + this.size() >= this.options.maxQueueSize) {
         // Keep the post-scan buffer bounded. The dropped event is recovered by
@@ -113,6 +117,7 @@ export class EventQueue {
     }
 
     if (mergedEvent) {
+      if (this.options.observer !== undefined) rememberQueuedObservation(mergedEvent);
       this.debouncedEvents.set(event.filePath, mergedEvent);
       const timer = setTimeout(() => {
         this.flushDebouncedEvent(event.filePath);
@@ -146,12 +151,14 @@ export class EventQueue {
       return this.recordDroppedEvent();
     }
 
-    this.reindexQueue.push({
+    const event: ReindexQueueEvent = {
       type: 'reindex',
       priority: 'high',
       options,
       detectedAt: new Date().toISOString(),
-    });
+    };
+    if (this.options.observer !== undefined) rememberQueuedObservation(event);
+    this.reindexQueue.push(event);
 
     if (this.size() >= this.options.fullScanThreshold) {
       this.enterOverflow();
@@ -300,6 +307,7 @@ export class EventQueue {
 
   enterPostScanMode(): void {
     this.postScanActive = true;
+    this.observeQueueState();
   }
 
   drainPostScanQueue(): number {
@@ -377,6 +385,7 @@ export class EventQueue {
   }
 
   private safeNotifyMetrics(): void {
+    this.observeQueueState();
     const { metricsHooks } = this.options;
     if (!metricsHooks) return;
     try {
@@ -389,6 +398,20 @@ export class EventQueue {
     } catch (err) {
       console.warn('[Nexus EventQueue] Metrics hook failed:', err);
     }
+  }
+
+  private lastObservationSnapshot: string | undefined;
+
+  private observeQueueState(): void {
+    const observer = this.options.observer;
+    if (observer === undefined) return;
+    const snapshot = { queued: this.size(), postScanQueued: this.postScanQueue.length,
+      dropped: this.droppedEventCount, postScanActive: this.postScanActive, state: this.state };
+    const identity = JSON.stringify(snapshot);
+    if (identity === this.lastObservationSnapshot) return;
+    this.lastObservationSnapshot = identity;
+    markRuntimeMutation(observer);
+    emitRuntimeEvent(observer, { kind: 'queue_state', ...snapshot });
   }
 
   private flushDebouncedEvent(filePath: string): void {

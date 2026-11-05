@@ -2,6 +2,9 @@
 
 This guide describes how to configure Prometheus and Grafana to scrape merged metrics from the Nexus Aggregator.
 
+For local retrieval/indexing measurements, see the
+[performance baseline guide](performance-benchmarks.md).
+
 ## How it works
 
 1. Multiple Nexus server processes register themselves with the Dashboard CLI's central Aggregator.
@@ -14,15 +17,16 @@ Add the following scrape configuration to your `prometheus.yml`:
 
 ```yaml
 scrape_configs:
-  - job_name: 'nexus'
+  - job_name: "nexus"
     scrape_interval: 10s
     static_configs:
-      - targets: ['localhost:9470']
+      - targets: ["localhost:9470"]
 ```
 
 ## Grafana Dashboard Import
 
 Import the JSON file at `docs/observability/grafana-dashboard.json` into Grafana:
+
 1. Open Grafana Dashboard.
 2. Click **Dashboards** -> **New** -> **Import**.
 3. Upload `grafana-dashboard.json`.
@@ -30,29 +34,30 @@ Import the JSON file at `docs/observability/grafana-dashboard.json` into Grafana
 
 ## Metrics Index (Full Catalog)
 
-| Metric Name | Type | Labels | Description |
-|---|---|---|---|
-| `nexus_event_queue_size` | Gauge | `project`, `pid`, `queue_id` | Current event queue size |
-| `nexus_event_queue_state` | Gauge | `project`, `pid`, `queue_id`, `state` | Current backpressure state (1 = active) |
-| `nexus_event_queue_dropped_total` | Counter | `project`, `pid`, `queue_id` | Total dropped events due to overflow |
-| `nexus_indexing_chunks_total` | Counter | `project`, `pid` | Total chunks indexed |
-| `nexus_reindex_duration_seconds` | Histogram | `project`, `pid`, `full_rebuild` | Duration of reindex runs |
-| `nexus_dlq_size` | Gauge | `project`, `pid`, `dlq_id` | Current DLQ entry count |
-| `nexus_dlq_recovery_total` | Counter | `project`, `pid`, `dlq_id`, `result` | DLQ recovery sweep results |
-| `nexus_indexing_active` | Gauge | `project`, `pid` | Whether indexing run is active (1 = active) |
-| `nexus_indexing_processed_files` | Gauge | `project`, `pid` | Processed files count in current run |
-| `nexus_indexing_total_files` | Gauge | `project`, `pid` | Total files to process in current run |
-| `nexus_tool_calls_total` | Counter | `project`, `pid`, `tool_name`, `status` | Cumulative tool calls count |
-| `nexus_tool_duration_seconds` | Histogram | `project`, `pid`, `tool_name` | Latency distribution of tool calls |
-| `nexus_search_results_hits` | Histogram | `project`, `pid`, `search_type` | Hits count per search query |
-| `nexus_context_lines_fetched_total` | Counter | `project`, `pid`, `tool_name` | Cumulative lines fetched by code viewer |
-| `nexus_embedding_requests_total` | Counter | `project`, `pid`, `provider`, `status` | Embedding provider requests count |
-| `nexus_embedding_duration_seconds` | Histogram | `project`, `pid`, `provider` | Embedding request latency |
-| `nexus_embedding_batch_size` | Histogram | `project`, `pid`, `provider` | Embedding request batch size distribution |
-| `nexus_structured_retrieval_outcomes_total` | Counter | `project`, `pid`, `tool`, `status` | Structured retrieval tool outcomes by status |
-| `nexus_structured_parser_outcomes_total` | Counter | `project`, `pid`, `language`, `parse_status` | Structured parser outcomes by language and parse status |
-| `nexus_structured_context_tokens` | Histogram | `project`, `pid`, `tool`, `measurement` | Structured context token counts (`requested` / `actual`) |
-| `nexus_structured_budget_overflows_total` | Counter | `project`, `pid`, `tool` | Structured retrieval budget overflow counts (omitted imports) |
-| `nexus_structured_catalog_files` | Gauge | `project`, `pid`, `coverage` | Structured catalog file counts (`exact` / `degraded` / `pending`) |
-| `nexus_structured_catalog_symbols` | Gauge | `project`, `pid` | Structured catalog symbol count |
-| `nexus_structured_catalog_coverage_files` | Gauge | `project`, `pid` | Structured catalog coverage ratio (exact files / total files) |
+| Metric Name                                 | Type      | Labels                                       | Description                                                       |
+| ------------------------------------------- | --------- | -------------------------------------------- | ----------------------------------------------------------------- |
+| `nexus_event_queue_size`                    | Gauge     | `project`, `pid`, `queue_id`                 | Current event queue size                                          |
+| `nexus_event_queue_state`                   | Gauge     | `project`, `pid`, `queue_id`, `state`        | Current backpressure state (1 = active)                           |
+| `nexus_event_queue_dropped_total`           | Counter   | `project`, `pid`, `queue_id`                 | Total dropped events due to overflow                              |
+| `nexus_indexing_chunks_total`               | Counter   | `project`, `pid`                             | Total chunks indexed                                              |
+| `nexus_reindex_duration_seconds`            | Histogram | `project`, `pid`, `full_rebuild`             | Duration of reindex runs                                          |
+| `nexus_dlq_size`                            | Gauge     | `project`, `pid`, `dlq_id`                   | Current DLQ entry count                                           |
+| `nexus_dlq_recovery_total`                  | Counter   | `project`, `pid`, `dlq_id`, `result`         | DLQ recovery sweep results                                        |
+| `nexus_indexing_active`                     | Gauge     | `project`, `pid`                             | Whether indexing run is active (1 = active)                       |
+| `nexus_indexing_processed_files`            | Gauge     | `project`, `pid`                             | Processed files count in current run                              |
+| `nexus_indexing_total_files`                | Gauge     | `project`, `pid`                             | Total files to process in current run                             |
+| `nexus_tool_calls_total`                    | Counter   | `project`, `pid`, `tool_name`, `status`      | Cumulative tool calls count                                       |
+| `nexus_tool_duration_seconds`               | Histogram | `project`, `pid`, `tool_name`                | Latency distribution of tool calls                                |
+| `nexus_search_results_hits`                 | Histogram | `project`, `pid`, `search_type`              | Hits count per search query                                       |
+| `nexus_context_lines_fetched_total`         | Counter   | `project`, `pid`, `tool_name`                | Cumulative lines fetched by code viewer                           |
+| `nexus_embedding_requests_total`            | Counter   | `project`, `pid`, `provider`, `status`       | Embedding provider requests count                                 |
+| `nexus_embedding_duration_seconds`          | Histogram | `project`, `pid`, `provider`                 | Embedding request latency                                         |
+| `nexus_embedding_batch_size`                | Histogram | `project`, `pid`, `provider`                 | Embedding request batch size distribution                         |
+| `nexus_embedding_cache_lookups_total`       | Counter   | `project`, `pid`, `outcome`                  | Terminal chunk cache outcomes: `l1_hit`, `l2_hit`, `miss`         |
+| `nexus_structured_retrieval_outcomes_total` | Counter   | `project`, `pid`, `tool`, `status`           | Structured retrieval tool outcomes by status                      |
+| `nexus_structured_parser_outcomes_total`    | Counter   | `project`, `pid`, `language`, `parse_status` | Structured parser outcomes by language and parse status           |
+| `nexus_structured_context_tokens`           | Histogram | `project`, `pid`, `tool`, `measurement`      | Structured context token counts (`requested` / `actual`)          |
+| `nexus_structured_budget_overflows_total`   | Counter   | `project`, `pid`, `tool`                     | Structured retrieval budget overflow counts (omitted imports)     |
+| `nexus_structured_catalog_files`            | Gauge     | `project`, `pid`, `coverage`                 | Structured catalog file counts (`exact` / `degraded` / `pending`) |
+| `nexus_structured_catalog_symbols`          | Gauge     | `project`, `pid`                             | Structured catalog symbol count                                   |
+| `nexus_structured_catalog_coverage_files`   | Gauge     | `project`, `pid`                             | Structured catalog coverage ratio (exact files / total files)     |
