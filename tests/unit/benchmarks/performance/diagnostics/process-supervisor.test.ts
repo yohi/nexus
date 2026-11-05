@@ -118,17 +118,20 @@ it('blocks_worker_start_when_host_snapshot_is_stale_before_spawn', async () => {
   const module = await loadProcessSupervisorModule();
   const preparedRun = await createPreparedRun();
   let starts = 0;
+  const staleMonotonicNs = (process.hrtime.bigint() - 120_000_000_001n).toString();
 
   await expect(module.executeDiagnosticRun(preparedRun, {
     executionMode: true,
     sourceGateResult: { status: 'PASS', digest: preparedRun.workerDiagnosticRequest.sourceFingerprint },
-    hostGateResult: { ...passHostGateResult(), monotonicNs: '0' },
+    hostGateResult: { ...passHostGateResult(), monotonicNs: staleMonotonicNs },
     currentSourceFingerprint: () => Promise.resolve(preparedRun.workerDiagnosticRequest.sourceFingerprint),
     clockProbe: (phase) => Promise.resolve(supervisorClockProbe(phase)),
     superviseProcess: () => { starts += 1; return Promise.resolve({ status: 'completed', exitCode: 0 }); },
   })).resolves.toMatchObject({ status: 'gate_blocked', reasonCode: 'host_snapshots_stale' });
 
   expect(starts).toBe(0);
+  expect(JSON.parse(await readFile(join(preparedRun.runDirectory, 'supervisor-final-status.json'), 'utf8')))
+    .toMatchObject({ status: 'failed', reasonCodes: ['host_snapshots_stale'], diagnosticAdmissible: false });
 });
 
 it('blocks_worker_start_when_host_gate_pass_lacks_three_clean_snapshots', async () => {

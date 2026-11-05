@@ -248,7 +248,12 @@ export async function defaultStartWorker(validated, dependencies = {}) {
   }
   const snapshotAgeNs = process.hrtime.bigint() - BigInt(dependencies.hostGateResult.monotonicNs);
   if (snapshotAgeNs < 0n || snapshotAgeNs > MAX_HOST_SNAPSHOT_AGE_NS) {
-    return Object.freeze({ status: 'gate_blocked', reasonCode: 'host_snapshots_stale' });
+    const reasonCode = 'host_snapshots_stale';
+    const diagnosticSummary = await persistFailure({
+      prepared, diagnosticRequest, reasonCode, status: 'failed', workerStatus: 'not_started',
+      workerExitCode: null, cleanupStatus: 'verified', remainingProcessCount: 0,
+    });
+    return Object.freeze({ status: 'gate_blocked', reasonCode, diagnosticSummary });
   }
   const processResult = await superviseProcess({
     command: process.execPath,

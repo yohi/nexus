@@ -141,7 +141,7 @@ async function createEvidence(overrides: Readonly<Record<string, unknown>> = {})
     sourceGate: { status: 'PASS', digest: sourceFingerprint },
     hostGate: {
       status: 'PASS', snapshotCount: 3, reasonCodes: [], requiredScratchBytes: 5_000_000_000,
-      scratchFreeBytes: 8_000_000_000, effectiveCpuCapacity: 4,
+      scratchFreeBytes: 8_000_000_000, effectiveCpuCapacity: 4, monotonicNs: '60000000000',
     },
     workerResult: {
       schemaVersion: 1,

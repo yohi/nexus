@@ -41,6 +41,7 @@ const failureReasonSchema = z.enum([
   'diagnostic_worker_result_invalid',
   'diagnostic_evidence_error',
   'diagnostic_worker_timeout',
+  'host_snapshots_stale',
   'source_fingerprint_mismatch',
 ]);
 const identitySchema = z.object({

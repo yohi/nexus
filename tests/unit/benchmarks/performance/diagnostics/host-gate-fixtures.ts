@@ -67,6 +67,7 @@ export type HostGateResult = Readonly<{
   requiredScratchBytes?: number;
   scratchFreeBytes?: number;
   effectiveCpuCapacity?: number;
+  monotonicNs?: string;
 }>;
 
 export type HostGateModule = Readonly<{
@@ -176,4 +177,5 @@ export const resultSchema = z.object({
   requiredScratchBytes: z.number().optional(),
   scratchFreeBytes: z.number().optional(),
   effectiveCpuCapacity: z.number().optional(),
+  monotonicNs: z.string().regex(/^(0|[1-9][0-9]*)$/).optional(),
 }).strict();
