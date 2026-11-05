@@ -41,4 +41,27 @@ describe('performanceSourceMetadata', () => {
     expect(first.environment.sourceFingerprint).toMatch(/^[a-f0-9]{64}$/);
     expect(second.environment.sourceFingerprint).toBe(first.environment.sourceFingerprint);
   });
+
+  it('fingerprints a tracked source file that cannot be read deterministically', async () => {
+    const repository = await mkdtemp(join(tmpdir(), 'nexus-performance-source-'));
+    roots.push(repository);
+    await runFile('git', ['init', '--quiet'], { cwd: repository });
+    await runFile('git', ['config', 'user.email', 'test@example.invalid'], { cwd: repository });
+    await runFile('git', ['config', 'user.name', 'Test'], { cwd: repository });
+    const source = join(repository, 'src', 'unreadable.ts');
+    await mkdir(join(repository, 'src'));
+    await writeFile(source, 'export const readable = true;\n');
+    await runFile('git', ['add', 'src/unreadable.ts'], { cwd: repository });
+    await runFile('git', ['commit', '--quiet', '-m', 'fixture'], { cwd: repository });
+    const readable = await metadata(repository);
+    await rm(source);
+    await mkdir(source);
+
+    const first = await metadata(repository);
+    const second = await metadata(repository);
+
+    expect(first.environment.sourceFingerprint).toMatch(/^[a-f0-9]{64}$/);
+    expect(first.environment.sourceFingerprint).not.toBe(readable.environment.sourceFingerprint);
+    expect(second.environment.sourceFingerprint).toBe(first.environment.sourceFingerprint);
+  });
 });

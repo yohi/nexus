@@ -39,8 +39,8 @@ export async function performanceSourceMetadata(repository) {
       try {
         hash.update(createHash('sha256').update(await readFile(join(repository, path))).digest());
       } catch (error) {
-        if (error?.code !== 'ENOENT') throw error;
-        hash.update('deleted');
+        const code = error?.code;
+        hash.update(code === 'ENOENT' ? 'deleted' : `unreadable:${typeof code === 'string' ? code : 'unknown'}`);
       }
       hash.update('\0');
     }
