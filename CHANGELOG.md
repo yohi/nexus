@@ -1,5 +1,38 @@
 # Changelog
 
+## [2.8.0](https://github.com/yohi/nexus/compare/v2.7.0...v2.8.0) (2026-11-05)
+
+
+### Features
+
+* add retrieval performance baselines ([bf4feec](https://github.com/yohi/nexus/commit/bf4feec5ad3e7903250a5f2134ec3155a0960a76))
+* R5診断実行ゲートを安全化 ([9dd17e0](https://github.com/yohi/nexus/commit/9dd17e0d312b1aa8774404895e3604acb37726ee))
+* 検索性能の診断計測を追加 ([a0a352a](https://github.com/yohi/nexus/commit/a0a352adb2b81c17255ff82cfe7b0dad41121232))
+
+
+### Bug Fixes
+
+* PR [#341](https://github.com/yohi/nexus/issues/341) の失敗checkを修正 ([57e2a80](https://github.com/yohi/nexus/commit/57e2a80a0bb97360b25ca423b1e08ac3af283f26))
+* SonarCloudの品質ゲート指摘を修正 ([2abecae](https://github.com/yohi/nexus/commit/2abecaec8b6a2a6d6ee277a38d34649b61113482))
+* SonarCloud品質ゲートの指摘を修正 ([fdcd260](https://github.com/yohi/nexus/commit/fdcd26085577cfd9347844c40f8a4b8af4d322a1))
+* update gitignore ([7bd27fe](https://github.com/yohi/nexus/commit/7bd27fe97de092eb9ae91b1360b3fd19c37abea2))
+* update gitignore ([373ada2](https://github.com/yohi/nexus/commit/373ada24916dd3b22b28bb7b53f4b685640e1b4e))
+* Vitest関連の依存バージョンを同期 ([45d24f1](https://github.com/yohi/nexus/commit/45d24f1aa37902e9781301af7b93ec5d65c003c3))
+* 古いホストスナップショットの失敗を記録 ([f643ffa](https://github.com/yohi/nexus/commit/f643ffa88db17ee1a16a1c5043ddd2d34b5245e2))
+* 埋め込みキャッシュを設定互換性で分離 ([f910558](https://github.com/yohi/nexus/commit/f9105586915f7a99984dff49c5d4dde8d7a4f7f5))
+* 埋め込みキャッシュを設定互換性で分離 ([deaf485](https://github.com/yohi/nexus/commit/deaf485946b0b50a1f18a2d0305ca0d9d50ab0ca))
+* 埋め込みキャッシュを設定互換性で分離 ([6b077d6](https://github.com/yohi/nexus/commit/6b077d622911d6350926e29d01d1f21cf7fc0a32))
+* 埋め込みキャッシュ互換性と境界仕様を更新 ([51c0a21](https://github.com/yohi/nexus/commit/51c0a21d909c65a9e05a21a0fba0d6e8886a2402))
+* 性能計測の失敗処理を修正 ([40b8256](https://github.com/yohi/nexus/commit/40b82567b0d3f5ddedc477f908e495ebbc15d59e))
+* 性能計測ブランチのマージ競合を解決 ([4951818](https://github.com/yohi/nexus/commit/49518185c1db57c13be8b85d6fd39dcd94b67d88))
+* 性能計測レビュー指摘を修正 ([9f599e7](https://github.com/yohi/nexus/commit/9f599e70a6d0ceb633c7afde4847d920f2aba10a))
+* 性能診断テストのLintと重複指摘を修正 ([937bcd1](https://github.com/yohi/nexus/commit/937bcd12d8de35ce0af1da08659d9ffd8c24797e))
+* 本番依存の脆弱性を修正 ([7c7208a](https://github.com/yohi/nexus/commit/7c7208ad08ce27724521cb40adde3780ec79be7c))
+* 本番依存の脆弱性を解消 ([7c5bcce](https://github.com/yohi/nexus/commit/7c5bcce82a8a49c925b2a6a247f0e3b99d070569))
+* 診断ゲートのレビュー指摘を修正 ([7ad46e0](https://github.com/yohi/nexus/commit/7ad46e0c8c80a05edd55b703503dd84acdf56e92))
+* 診断コンテキスト外のインデックス処理を維持 ([7e3bead](https://github.com/yohi/nexus/commit/7e3beadcffc3cf71956a0b86c56a604647bd5020))
+* 読み取り不能時の性能計測フィンガープリントを安定化 ([b02dacd](https://github.com/yohi/nexus/commit/b02dacd82d8e0556a1896070beb545e45b68805f))
+
 ## [2.7.0](https://github.com/yohi/nexus/compare/v2.6.0...v2.7.0) (2026-10-04)
 
 
