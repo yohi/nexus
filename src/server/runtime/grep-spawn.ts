@@ -48,7 +48,7 @@ export function createGrepEngine(projectRoot: string, observer?: RuntimeObserver
       const args = ['--json', ...(params.caseSensitive ? [] : ['--ignore-case'])];
       if (params.glob?.length) params.glob.forEach((glob) => args.push('--glob', glob));
       args.push('--', params.query, params.cwd);
-      const child = spawn('rg', args, { signal });
+      const child = spawn('rg', args, { signal }); // NOSONAR — PATH comes from the locally administered Nexus process and is not request-controlled.
       let childFailure: GrepChildOutcome | undefined;
       let stdout = '';
       let stderr = '';

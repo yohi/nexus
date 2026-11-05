@@ -32,7 +32,9 @@ export async function performanceSourceMetadata(repository) {
     const hash = createHash('sha256');
     for (const path of [...new Set(files.split('\0').filter((path) => path.startsWith('src/') ||
       path.startsWith('tests/benchmarks/performance/') || /^scripts\/(?:run-performance|performance-).*\.mjs$/.test(path) ||
-      ['package.json', 'package-lock.json', 'tsconfig.json', 'vitest.performance.config.ts'].includes(path)))].sort()) {
+      ['package.json', 'package-lock.json', 'tsconfig.json', 'vitest.performance.config.ts'].includes(path)))].sort(
+        (left, right) => left < right ? -1 : left > right ? 1 : 0,
+      )) {
       hash.update(path).update('\0').update(createHash('sha256').update(await readFile(join(repository, path))).digest()).update('\0');
     }
     sourceFingerprint = hash.digest('hex');

@@ -24,7 +24,7 @@ export type CacheSeedResult = z.infer<typeof cacheSeedResultSchema>;
 export function expectedCacheKeys(manifest: FixtureManifest, config: Readonly<EmbeddingConfig>): readonly string[] {
   const identity = createEmbeddingCacheIdentity(config);
   return [...new Set(manifest.files.flatMap((file) => [...file.legacyRows, ...file.structuredRows]
-    .map((row) => identity.keyFor(row.contentHash))))].sort();
+    .map((row) => identity.keyFor(row.contentHash))))].sort((left, right) => left < right ? -1 : left > right ? 1 : 0);
 }
 
 function requireCompatibility(source: CacheSeedEndpoint, target: CacheSeedEndpoint): void {
