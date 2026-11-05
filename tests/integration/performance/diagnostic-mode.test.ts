@@ -21,6 +21,18 @@ async function loadLauncher() {
   return launcher;
 }
 
+function prepareRun(launcher: Awaited<ReturnType<typeof loadLauncher>>, diagnosticsRoot: string) {
+  return launcher.prepareDiagnosticRun({ diagnosticsRoot }, {
+    repository: '/repo',
+    runId,
+    sourceMetadata: () => Promise.resolve({
+      revision: { commit: 'f'.repeat(40), dirty: true },
+      environment: { sourceFingerprint },
+    }),
+    diagnosticFingerprint: () => Promise.resolve({ digest: 'c'.repeat(64) }),
+  });
+}
+
 afterEach(async () => {
   await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
 });
@@ -29,15 +41,7 @@ describe('diagnostic-only performance launcher', () => {
   it('prepares a private medium cold-start request without launching a worker', async () => {
     const launcher = await loadLauncher();
     const diagnosticsRoot = join(await temporaryRoot(), 'diagnostics');
-    const prepared = await launcher.prepareDiagnosticRun({ diagnosticsRoot }, {
-      repository: '/repo',
-      runId,
-      sourceMetadata: () => Promise.resolve({
-        revision: { commit: 'f'.repeat(40), dirty: true },
-        environment: { sourceFingerprint },
-      }),
-      diagnosticFingerprint: () => Promise.resolve({ digest: 'c'.repeat(64) }),
-    });
+    const prepared = await prepareRun(launcher, diagnosticsRoot);
 
     const request = workerRequestSchema.parse(JSON.parse(await readFile(prepared.workerRequestFile, 'utf8')));
     const diagnostic = workerDiagnosticRequestSchema.parse(JSON.parse(await readFile(prepared.workerDiagnosticRequestFile, 'utf8')));
@@ -66,25 +70,9 @@ describe('diagnostic-only performance launcher', () => {
   it('rejects a run ID whose private directory already exists without overwriting it', async () => {
     const launcher = await loadLauncher();
     const diagnosticsRoot = join(await temporaryRoot(), 'diagnostics');
-    const prepared = await launcher.prepareDiagnosticRun({ diagnosticsRoot }, {
-      repository: '/repo',
-      runId,
-      sourceMetadata: () => Promise.resolve({
-        revision: { commit: 'f'.repeat(40), dirty: true },
-        environment: { sourceFingerprint },
-      }),
-      diagnosticFingerprint: () => Promise.resolve({ digest: 'c'.repeat(64) }),
-    });
+    const prepared = await prepareRun(launcher, diagnosticsRoot);
 
-    await expect(launcher.prepareDiagnosticRun({ diagnosticsRoot }, {
-      repository: '/repo',
-      runId,
-      sourceMetadata: () => Promise.resolve({
-        revision: { commit: 'f'.repeat(40), dirty: true },
-        environment: { sourceFingerprint },
-      }),
-      diagnosticFingerprint: () => Promise.resolve({ digest: 'c'.repeat(64) }),
-    })).rejects.toThrow();
+    await expect(prepareRun(launcher, diagnosticsRoot)).rejects.toThrow();
     expect(await readFile(prepared.workerRequestFile, 'utf8')).toContain(runId);
   });
 

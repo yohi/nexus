@@ -1,9 +1,14 @@
-import { mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
+import { readFile, rm, stat } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { afterEach, expect, it } from 'vitest';
 import { pathToFileURL } from 'node:url';
-import { prepareDiagnosticRun } from '../../../../../scripts/run-performance-diagnostic.mjs';
+import {
+  createPreparedSupervisorRun,
+  supervisorClockProbe,
+  supervisorRunId as runId,
+  validSupervisorHostGateResult as passHostGateResult,
+  writeCompletedSupervisorWorkerArtifacts,
+} from './supervisor-admission-fixtures.js';
 
 type DiagnosticRunStatus = 'preflight_only' | 'gate_blocked' | 'completed' | 'cleanup_unverified';
 type SupervisedWorkerInput = Readonly<{
@@ -58,32 +63,8 @@ async function loadProcessSupervisorModule(): Promise<ProcessSupervisorModule> {
   return loaded;
 }
 
-const runId = '00000000-0000-4000-8000-000000000001';
 const roots: string[] = [];
-
-function passHostGateResult() {
-  return {
-    status: 'PASS',
-    snapshotCount: 3,
-    reasonCodes: [],
-    requiredScratchBytes: 5_000_000_000,
-    scratchFreeBytes: 8_000_000_000,
-    effectiveCpuCapacity: 4,
-  };
-}
-
-async function createPreparedRun() {
-  const root = await mkdtemp(join(tmpdir(), 'nexus-supervisor-preflight-'));
-  roots.push(root);
-  return await prepareDiagnosticRun({ diagnosticsRoot: join(root, 'diagnostics') }, {
-    repository: process.cwd(),
-    runId,
-    sourceMetadata: () => Promise.resolve({
-      revision: { commit: 'a'.repeat(40), dirty: false },
-      environment: { sourceFingerprint: 'b'.repeat(64) },
-    }),
-  });
-}
+const createPreparedRun = () => createPreparedSupervisorRun(roots, 'nexus-supervisor-preflight-');
 
 afterEach(async () => {
   await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
@@ -278,23 +259,7 @@ it('finalizes_admission_after_a_successful_supervised_worker_without_running_a_w
     currentSourceFingerprint: () => Promise.resolve(preparedRun.workerDiagnosticRequest.sourceFingerprint),
     clockProbe: (phase) => {
       order.push(`clock-${phase}`);
-      return Promise.resolve({
-        phase,
-        probePid: phase === 'start' ? 4040 : 5050,
-        probeStartTicks: phase === 'start' ? '1111' : '2222',
-        clockWindow: {
-          bootId: 'boot-test',
-          parentClockSource: 'time.clock_gettime_ns:CLOCK_MONOTONIC',
-          parentResolutionNs: '1',
-          childClockSource: 'process.hrtime.bigint',
-          childResolutionNs: '1',
-          pings: [1, 2, 3].map((value) => ({
-            parentSendNs: String(value * 1_000 + 10_000),
-            childMonotonicNs: String(value * 1_000),
-            parentReceiveNs: String(value * 1_000 + 11_000),
-          })),
-        },
-      });
+      return Promise.resolve(supervisorClockProbe(phase));
     },
     superviseProcess: async (input) => {
       order.push('supervisor');
@@ -304,29 +269,7 @@ it('finalizes_admission_after_a_successful_supervised_worker_without_running_a_w
         .toBe(join(preparedRun.traceDirectory, 'profile-request.json'));
       expect(input.environment.NEXUS_PERF_SUPERVISOR_START_REQUIRED).toBe('1');
       expect(input).toMatchObject({ startGateRequired: true, runId });
-      await writeFile(join(preparedRun.runDirectory, 'diagnostic-status.json'), `${JSON.stringify({
-        schemaVersion: 1,
-        diagnosticOnly: true,
-        runId,
-        jobId: 'cold_initial_index',
-        status: 'completed',
-        exitCode: 0,
-        diagnosticAdmissible: false,
-      })}\n`, { mode: 0o600 });
-      await writeFile(join(preparedRun.traceDirectory, 'diagnostic-worker-result.json'), `${JSON.stringify({
-        schemaVersion: 1,
-        diagnosticOnly: true,
-        runId,
-        jobId: 'cold_initial_index',
-        recipeDigest: preparedRun.workerDiagnosticRequest.recipeDigest,
-        sourceFingerprint: preparedRun.workerDiagnosticRequest.sourceFingerprint,
-        status: 'completed',
-        exitCode: 0,
-        diagnosticAdmissible: false,
-        observerFailure: false,
-        traceIncomplete: false,
-        scenario: { records: [{ status: 'valid' }] },
-      })}\n`, { mode: 0o600 });
+      await writeCompletedSupervisorWorkerArtifacts(preparedRun);
       return { status: 'completed', exitCode: 0 };
     },
     collectAdmissionEvidence: (input) => {
@@ -371,23 +314,7 @@ it('finalizes_admission_after_a_successful_supervised_worker_without_running_a_w
 it('writes_a_private_non_admissible_summary_when_supervisor_cleanup_is_unverified', async () => {
   const module = await loadProcessSupervisorModule();
   const preparedRun = await createPreparedRun();
-  const clockProbe = (phase: 'start' | 'end') => Promise.resolve({
-    phase,
-    probePid: phase === 'start' ? 4040 : 5050,
-    probeStartTicks: phase === 'start' ? '1111' : '2222',
-    clockWindow: {
-      bootId: 'boot-test',
-      parentClockSource: 'time.clock_gettime_ns:CLOCK_MONOTONIC',
-      parentResolutionNs: '1',
-      childClockSource: 'process.hrtime.bigint',
-      childResolutionNs: '1',
-      pings: [1, 2, 3].map((value) => ({
-        parentSendNs: String(value * 1_000 + 10_000),
-        childMonotonicNs: String(value * 1_000),
-        parentReceiveNs: String(value * 1_000 + 11_000),
-      })),
-    },
-  });
+  const clockProbe = (phase: 'start' | 'end') => Promise.resolve(supervisorClockProbe(phase));
 
   const result = await module.executeDiagnosticRun(preparedRun, {
     executionMode: true,

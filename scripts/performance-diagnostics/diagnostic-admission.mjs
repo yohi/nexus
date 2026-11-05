@@ -1,6 +1,6 @@
 import { isAbsolute, join } from 'node:path';
 import { z } from 'zod';
-import { validateDiagnosticArtifacts } from './diagnostic-admission-artifacts.mjs';
+import { traceStatusSchema, validateDiagnosticArtifacts } from './diagnostic-admission-artifacts.mjs';
 import { diagnosticWorkerResultSchema } from './diagnostic-worker-result-contract.mjs';
 import {
   readPrivateJson,
@@ -47,21 +47,6 @@ const identitySchema = z.object({
   startTicks: z.string().regex(/^[1-9][0-9]*$/),
   parentPid: z.number().int().positive(),
 }).strict();
-const traceStatusSchema = z.object({
-  runId: runIdSchema,
-  finalizationState: z.literal('provisional'),
-  traceIncomplete: z.boolean(),
-  traceTruncated: z.boolean(),
-  samplingIncomplete: z.boolean(),
-  diagnosticAdmissible: z.literal(false),
-  eventsDropped: z.number().int().nonnegative(),
-  bytesDropped: z.number().int().nonnegative(),
-  profilesMissing: z.number().int().nonnegative(),
-  profilesMissingExact: z.boolean(),
-  stateIntegrity: z.enum(['unknown', 'verified', 'rollback_incomplete', 'backup_cleanup_failed']),
-  reasonCode: z.string().optional(),
-  reasonCodes: z.array(z.string()),
-}).passthrough();
 const profileSchema = z.object({
   clockAlignmentStatus: z.enum(['aligned', 'not_correlatable']),
   correlationStatus: z.enum(['cpu_active_fork_profile_captured', 'worker_profile_NOT_PROVEN']),

@@ -6,7 +6,7 @@ import { inside } from './diagnostic-vitest-bootstrap-control.mjs';
 import { diagnosticWorkerResultSchema as workerArtifactSchema } from './diagnostic-worker-result-contract.mjs';
 
 const runIdSchema = z.string().uuid();
-const traceStatusSchema = z.object({
+export const traceStatusSchema = z.object({
   runId: runIdSchema,
   finalizationState: z.literal('provisional'),
   traceIncomplete: z.boolean(),

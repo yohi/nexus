@@ -63,6 +63,37 @@ async function loadSupervisorProcessModule(): Promise<ProcessSupervisorProcessMo
 
 const fixture = resolve(process.cwd(), 'tests/fixtures/performance/supervisor-child.mjs');
 
+async function runObservedChildScenario(supervisor: ProcessSupervisorProcessModule, scenario: string, prefix: string) {
+  const directory = await mkdtemp(join(tmpdir(), prefix));
+  const pidFile = join(directory, 'child-pid');
+  const acknowledgementFile = join(directory, 'child-observed');
+  const signals: Array<Readonly<{ pid: number; signal: string }>> = [];
+  try {
+    const result = await supervisor.superviseDiagnosticProcess({
+      command: process.execPath,
+      args: [fixture, scenario],
+      cwd: process.cwd(),
+      environment: {
+        ...process.env,
+        SUPERVISOR_TEST_PID_FILE: pidFile,
+        SUPERVISOR_TEST_ACK_FILE: acknowledgementFile,
+      },
+      timeoutMs: 2_000,
+      termGraceMs: 50,
+    }, {
+      sendSignal: (identity, signal) => {
+        signals.push({ pid: identity.pid, signal });
+        process.kill(identity.pid, signal);
+      },
+      onIdentityObserved: () => { writeFileSync(acknowledgementFile, 'observed\n', { flag: 'wx', mode: 0o600 }); },
+    });
+    return { result, signals, childPid: Number(await readFile(pidFile, 'utf8')) };
+  } finally {
+    if (scenario === 'spawn-detached-child') await terminateEscapedFixture(pidFile);
+    await rm(directory, { recursive: true, force: true });
+  }
+}
+
 it('does_not_spawn_a_child_when_atomic_pidfd_signal_support_is_unavailable', async () => {
   const supervisor = await loadSupervisorProcessModule();
   let spawnCount = 0;
@@ -287,40 +318,15 @@ it('terminates_a_previously_observed_descendant_individually', async () => {
 
 it('cleans_up_a_previously_observed_child_after_its_parent_exits', async () => {
   const supervisor = await loadSupervisorProcessModule();
-  const directory = await mkdtemp(join(tmpdir(), 'nexus-supervisor-parent-exit-'));
-  const pidFile = join(directory, 'child-pid');
-  const acknowledgementFile = join(directory, 'child-observed');
-  const signals: Array<Readonly<{ pid: number; signal: string }>> = [];
+  const { result, signals, childPid } = await runObservedChildScenario(
+    supervisor, 'exit-with-child', 'nexus-supervisor-parent-exit-',
+  );
 
-  try {
-    const result = await supervisor.superviseDiagnosticProcess({
-      command: process.execPath,
-      args: [fixture, 'exit-with-child'],
-      cwd: process.cwd(),
-      environment: {
-        ...process.env,
-        SUPERVISOR_TEST_PID_FILE: pidFile,
-        SUPERVISOR_TEST_ACK_FILE: acknowledgementFile,
-      },
-      timeoutMs: 2_000,
-      termGraceMs: 50,
-    }, {
-      sendSignal: (identity, signal) => {
-        signals.push({ pid: identity.pid, signal });
-        process.kill(identity.pid, signal);
-      },
-      onIdentityObserved: () => { writeFileSync(acknowledgementFile, 'observed\n', { flag: 'wx', mode: 0o600 }); },
-    });
-    const childPid = Number(await readFile(pidFile, 'utf8'));
-
-    expect(result).toEqual({ status: 'failed', exitCode: 0, reasonCode: 'session_members_remain' });
-    expect(signals).toEqual([
-      { pid: childPid, signal: 'SIGTERM' },
-      { pid: childPid, signal: 'SIGKILL' },
-    ]);
-  } finally {
-    await rm(directory, { recursive: true, force: true });
-  }
+  expect(result).toEqual({ status: 'failed', exitCode: 0, reasonCode: 'session_members_remain' });
+  expect(signals).toEqual([
+    { pid: childPid, signal: 'SIGTERM' },
+    { pid: childPid, signal: 'SIGKILL' },
+  ]);
 });
 
 it('preserves_cleanup_unverified_and_never_signals_an_unobserved_session_member', async () => {
@@ -353,74 +359,23 @@ it('preserves_cleanup_unverified_and_never_signals_an_unobserved_session_member'
 
 it('cleans_up_a_previously_observed_descendant_after_parent_failure', async () => {
   const supervisor = await loadSupervisorProcessModule();
-  const directory = await mkdtemp(join(tmpdir(), 'nexus-supervisor-parent-crash-'));
-  const pidFile = join(directory, 'child-pid');
-  const acknowledgementFile = join(directory, 'child-observed');
-  const signals: Array<Readonly<{ pid: number; signal: string }>> = [];
+  const { result, signals, childPid } = await runObservedChildScenario(
+    supervisor, 'crash-with-child', 'nexus-supervisor-parent-crash-',
+  );
 
-  try {
-    const result = await supervisor.superviseDiagnosticProcess({
-      command: process.execPath,
-      args: [fixture, 'crash-with-child'],
-      cwd: process.cwd(),
-      environment: {
-        ...process.env,
-        SUPERVISOR_TEST_PID_FILE: pidFile,
-        SUPERVISOR_TEST_ACK_FILE: acknowledgementFile,
-      },
-      timeoutMs: 2_000,
-      termGraceMs: 50,
-    }, {
-      sendSignal: (identity, signal) => {
-        signals.push({ pid: identity.pid, signal });
-        process.kill(identity.pid, signal);
-      },
-      onIdentityObserved: () => { writeFileSync(acknowledgementFile, 'observed\n', { flag: 'wx', mode: 0o600 }); },
-    });
-    const childPid = Number(await readFile(pidFile, 'utf8'));
-
-    expect(result).toEqual({ status: 'failed', exitCode: 1, reasonCode: 'child_failed' });
-    expect(signals).toEqual([
-      { pid: childPid, signal: 'SIGTERM' },
-      { pid: childPid, signal: 'SIGKILL' },
-    ]);
-  } finally {
-    await rm(directory, { recursive: true, force: true });
-  }
+  expect(result).toEqual({ status: 'failed', exitCode: 1, reasonCode: 'child_failed' });
+  expect(signals).toEqual([
+    { pid: childPid, signal: 'SIGTERM' },
+    { pid: childPid, signal: 'SIGKILL' },
+  ]);
 });
 
 it('preserves_cleanup_unverified_without_signaling_a_descendant_that_leaves_the_session', async () => {
   const supervisor = await loadSupervisorProcessModule();
-  const directory = await mkdtemp(join(tmpdir(), 'nexus-supervisor-session-escape-'));
-  const pidFile = join(directory, 'escaped-child-pid');
-  const acknowledgementFile = join(directory, 'escaped-child-observed');
-  const signals: Array<Readonly<{ pid: number; signal: string }>> = [];
+  const { result, signals, childPid } = await runObservedChildScenario(
+    supervisor, 'spawn-detached-child', 'nexus-supervisor-session-escape-',
+  );
 
-  try {
-    const result = await supervisor.superviseDiagnosticProcess({
-      command: process.execPath,
-      args: [fixture, 'spawn-detached-child'],
-      cwd: process.cwd(),
-      environment: {
-        ...process.env,
-        SUPERVISOR_TEST_PID_FILE: pidFile,
-        SUPERVISOR_TEST_ACK_FILE: acknowledgementFile,
-      },
-      timeoutMs: 2_000,
-      termGraceMs: 50,
-    }, {
-      sendSignal: (identity, signal) => {
-        signals.push({ pid: identity.pid, signal });
-        process.kill(identity.pid, signal);
-      },
-      onIdentityObserved: () => { writeFileSync(acknowledgementFile, 'observed\n', { flag: 'wx', mode: 0o600 }); },
-    });
-    const escapedPid = Number(await readFile(pidFile, 'utf8'));
-
-    expect(result).toMatchObject({ status: 'cleanup_unverified', reasonCode: 'session_members_remain' });
-    expect(signals.some((signal) => signal.pid === escapedPid)).toBe(false);
-  } finally {
-    await terminateEscapedFixture(pidFile);
-    await rm(directory, { recursive: true, force: true });
-  }
+  expect(result).toMatchObject({ status: 'cleanup_unverified', reasonCode: 'session_members_remain' });
+  expect(signals.some((signal) => signal.pid === childPid)).toBe(false);
 });

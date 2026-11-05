@@ -1,6 +1,17 @@
 import { expect, it } from 'vitest';
 import { loadHostGate, mediumFixtureSize, smallReport, snapshot, validSnapshots } from './host-gate-fixtures.js';
-import type { HostSnapshot } from './host-gate-fixtures.js';
+import type { HostProcessSample, HostSnapshot } from './host-gate-fixtures.js';
+
+function processSample(sample: Pick<HostProcessSample, 'pid' | 'startTicks' | 'cpuTicks' | 'executable'>): HostProcessSample {
+  return {
+    ...sample,
+    ppid: 1,
+    pgid: sample.pid,
+    sid: sample.pid,
+    uid: 1000,
+    cgroupClass: 'user_session',
+  };
+}
 
 async function evaluate(snapshots: readonly HostSnapshot[]) {
   const hostGate = await loadHostGate();
@@ -154,12 +165,12 @@ it('requires_two_consecutive_intervals_for_the_single_process_cpu_stop', async (
   const snapshots = [
     snapshot('0'),
     snapshot('30000000000', { processes: [
-      { pid: 100, startTicks: '1000', ppid: 1, pgid: 100, sid: 100, cpuTicks: 2_200, uid: 1000, executable: 'editor', cgroupClass: 'user_session' },
-      { pid: 900, startTicks: '9000', ppid: 1, pgid: 900, sid: 900, cpuTicks: 100, uid: 1000, executable: 'host-gate', cgroupClass: 'user_session' },
+      processSample({ pid: 100, startTicks: '1000', cpuTicks: 2_200, executable: 'editor' }),
+      processSample({ pid: 900, startTicks: '9000', cpuTicks: 100, executable: 'host-gate' }),
     ] }),
     snapshot('60000000000', { processes: [
-      { pid: 100, startTicks: '1000', ppid: 1, pgid: 100, sid: 100, cpuTicks: 2_300, uid: 1000, executable: 'editor', cgroupClass: 'user_session' },
-      { pid: 900, startTicks: '9000', ppid: 1, pgid: 900, sid: 900, cpuTicks: 100, uid: 1000, executable: 'host-gate', cgroupClass: 'user_session' },
+      processSample({ pid: 100, startTicks: '1000', cpuTicks: 2_300, executable: 'editor' }),
+      processSample({ pid: 900, startTicks: '9000', cpuTicks: 100, executable: 'host-gate' }),
     ] }),
   ];
 
@@ -172,19 +183,19 @@ it('requires_two_consecutive_intervals_for_the_single_process_cpu_stop', async (
 it('stops_when_unrelated_process_cpu_averages_above_one_core', async () => {
   const snapshots = [
     snapshot('0', { processes: [
-      { pid: 100, startTicks: '1000', ppid: 1, pgid: 100, sid: 100, cpuTicks: 100, uid: 1000, executable: 'editor-a', cgroupClass: 'user_session' },
-      { pid: 200, startTicks: '2000', ppid: 1, pgid: 200, sid: 200, cpuTicks: 100, uid: 1000, executable: 'editor-b', cgroupClass: 'user_session' },
-      { pid: 900, startTicks: '9000', ppid: 1, pgid: 900, sid: 900, cpuTicks: 100, uid: 1000, executable: 'host-gate', cgroupClass: 'user_session' },
+      processSample({ pid: 100, startTicks: '1000', cpuTicks: 100, executable: 'editor-a' }),
+      processSample({ pid: 200, startTicks: '2000', cpuTicks: 100, executable: 'editor-b' }),
+      processSample({ pid: 900, startTicks: '9000', cpuTicks: 100, executable: 'host-gate' }),
     ] }),
     snapshot('30000000000', { processes: [
-      { pid: 100, startTicks: '1000', ppid: 1, pgid: 100, sid: 100, cpuTicks: 1_900, uid: 1000, executable: 'editor-a', cgroupClass: 'user_session' },
-      { pid: 200, startTicks: '2000', ppid: 1, pgid: 200, sid: 200, cpuTicks: 1_900, uid: 1000, executable: 'editor-b', cgroupClass: 'user_session' },
-      { pid: 900, startTicks: '9000', ppid: 1, pgid: 900, sid: 900, cpuTicks: 100, uid: 1000, executable: 'host-gate', cgroupClass: 'user_session' },
+      processSample({ pid: 100, startTicks: '1000', cpuTicks: 1_900, executable: 'editor-a' }),
+      processSample({ pid: 200, startTicks: '2000', cpuTicks: 1_900, executable: 'editor-b' }),
+      processSample({ pid: 900, startTicks: '9000', cpuTicks: 100, executable: 'host-gate' }),
     ] }),
     snapshot('60000000000', { processes: [
-      { pid: 100, startTicks: '1000', ppid: 1, pgid: 100, sid: 100, cpuTicks: 3_700, uid: 1000, executable: 'editor-a', cgroupClass: 'user_session' },
-      { pid: 200, startTicks: '2000', ppid: 1, pgid: 200, sid: 200, cpuTicks: 3_700, uid: 1000, executable: 'editor-b', cgroupClass: 'user_session' },
-      { pid: 900, startTicks: '9000', ppid: 1, pgid: 900, sid: 900, cpuTicks: 100, uid: 1000, executable: 'host-gate', cgroupClass: 'user_session' },
+      processSample({ pid: 100, startTicks: '1000', cpuTicks: 3_700, executable: 'editor-a' }),
+      processSample({ pid: 200, startTicks: '2000', cpuTicks: 3_700, executable: 'editor-b' }),
+      processSample({ pid: 900, startTicks: '9000', cpuTicks: 100, executable: 'host-gate' }),
     ] }),
   ];
 
@@ -198,12 +209,12 @@ it('does_not_attribute_cpu_delta_across_pid_reuse_to_the_previous_process', asyn
   const snapshots = [
     snapshot('0'),
     snapshot('30000000000', { processes: [
-      { pid: 100, startTicks: '2000', ppid: 1, pgid: 100, sid: 100, cpuTicks: 2_200, uid: 1000, executable: 'new-editor', cgroupClass: 'user_session' },
-      { pid: 900, startTicks: '9000', ppid: 1, pgid: 900, sid: 900, cpuTicks: 100, uid: 1000, executable: 'host-gate', cgroupClass: 'user_session' },
+      processSample({ pid: 100, startTicks: '2000', cpuTicks: 2_200, executable: 'new-editor' }),
+      processSample({ pid: 900, startTicks: '9000', cpuTicks: 100, executable: 'host-gate' }),
     ] }),
     snapshot('60000000000', { processes: [
-      { pid: 100, startTicks: '2000', ppid: 1, pgid: 100, sid: 100, cpuTicks: 2_300, uid: 1000, executable: 'new-editor', cgroupClass: 'user_session' },
-      { pid: 900, startTicks: '9000', ppid: 1, pgid: 900, sid: 900, cpuTicks: 100, uid: 1000, executable: 'host-gate', cgroupClass: 'user_session' },
+      processSample({ pid: 100, startTicks: '2000', cpuTicks: 2_300, executable: 'new-editor' }),
+      processSample({ pid: 900, startTicks: '9000', cpuTicks: 100, executable: 'host-gate' }),
     ] }),
   ];
 
