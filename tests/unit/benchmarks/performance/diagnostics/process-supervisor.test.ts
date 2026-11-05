@@ -1,6 +1,6 @@
 import { readFile, rm, stat } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
-import { afterEach, expect, it } from 'vitest';
+import { afterEach, expect, it, vi } from 'vitest';
 import { pathToFileURL } from 'node:url';
 import {
   createPreparedSupervisorRun,
@@ -68,6 +68,7 @@ const roots: string[] = [];
 const createPreparedRun = () => createPreparedSupervisorRun(roots, 'nexus-supervisor-preflight-');
 
 afterEach(async () => {
+  vi.restoreAllMocks();
   await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
 });
 
@@ -118,7 +119,8 @@ it('blocks_worker_start_when_host_snapshot_is_stale_before_spawn', async () => {
   const module = await loadProcessSupervisorModule();
   const preparedRun = await createPreparedRun();
   let starts = 0;
-  const staleMonotonicNs = (process.hrtime.bigint() - 120_000_000_001n).toString();
+  const staleMonotonicNs = '0';
+  vi.spyOn(process.hrtime, 'bigint').mockReturnValue(120_000_000_001n);
 
   await expect(module.executeDiagnosticRun(preparedRun, {
     executionMode: true,
