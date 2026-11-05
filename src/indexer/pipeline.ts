@@ -820,7 +820,7 @@ export class IndexPipeline implements IIndexPipeline {
           }
           this.diagnosticCounter('S07_embedding_cache', 'index.embedding_batches_succeeded', 1, 'batches', 'succeeded');
           this.diagnosticCounter('S07_embedding_cache', 'index.embedding_vectors_returned', embeddings.length, 'vectors', 'returned');
-          if (embeddings.length === missTexts.length) {
+          if (embeddings.length === missTexts.length && currentRuntimeDiagnosticContext() !== undefined) {
             const hasInvalidVector = embeddings.some((vector) =>
               vector.length !== this.options.embeddingProvider.dimensions || !vector.every(Number.isFinite),
             );
