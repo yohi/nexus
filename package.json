@@ -44,7 +44,7 @@
     "test:perf": "node scripts/run-performance.mjs",
     "build": "tsc -p tsconfig.build.json && shx chmod +x dist/bin/nexus.js dist/bin/dashboard.js dist/bin/aggregator.js && npm run build -w packages/dashboard && shx mkdir -p dist/dashboard && shx cp packages/dashboard/dist/cli.js dist/dashboard/cli.js",
     "lint": "eslint src/**/*.ts vitest.config.ts",
-    "lint:perf": "eslint \"tests/benchmarks/performance/**/*.ts\" \"tests/unit/benchmarks/performance/**/*.ts\" \"tests/integration/performance/**/*.ts\" vitest.performance.config.ts src/server/runtime src/server/runtime-assembly.ts src/storage/interfaces/vector-audit.ts src/storage/vector-audit-reader.ts \"scripts/*performance*.mjs\" \"tests/fixtures/performance/*.mjs\"",
+    "lint:perf": "eslint \"tests/benchmarks/performance/**/*.ts\" \"tests/unit/benchmarks/performance/**/*.ts\" \"tests/integration/performance/**/*.ts\" vitest.performance.config.ts vitest.diagnostic-performance.config.ts src/server/runtime src/server/runtime-assembly.ts src/storage/interfaces/vector-audit.ts src/storage/vector-audit-reader.ts \"scripts/*performance*.mjs\" \"scripts/performance-diagnostics/**/*.mjs\" \"scripts/performance-diagnostics/**/*.cjs\" \"tests/fixtures/performance/*.mjs\"",
     "test": "vitest run --passWithNoTests --exclude packages/dashboard/tests/integration/cli.test.ts && vitest run --passWithNoTests packages/dashboard/tests/integration/cli.test.ts && bash tests/unit/scripts/setup-plugin.test.sh && bash tests/unit/scripts/stage-plugin-dist.test.sh",
     "test:e2e": "npm run build && NEXUS_E2E=1 vitest run",
     "verify:mcp-tools": "npm run build && node scripts/verify-mcp-tools.mjs",

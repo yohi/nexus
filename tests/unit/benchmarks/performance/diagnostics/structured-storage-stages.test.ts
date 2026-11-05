@@ -60,11 +60,13 @@ describe('structured storage diagnostic stages', () => {
 
     const trace = context.recorder.snapshot().events;
     const counters = trace.filter((event) => event.event === 'progress');
+    const finished = trace.filter((event) => event.event === 'span_finished');
     expect(counters).toContainEqual(expect.objectContaining({ counterId: 'index.sqlite_generation_stage_attempted', value: 1 }));
     expect(counters).toContainEqual(expect.objectContaining({ counterId: 'index.sqlite_generation_stage_succeeded', value: 1 }));
     expect(counters).toContainEqual(expect.objectContaining({ counterId: 'index.structured_vector_rows_attempted', value: 1 }));
     expect(counters).toContainEqual(expect.objectContaining({ counterId: 'index.structured_vector_rows_write_succeeded', value: 1 }));
     expect(counters).toContainEqual(expect.objectContaining({ counterId: 'index.structured_vector_rows_activated', value: 1 }));
+    expect(finished.some((event) => event.stageId === 'S08_storage_write' && event.stateIntegrity === 'verified')).toBe(true);
     expect(JSON.stringify(trace)).not.toContain('private/full-rebuild.ts');
   });
 

@@ -120,7 +120,7 @@ function createProfileEventSink(rawRequest) {
       eventCount += 1;
       writtenBytes += size;
       return true;
-    } catch (error) {
+    } catch {
       failed = true;
       reasons.add('write_error');
       return false;
@@ -170,7 +170,7 @@ function createProfileEventSink(rawRequest) {
         fileBytes: { status: 'observed', value: profileBuffer.byteLength },
       });
       return true;
-    } catch (error) {
+    } catch {
       if (profileFd !== undefined) {
         try {
           profileBytes += fs.fstatSync(profileFd).size;
@@ -200,7 +200,7 @@ function createProfileEventSink(rawRequest) {
       try {
         const line = `${JSON.stringify(statusEvent())}\n`;
         if (eventCount < MAX_EVENTS && writtenBytes + Buffer.byteLength(line) <= MAX_TRACE_BYTES) writeComplete(eventFd, line);
-      } catch (error) {
+      } catch {
         failed = true;
       }
     }

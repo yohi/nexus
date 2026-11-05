@@ -395,6 +395,7 @@ export class StructuredIndexCoordinator {
         }
       });
       await this.options.metadataStore.setStructuredRebuildState({ rebuildState: 'idle', lastErrorCode: null });
+      await runRuntimeDiagnosticStage('S08_storage_write', () => markRuntimeDiagnosticStateIntegrity('verified'));
     });
   }
 

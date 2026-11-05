@@ -1,0 +1,335 @@
+import { constants } from 'node:fs';
+import { open, realpath } from 'node:fs/promises';
+import { isAbsolute, resolve } from 'node:path';
+import { z } from 'zod';
+import { inside } from './diagnostic-vitest-bootstrap-control.mjs';
+import { diagnosticWorkerResultSchema as workerArtifactSchema } from './diagnostic-worker-result-contract.mjs';
+
+const runIdSchema = z.string().uuid();
+export const traceStatusSchema = z.object({
+  runId: runIdSchema,
+  finalizationState: z.literal('provisional'),
+  traceIncomplete: z.boolean(),
+  traceTruncated: z.boolean(),
+  samplingIncomplete: z.boolean(),
+  diagnosticAdmissible: z.literal(false),
+  eventsDropped: z.number().int().nonnegative(),
+  bytesDropped: z.number().int().nonnegative(),
+  profilesMissing: z.number().int().nonnegative(),
+  profilesMissingExact: z.boolean(),
+  stateIntegrity: z.enum(['unknown', 'verified', 'rollback_incomplete', 'backup_cleanup_failed']),
+  reasonCode: z.string().optional(),
+  reasonCodes: z.array(z.string()),
+}).passthrough();
+const eventEnvelopeSchema = z.object({
+  schemaVersion: z.literal(1),
+  seq: z.number().int().positive(),
+  monotonicNs: z.string().regex(/^(0|[1-9][0-9]*)$/),
+  event: z.string().min(1),
+  runId: runIdSchema,
+  jobId: z.literal('cold_initial_index'),
+  recipeDigest: z.string().regex(/^[a-f0-9]{64}$/),
+  sourceFingerprint: z.string().regex(/^[a-f0-9]{64}$/),
+  pid: z.number().int().positive(),
+  processStartTicks: z.string().regex(/^[1-9][0-9]*$/),
+  ppid: z.number().int().nonnegative(),
+  processRole: z.enum(['vitest_parent', 'vitest_worker', 'unknown_node']),
+  clockDomain: z.enum(['linux_clock_monotonic_ns', 'process_local_monotonic']),
+}).passthrough();
+const artifactSchema = z.object({
+  kind: z.enum(['trace', 'profile_events', 'worker_result', 'profile', 'profile_support']),
+  path: z.string().refine(isAbsolute),
+}).strict();
+export async function readPrivateDiagnosticArtifact(path, ownerRoot, maxBytes) {
+  if (!inside(ownerRoot, resolve(path))) return undefined;
+  let descriptor;
+  try {
+    if (await realpath(path) !== resolve(path)) return undefined;
+    descriptor = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+    const [info, canonical] = await Promise.all([
+      descriptor.stat(),
+      realpath(`/proc/self/fd/${descriptor.fd}`),
+    ]);
+    if (!info.isFile() || (info.mode & 0o777) !== 0o600 || info.uid !== process.getuid()
+      || info.nlink !== 1 || canonical !== resolve(path) || info.size > maxBytes) return undefined;
+    const bytes = Buffer.alloc(Math.min(info.size + 1, maxBytes + 1));
+    let total = 0;
+    while (total < bytes.length) {
+      const result = await descriptor.read(bytes, total, bytes.length - total, null);
+      if (result.bytesRead === 0) break;
+      total += result.bytesRead;
+    }
+    const finalInfo = await descriptor.stat();
+    if (total > maxBytes || total !== finalInfo.size || finalInfo.size > maxBytes) return undefined;
+    return { bytes: bytes.subarray(0, total), size: total };
+  } catch (error) {
+    if (error instanceof Error) return undefined;
+    throw error;
+  } finally {
+    await descriptor?.close();
+  }
+}
+
+function parseTraceEvent(line, index, runId, reasons) {
+  let parsed;
+  try {
+    parsed = eventEnvelopeSchema.safeParse(JSON.parse(line));
+  } catch {
+    parsed = undefined;
+  }
+  if (parsed === undefined || !parsed.success || parsed.data.runId !== runId || parsed.data.seq !== index + 1) {
+    reasons.add('trace_event_invalid');
+    return undefined;
+  }
+  return parsed.data;
+}
+
+function recordTraceEvent(event, index, lineCount, state) {
+  const monotonic = BigInt(event.monotonicNs);
+  if (monotonic < state.previousMonotonic) state.reasons.add('trace_sequence_invalid');
+  state.previousMonotonic = monotonic;
+  state.events.push(event);
+  if (event.event !== 'trace_status') return;
+  if (state.terminal !== undefined || index !== lineCount - 1) state.reasons.add('trace_sequence_invalid');
+  const status = traceStatusSchema.safeParse(event);
+  if (!status.success) state.reasons.add('trace_status_invalid');
+  else state.terminal = status.data;
+}
+
+export function parseTraceArtifact(contents, runId) {
+  const reasons = new Set();
+  const lines = contents.toString('utf8').split('\n').filter((line) => line.length > 0);
+  const state = { events: [], previousMonotonic: -1n, reasons, terminal: undefined };
+  for (const [index, line] of lines.entries()) {
+    const event = parseTraceEvent(line, index, runId, reasons);
+    if (event !== undefined) recordTraceEvent(event, index, lines.length, state);
+  }
+  if (state.terminal === undefined) reasons.add('trace_terminal_missing');
+  return { events: state.events, terminal: state.terminal, reasons };
+}
+
+export function parseCpuProfileArtifact(contents) {
+  let value;
+  try {
+    value = JSON.parse(contents.toString('utf8'));
+  } catch {
+    return undefined;
+  }
+  if (typeof value !== 'object' || value === null || !Array.isArray(value.nodes) || !Array.isArray(value.samples)) {
+    return undefined;
+  }
+  const nodeIds = new Set();
+  for (const node of value.nodes) {
+    if (typeof node !== 'object' || node === null || !Number.isSafeInteger(node.id) || node.id < 1
+      || nodeIds.has(node.id) || typeof node.callFrame !== 'object' || node.callFrame === null
+      || typeof node.callFrame.functionName !== 'string' || typeof node.callFrame.url !== 'string') return undefined;
+    nodeIds.add(node.id);
+  }
+  if (!value.samples.every((sample) => Number.isSafeInteger(sample) && nodeIds.has(sample))) return undefined;
+  return Object.freeze({ sampleCount: value.samples.length });
+}
+
+function traceStatusMatches(actual, expected) {
+  if (actual === undefined || expected === undefined) return false;
+  const fieldsMatch = ['runId', 'finalizationState', 'traceIncomplete', 'traceTruncated', 'samplingIncomplete',
+    'diagnosticAdmissible', 'eventsDropped', 'bytesDropped', 'profilesMissing', 'profilesMissingExact', 'stateIntegrity', 'reasonCode']
+    .every((key) => actual[key] === expected[key]);
+  return fieldsMatch && JSON.stringify(actual.reasonCodes) === JSON.stringify(expected.reasonCodes);
+}
+
+function validateSegmentEvents(events, segment, identity, runId) {
+  const sequence = ['profile_segment_started', 'profile_segment_stop_requested', 'profile_segment_stopped', 'profile_write_completed'];
+  const matched = events.filter((event) => event.segmentId === segment.segmentId && event.runId === runId
+    && event.pid === identity.pid && event.processStartTicks === identity.startTicks);
+  if (matched.length !== sequence.length || matched.some((event, index) => event.event !== sequence[index])) return false;
+  if (matched.some((event) => event.pid !== identity.pid || event.processStartTicks !== identity.startTicks
+    || event.ppid !== identity.parentPid || event.runId !== runId)) return false;
+  const stopped = matched[2];
+  const written = matched[3];
+  return stopped?.sampleCount?.status === 'observed' && written?.sampleCount?.status === 'observed'
+    && stopped.sampleCount.value === segment.sampleCount && written.sampleCount.value === segment.sampleCount
+    && written.fileBytes?.status === 'observed' && written.fileBytes.value === segment.fileBytes;
+}
+
+function maxArtifactBytes(kind) {
+  switch (kind) {
+    case 'profile':
+    case 'profile_support':
+      return 64 * 1024 * 1024;
+    case 'trace':
+    case 'profile_events':
+      return 8 * 1024 * 1024;
+    case 'worker_result':
+      return 4 * 1024 * 1024;
+  }
+}
+
+function isValidWorkerArtifact(parsed, expected) {
+  return parsed.success && parsed.data.runId === expected?.runId
+    && parsed.data.recipeDigest === expected?.recipeDigest
+    && parsed.data.sourceFingerprint === expected?.sourceFingerprint
+    && parsed.data.status === expected?.status && parsed.data.exitCode === expected?.exitCode;
+}
+
+function inspectWorkerArtifact(contents, expected, state) {
+  try {
+    const parsed = workerArtifactSchema.safeParse(JSON.parse(contents.bytes.toString('utf8')));
+    if (!isValidWorkerArtifact(parsed, expected)) {
+      state.reasons.add('worker_result_invalid');
+      return;
+    }
+    state.workerArtifact = parsed.data;
+    if (parsed.data.scenario.records.some((record) => record.status !== 'valid')) {
+      state.reasons.add('worker_scenario_invalid');
+    }
+  } catch {
+    state.reasons.add('worker_result_invalid');
+  }
+}
+
+function isProvisionalFinalizationOnly(terminal, allowProvisionalFinalization) {
+  return allowProvisionalFinalization
+    && terminal?.finalizationState === 'provisional'
+    && terminal.traceIncomplete
+    && terminal.samplingIncomplete
+    && !terminal.traceTruncated
+    && terminal.reasonCode === 'finalization_unverified'
+    && terminal.reasonCodes.length === 1
+    && terminal.reasonCodes[0] === 'finalization_unverified'
+    && terminal.eventsDropped === 0
+    && terminal.bytesDropped === 0
+    && terminal.profilesMissing === 0
+    && terminal.profilesMissingExact
+    && terminal.stateIntegrity === 'unknown';
+}
+
+function validateTraceTerminal(parsed, expectedTraceStatus, allowProvisionalFinalization, reasons) {
+  if (!traceStatusMatches(parsed.terminal, expectedTraceStatus)) reasons.add('trace_status_mismatch');
+  const finalizationOnly = isProvisionalFinalizationOnly(parsed.terminal, allowProvisionalFinalization);
+  const terminal = parsed.terminal;
+  if (terminal === undefined || (!finalizationOnly && (terminal.traceIncomplete || terminal.traceTruncated
+    || terminal.samplingIncomplete || terminal.eventsDropped > 0 || terminal.bytesDropped > 0
+    || terminal.profilesMissing > 0 || !terminal.profilesMissingExact))) {
+    reasons.add('trace_incomplete');
+  }
+  if (finalizationOnly) {
+    const integrityEvents = parsed.events.filter((event) => event.event === 'span_finished'
+      && event.stageId === 'S08_storage_write' && event.stateIntegrity !== undefined);
+    if (integrityEvents.length === 0 || integrityEvents.some((event) => event.stateIntegrity !== 'verified')) {
+      reasons.add('storage_integrity_unverified');
+    }
+  } else if (terminal?.stateIntegrity !== 'verified') {
+    reasons.add('storage_integrity_unverified');
+  }
+}
+
+function inspectTraceArtifact(artifact, contents, context) {
+  const parsed = parseTraceArtifact(contents.bytes, context.runId);
+  for (const reason of parsed.reasons) context.reasons.add(reason);
+  if (context.expectedWorkerResult !== undefined && parsed.events.some((event) =>
+    event.jobId !== context.expectedWorkerResult.jobId
+    || event.recipeDigest !== context.expectedWorkerResult.recipeDigest
+    || event.sourceFingerprint !== context.expectedWorkerResult.sourceFingerprint)) {
+    context.reasons.add('trace_identity_mismatch');
+  }
+  if (artifact.kind === 'trace') {
+    validateTraceTerminal(parsed, context.expectedTraceStatus, context.allowProvisionalFinalization, context.reasons);
+  } else if (parsed.terminal?.processRole === 'vitest_worker'
+    && parsed.terminal.pid === context.profileEvidence?.workerIdentity.pid
+    && parsed.terminal.processStartTicks === context.profileEvidence?.workerIdentity.startTicks
+    && (parsed.terminal.traceTruncated || parsed.terminal.eventsDropped > 0 || parsed.terminal.bytesDropped > 0
+      || parsed.terminal.profilesMissing > 0 || !parsed.terminal.profilesMissingExact)) {
+    context.reasons.add('profile_events_incomplete');
+  }
+  context.parsedTraces.push(parsed);
+}
+
+function inspectProfileArtifact(path, contents, context) {
+  const parsed = parseCpuProfileArtifact(contents.bytes);
+  const expected = context.profileEvidence?.segments.find((segment) => resolve(segment.path) === path);
+  if (parsed === undefined || expected === undefined || parsed.sampleCount !== expected.sampleCount
+    || contents.size !== expected.fileBytes || !expected.profileValid) {
+    context.reasons.add('profile_artifact_invalid');
+  } else {
+    context.verifiedProfiles += 1;
+  }
+}
+
+function inspectArtifact(artifact, path, contents, context) {
+  if (artifact.kind === 'worker_result') {
+    inspectWorkerArtifact(contents, context.expectedWorkerResult, context);
+  } else if (artifact.kind === 'trace' || artifact.kind === 'profile_events') {
+    inspectTraceArtifact(artifact, contents, context);
+  } else if (artifact.kind === 'profile') {
+    inspectProfileArtifact(path, contents, context);
+  } else if (parseCpuProfileArtifact(contents.bytes) === undefined) {
+    context.reasons.add('profile_support_artifact_invalid');
+  }
+}
+
+function validateArtifactInventory(artifacts, profileEvidence, reasons) {
+  const traceCount = artifacts.filter((artifact) => artifact.kind === 'trace').length;
+  const workerResultCount = artifacts.filter((artifact) => artifact.kind === 'worker_result').length;
+  const profileCount = artifacts.filter((artifact) => artifact.kind === 'profile').length;
+  if (traceCount !== 1 || workerResultCount !== 1 || profileCount !== profileEvidence?.segments.length || profileCount < 2) {
+    reasons.add('artifact_inventory_invalid');
+  }
+}
+
+function validateFinalWorkerEvidence(workerArtifact, reasons) {
+  if (workerArtifact === undefined) reasons.add('worker_result_invalid');
+  if (workerArtifact?.observerFailure === true) reasons.add('observer_failure');
+  if (workerArtifact?.traceIncomplete === true) reasons.add('trace_incomplete');
+}
+
+function validateProfileEvidence(parsedTraces, profileEvidence, runId, verifiedProfiles, reasons) {
+  const traceEvents = parsedTraces.flatMap((trace) => trace.events);
+  const preloads = traceEvents.filter((event) => event.event === 'preload_started');
+  const workerIdentity = profileEvidence?.workerIdentity;
+  const markerFound = preloads.some((event) => event.runId === runId && event.pid === workerIdentity?.pid
+    && event.processStartTicks === workerIdentity?.startTicks && event.ppid === workerIdentity?.parentPid
+    && event.processRole === 'vitest_worker');
+  if (!markerFound) reasons.add('preload_identity_mismatch');
+  for (const segment of profileEvidence?.segments ?? []) {
+    if (!validateSegmentEvents(traceEvents, segment, workerIdentity, runId)) reasons.add('profile_segment_evidence_invalid');
+  }
+  if (verifiedProfiles !== profileEvidence?.segments.length) reasons.add('profile_artifact_invalid');
+}
+
+export async function validateDiagnosticArtifacts(
+  value, runDirectory, profileEvidence, expectedWorkerResult, expectedTraceStatus, runId, allowProvisionalFinalization = false,
+) {
+  const parsedArtifacts = z.array(artifactSchema).safeParse(value);
+  if (!parsedArtifacts.success) return ['artifact_ownership_unverified'];
+  const reasons = new Set();
+  const artifacts = parsedArtifacts.data;
+  validateArtifactInventory(artifacts, profileEvidence, reasons);
+  const context = {
+    expectedTraceStatus,
+    expectedWorkerResult,
+    allowProvisionalFinalization,
+    profileEvidence,
+    parsedTraces: [],
+    reasons,
+    runId,
+    verifiedProfiles: 0,
+    workerArtifact: undefined,
+  };
+  for (const artifact of artifacts) {
+    const path = resolve(artifact.path);
+    if (!inside(runDirectory, path)) {
+      reasons.add('artifact_ownership_unverified');
+      continue;
+    }
+    const contents = await readPrivateDiagnosticArtifact(path, runDirectory, maxArtifactBytes(artifact.kind));
+    if (contents === undefined) {
+      reasons.add(artifact.kind === 'worker_result' ? 'worker_result_invalid'
+        : artifact.kind === 'profile' ? 'profile_artifact_invalid' : 'artifact_ownership_unverified');
+      continue;
+    }
+    inspectArtifact(artifact, path, contents, context);
+  }
+  validateFinalWorkerEvidence(context.workerArtifact, reasons);
+  validateProfileEvidence(context.parsedTraces, profileEvidence, runId, context.verifiedProfiles, reasons);
+  return [...reasons];
+}

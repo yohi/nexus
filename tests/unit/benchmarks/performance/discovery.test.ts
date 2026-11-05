@@ -23,6 +23,7 @@ describe('real Vitest discovery boundaries', () => {
     const bench = await discover('benchmark', 'vitest.config.ts', false);
     const perf = await discover('test', 'vitest.performance.config.ts', false);
     const perfE2e = await discover('test', 'vitest.performance.config.ts', true);
+    const diagnosticPerf = await discover('test', 'vitest.diagnostic-performance.config.ts', false);
     expect(normal.length).toBeGreaterThan(0);
     expect(normal.every((file) => file.endsWith('.test.ts') && !file.startsWith('tests/e2e/'))).toBe(true);
     expect(e2e.length).toBeGreaterThan(0);
@@ -31,6 +32,7 @@ describe('real Vitest discovery boundaries', () => {
     expect(bench.every((file) => file.endsWith('.bench.ts'))).toBe(true);
     expect(perf).toEqual(['tests/benchmarks/performance/runtime.perf.ts']);
     expect(perfE2e).toEqual(perf);
+    expect(diagnosticPerf).toEqual(['tests/benchmarks/performance/runtime.diagnostic.perf.ts']);
     expect(perf).not.toContain('tests/fixtures/performance/outside.perf.ts');
     expect([...normal, ...e2e, ...bench].some((file) => file.endsWith('.perf.ts'))).toBe(false);
     expect([...normal, ...e2e, ...perf].some((file) => file.endsWith('.bench.ts'))).toBe(false);
@@ -38,6 +40,7 @@ describe('real Vitest discovery boundaries', () => {
 
   it('exposes an explicit performance lint gate for helpers, tests, config and parent JavaScript', async () => {
     const value: unknown = JSON.parse(await readFile(new URL('../../../../package.json', import.meta.url), 'utf8'));
-    expect(z.object({ scripts: z.object({ 'lint:perf': z.string().min(1) }) }).safeParse(value).success).toBe(true);
+    const parsed = z.object({ scripts: z.object({ 'lint:perf': z.string().min(1) }) }).parse(value);
+    expect(parsed.scripts['lint:perf']).toContain('vitest.diagnostic-performance.config.ts');
   });
 });

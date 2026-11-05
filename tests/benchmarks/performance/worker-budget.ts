@@ -20,8 +20,12 @@ export class WorkerBudget {
   private phaseFd: number | undefined;
   private readonly terminate = () => this.controller.abort(new WorkerBudgetError('worker_aborted'));
 
-  constructor(private readonly request: Readonly<{ memoryLimitMb: number; deadlineEpochMs: number; phaseFile: string }>,
-    options: Readonly<{ exclusivePhase?: boolean }> = {}) {
+  constructor(private readonly request: Readonly<{
+    memoryLimitMb: number;
+    deadlineEpochMs: number;
+    timeoutMs?: number;
+    phaseFile: string;
+  }>, options: Readonly<{ exclusivePhase?: boolean; timeoutMode?: 'monotonic' }> = {}) {
     if (options.exclusivePhase === true) {
       const parentPath = resolve(dirname(request.phaseFile));
       const parentFd = openSync(parentPath, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
@@ -36,8 +40,10 @@ export class WorkerBudget {
     const flags = [...(process.env.NODE_OPTIONS ?? '').matchAll(/--max[-_]old[-_]space[-_]size=(\d+)/g)];
     const raw = flags.length === 1 ? flags[0]?.[1] : undefined;
     this.receivedMemory = raw === undefined ? 0 : Number(raw);
-    this.timer = setTimeout(() => this.controller.abort(new WorkerBudgetError('scenario_deadline')),
-      Math.max(1, request.deadlineEpochMs - Date.now()));
+    const timeoutMs = options.timeoutMode === 'monotonic'
+      ? Math.max(1, request.timeoutMs ?? 1)
+      : Math.max(1, request.deadlineEpochMs - Date.now());
+    this.timer = setTimeout(() => this.controller.abort(new WorkerBudgetError('scenario_deadline')), timeoutMs);
     this.monitor = setInterval(() => this.refresh(), 25);
     this.monitor.unref();
     process.once('SIGTERM', this.terminate);

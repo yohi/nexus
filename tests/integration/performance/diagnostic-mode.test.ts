@@ -21,6 +21,18 @@ async function loadLauncher() {
   return launcher;
 }
 
+function prepareRun(launcher: Awaited<ReturnType<typeof loadLauncher>>, diagnosticsRoot: string) {
+  return launcher.prepareDiagnosticRun({ diagnosticsRoot }, {
+    repository: '/repo',
+    runId,
+    sourceMetadata: () => Promise.resolve({
+      revision: { commit: 'f'.repeat(40), dirty: true },
+      environment: { sourceFingerprint },
+    }),
+    diagnosticFingerprint: () => Promise.resolve({ digest: 'c'.repeat(64) }),
+  });
+}
+
 afterEach(async () => {
   await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
 });
@@ -29,14 +41,7 @@ describe('diagnostic-only performance launcher', () => {
   it('prepares a private medium cold-start request without launching a worker', async () => {
     const launcher = await loadLauncher();
     const diagnosticsRoot = join(await temporaryRoot(), 'diagnostics');
-    const prepared = await launcher.prepareDiagnosticRun({ diagnosticsRoot }, {
-      repository: '/repo',
-      runId,
-      sourceMetadata: () => Promise.resolve({
-        revision: { commit: 'f'.repeat(40), dirty: true },
-        environment: { sourceFingerprint },
-      }),
-    });
+    const prepared = await prepareRun(launcher, diagnosticsRoot);
 
     const request = workerRequestSchema.parse(JSON.parse(await readFile(prepared.workerRequestFile, 'utf8')));
     const diagnostic = workerDiagnosticRequestSchema.parse(JSON.parse(await readFile(prepared.workerDiagnosticRequestFile, 'utf8')));
@@ -50,7 +55,9 @@ describe('diagnostic-only performance launcher', () => {
       job: { kind: 'cold_initial_index', repeat: 0 },
     });
     expect(workerRequestSchema.safeParse({ ...request, diagnosticOnly: true }).success).toBe(false);
-    expect(diagnostic).toMatchObject({ diagnosticOnly: true, runId, jobId: 'cold_initial_index', sourceFingerprint });
+    expect(diagnostic).toMatchObject({
+      diagnosticOnly: true, runId, jobId: 'cold_initial_index', sourceFingerprint: 'c'.repeat(64),
+    });
     expect(diagnosticRequestMatchesWorker(request, diagnostic)).toBe(true);
     expect((await stat(prepared.runDirectory)).mode & 0o777).toBe(0o700);
     expect((await stat(prepared.traceDirectory)).mode & 0o777).toBe(0o700);
@@ -63,27 +70,13 @@ describe('diagnostic-only performance launcher', () => {
   it('rejects a run ID whose private directory already exists without overwriting it', async () => {
     const launcher = await loadLauncher();
     const diagnosticsRoot = join(await temporaryRoot(), 'diagnostics');
-    const prepared = await launcher.prepareDiagnosticRun({ diagnosticsRoot }, {
-      repository: '/repo',
-      runId,
-      sourceMetadata: () => Promise.resolve({
-        revision: { commit: 'f'.repeat(40), dirty: true },
-        environment: { sourceFingerprint },
-      }),
-    });
+    const prepared = await prepareRun(launcher, diagnosticsRoot);
 
-    await expect(launcher.prepareDiagnosticRun({ diagnosticsRoot }, {
-      repository: '/repo',
-      runId,
-      sourceMetadata: () => Promise.resolve({
-        revision: { commit: 'f'.repeat(40), dirty: true },
-        environment: { sourceFingerprint },
-      }),
-    })).rejects.toThrow();
+    await expect(prepareRun(launcher, diagnosticsRoot)).rejects.toThrow();
     expect(await readFile(prepared.workerRequestFile, 'utf8')).toContain(runId);
   });
 
-  it('rejects missing source identity before creating a diagnostic run directory', async () => {
+  it('rejects missing diagnostic source identity before creating a run directory', async () => {
     const launcher = await loadLauncher();
     const diagnosticsRoot = join(await temporaryRoot(), 'diagnostics');
 
@@ -94,6 +87,7 @@ describe('diagnostic-only performance launcher', () => {
         revision: { commit: null, dirty: null },
         environment: {},
       }),
+      diagnosticFingerprint: () => Promise.resolve({ digest: '' }),
     })).rejects.toThrow();
     await expect(stat(diagnosticsRoot)).rejects.toThrow();
   });

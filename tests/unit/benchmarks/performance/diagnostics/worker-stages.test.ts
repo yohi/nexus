@@ -58,6 +58,34 @@ async function createWorkerControlFiles(root: string, directory: string) {
 }
 
 describe('worker diagnostic stages', () => {
+  it('uses_a_relative_timeout_for_diagnostic_budgets_instead_of_a_stale_epoch_deadline', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'nexus-worker-monotonic-budget-'));
+    const previousOptions = process.env.NODE_OPTIONS;
+    const request = {
+      memoryLimitMb: 4_096,
+      deadlineEpochMs: 1,
+      timeoutMs: 60_000,
+      phaseFile: join(root, 'phase.json'),
+    };
+    let budget: WorkerBudget | undefined;
+    try {
+      process.env.NODE_OPTIONS = '--max-old-space-size=4096';
+      vi.useFakeTimers({ now: 10_000 });
+      budget = new WorkerBudget(request, Object.assign({ exclusivePhase: true }, { timeoutMode: 'monotonic' as const }));
+      await vi.advanceTimersByTimeAsync(1);
+      expect(budget.signal.aborted).toBe(false);
+      await vi.advanceTimersByTimeAsync(59_999);
+      expect(budget.signal.aborted).toBe(true);
+      expect(budget.signal.reason).toMatchObject({ code: 'scenario_deadline' });
+    } finally {
+      budget?.close();
+      if (previousOptions === undefined) delete process.env.NODE_OPTIONS;
+      else process.env.NODE_OPTIONS = previousOptions;
+      vi.useRealTimers();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it('preserves a scenario error and flushes diagnostics when budget close fails', async () => {
     const root = await mkdtemp(join(tmpdir(), 'nexus-diagnostic-close-failure-'));
     const previousOptions = process.env.NODE_OPTIONS;

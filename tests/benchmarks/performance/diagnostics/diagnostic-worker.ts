@@ -13,7 +13,7 @@ type DiagnosticWorkerDependencies = Readonly<{
 }>;
 
 const defaultDependencies: DiagnosticWorkerDependencies = Object.freeze({
-  createBudget: (request) => new WorkerBudget(request, { exclusivePhase: true }),
+  createBudget: (request) => new WorkerBudget(request, { exclusivePhase: true, timeoutMode: 'monotonic' }),
 });
 
 function inside(root: string, candidate: string): boolean {
