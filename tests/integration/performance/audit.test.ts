@@ -4,31 +4,11 @@ import { z } from 'zod';
 import { auditRuntime } from '../../benchmarks/performance/audit.js';
 import { createSyntheticProvider } from '../../benchmarks/performance/synthetic-provider.js';
 import { createAuditFixture, faultChunk, nativeFixturePath } from './audit-fixture.js';
-import { createTraceRecorder } from '../../benchmarks/performance/diagnostics/trace-recorder.js';
-import { createRuntimeDiagnosticContext } from '../../benchmarks/performance/diagnostics/worker-stage-context.js';
 import { withRuntimeDiagnosticContext } from '../../../src/observability/diagnostic-stage-trace.js';
 import type { VectorAuditRow } from '../../../src/storage/interfaces/vector-audit.js';
+import { createDiagnosticWorkerContext } from './diagnostic-context.js';
 
 const fixtures: Awaited<ReturnType<typeof createAuditFixture>>[] = [];
-function createDiagnosticContext() {
-  const workerContext = {
-    recorder: createTraceRecorder({
-      runId: '00000000-0000-4000-8000-000000000001',
-      jobId: 'cold_initial_index',
-      recipeDigest: 'a'.repeat(64),
-      sourceFingerprint: 'b'.repeat(64),
-      pid: 3002,
-      processStartTicks: '4567',
-      ppid: 2000,
-      processRole: 'vitest_worker',
-      clockDomain: 'process_local_monotonic',
-    }, { nowNs: () => process.hrtime.bigint() }),
-    operationId: 'op_0000000000000001',
-    attemptId: 'attempt_1',
-  };
-  return { workerContext, runtimeContext: createRuntimeDiagnosticContext(workerContext) };
-}
-
 async function fixture() {
   const value = await createAuditFixture();
   fixtures.push(value);
@@ -52,7 +32,7 @@ describe('streaming per-path physical audit', () => {
 
   it('records audit row and catalog progress without changing the audit result', async () => {
     const current = await fixture();
-    const { workerContext, runtimeContext } = createDiagnosticContext();
+    const { workerContext, runtimeContext } = createDiagnosticWorkerContext();
 
     const result = await withRuntimeDiagnosticContext(runtimeContext, () =>
       auditRuntime(current.assembly.diagnostics, current.manifest, signal()));
@@ -76,7 +56,7 @@ describe('streaming per-path physical audit', () => {
     if (file === undefined || row === undefined) throw new Error('row required');
     const chunk = { ...faultChunk(file, row), hash: '0'.repeat(16) };
     await current.assembly.diagnostics.vectorStore.upsertChunks([chunk], await createSyntheticProvider().embed([chunk.content]));
-    const { workerContext, runtimeContext } = createDiagnosticContext();
+    const { workerContext, runtimeContext } = createDiagnosticWorkerContext();
 
     const result = await withRuntimeDiagnosticContext(runtimeContext, () =>
       auditRuntime(current.assembly.diagnostics, current.manifest, signal()));
@@ -100,7 +80,7 @@ describe('streaming per-path physical audit', () => {
       }
       await Promise.resolve();
     });
-    const { workerContext, runtimeContext } = createDiagnosticContext();
+    const { workerContext, runtimeContext } = createDiagnosticWorkerContext();
 
     await withRuntimeDiagnosticContext(runtimeContext, () => auditRuntime(current.assembly.diagnostics, current.manifest, signal()));
 

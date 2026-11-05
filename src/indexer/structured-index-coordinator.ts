@@ -10,7 +10,7 @@ import type {
 } from '../storage/interfaces/structured-catalog.js';
 import type { StructuredShadowTable } from '../storage/interfaces/vector-store.js';
 import type { ProjectWriteCoordinator } from './project-write-coordinator.js';
-import { incrementRuntimeDiagnosticCounter, markRuntimeDiagnosticStateIntegrity, runRuntimeDiagnosticStage } from '../observability/diagnostic-stage-trace.js';
+import { currentRuntimeDiagnosticContext, incrementRuntimeDiagnosticCounter, markRuntimeDiagnosticStateIntegrity, runRuntimeDiagnosticStage } from '../observability/diagnostic-stage-trace.js';
 
 export interface FullRebuildFile {
   source: StructuredSource;
@@ -122,21 +122,27 @@ export class StructuredIndexCoordinator {
           }
           this.diagnosticCounter('index.structured_vector_rows_write_succeeded', chunks.length, 'rows', 'succeeded');
         });
-        this.stagedGenerationRowCounts.set(this.generationKey(input.source.filePath, input.generationId), chunks.length);
+        if (currentRuntimeDiagnosticContext() !== undefined) {
+          this.stagedGenerationRowCounts.set(this.generationKey(input.source.filePath, input.generationId), chunks.length);
+        }
       } catch (error) {
-        await runRuntimeDiagnosticStage('S08_storage_write', async () => {
-          try {
-            await this.options.metadataStore.clearPendingGeneration({
-              filePath: input.source.filePath,
-              expectedActiveGeneration,
-              expectedPendingGeneration: input.generationId,
-              expectedRebuildEpoch: rebuildEpoch,
-            });
-          } catch (cleanupError) {
-            markRuntimeDiagnosticStateIntegrity('rollback_incomplete');
-            throw cleanupError;
-          }
-        });
+        try {
+          await runRuntimeDiagnosticStage('S08_storage_write', async () => {
+            try {
+              await this.options.metadataStore.clearPendingGeneration({
+                filePath: input.source.filePath,
+                expectedActiveGeneration,
+                expectedPendingGeneration: input.generationId,
+                expectedRebuildEpoch: rebuildEpoch,
+              });
+            } catch (cleanupError) {
+              markRuntimeDiagnosticStateIntegrity('rollback_incomplete');
+              throw cleanupError;
+            }
+          });
+        } finally {
+          this.stagedGenerationRowCounts.delete(this.generationKey(input.source.filePath, input.generationId));
+        }
         throw error;
       }
     });
@@ -155,24 +161,26 @@ export class StructuredIndexCoordinator {
         expectedRebuildEpoch: state.rebuildEpoch,
       };
 
-      const result = await this.options.metadataStore.activateGeneration(activation);
-      if (!result.activated) {
-        return;
-      }
+      const generationKey = this.generationKey(input.filePath, input.generationId);
+      try {
+        const result = await this.options.metadataStore.activateGeneration(activation);
+        if (!result.activated) return;
 
-      await runRuntimeDiagnosticStage('S08_storage_write', async () => {
-        try {
-          await this.options.vectorStore.activateGenerationRows(input.filePath, input.generationId);
-        } catch (error) {
-          markRuntimeDiagnosticStateIntegrity('unknown');
-          throw error;
-        }
-        const rowCount = this.stagedGenerationRowCounts.get(this.generationKey(input.filePath, input.generationId));
-        if (rowCount !== undefined) {
-          this.diagnosticCounter('index.structured_vector_rows_activated', rowCount, 'rows', 'succeeded');
-          this.stagedGenerationRowCounts.delete(this.generationKey(input.filePath, input.generationId));
-        }
-      });
+        await runRuntimeDiagnosticStage('S08_storage_write', async () => {
+          try {
+            await this.options.vectorStore.activateGenerationRows(input.filePath, input.generationId);
+          } catch (error) {
+            markRuntimeDiagnosticStateIntegrity('unknown');
+            throw error;
+          }
+          const rowCount = this.stagedGenerationRowCounts.get(generationKey);
+          if (rowCount !== undefined) {
+            this.diagnosticCounter('index.structured_vector_rows_activated', rowCount, 'rows', 'succeeded');
+          }
+        });
+      } finally {
+        this.stagedGenerationRowCounts.delete(generationKey);
+      }
 
       if (expectedActiveGeneration !== null) {
         await this.options.vectorStore.removeGenerationRows(input.filePath, expectedActiveGeneration);
@@ -192,12 +200,19 @@ export class StructuredIndexCoordinator {
         rebuildEpoch: state.rebuildEpoch,
       };
 
-      await this.options.metadataStore.retireFile(retirement);
+      try {
+        await this.options.metadataStore.retireFile(retirement);
 
-      if (expectedActiveGeneration !== null) {
-        await this.options.vectorStore.removeGenerationRows(input.filePath, expectedActiveGeneration);
+        if (expectedActiveGeneration !== null) {
+          await this.options.vectorStore.removeGenerationRows(input.filePath, expectedActiveGeneration);
+        }
+        await this.options.vectorStore.deleteByFilePath(input.filePath);
+      } finally {
+        const prefix = `${input.filePath}\0`;
+        for (const key of this.stagedGenerationRowCounts.keys()) {
+          if (key.startsWith(prefix)) this.stagedGenerationRowCounts.delete(key);
+        }
       }
-      await this.options.vectorStore.deleteByFilePath(input.filePath);
     });
   }
   async runFullRebuild(input: { files: FullRebuildFile[] } & FullRebuildCommitHooks): Promise<void> {

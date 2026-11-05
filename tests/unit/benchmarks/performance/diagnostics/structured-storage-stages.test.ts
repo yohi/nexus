@@ -5,6 +5,24 @@ import { createRuntimeDiagnosticContext } from '../../../../benchmarks/performan
 import { withRuntimeDiagnosticContext } from '../../../../../src/observability/diagnostic-stage-trace.js';
 import { createDiagnosticTestContext } from './diagnostic-test-helpers.js';
 
+function generationInput(stage: ReturnType<typeof createStructuredStage>) {
+  return {
+    source: stage.source,
+    generationId: stage.generationId,
+    contentHash: stage.contentHash,
+    fileCompleteness: 'complete' as const,
+    declarations: [stage.symbol],
+    imports: [],
+  };
+}
+
+function runFullRebuild(
+  fixture: Awaited<ReturnType<typeof createStructuredCoordinatorFixture>>,
+  stage: ReturnType<typeof createStructuredStage>,
+) {
+  return fixture.coordinator.runFullRebuild({ files: [generationInput(stage)], merkleSnapshot: [] });
+}
+
 describe('structured storage diagnostic stages', () => {
   it('records generation and activation counters without paths', async () => {
     const fixture = await createStructuredCoordinatorFixture();
@@ -12,14 +30,7 @@ describe('structured storage diagnostic stages', () => {
     const context = createDiagnosticTestContext();
 
     await withRuntimeDiagnosticContext(createRuntimeDiagnosticContext(context), async () => {
-      await fixture.coordinator.stageFile({
-        source: stage.source,
-        generationId: stage.generationId,
-        contentHash: stage.contentHash,
-        fileCompleteness: 'complete',
-        declarations: [stage.symbol],
-        imports: [],
-      });
+      await fixture.coordinator.stageFile(generationInput(stage));
       await fixture.coordinator.activateFile({ filePath: stage.source.filePath, generationId: stage.generationId });
     });
 
@@ -45,17 +56,7 @@ describe('structured storage diagnostic stages', () => {
     const context = createDiagnosticTestContext();
 
     await withRuntimeDiagnosticContext(createRuntimeDiagnosticContext(context), () =>
-      fixture.coordinator.runFullRebuild({
-        files: [{
-          source: stage.source,
-          generationId: stage.generationId,
-          contentHash: stage.contentHash,
-          fileCompleteness: 'complete',
-          declarations: [stage.symbol],
-          imports: [],
-        }],
-        merkleSnapshot: [],
-      }));
+      runFullRebuild(fixture, stage));
 
     const trace = context.recorder.snapshot().events;
     const counters = trace.filter((event) => event.event === 'progress');
@@ -76,17 +77,7 @@ describe('structured storage diagnostic stages', () => {
     const context = createDiagnosticTestContext();
 
     await withRuntimeDiagnosticContext(createRuntimeDiagnosticContext(context), () =>
-      fixture.coordinator.runFullRebuild({
-        files: [{
-          source: stage.source,
-          generationId: stage.generationId,
-          contentHash: stage.contentHash,
-          fileCompleteness: 'complete',
-          declarations: [stage.symbol],
-          imports: [],
-        }],
-        merkleSnapshot: [],
-      }));
+      runFullRebuild(fixture, stage));
 
     const finished = context.recorder.snapshot().events.filter((event) => event.event === 'span_finished');
     expect(finished.some((event) => event.stateIntegrity === 'backup_cleanup_failed')).toBe(true);
@@ -101,17 +92,7 @@ describe('structured storage diagnostic stages', () => {
     const context = createDiagnosticTestContext();
 
     await expect(withRuntimeDiagnosticContext(createRuntimeDiagnosticContext(context), () =>
-      fixture.coordinator.runFullRebuild({
-        files: [{
-          source: stage.source,
-          generationId: stage.generationId,
-          contentHash: stage.contentHash,
-          fileCompleteness: 'complete',
-          declarations: [stage.symbol],
-          imports: [],
-        }],
-        merkleSnapshot: [],
-      }))).rejects.toThrow('injected activation failure');
+      runFullRebuild(fixture, stage))).rejects.toThrow('injected activation failure');
 
     const finished = context.recorder.snapshot().events.filter((event) => event.event === 'span_finished');
     expect(finished.some((event) => event.stateIntegrity === 'rollback_incomplete')).toBe(true);
@@ -124,14 +105,7 @@ describe('structured storage diagnostic stages', () => {
     const context = createDiagnosticTestContext();
 
     await expect(withRuntimeDiagnosticContext(createRuntimeDiagnosticContext(context), () =>
-      fixture.coordinator.stageFile({
-        source: stage.source,
-        generationId: stage.generationId,
-        contentHash: stage.contentHash,
-        fileCompleteness: 'complete',
-        declarations: [stage.symbol],
-        imports: [],
-      }))).rejects.toThrow('injected partial vector write');
+      fixture.coordinator.stageFile(generationInput(stage)))).rejects.toThrow('injected partial vector write');
 
     const finished = context.recorder.snapshot().events.filter((event) => event.event === 'span_finished');
     expect(finished.some((event) => event.stateIntegrity === 'unknown')).toBe(true);
@@ -145,14 +119,7 @@ describe('structured storage diagnostic stages', () => {
     const context = createDiagnosticTestContext();
 
     await expect(withRuntimeDiagnosticContext(createRuntimeDiagnosticContext(context), () =>
-      fixture.coordinator.stageFile({
-        source: stage.source,
-        generationId: stage.generationId,
-        contentHash: stage.contentHash,
-        fileCompleteness: 'complete',
-        declarations: [stage.symbol],
-        imports: [],
-      }))).rejects.toThrow('injected pending cleanup failure');
+      fixture.coordinator.stageFile(generationInput(stage)))).rejects.toThrow('injected pending cleanup failure');
 
     const finished = context.recorder.snapshot().events.filter((event) => event.event === 'span_finished');
     expect(finished.some((event) => event.stateIntegrity === 'rollback_incomplete')).toBe(true);
@@ -166,17 +133,7 @@ describe('structured storage diagnostic stages', () => {
     const context = createDiagnosticTestContext();
 
     await expect(withRuntimeDiagnosticContext(createRuntimeDiagnosticContext(context), () =>
-      fixture.coordinator.runFullRebuild({
-        files: [{
-          source: stage.source,
-          generationId: stage.generationId,
-          contentHash: stage.contentHash,
-          fileCompleteness: 'complete',
-          declarations: [stage.symbol],
-          imports: [],
-        }],
-        merkleSnapshot: [],
-      }))).rejects.toThrow('injected activation failure');
+      runFullRebuild(fixture, stage))).rejects.toThrow('injected activation failure');
 
     const finished = context.recorder.snapshot().events.filter((event) => event.event === 'span_finished');
     expect(finished.some((event) => event.stateIntegrity === 'rollback_incomplete')).toBe(true);

@@ -92,7 +92,10 @@ function deriveMinimumRttInterval(pings: readonly ClockPing[]): InternalInterval
   if (pings.length < REQUIRED_PINGS) return { status: 'not_correlatable', reasonCode: 'insufficient_pings' };
 
   const roundTrips = pings.map((ping) => ping.parentReceiveNs - ping.parentSendNs);
-  const minimumRoundTrip = roundTrips.reduce((minimum, roundTrip) => roundTrip < minimum ? roundTrip : minimum);
+  const minimumRoundTrip = roundTrips.reduce(
+    (minimum, roundTrip) => roundTrip < minimum ? roundTrip : minimum,
+    roundTrips[0] ?? 0n,
+  );
   const minimumPings = pings.filter((_, index) => roundTrips[index] === minimumRoundTrip);
   const firstMinimumPing = minimumPings.at(0);
   if (firstMinimumPing === undefined) return { status: 'not_correlatable', reasonCode: 'insufficient_pings' };

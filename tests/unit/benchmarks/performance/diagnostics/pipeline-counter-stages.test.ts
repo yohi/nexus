@@ -1,9 +1,9 @@
 import { describe, expect, it } from 'vitest';
 
-import { IndexPipeline } from '../../../../../src/indexer/pipeline.js';
 import { DimensionMismatchError, RetryExhaustedError } from '../../../../../src/types/index.js';
 import { TestEmbeddingProvider } from '../../../plugins/embeddings/test-embedding-provider.js';
 import { createPipeline } from '../../../../shared/test-helpers.js';
+import { createDiagnosticPipeline } from '../../../../shared/diagnostic-pipeline.js';
 import { createRuntimeDiagnosticContext } from '../../../../benchmarks/performance/diagnostics/worker-stage-context.js';
 import { withRuntimeDiagnosticContext } from '../../../../../src/observability/diagnostic-stage-trace.js';
 import { createDiagnosticTestContext } from './diagnostic-test-helpers.js';
@@ -23,12 +23,8 @@ class MalformedDiagnosticEmbeddingProvider extends TestEmbeddingProvider {
 describe('pipeline diagnostic counters', () => {
   it('records no-plugin fallback, cache/provider, and legacy vector counters without paths', async () => {
     const { metadataStore, vectorStore, chunker, registry } = await createPipeline();
-    const pipeline = new IndexPipeline({
-      metadataStore, vectorStore, chunker,
-      embeddingProvider: new TestEmbeddingProvider(),
-      pluginRegistry: registry,
-      embedBatchWindowSize: 2,
-    });
+    const pipeline = createDiagnosticPipeline(
+      { metadataStore, vectorStore, chunker, pluginRegistry: registry }, new TestEmbeddingProvider(), { embedBatchWindowSize: 2 });
     const context = createDiagnosticTestContext();
     const filePath = 'private/unsupported.txt';
     const result = await withRuntimeDiagnosticContext(createRuntimeDiagnosticContext(context), () =>
@@ -61,13 +57,9 @@ describe('pipeline diagnostic counters', () => {
 
   it('captures overlapping S06 child spans for concurrent window reads', async () => {
     const { metadataStore, vectorStore, chunker, registry } = await createPipeline();
-    const pipeline = new IndexPipeline({
-      metadataStore, vectorStore, chunker,
-      embeddingProvider: new TestEmbeddingProvider(),
-      pluginRegistry: registry,
-      chunkConcurrency: 2,
-      embedBatchWindowSize: 16,
-    });
+    const pipeline = createDiagnosticPipeline(
+      { metadataStore, vectorStore, chunker, pluginRegistry: registry }, new TestEmbeddingProvider(),
+      { chunkConcurrency: 2, embedBatchWindowSize: 16 });
     const context = createDiagnosticTestContext();
     const events = [0, 1].map((index) => ({
       type: 'added' as const,
@@ -101,13 +93,9 @@ describe('pipeline diagnostic counters', () => {
 
   it('records two embedding batches for a 17-file workload split into 16-file windows', async () => {
     const { metadataStore, vectorStore, chunker, registry } = await createPipeline();
-    const pipeline = new IndexPipeline({
-      metadataStore, vectorStore, chunker,
-      embeddingProvider: new TestEmbeddingProvider(),
-      pluginRegistry: registry,
-      chunkConcurrency: 2,
-      embedBatchWindowSize: 16,
-    });
+    const pipeline = createDiagnosticPipeline(
+      { metadataStore, vectorStore, chunker, pluginRegistry: registry }, new TestEmbeddingProvider(),
+      { chunkConcurrency: 2, embedBatchWindowSize: 16 });
     const context = createDiagnosticTestContext();
     const events = Array.from({ length: 17 }, (_, index) => ({
       type: 'added' as const,
@@ -136,12 +124,8 @@ describe('pipeline diagnostic counters', () => {
       retryCount: 0,
       retryBaseDelayMs: 0,
     };
-    const makePipeline = () => new IndexPipeline({
-      metadataStore, vectorStore, chunker,
-      embeddingProvider: new TestEmbeddingProvider(),
-      pluginRegistry: registry,
-      embeddingConfig,
-    });
+    const makePipeline = () => createDiagnosticPipeline(
+      { metadataStore, vectorStore, chunker, pluginRegistry: registry }, new TestEmbeddingProvider(), { embeddingConfig });
     const firstPipeline = makePipeline();
     const secondPipeline = makePipeline();
     const context = createDiagnosticTestContext();
@@ -168,11 +152,8 @@ describe('pipeline diagnostic counters', () => {
 
   it('records a failed embedding batch and finalized DLQ path without marking success', async () => {
     const { metadataStore, vectorStore, chunker, registry } = await createPipeline();
-    const pipeline = new IndexPipeline({
-      metadataStore, vectorStore, chunker,
-      embeddingProvider: new FailingDiagnosticEmbeddingProvider(),
-      pluginRegistry: registry,
-    });
+    const pipeline = createDiagnosticPipeline(
+      { metadataStore, vectorStore, chunker, pluginRegistry: registry }, new FailingDiagnosticEmbeddingProvider());
     const context = createDiagnosticTestContext();
 
     await withRuntimeDiagnosticContext(createRuntimeDiagnosticContext(context), () =>
@@ -196,11 +177,8 @@ describe('pipeline diagnostic counters', () => {
 
   it('counts returned vectors without marking inputs complete when vector dimensions are invalid', async () => {
     const { metadataStore, vectorStore, chunker, registry } = await createPipeline();
-    const pipeline = new IndexPipeline({
-      metadataStore, vectorStore, chunker,
-      embeddingProvider: new MalformedDiagnosticEmbeddingProvider(),
-      pluginRegistry: registry,
-    });
+    const pipeline = createDiagnosticPipeline(
+      { metadataStore, vectorStore, chunker, pluginRegistry: registry }, new MalformedDiagnosticEmbeddingProvider());
     const context = createDiagnosticTestContext();
 
     await expect(withRuntimeDiagnosticContext(createRuntimeDiagnosticContext(context), () =>
@@ -226,11 +204,8 @@ describe('pipeline diagnostic counters', () => {
       supports: (filePath) => filePath.endsWith('.broken'),
       createParser: () => Promise.reject(new Error('private parser error')),
     });
-    const pipeline = new IndexPipeline({
-      metadataStore, vectorStore, chunker,
-      embeddingProvider: new TestEmbeddingProvider(),
-      pluginRegistry: registry,
-    });
+    const pipeline = createDiagnosticPipeline(
+      { metadataStore, vectorStore, chunker, pluginRegistry: registry }, new TestEmbeddingProvider());
     const context = createDiagnosticTestContext();
 
     await withRuntimeDiagnosticContext(createRuntimeDiagnosticContext(context), () =>

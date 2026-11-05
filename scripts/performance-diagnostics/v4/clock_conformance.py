@@ -7,17 +7,19 @@
 # ─── How to run ───
 # 1. Install uv (if not installed):
 #      curl -LsSf https://astral.sh/uv/install.sh | sh
-# 2. Run a preflight-only clock calibration:
-#      uv run clock_conformance.py /absolute/path/to/node start
-#      uv run clock_conformance.py /absolute/path/to/node end
+# 2. Run a preflight-only clock calibration with the intended Node on PATH:
+#      uv run clock_conformance.py start
+#      uv run clock_conformance.py end
 # 3. Or make executable and run:
-#      chmod +x clock_conformance.py && ./clock_conformance.py /absolute/path/to/node start
+#      chmod +x clock_conformance.py && ./clock_conformance.py start
 # ──────────────────
 
 from __future__ import annotations
 
 import json
 import os
+import shutil
+from collections.abc import Mapping
 from pathlib import Path
 import select
 import subprocess
@@ -73,19 +75,11 @@ class ChildClockMetadata(TypedDict):
     resolutionNs: str
 
 
-class ProbeEnvironment(TypedDict, total=False):
-    PATH: str
-    HOME: str
-    LANG: str
-    LC_ALL: str
-    TMPDIR: str
-
-
 class ClockProbeError(RuntimeError):
     """A bounded failure while observing a dedicated clock-probe child."""
 
     def __init__(self, reason_code: str) -> None:
-        self.reason_code = reason_code
+        self.reason_code: str = reason_code
         super().__init__(reason_code)
 
 
@@ -131,26 +125,67 @@ def parse_child_metadata(line: str) -> ChildClockMetadata:
     return {'clockSource': clock_source, 'resolutionNs': resolution}
 
 
-def environment_for_probe() -> ProbeEnvironment:
+def environment_for_probe() -> Mapping[str, str]:
     """Keep the clock probe isolated from inherited profiler/request settings."""
-    environment: ProbeEnvironment = {'PATH': os.environ.get('PATH', '')}
+    environment = {'PATH': os.environ.get('PATH', '')}
     home = os.environ.get('HOME')
     language = os.environ.get('LANG')
     locale = os.environ.get('LC_ALL')
-    temporary_directory = os.environ.get('TMPDIR')
     if home is not None:
         environment['HOME'] = home
     if language is not None:
         environment['LANG'] = language
     if locale is not None:
         environment['LC_ALL'] = locale
-    if temporary_directory is not None:
-        environment['TMPDIR'] = temporary_directory
     return environment
 
 
-def run_clock_probe(node_executable: Path, phase: str) -> ProbeResult:
+def collect_pings(child: subprocess.Popen[str]) -> list[ClockPing]:
+    pings: list[ClockPing] = []
+    if child.stdin is None:
+        raise ClockProbeError('child_pipe_unavailable')
+    for _ in range(PING_COUNT):
+        parent_send = time.clock_gettime_ns(time.CLOCK_MONOTONIC)
+        child.stdin.write('ping\n')
+        child.stdin.flush()
+        response = read_child_line(child).strip()
+        parent_receive = time.clock_gettime_ns(time.CLOCK_MONOTONIC)
+        if not response.isdigit():
+            raise ClockProbeError('invalid_child_ping')
+        pings.append({
+            'parentSendNs': str(parent_send),
+            'childMonotonicNs': response,
+            'parentReceiveNs': str(parent_receive),
+        })
+    return pings
+
+
+def close_probe(child: subprocess.Popen[str]) -> None:
+    if child.stdin is not None and child.poll() is None:
+        try:
+            child.stdin.write('quit\n')
+            child.stdin.flush()
+            child.stdin.close()
+        except BrokenPipeError:
+            if child.poll() is None:
+                child.terminate()
+    try:
+        child.wait(timeout=LINE_TIMEOUT_SECONDS)
+    except subprocess.TimeoutExpired:
+        child.terminate()
+        try:
+            child.wait(timeout=LINE_TIMEOUT_SECONDS)
+        except subprocess.TimeoutExpired:
+            child.kill()
+            child.wait()
+
+
+def run_clock_probe(phase: str) -> ProbeResult:
     """Collect send/child/receive monotonic samples without running a benchmark."""
+    node_path = shutil.which('node')
+    if node_path is None:
+        raise ClockProbeError('invalid_node_executable')
+    node_executable = Path(node_path).resolve()
     if not node_executable.is_absolute() or not node_executable.is_file() or not os.access(node_executable, os.X_OK):
         raise ClockProbeError('invalid_node_executable')
     if phase not in ('start', 'end'):
@@ -170,24 +205,9 @@ def run_clock_probe(node_executable: Path, phase: str) -> ProbeResult:
         bufsize=1,
         env=environment_for_probe(),
     )
-    pings: list[ClockPing] = []
     try:
         metadata = parse_child_metadata(read_child_line(child))
-        if child.stdin is None:
-            raise ClockProbeError('child_pipe_unavailable')
-        for _ in range(PING_COUNT):
-            parent_send = time.clock_gettime_ns(time.CLOCK_MONOTONIC)
-            child.stdin.write('ping\n')
-            child.stdin.flush()
-            response = read_child_line(child).strip()
-            parent_receive = time.clock_gettime_ns(time.CLOCK_MONOTONIC)
-            if not response.isdigit():
-                raise ClockProbeError('invalid_child_ping')
-            pings.append({
-                'parentSendNs': str(parent_send),
-                'childMonotonicNs': response,
-                'parentReceiveNs': str(parent_receive),
-            })
+        pings = collect_pings(child)
         return {
             'phase': phase,
             'probePid': child.pid,
@@ -202,32 +222,16 @@ def run_clock_probe(node_executable: Path, phase: str) -> ProbeResult:
             },
         }
     finally:
-        if child.stdin is not None and child.poll() is None:
-            try:
-                child.stdin.write('quit\n')
-                child.stdin.flush()
-                child.stdin.close()
-            except BrokenPipeError:
-                if child.poll() is None:
-                    child.terminate()
-        try:
-            child.wait(timeout=LINE_TIMEOUT_SECONDS)
-        except subprocess.TimeoutExpired:
-            child.terminate()
-            try:
-                child.wait(timeout=LINE_TIMEOUT_SECONDS)
-            except subprocess.TimeoutExpired:
-                child.kill()
-                child.wait()
+        close_probe(child)
 
 
 def main(arguments: list[str]) -> int:
     """Run a clock-only calibration phase and emit one machine-readable record."""
-    if len(arguments) != 3:
-        sys.stderr.write('usage: clock_conformance.py NODE_EXECUTABLE start|end\n')
+    if len(arguments) != 2:
+        sys.stderr.write('usage: clock_conformance.py start|end\n')
         return 2
     try:
-        result = run_clock_probe(Path(arguments[1]), arguments[2])
+        result = run_clock_probe(arguments[1])
     except (ClockProbeError, OSError, subprocess.SubprocessError) as error:
         reason_code = error.reason_code if isinstance(error, ClockProbeError) else 'clock_probe_failed'
         sys.stderr.write(f'clock_probe_failed:{reason_code}\n')

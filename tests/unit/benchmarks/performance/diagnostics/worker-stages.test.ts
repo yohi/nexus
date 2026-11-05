@@ -35,6 +35,27 @@ function recorder() {
 
 const operationId = 'op_0000000000000001';
 const attemptId = 'attempt_1';
+const runId = '00000000-0000-4000-8000-000000000001';
+
+async function createWorkerControlFiles(root: string, directory: string) {
+  const requestFile = join(root, 'request.json');
+  const diagnosticFile = join(root, 'diagnostic.json');
+  await mkdir(directory, { mode: 0o700 });
+  await writeFile(requestFile, JSON.stringify({
+    schemaVersion: 1, mode: 'scenario', runId, ownerRoot: root,
+    resultFile: join(root, 'result.json'), phaseFile: join(root, 'phase.json'),
+    deadlineEpochMs: Date.now() + 60_000, memoryLimitMb: 4096, timeoutMs: 60_000,
+    options: { profile: 'smoke', outputMode: 'file', revision: { commit: null, dirty: null },
+      timeoutMs: 60_000, auditPageSize: 10, cacheSeedBatchSize: 512, memoryLimitMb: 4096, sampleMode: 'smoke' },
+    job: { id: 'cold_initial_index', kind: 'cold_initial_index', repeat: 0 },
+  }), { mode: 0o600 });
+  await writeFile(diagnosticFile, JSON.stringify({
+    schemaVersion: 1, diagnosticOnly: true, runId, jobId: 'cold_initial_index',
+    recipeDigest: 'a'.repeat(64), sourceFingerprint: 'b'.repeat(64), runDirectory: directory,
+    operationId, attemptId,
+  }), { mode: 0o600 });
+  return { requestFile, diagnosticFile };
+}
 
 describe('worker diagnostic stages', () => {
   it('uses_a_relative_timeout_for_diagnostic_budgets_instead_of_a_stale_epoch_deadline', async () => {
@@ -78,24 +99,8 @@ describe('worker diagnostic stages', () => {
       close: () => { closes += 1; return Promise.resolve(); },
     });
     try {
-      const runId = '00000000-0000-4000-8000-000000000001';
       const directory = join(root, 'trace');
-      const requestFile = join(root, 'request.json');
-      const diagnosticFile = join(root, 'diagnostic.json');
-      await mkdir(directory, { mode: 0o700 });
-      await writeFile(requestFile, JSON.stringify({
-        schemaVersion: 1, mode: 'scenario', runId, ownerRoot: root,
-        resultFile: join(root, 'result.json'), phaseFile: join(root, 'phase.json'),
-        deadlineEpochMs: Date.now() + 60_000, memoryLimitMb: 4096, timeoutMs: 60_000,
-        options: { profile: 'smoke', outputMode: 'file', revision: { commit: null, dirty: null },
-          timeoutMs: 60_000, auditPageSize: 10, cacheSeedBatchSize: 512, memoryLimitMb: 4096, sampleMode: 'smoke' },
-        job: { id: 'cold_initial_index', kind: 'cold_initial_index', repeat: 0 },
-      }), { mode: 0o600 });
-      await writeFile(diagnosticFile, JSON.stringify({
-        schemaVersion: 1, diagnosticOnly: true, runId, jobId: 'cold_initial_index',
-        recipeDigest: 'a'.repeat(64), sourceFingerprint: 'b'.repeat(64), runDirectory: directory,
-        operationId, attemptId,
-      }), { mode: 0o600 });
+      const { requestFile, diagnosticFile } = await createWorkerControlFiles(root, directory);
       process.env.NODE_OPTIONS = '--max-old-space-size=4096';
       await expect(executeDiagnosticPerformanceWorker(requestFile, diagnosticFile, {
         createBudget: () => ({
@@ -251,24 +256,8 @@ describe('worker diagnostic stages', () => {
       close: () => failureStage === 'close' ? Promise.reject(new Error('private writer detail')) : Promise.resolve(),
     });
     try {
-      const runId = '00000000-0000-4000-8000-000000000001';
       const directory = join(root, 'trace');
-      const requestFile = join(root, 'request.json');
-      const diagnosticFile = join(root, 'diagnostic.json');
-      await mkdir(directory, { mode: 0o700 });
-      await writeFile(requestFile, JSON.stringify({
-        schemaVersion: 1, mode: 'scenario', runId, ownerRoot: root,
-        resultFile: join(root, 'result.json'), phaseFile: join(root, 'phase.json'),
-        deadlineEpochMs: Date.now() + 60_000, memoryLimitMb: 4096, timeoutMs: 60_000,
-        options: { profile: 'smoke', outputMode: 'file', revision: { commit: null, dirty: null },
-          timeoutMs: 60_000, auditPageSize: 10, cacheSeedBatchSize: 512, memoryLimitMb: 4096, sampleMode: 'smoke' },
-        job: { id: 'cold_initial_index', kind: 'cold_initial_index', repeat: 0 },
-      }), { mode: 0o600 });
-      await writeFile(diagnosticFile, JSON.stringify({
-        schemaVersion: 1, diagnosticOnly: true, runId, jobId: 'cold_initial_index',
-        recipeDigest: 'a'.repeat(64), sourceFingerprint: 'b'.repeat(64), runDirectory: directory,
-        operationId, attemptId,
-      }), { mode: 0o600 });
+      const { requestFile, diagnosticFile } = await createWorkerControlFiles(root, directory);
       process.env.NODE_OPTIONS = '--max-old-space-size=4096';
       const result = await executeDiagnosticPerformanceWorker(requestFile, diagnosticFile);
       expect(result.scenario.records).toEqual([]);
@@ -288,24 +277,8 @@ describe('worker diagnostic stages', () => {
     const previousOptions = process.env.NODE_OPTIONS;
     const spy = vi.spyOn(workerScenario, 'runScenarioWorker').mockResolvedValueOnce({ records: [], fixtureDigest: null, workload: null });
     try {
-      const runId = '00000000-0000-4000-8000-000000000001';
       const directory = join(root, 'trace');
-      const requestFile = join(root, 'request.json');
-      const diagnosticFile = join(root, 'diagnostic.json');
-      await mkdir(directory, { mode: 0o700 });
-      await writeFile(requestFile, JSON.stringify({
-        schemaVersion: 1, mode: 'scenario', runId, ownerRoot: root,
-        resultFile: join(root, 'result.json'), phaseFile: join(root, 'phase.json'),
-        deadlineEpochMs: Date.now() + 60_000, memoryLimitMb: 4096, timeoutMs: 60_000,
-        options: { profile: 'smoke', outputMode: 'file', revision: { commit: null, dirty: null },
-          timeoutMs: 60_000, auditPageSize: 10, cacheSeedBatchSize: 512, memoryLimitMb: 4096, sampleMode: 'smoke' },
-        job: { id: 'cold_initial_index', kind: 'cold_initial_index', repeat: 0 },
-      }), { mode: 0o600 });
-      await writeFile(diagnosticFile, JSON.stringify({
-        schemaVersion: 1, diagnosticOnly: true, runId, jobId: 'cold_initial_index',
-        recipeDigest: 'a'.repeat(64), sourceFingerprint: 'b'.repeat(64), runDirectory: directory,
-        operationId, attemptId,
-      }), { mode: 0o600 });
+      const { requestFile, diagnosticFile } = await createWorkerControlFiles(root, directory);
       process.env.NODE_OPTIONS = '--max-old-space-size=4096';
       const result = await executeDiagnosticPerformanceWorker(requestFile, diagnosticFile);
       expect(result.diagnosticAdmissible).toBe(false);

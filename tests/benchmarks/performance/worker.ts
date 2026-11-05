@@ -1,5 +1,5 @@
 import { readFile, realpath, rename, writeFile } from 'node:fs/promises';
-import { dirname, isAbsolute, relative, resolve, sep } from 'node:path';
+import { basename, dirname, isAbsolute, relative, resolve, sep } from 'node:path';
 import { reportSchema } from './contracts.js';
 import { workerRequestSchema, workerResultSchema } from './worker-contracts.js';
 import { WorkerBudget, WorkerBudgetError } from './worker-budget.js';
@@ -22,8 +22,8 @@ export async function executePerformanceWorker(requestFile: string): Promise<voi
   const request = workerRequestSchema.parse(JSON.parse(await readFile(requestFile, 'utf8')));
   const owner = await realpath(request.ownerRoot);
   for (const path of [requestFile, request.resultFile, request.phaseFile]) {
-    contained(owner, path);
-    contained(owner, await realpath(dirname(path)) === owner ? path : resolve(await realpath(dirname(path)), path.split(sep).at(-1) ?? ''));
+    const normalized = resolve(await realpath(dirname(path)), basename(path));
+    contained(owner, normalized);
   }
   const budget = new WorkerBudget(request);
   try {

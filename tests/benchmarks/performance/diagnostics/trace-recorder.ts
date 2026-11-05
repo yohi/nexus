@@ -98,11 +98,11 @@ export class DiagnosticTraceRecorder {
     this.#append({ ...this.#identity, schemaVersion: 1, seq, monotonicNs, event: 'resource_sample', ...sample });
   }
 
-  constructor(identity: DiagnosticTraceIdentity, clock: TraceClock, options: Readonly<{ maxEvents?: number; maxBytes?: number }> = {}) {
+  constructor(identity: DiagnosticTraceIdentity, clock: TraceClock, options?: Readonly<{ maxEvents?: number; maxBytes?: number }>) {
     this.#identity = diagnosticTraceIdentitySchema.parse(identity);
     this.#clock = clock;
-    this.#maxEvents = Math.min(4095, Math.max(0, Math.floor(options.maxEvents ?? 4095)));
-    this.#maxBytes = Math.min(8 * 1024 * 1024, Math.max(0, Math.floor(options.maxBytes ?? 8 * 1024 * 1024)));
+    this.#maxEvents = Math.min(4095, Math.max(0, Math.floor(options?.maxEvents ?? 4095)));
+    this.#maxBytes = Math.min(8 * 1024 * 1024, Math.max(0, Math.floor(options?.maxBytes ?? 8 * 1024 * 1024)));
     if (!Number.isSafeInteger(this.#maxEvents) || !Number.isSafeInteger(this.#maxBytes) || this.#maxBytes < this.#terminalReserve('0')) {
       throw new RangeError('Invalid diagnostic trace limits');
     }
@@ -125,7 +125,7 @@ export class DiagnosticTraceRecorder {
     }
   }
 
-  async #runStage<T>(input: StageInput, work: () => T | Promise<T>): Promise<T> {
+  #runStage<T>(input: StageInput, work: () => T | Promise<T>): Promise<T> {
     const workKind = input.workKind !== undefined && isAllowedWorkKind(input.workKind) ? input.workKind : undefined;
     if (input.workKind !== undefined && workKind === undefined) this.#markIncomplete('event_validation_failed');
     const startMonotonicNs = this.#readMonotonicNs();
@@ -136,7 +136,7 @@ export class DiagnosticTraceRecorder {
         operationId: input.operationId,
         attemptId: input.attemptId,
         stageId: input.stageId,
-      }, async () => await work());
+      }, () => Promise.resolve(work()));
     }
     const spanId = `${this.#identity.pid}:${this.#identity.processStartTicks}:${++this.#spanSequence}`;
     const parent = this.#context.getStore();

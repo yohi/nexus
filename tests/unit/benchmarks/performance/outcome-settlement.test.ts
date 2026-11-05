@@ -1,9 +1,22 @@
 import { describe, expect, it } from 'vitest';
-import { emitRuntimeEvent } from '../../../../src/observability/runtime-observer.js';
+import { emitRuntimeEvent, getObservationContext } from '../../../../src/observability/runtime-observer.js';
 import { observeReindex, observeRuntimeWork, startRuntimeWork } from '../../../../src/observability/runtime-work.js';
 import { OutcomeCollector } from '../../../benchmarks/performance/outcomes.js';
 
 describe('observation settlement ownership', () => {
+  it('sets the work context when a child has no parent context', () => {
+    const events: Parameters<OutcomeCollector['onEvent']>[0][] = [];
+    const child = startRuntimeWork({ onEvent: (event) => events.push(event) }, 'grep_spawn');
+    let contextWorkId: string | undefined;
+    child.run(() => {
+      contextWorkId = getObservationContext()?.workId;
+      emitRuntimeEvent({ onEvent: (event) => events.push(event) }, { kind: 'compaction_failed' });
+    });
+    const event = events.find((item) => item.kind === 'compaction_failed');
+    expect(event?.workId).toBe(child.workId);
+    expect(contextWorkId).toBe(child.workId);
+  });
+
   it('does not admit an already-running owner whose auxiliary compaction failed', async () => {
     const collector = new OutcomeCollector();
     const owner = {};

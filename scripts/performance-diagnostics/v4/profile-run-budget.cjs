@@ -58,18 +58,13 @@ function withProfileRunBudget(runDirectoryFd, profileDirectoryFd, requestedBytes
     cleanupErrors.push(error);
   }
 
-  if (cleanupErrors.length > 0 && operationFailed) {
-    const error = new AggregateError([operationError, ...cleanupErrors], 'profile_budget_lock_cleanup_failed');
-    error.code = 'profile_budget_lock_cleanup_failed';
-    throw error;
-  }
+  if (operationFailed) throw operationError;
   if (cleanupErrors.length > 0) {
     if (cleanupErrors.length === 1) throw cleanupErrors[0];
     const error = new AggregateError(cleanupErrors, 'profile_budget_lock_cleanup_failed');
     error.code = 'profile_budget_lock_cleanup_failed';
     throw error;
   }
-  if (operationFailed) throw operationError;
   return result;
 }
 

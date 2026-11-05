@@ -24,7 +24,7 @@ export type CacheSeedResult = z.infer<typeof cacheSeedResultSchema>;
 export function expectedCacheKeys(manifest: FixtureManifest, config: Readonly<EmbeddingConfig>): readonly string[] {
   const identity = createEmbeddingCacheIdentity(config);
   return [...new Set(manifest.files.flatMap((file) => [...file.legacyRows, ...file.structuredRows]
-    .map((row) => identity.keyFor(row.contentHash))))].sort();
+    .map((row) => identity.keyFor(row.contentHash))))].sort((left, right) => left < right ? -1 : left > right ? 1 : 0);
 }
 
 function requireCompatibility(source: CacheSeedEndpoint, target: CacheSeedEndpoint): void {
@@ -82,7 +82,7 @@ export async function seedCompatibleCache(source: CacheSeedEndpoint, target: Cac
     return cacheSeedResultSchema.parse({ status: 'valid', keySetDigest, ...resultCounts() });
   } catch (error) {
     let code = failureCode(error, signal);
-    const closed = await Promise.allSettled([source.metadataStore.close(), target.metadataStore.close()]);
+    const closed = await Promise.allSettled([target.metadataStore.close()]);
     try { await disposeCacheSeedTarget(target); }
     catch { code = 'cache_seed_cleanup_failed'; }
     if (closed.some((item) => item.status === 'rejected')) code = 'cache_seed_cleanup_failed';
