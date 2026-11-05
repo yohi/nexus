@@ -17,8 +17,8 @@ export function startRuntimeWork(observer: RuntimeObserver, work: RuntimeWorkKin
     workId, emit,
     finish: (outcome: 'success' | 'failed' | 'aborted' | 'timeout' | 'incomplete' | 'already_running') =>
       emit({ kind: 'work_finished', work, outcome }),
-    run: <T>(callback: () => T): T => parent === undefined ? callback()
-      : withObservationContext({ ...parent, workId, parentWorkId: parent.workId }, callback),
+    run: <T>(callback: () => T): T => withObservationContext({ requestId: parent?.requestId ?? workId,
+      phaseId: parent?.phaseId ?? work, ...parent, workId, ...(parent?.workId === undefined ? {} : { parentWorkId: parent.workId }) }, callback),
   };
 }
 

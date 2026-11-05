@@ -61,9 +61,10 @@ describe('RipgrepEngine', () => {
   it('returns an empty result when the request times out', async () => {
     vi.useFakeTimers();
     const reasons: string[] = [];
+    const abortReasonNames: string[] = [];
     const spawnImpl = vi.fn(async (_params, signal: AbortSignal) => {
       await new Promise<void>((resolve) => {
-        signal.addEventListener('abort', () => resolve(), { once: true });
+        signal.addEventListener('abort', () => { abortReasonNames.push((signal.reason as Error).name); resolve(); }, { once: true });
       });
       throw new Error('aborted');
     });
@@ -82,6 +83,7 @@ describe('RipgrepEngine', () => {
 
     await expect(searchPromise).resolves.toEqual([]);
     expect(reasons).toEqual(['timeout']);
+    expect(abortReasonNames).toEqual(['TimeoutError']);
   });
 
   it('propagates client abort signals to the spawned grep process', async () => {

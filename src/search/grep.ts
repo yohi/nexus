@@ -99,7 +99,7 @@ export class RipgrepEngine implements IGrepEngine {
       timedOut = true;
       emitRuntimeEvent(this.options.observer, { kind: 'grep_signal', reason: 'timeout' });
       processController?.kill('SIGTERM');
-      timeoutController.abort();
+      timeoutController.abort(new DOMException('The grep operation timed out.', 'TimeoutError'));
 
       if (processController) {
         escalationId = setTimeout(() => {

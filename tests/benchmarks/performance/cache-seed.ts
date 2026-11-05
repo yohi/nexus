@@ -82,7 +82,7 @@ export async function seedCompatibleCache(source: CacheSeedEndpoint, target: Cac
     return cacheSeedResultSchema.parse({ status: 'valid', keySetDigest, ...resultCounts() });
   } catch (error) {
     let code = failureCode(error, signal);
-    const closed = await Promise.allSettled([source.metadataStore.close(), target.metadataStore.close()]);
+    const closed = await Promise.allSettled([target.metadataStore.close()]);
     try { await disposeCacheSeedTarget(target); }
     catch { code = 'cache_seed_cleanup_failed'; }
     if (closed.some((item) => item.status === 'rejected')) code = 'cache_seed_cleanup_failed';

@@ -69,7 +69,9 @@ export function createGrepEngine(projectRoot: string, observer?: RuntimeObserver
         res(matches);
       });
       child.on('error', (error) => {
-        childFailure = { status: error.name === 'AbortError' ? 'aborted' : 'spawn_failure' };
+        childFailure = error.name === 'AbortError'
+          ? { status: signal?.reason instanceof Error && signal.reason.name === 'TimeoutError' ? 'timeout' : 'aborted' }
+          : { status: 'spawn_failure' };
         if (error.name === 'AbortError') res([]); else rej(error);
       });
       });

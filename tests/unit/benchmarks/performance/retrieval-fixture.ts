@@ -1,4 +1,4 @@
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, realpath, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { GrepMatch } from '../../../../src/types/index.js';
@@ -10,7 +10,7 @@ import { runOptionsSchema } from '../../../benchmarks/performance/contracts.js';
 import type { OutcomeCollector } from '../../../benchmarks/performance/outcomes.js';
 
 export async function createRetrievalFixture() {
-  const root = await mkdtemp(join(tmpdir(), 'nexus-retrieval-contract-'));
+  const root = await realpath(await mkdtemp(join(tmpdir(), 'nexus-retrieval-contract-')));
   const manifest = await generateFixture(root, 'smoke');
   const normalize = await createFixturePathNormalizer(root, manifest);
   const run = runOptionsSchema.parse({ profile: 'smoke', outputMode: 'stdout', revision: { commit: 'a'.repeat(40), dirty: true },

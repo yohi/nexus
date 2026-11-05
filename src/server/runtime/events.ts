@@ -12,7 +12,7 @@ import { observeRuntimeWork } from '../../observability/runtime-work.js';
 export class EventProcessingManager {
   private abortController = new AbortController();
   private drainTask?: Promise<void>;
-  private fullScanPromise?: Promise<void>;
+  private readonly fullScanPromises = new Set<Promise<void>>();
 
   constructor(private config: Config, private projectRoot: string, private ignorePaths: string[],
     private pipeline: IndexPipeline, private loadFileContent: (path: string) => Promise<string>,
@@ -27,9 +27,9 @@ export class EventProcessingManager {
       concurrency: 4, metricsHooks: this.metricsCollector, observer: this.observer,
       onFullScanRequired: () => {
         const promise = this.triggerFullScan('overflow-recovery').finally(() => {
-          if (this.fullScanPromise === promise) this.fullScanPromise = undefined;
+          this.fullScanPromises.delete(promise);
         });
-        this.fullScanPromise = promise;
+        this.fullScanPromises.add(promise);
         return Promise.resolve();
       },
     });
@@ -44,7 +44,8 @@ export class EventProcessingManager {
 
   private async stop() {
     this.abortController.abort();
-    await Promise.allSettled([this.drainTask ?? Promise.resolve(), this.fullScanPromise ?? Promise.resolve()]);
+    await Promise.allSettled([this.drainTask ?? Promise.resolve()]);
+    while (this.fullScanPromises.size > 0) await Promise.allSettled([...this.fullScanPromises]);
   }
 
   private async triggerFullScan(reason: ReindexOptions['reason'] = 'overflow-recovery', retryCount = 3, baseDelayMs = 1000) {
