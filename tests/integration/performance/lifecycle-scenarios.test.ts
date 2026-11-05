@@ -11,6 +11,8 @@ import { OutcomeCollector } from '../../benchmarks/performance/outcomes.js';
 import * as resources from '../../benchmarks/performance/resources.js';
 import { ArtifactMeasurementError } from '../../benchmarks/performance/resources.js';
 import { createLifecycleFixture } from './lifecycle-fixture.js';
+import { withRuntimeDiagnosticContext } from '../../../src/observability/diagnostic-stage-trace.js';
+import { createDiagnosticWorkerContext } from './diagnostic-context.js';
 
 const fixtures: Awaited<ReturnType<typeof createLifecycleFixture>>[] = [];
 async function fixture() { const value = await createLifecycleFixture(); fixtures.push(value); return value; }
@@ -19,6 +21,21 @@ const run = runOptionsSchema.parse({ profile: 'smoke', outputMode: 'stdout', rev
   timeoutMs: 30_000, auditPageSize: 512, cacheSeedBatchSize: 512, memoryLimitMb: 2_048, sampleMode: 'smoke' });
 
 describe('actual lifecycle scenario records', () => {
+  it('records S12 runtime close and artifact measurement spans', async () => {
+    const current = await fixture();
+    const { workerContext, runtimeContext } = createDiagnosticWorkerContext();
+
+    const record = await withRuntimeDiagnosticContext(runtimeContext, () =>
+      runStartupScenario('cold_initial_index', current.factory, current.manifest,
+        { run, collector: current.collector, signal: new AbortController().signal, setupMs: 0 }));
+
+    expect(record.status).toBe('valid');
+    const s12Spans = workerContext.recorder.snapshot().events.filter(
+      (event) => event.event === 'span_started' && event.stageId === 'S12_resource_cleanup',
+    );
+    expect(s12Spans.length).toBeGreaterThanOrEqual(2);
+  });
+
   it('returns construction-to-ready samples and closes startup-only runtimes', async () => {
     const current = await fixture();
     const record = await runStartupScenario('cold_initial_index', current.factory, current.manifest,

@@ -1,4 +1,6 @@
 import { z } from 'zod';
+import { isAbsolute, relative, sep } from 'node:path';
+import { attemptIdSchema, operationIdSchema } from './diagnostics/contracts.js';
 import { environmentSchema, failureSchema, runOptionsSchema, scenarioRecordSchema } from './contracts.js';
 import { workloadSchema } from './workload.js';
 import { limitProofSchema } from './worker-proof.js';
@@ -15,6 +17,12 @@ export const transportSchema = z.object({ jobId: z.string(), kind: jobKindSchema
 const common = { schemaVersion: z.literal(1), runId: z.string().uuid(), ownerRoot: z.string().min(1),
   resultFile: z.string().min(1), phaseFile: z.string().min(1), deadlineEpochMs: z.number().finite().positive(),
   memoryLimitMb: z.number().int().positive(), timeoutMs: z.number().int().positive() };
+export const workerDiagnosticRequestSchema = z.object({
+  schemaVersion: z.literal(1), diagnosticOnly: z.literal(true), runId: z.string().uuid(),
+  jobId: z.literal('cold_initial_index'), recipeDigest: z.string().regex(/^[a-f0-9]{64}$/),
+  sourceFingerprint: z.string().regex(/^[a-f0-9]{64}$/), runDirectory: z.string().refine(isAbsolute),
+  operationId: operationIdSchema, attemptId: attemptIdSchema,
+}).strict().readonly();
 export const workerRequestSchema = z.discriminatedUnion('mode', [
   z.object({ ...common, mode: z.literal('scenario'), options: runOptionsSchema, job: jobSchema }).strict(),
   z.object({ ...common, mode: z.literal('aggregate'), options: runOptionsSchema.nullable(),
@@ -23,6 +31,13 @@ export const workerRequestSchema = z.discriminatedUnion('mode', [
 ]).readonly();
 export type WorkerRequest = z.infer<typeof workerRequestSchema>;
 export type ScenarioRequest = Extract<WorkerRequest, { mode: 'scenario' }>;
+export type WorkerDiagnosticRequest = z.infer<typeof workerDiagnosticRequestSchema>;
+export function diagnosticRequestMatchesWorker(request: ScenarioRequest, diagnostic: WorkerDiagnosticRequest): boolean {
+  const directory = relative(request.ownerRoot, diagnostic.runDirectory);
+  return isAbsolute(request.ownerRoot) && request.runId === diagnostic.runId
+    && request.job.kind === 'cold_initial_index' && directory !== '' && directory !== '..'
+    && !directory.startsWith(`..${sep}`) && !isAbsolute(directory);
+}
 export type AggregateRequest = Extract<WorkerRequest, { mode: 'aggregate' }>;
 export type JobKind = z.infer<typeof jobKindSchema>;
 export type JobTransport = z.infer<typeof transportSchema>;

@@ -25,24 +25,41 @@ export class AuditMembership {
 
   get fileCounts() { return { legacyFiles: this.legacyFiles.size, structuredFiles: this.structuredFiles.size }; }
 
-  accept(row: VectorAuditRow): void {
+  accept(row: VectorAuditRow): boolean {
     switch (row.view) {
       case 'legacy': this.legacyFiles.add(row.filePath); break;
       case 'structured': this.structuredFiles.add(row.filePath); break;
     }
     const state = this.files.get(row.filePath);
-    if (state === undefined) { this.failures.add('unexpected_active_file'); return; }
+    if (state === undefined) { this.failures.add('unexpected_active_file'); return false; }
     const expected = row.view === 'legacy' ? state.file.legacyRows : state.file.structuredRows;
     const index = expected.findIndex((item) => row.id === `${row.filePath}:${item.startLine}-${item.endLine}:${item.name}`);
     const target = expected[index];
-    if (target === undefined) { this.failures.add('vector_identity_mismatch', 1, state.file.path); return; }
-    if (state[row.view][index] !== 0) this.failures.add('duplicate_vector_row', 1, state.file.path);
+    if (target === undefined) { this.failures.add('vector_identity_mismatch', 1, state.file.path); return false; }
+    let valid = true;
+    if (state[row.view][index] !== 0) {
+      this.failures.add('duplicate_vector_row', 1, state.file.path);
+      valid = false;
+    }
     state[row.view][index] = 1;
-    if (row.name !== target.name || row.kind !== target.kind) this.failures.add('vector_identity_mismatch', 1, state.file.path);
-    if (row.contentHash !== target.contentHash) this.failures.add('vector_hash_mismatch', 1, state.file.path);
-    if (row.startLine !== target.startLine || row.endLine !== target.endLine) this.failures.add('vector_span_mismatch', 1, state.file.path);
+    if (row.name !== target.name || row.kind !== target.kind) {
+      this.failures.add('vector_identity_mismatch', 1, state.file.path);
+      valid = false;
+    }
+    if (row.contentHash !== target.contentHash) {
+      this.failures.add('vector_hash_mismatch', 1, state.file.path);
+      valid = false;
+    }
+    if (row.startLine !== target.startLine || row.endLine !== target.endLine) {
+      this.failures.add('vector_span_mismatch', 1, state.file.path);
+      valid = false;
+    }
     if (row.view === 'structured' && (row.generationId !== state.file.sourceHash ||
-      row.symbolId !== expectedSymbolId(state.file, target.name))) this.failures.add('vector_generation_mismatch', 1, state.file.path);
+      row.symbolId !== expectedSymbolId(state.file, target.name))) {
+      this.failures.add('vector_generation_mismatch', 1, state.file.path);
+      valid = false;
+    }
+    return valid;
   }
 
   finish(complete: boolean): void {

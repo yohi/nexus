@@ -4,7 +4,7 @@ import { scenarioRecordSchema } from './contracts.js';
 import type { RuntimeAssembly } from '../../../src/server/runtime/assembly-types.js';
 import type { ReadinessCapture } from './readiness.js';
 import type { ScenarioRequest } from './worker-contracts.js';
-import type { WorkerBudget } from './worker-budget.js';
+import type { WorkerExecutionBudget } from './worker-budget.js';
 import type { OutcomeCollector } from './outcomes.js';
 import { createFixturePathNormalizer } from './logical-path.js';
 import { runRetrievalCase } from './retrieval.js';
@@ -14,7 +14,7 @@ import { captureResources } from './resources.js';
 
 export interface RetrievalWorkerContext {
   readonly request: ScenarioRequest;
-  readonly budget: WorkerBudget;
+  readonly budget: WorkerExecutionBudget;
   readonly collector: OutcomeCollector;
   readonly root: string;
   readonly manifest: FixtureManifest;

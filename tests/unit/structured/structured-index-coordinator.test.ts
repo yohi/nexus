@@ -30,6 +30,14 @@ describe('StructuredIndexCoordinator', () => {
     expect((await metadataStore.getStructuredIndexState()).rebuildEpoch).toBe(0);
   });
 
+  it('does not retain diagnostic row counts during an unobserved stage', async () => {
+    const stage = createStructuredStage('src/unobserved.ts', 'export function unobserved() { return 1; }', 'unobserved');
+
+    await stageStructuredFile(coordinator, stage);
+
+    expect(coordinator['stagedGenerationRowCounts'].size).toBe(0);
+  });
+
   it('does not leave a pending generation when embedding counts mismatch', async () => {
     const stage = createStructuredStage('src/mismatch.ts', 'export function mismatch() { return 1; }', 'mismatch');
 

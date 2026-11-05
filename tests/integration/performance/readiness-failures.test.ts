@@ -4,6 +4,8 @@ import { systemClock } from '../../benchmarks/performance/clock.js';
 import * as settlement from '../../benchmarks/performance/readiness-settlement.js';
 import { observeReindex, observeRuntimeWork } from '../../../src/observability/runtime-work.js';
 import { createLifecycleFixture } from './lifecycle-fixture.js';
+import { withRuntimeDiagnosticContext } from '../../../src/observability/diagnostic-stage-trace.js';
+import { createDiagnosticWorkerContext } from './diagnostic-context.js';
 
 const fixtures: Awaited<ReturnType<typeof createLifecycleFixture>>[] = [];
 async function fixture() {
@@ -15,6 +17,19 @@ afterEach(async () => {
 });
 
 describe('readiness failure admission', () => {
+  it('records an S11 span around the actual-handler readiness probe', async () => {
+    const current = await fixture();
+    const { workerContext, runtimeContext } = createDiagnosticWorkerContext();
+    const result = await withRuntimeDiagnosticContext(runtimeContext, () =>
+      captureReadiness(current.factory, current.collector, current.manifest, systemClock, new AbortController().signal));
+
+    expect(result.status).toBe('valid');
+    const stages = workerContext.recorder.snapshot().events
+      .filter((event) => event.event === 'span_started')
+      .map((event) => event.stageId);
+    expect(stages).toContain('S11_readiness_probe');
+  });
+
   it.each(['rejected', 'incomplete', 'unowned', 'stale'] as const)(
     'does not admit %s indexing evidence as a fast startup', async (failure) => {
       const current = await fixture();

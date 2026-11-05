@@ -67,6 +67,21 @@ describe('EventQueue', () => {
     expect(running.peak).toBeLessThanOrEqual(2);
   });
 
+  it('reports the number of active drain handlers until they settle', async () => {
+    vi.useFakeTimers();
+    const queue = new EventQueue({ debounceMs: 10, maxQueueSize: 10, fullScanThreshold: 5, concurrency: 2 });
+    queue.enqueue(makeEvent({ filePath: 'src/active.ts' }));
+    vi.runAllTimers();
+
+    const drainPromise = queue.drain(async () => {
+      expect(queue.getDrainInFlightCount()).toBe(1);
+      await Promise.resolve();
+    });
+    await drainPromise;
+
+    expect(queue.getDrainInFlightCount()).toBe(0);
+  });
+
   it('sets overflow when the queue size exceeds the full scan threshold', async () => {
     vi.useFakeTimers();
     const queue = new EventQueue({ debounceMs: 10, maxQueueSize: 10, fullScanThreshold: 2, concurrency: 1 });
