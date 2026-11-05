@@ -15,11 +15,10 @@ type AuditRuntimeInput = Readonly<{
   reader: RuntimeDiagnostics;
   manifest: FixtureManifest;
   failures: AuditFailures;
-  membership: AuditMembership;
 }>;
 
 async function auditInitialState(input: AuditRuntimeInput): Promise<Awaited<ReturnType<RuntimeDiagnostics['metadataStore']['getIndexStats']>>> {
-  const { reader, manifest, failures, membership } = input;
+  const { reader, manifest, failures } = input;
   const queue = reader.queueSnapshot();
   if (queue.size !== 0 || queue.postScanSize !== 0 || queue.dropped !== 0 || queue.state !== 'normal' ||
     queue.postScanActive || reader.pendingDrainCount() !== 0) failures.add('runtime_not_settled');
@@ -110,9 +109,8 @@ async function auditRuntimeUnstaged(reader: RuntimeDiagnostics, manifest: Fixtur
   const membership = new AuditMembership(manifest, failures);
   try {
     signal.throwIfAborted();
-    const auditInput = { reader, manifest, failures, membership } as const;
-    const stats = await auditInitialState(auditInput);
-    const vectorComplete = await auditVectorRows({ ...auditInput, signal, counts });
+    const stats = await auditInitialState({ reader, manifest, failures });
+    const vectorComplete = await auditVectorRows({ reader, signal, counts, failures, membership });
     Object.assign(counts, membership.fileCounts);
     membership.finish(vectorComplete);
     await auditStoredCounts({ reader, manifest, counts, failures, signal, stats });

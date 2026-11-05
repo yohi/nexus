@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'vitest';
 
-import { IndexPipeline } from '../../../../../src/indexer/pipeline.js';
 import { TestEmbeddingProvider } from '../../../plugins/embeddings/test-embedding-provider.js';
 import { createPipeline } from '../../../../shared/test-helpers.js';
+import { createDiagnosticPipeline } from '../../../../shared/diagnostic-pipeline.js';
 import { createRuntimeDiagnosticContext } from '../../../../benchmarks/performance/diagnostics/worker-stage-context.js';
 import { withRuntimeDiagnosticContext } from '../../../../../src/observability/diagnostic-stage-trace.js';
 import { createDiagnosticTestContext } from './diagnostic-test-helpers.js';
@@ -27,13 +27,8 @@ describe('legacy parser diagnostic stages', () => {
         }),
       }),
     });
-    const pipeline = new IndexPipeline({
-      metadataStore,
-      vectorStore,
-      chunker,
-      embeddingProvider: new TestEmbeddingProvider(),
-      pluginRegistry: registry,
-    });
+    const pipeline = createDiagnosticPipeline(
+      { metadataStore, vectorStore, chunker, pluginRegistry: registry }, new TestEmbeddingProvider());
     const context = createDiagnosticTestContext();
 
     await withRuntimeDiagnosticContext(createRuntimeDiagnosticContext(context), () =>

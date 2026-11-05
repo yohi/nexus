@@ -4,9 +4,8 @@ import { systemClock } from '../../benchmarks/performance/clock.js';
 import * as settlement from '../../benchmarks/performance/readiness-settlement.js';
 import { observeReindex, observeRuntimeWork } from '../../../src/observability/runtime-work.js';
 import { createLifecycleFixture } from './lifecycle-fixture.js';
-import { createTraceRecorder } from '../../benchmarks/performance/diagnostics/trace-recorder.js';
-import { createRuntimeDiagnosticContext } from '../../benchmarks/performance/diagnostics/worker-stage-context.js';
 import { withRuntimeDiagnosticContext } from '../../../src/observability/diagnostic-stage-trace.js';
+import { createDiagnosticWorkerContext } from './diagnostic-context.js';
 
 const fixtures: Awaited<ReturnType<typeof createLifecycleFixture>>[] = [];
 async function fixture() {
@@ -20,22 +19,8 @@ afterEach(async () => {
 describe('readiness failure admission', () => {
   it('records an S11 span around the actual-handler readiness probe', async () => {
     const current = await fixture();
-    const workerContext = {
-      recorder: createTraceRecorder({
-        runId: '00000000-0000-4000-8000-000000000001',
-        jobId: 'cold_initial_index',
-        recipeDigest: 'a'.repeat(64),
-        sourceFingerprint: 'b'.repeat(64),
-        pid: 3002,
-        processStartTicks: '4567',
-        ppid: 2000,
-        processRole: 'vitest_worker',
-        clockDomain: 'process_local_monotonic',
-      }, { nowNs: () => process.hrtime.bigint() }),
-      operationId: 'op_0000000000000001',
-      attemptId: 'attempt_1',
-    };
-    const result = await withRuntimeDiagnosticContext(createRuntimeDiagnosticContext(workerContext), () =>
+    const { workerContext, runtimeContext } = createDiagnosticWorkerContext();
+    const result = await withRuntimeDiagnosticContext(runtimeContext, () =>
       captureReadiness(current.factory, current.collector, current.manifest, systemClock, new AbortController().signal));
 
     expect(result.status).toBe('valid');

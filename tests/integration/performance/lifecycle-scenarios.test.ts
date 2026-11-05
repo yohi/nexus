@@ -11,9 +11,8 @@ import { OutcomeCollector } from '../../benchmarks/performance/outcomes.js';
 import * as resources from '../../benchmarks/performance/resources.js';
 import { ArtifactMeasurementError } from '../../benchmarks/performance/resources.js';
 import { createLifecycleFixture } from './lifecycle-fixture.js';
-import { createTraceRecorder } from '../../benchmarks/performance/diagnostics/trace-recorder.js';
-import { createRuntimeDiagnosticContext } from '../../benchmarks/performance/diagnostics/worker-stage-context.js';
 import { withRuntimeDiagnosticContext } from '../../../src/observability/diagnostic-stage-trace.js';
+import { createDiagnosticWorkerContext } from './diagnostic-context.js';
 
 const fixtures: Awaited<ReturnType<typeof createLifecycleFixture>>[] = [];
 async function fixture() { const value = await createLifecycleFixture(); fixtures.push(value); return value; }
@@ -24,23 +23,9 @@ const run = runOptionsSchema.parse({ profile: 'smoke', outputMode: 'stdout', rev
 describe('actual lifecycle scenario records', () => {
   it('records S12 runtime close and artifact measurement spans', async () => {
     const current = await fixture();
-    const workerContext = {
-      recorder: createTraceRecorder({
-        runId: '00000000-0000-4000-8000-000000000001',
-        jobId: 'cold_initial_index',
-        recipeDigest: 'a'.repeat(64),
-        sourceFingerprint: 'b'.repeat(64),
-        pid: 3002,
-        processStartTicks: '4567',
-        ppid: 2000,
-        processRole: 'vitest_worker',
-        clockDomain: 'process_local_monotonic',
-      }, { nowNs: () => process.hrtime.bigint() }),
-      operationId: 'op_0000000000000001',
-      attemptId: 'attempt_1',
-    };
+    const { workerContext, runtimeContext } = createDiagnosticWorkerContext();
 
-    const record = await withRuntimeDiagnosticContext(createRuntimeDiagnosticContext(workerContext), () =>
+    const record = await withRuntimeDiagnosticContext(runtimeContext, () =>
       runStartupScenario('cold_initial_index', current.factory, current.manifest,
         { run, collector: current.collector, signal: new AbortController().signal, setupMs: 0 }));
 

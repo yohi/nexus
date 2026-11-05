@@ -1,12 +1,21 @@
 import { describe, expect, it } from 'vitest';
 
 import { Chunker } from '../../../../../src/indexer/chunker.js';
-import { IndexPipeline } from '../../../../../src/indexer/pipeline.js';
 import { TestEmbeddingProvider } from '../../../plugins/embeddings/test-embedding-provider.js';
 import { createStructuredCoordinatorFixture, createStructuredStage } from '../../../../shared/structured-test-helpers.js';
+import { createDiagnosticPipeline } from '../../../../shared/diagnostic-pipeline.js';
 import { createRuntimeDiagnosticContext } from '../../../../benchmarks/performance/diagnostics/worker-stage-context.js';
 import { withRuntimeDiagnosticContext } from '../../../../../src/observability/diagnostic-stage-trace.js';
 import { createDiagnosticTestContext } from './diagnostic-test-helpers.js';
+
+function structuredPipeline(fixture: Awaited<ReturnType<typeof createStructuredCoordinatorFixture>>) {
+  return createDiagnosticPipeline({
+    metadataStore: fixture.metadataStore,
+    vectorStore: fixture.vectorStore,
+    chunker: new Chunker(fixture.pluginRegistry),
+    pluginRegistry: fixture.pluginRegistry,
+  }, new TestEmbeddingProvider(), { structuredIndexCoordinator: fixture.coordinator });
+}
 
 describe('structured parser diagnostic stages', () => {
   it('records a terminal failed structured parse without exposing paths', async () => {
@@ -28,14 +37,7 @@ describe('structured parser diagnostic stages', () => {
         }),
       }),
     });
-    const pipeline = new IndexPipeline({
-      metadataStore: fixture.metadataStore,
-      vectorStore: fixture.vectorStore,
-      chunker: new Chunker(fixture.pluginRegistry),
-      embeddingProvider: new TestEmbeddingProvider(),
-      pluginRegistry: fixture.pluginRegistry,
-      structuredIndexCoordinator: fixture.coordinator,
-    });
+    const pipeline = structuredPipeline(fixture);
     const context = createDiagnosticTestContext();
 
     await withRuntimeDiagnosticContext(createRuntimeDiagnosticContext(context), () =>
@@ -74,14 +76,7 @@ describe('structured parser diagnostic stages', () => {
         }),
       }),
     });
-    const pipeline = new IndexPipeline({
-      metadataStore: fixture.metadataStore,
-      vectorStore: fixture.vectorStore,
-      chunker: new Chunker(fixture.pluginRegistry),
-      embeddingProvider: new TestEmbeddingProvider(),
-      pluginRegistry: fixture.pluginRegistry,
-      structuredIndexCoordinator: fixture.coordinator,
-    });
+    const pipeline = structuredPipeline(fixture);
     const context = createDiagnosticTestContext();
 
     await withRuntimeDiagnosticContext(createRuntimeDiagnosticContext(context), () =>
