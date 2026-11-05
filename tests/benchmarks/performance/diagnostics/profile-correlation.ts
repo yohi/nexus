@@ -77,58 +77,14 @@ function collectValidSegmentEvents(
   input: ProfileCorrelationInput,
   reasons: Set<ProfileCorrelationReason>,
 ): readonly ProfileEvent[] | undefined {
-  if (segment.events.length !== 4) {
-    addReason(reasons, segment.events.length > 4 ? 'duplicate_segment_transition' : 'incomplete_segment');
-    return undefined;
-  }
-  const first = segment.events[0];
-  if (first === undefined) {
-    addReason(reasons, 'incomplete_segment');
-    return undefined;
-  }
-  const segmentId = first.segmentId;
-  let identity: DiagnosticTraceIdentity | undefined;
-  for (const [index, event] of segment.events.entries()) {
-    const expectedEvent = index < lifecycle.length ? lifecycle[index] : undefined;
-    if (event.segmentId !== segmentId || event.runId !== input.runId) {
-      addReason(reasons, 'process_identity_mismatch');
-      return undefined;
-    }
-    if (expectedEvent !== undefined && event.event !== expectedEvent) {
-      addReason(reasons, index === 0 ? 'out_of_order_segment_transition' : 'out_of_order_segment_transition');
-      return undefined;
-    }
-    if (index === 3) {
-      switch (event.event) {
-        case 'profile_write_completed':
-        case 'profile_write_failed':
-          break;
-        default:
-          addReason(reasons, 'out_of_order_segment_transition');
-          return undefined;
-      }
-    }
-    if (identity !== undefined && !sameProcessIdentity(identity, event)) {
-      addReason(reasons, 'process_identity_mismatch');
-      return undefined;
-    }
-    identity = event;
-    if (index > 0) {
-      const previous = segment.events[index - 1];
-      if (previous !== undefined && (event.seq <= previous.seq || BigInt(event.monotonicNs) < BigInt(previous.monotonicNs))) {
-        addReason(reasons, 'out_of_order_segment_transition');
-        return undefined;
-      }
-    }
-  }
+  if (!validSegmentLifecycle(segment.events, input.runId, reasons)) return undefined;
   if (!segment.profileValid) {
     addReason(reasons, 'corrupt_profile');
     return undefined;
   }
   const terminal = segment.events[3];
   const stopped = segment.events[2];
-  if (terminal?.event === 'profile_write_completed' && (terminal.fileBytes.value === 0
-    || stopped?.event !== 'profile_segment_stopped' || terminal.sampleCount.value !== stopped.sampleCount.value)) {
+  if (hasCorruptCompletedProfile(terminal, stopped)) {
     addReason(reasons, 'corrupt_profile');
     return undefined;
   }
@@ -139,6 +95,63 @@ function collectValidSegmentEvents(
   return segment.events;
 }
 
+function validSegmentLifecycle(
+  events: readonly ProfileEvent[],
+  runId: string,
+  reasons: Set<ProfileCorrelationReason>,
+): boolean {
+  if (events.length !== 4) {
+    addReason(reasons, events.length > 4 ? 'duplicate_segment_transition' : 'incomplete_segment');
+    return false;
+  }
+  const first = events[0];
+  if (first === undefined) {
+    addReason(reasons, 'incomplete_segment');
+    return false;
+  }
+  let identity: DiagnosticTraceIdentity = first;
+  for (const [index, event] of events.entries()) {
+    if (event.segmentId !== first.segmentId || event.runId !== runId) {
+      addReason(reasons, 'process_identity_mismatch');
+      return false;
+    }
+    if (!hasExpectedTransition(event, index)) {
+      addReason(reasons, 'out_of_order_segment_transition');
+      return false;
+    }
+    if (!sameProcessIdentity(identity, event)) {
+      addReason(reasons, 'process_identity_mismatch');
+      return false;
+    }
+    identity = event;
+    const previous = events[index - 1];
+    if (previous !== undefined && (event.seq <= previous.seq || BigInt(event.monotonicNs) < BigInt(previous.monotonicNs))) {
+      addReason(reasons, 'out_of_order_segment_transition');
+      return false;
+    }
+  }
+  return true;
+}
+
+function hasExpectedTransition(event: ProfileEvent, index: number): boolean {
+  if (index < lifecycle.length) return event.event === lifecycle[index];
+  switch (event.event) {
+    case 'profile_write_completed':
+    case 'profile_write_failed':
+      return true;
+    default:
+      return false;
+  }
+}
+
+function hasCorruptCompletedProfile(
+  terminal: ProfileEvent | undefined,
+  stopped: ProfileEvent | undefined,
+): boolean {
+  return terminal?.event === 'profile_write_completed' && (terminal.fileBytes.value === 0
+    || stopped?.event !== 'profile_segment_stopped' || terminal.sampleCount.value !== stopped.sampleCount.value);
+}
+
 export function correlateProfileEvidence(input: ProfileCorrelationInput): ProfileCorrelationResult {
   const reasons = new Set<ProfileCorrelationReason>();
   if (input.clockAlignment.status !== 'aligned') addReason(reasons, 'clock_unaligned');
@@ -146,6 +159,27 @@ export function correlateProfileEvidence(input: ProfileCorrelationInput): Profil
     const valid = collectValidSegmentEvents(segment, input, reasons);
     return valid === undefined ? [] : [valid];
   });
+  const groups = groupSegments(segmentEvents, reasons);
+  const selection = selectWorkerSegments(groups, input, reasons);
+  const selfSamples = selection.segments.reduce((total, segment) => {
+    const write = segment[3];
+    return total + (write?.event === 'profile_write_completed' ? write.sampleCount.value : 0);
+  }, 0);
+  const overlaps = stageOverlaps(selection.segments, input.stageEvents, input, reasons);
+  const reasonCodes = [...reasons];
+  return Object.freeze({
+    status: reasonCodes.length === 0 ? 'cpu_active_fork_profile_captured' : 'worker_profile_NOT_PROVEN',
+    reasonCodes: Object.freeze(reasonCodes),
+    selfSamples: selection.segments.length === 0 ? selection.selfSamples : selfSamples,
+    profilesMissing: input.segments.length - segmentEvents.length,
+    stageOverlaps: Object.freeze(overlaps),
+  });
+}
+
+function groupSegments(
+  segmentEvents: readonly (readonly ProfileEvent[])[],
+  reasons: Set<ProfileCorrelationReason>,
+): Map<string, readonly (readonly ProfileEvent[])[]> {
   const groups = new Map<string, readonly (readonly ProfileEvent[])[]>();
   const processIdentities = new Map<string, DiagnosticTraceIdentity>();
   const segmentIds = new Map<string, Set<string>>();
@@ -173,7 +207,19 @@ export function correlateProfileEvidence(input: ProfileCorrelationInput): Profil
     const current = groups.get(identityKey) ?? [];
     groups.set(identityKey, [...current, segment]);
   }
+  return groups;
+}
 
+type WorkerSelection = Readonly<{
+  readonly segments: readonly (readonly ProfileEvent[])[];
+  readonly selfSamples: number;
+}>;
+
+function selectWorkerSegments(
+  groups: ReadonlyMap<string, readonly (readonly ProfileEvent[])[]>,
+  input: ProfileCorrelationInput,
+  reasons: Set<ProfileCorrelationReason>,
+): WorkerSelection {
   let workerSegments: readonly (readonly ProfileEvent[])[] = [];
   let selfSamples = 0;
   let hasObservedChild = false;
@@ -217,34 +263,41 @@ export function correlateProfileEvidence(input: ProfileCorrelationInput): Profil
     }
   }
   if (workerSegments.length === 0) {
-    if (!hasObservedChild && groups.size > 0) addReason(reasons, 'parent_only_profile');
-    if (hasReusedPid) addReason(reasons, 'pid_start_tick_mismatch');
-    else if (hasUnownedChild) addReason(reasons, 'process_identity_mismatch');
-    else if (hasInactiveChild) addReason(reasons, 'cpu_inactive');
-    else if (hasMissingPreload) addReason(reasons, 'preload_marker_missing');
-    else if (!hasObservedChild && groups.size === 0) addReason(reasons, 'incomplete_segment');
-    if (hasObservedChild && !reasons.has('pid_start_tick_mismatch') && !reasons.has('process_identity_mismatch')
-      && !reasons.has('cpu_inactive') && !reasons.has('preload_marker_missing')) addReason(reasons, 'worker_not_observed');
-    const maxSegments = Math.max(0, ...[...groups.values()].filter((segments) => segments[0]?.[0]?.pid !== input.parentPid).map((segments) => segments.length));
-    const maxSamples = Math.max(0, ...[...groups.values()].filter((segments) => segments[0]?.[0]?.pid !== input.parentPid).map((segments) => segments.reduce((total, segment) => {
-      const terminal = segment[3];
-      return total + (terminal?.event === 'profile_write_completed' ? terminal.sampleCount.value : 0);
-    }, 0)));
-    if (maxSegments < 2) addReason(reasons, 'insufficient_segments');
-    if (maxSamples < SELF_SAMPLE_THRESHOLD) addReason(reasons, 'insufficient_self_samples');
+    addSelectionFailureReasons({ groups, input, reasons, hasObservedChild, hasReusedPid,
+      hasUnownedChild, hasInactiveChild, hasMissingPreload });
   }
+  return { segments: workerSegments, selfSamples };
+}
 
-  const selfSampleCount = workerSegments.reduce((total, segment) => {
-    const write = segment[3];
-    return total + (write?.event === 'profile_write_completed' ? write.sampleCount.value : 0);
+function addSelectionFailureReasons(input: Readonly<{
+  readonly groups: ReadonlyMap<string, readonly (readonly ProfileEvent[])[]>;
+  readonly input: ProfileCorrelationInput;
+  readonly reasons: Set<ProfileCorrelationReason>;
+  readonly hasObservedChild: boolean;
+  readonly hasReusedPid: boolean;
+  readonly hasUnownedChild: boolean;
+  readonly hasInactiveChild: boolean;
+  readonly hasMissingPreload: boolean;
+}>): void {
+  const { groups, reasons } = input;
+  if (!input.hasObservedChild && groups.size > 0) addReason(reasons, 'parent_only_profile');
+  if (input.hasReusedPid) addReason(reasons, 'pid_start_tick_mismatch');
+  else if (input.hasUnownedChild) addReason(reasons, 'process_identity_mismatch');
+  else if (input.hasInactiveChild) addReason(reasons, 'cpu_inactive');
+  else if (input.hasMissingPreload) addReason(reasons, 'preload_marker_missing');
+  else if (!input.hasObservedChild && groups.size === 0) addReason(reasons, 'incomplete_segment');
+  if (input.hasObservedChild && !reasons.has('pid_start_tick_mismatch') && !reasons.has('process_identity_mismatch')
+    && !reasons.has('cpu_inactive') && !reasons.has('preload_marker_missing')) addReason(reasons, 'worker_not_observed');
+  const workerGroups = [...groups.values()].filter((segments) => segments[0]?.[0]?.pid !== input.input.parentPid);
+  const maxSegments = Math.max(0, ...workerGroups.map((segments) => segments.length));
+  const maxSamples = Math.max(0, ...workerGroups.map((segments) => samplesInSegments(segments)));
+  if (maxSegments < 2) addReason(reasons, 'insufficient_segments');
+  if (maxSamples < SELF_SAMPLE_THRESHOLD) addReason(reasons, 'insufficient_self_samples');
+}
+
+function samplesInSegments(segments: readonly (readonly ProfileEvent[])[]): number {
+  return segments.reduce((total, segment) => {
+    const terminal = segment[3];
+    return total + (terminal?.event === 'profile_write_completed' ? terminal.sampleCount.value : 0);
   }, 0);
-  const overlaps = stageOverlaps(workerSegments, input.stageEvents, input, reasons);
-  const reasonCodes = [...reasons];
-  return Object.freeze({
-    status: reasonCodes.length === 0 ? 'cpu_active_fork_profile_captured' : 'worker_profile_NOT_PROVEN',
-    reasonCodes: Object.freeze(reasonCodes),
-    selfSamples: workerSegments.length === 0 ? selfSamples : selfSampleCount,
-    profilesMissing: input.segments.length - segmentEvents.length,
-    stageOverlaps: Object.freeze(overlaps),
-  });
 }

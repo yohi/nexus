@@ -1,5 +1,5 @@
 import { execFileSync, spawnSync } from 'node:child_process';
-import { chmod, mkdir, mkdtemp, open, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, open, readFile, readdir, rm, stat, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
@@ -61,6 +61,32 @@ describe('versioned external diagnostics kit', () => {
       execFileSync('node', ['-e', script], { env: { ...process.env, NODE_OPTIONS: '' } });
       expect(await readFile(lockPath, 'utf8')).toBe('other owner');
       expect(await readdir(join(runDirectory, 'profiles'))).toEqual([]);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('preserves the profile write error when lock cleanup detects replacement', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'nexus-profile-lock-replaced-'));
+    try {
+      const runDirectory = join(root, 'run');
+      const profiles = join(runDirectory, 'profiles');
+      await mkdir(runDirectory, { mode: 0o700 });
+      await mkdir(profiles, { mode: 0o700 });
+      const budgetPath = join(process.cwd(), 'scripts/performance-diagnostics/v4/profile-run-budget.cjs');
+      const script = [
+        "const fs = require('node:fs'); const original = fs.lstatSync;",
+        `const withBudget = require(${JSON.stringify(budgetPath)}).withProfileRunBudget;`,
+        'const runFd = fs.openSync(process.argv[1], fs.constants.O_RDONLY | fs.constants.O_DIRECTORY);',
+        'const profileFd = fs.openSync(process.argv[2], fs.constants.O_RDONLY | fs.constants.O_DIRECTORY);',
+        "fs.lstatSync = (path, ...args) => { const stat = original(path, ...args); return String(path).endsWith('profile-budget.lock') ? new Proxy(stat, { get(target, key) { return key === 'ino' ? target.ino + 1 : Reflect.get(target, key); } }) : stat; };",
+        "try { withBudget(runFd, profileFd, 1, () => { throw new Error('profile_write_failed'); }); } catch (error) { process.stdout.write(error.message); }",
+        'fs.closeSync(profileFd); fs.closeSync(runFd);',
+      ].join('\n');
+      const result = execFileSync('node', ['-e', script, runDirectory, profiles], {
+        env: { ...process.env, NODE_OPTIONS: '' }, encoding: 'utf8',
+      });
+      expect(result).toBe('profile_write_failed');
     } finally {
       await rm(root, { recursive: true, force: true });
     }
@@ -361,10 +387,8 @@ describe('versioned external diagnostics kit', () => {
   });
 
   it.skipIf(!hasPython)('runs a clock-only Node child handshake without starting a benchmark worker', () => {
-    const nodeExecutable = execFileSync('node', ['-p', 'process.execPath'], { encoding: 'utf8' }).trim();
     const output = execFileSync('python3', [
       join(process.cwd(), 'scripts/performance-diagnostics/v4/clock_conformance.py'),
-      nodeExecutable,
       'start',
     ], { encoding: 'utf8', timeout: 10_000 });
     const outputSchema = z.object({
@@ -380,8 +404,15 @@ describe('versioned external diagnostics kit', () => {
     expect(clock.childClockSource).toBe('process.hrtime.bigint');
   });
 
+  it.skipIf(!hasPython)('does not accept an executable path as a clock probe argument', () => {
+    const script = join(process.cwd(), 'scripts/performance-diagnostics/v4/clock_conformance.py');
+    const result = spawnSync('python3', [script, '/bin/sh', 'start'], { encoding: 'utf8' });
+    expect(result.status).toBe(2);
+    expect(result.stderr).toContain('usage: clock_conformance.py start|end');
+  });
+
   it.skipIf(!hasPython)('summarizes profile samples without emitting raw source URLs', async () => {
-    const directory = await mkdtemp(join(tmpdir(), 'nexus-profile-summary-'));
+    const directory = await mkdtemp(join(process.cwd(), 'tests', '.nexus-profile-summary-'));
     try {
       const profilePath = join(directory, 'sample.cpuprofile');
       const outputPath = join(directory, 'summary.json');
@@ -407,7 +438,7 @@ describe('versioned external diagnostics kit', () => {
   });
 
   it.skipIf(!hasPython)('rejects a corrupt profile without writing a summary file', async () => {
-    const directory = await mkdtemp(join(tmpdir(), 'nexus-corrupt-profile-'));
+    const directory = await mkdtemp(join(process.cwd(), 'tests', '.nexus-corrupt-profile-'));
     try {
       const profilePath = join(directory, 'corrupt.cpuprofile');
       const outputPath = join(directory, 'summary.json');
@@ -419,6 +450,58 @@ describe('versioned external diagnostics kit', () => {
       await expect(readFile(outputPath, 'utf8')).rejects.toThrow();
     } finally {
       await rm(directory, { recursive: true, force: true });
+    }
+  });
+
+  it.skipIf(!hasPython)('rejects a profile path outside the current workspace', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'nexus-profile-outside-workspace-'));
+    try {
+      const profilePath = join(directory, 'sample.cpuprofile');
+      const outputPath = join(directory, 'summary.json');
+      await writeFile(profilePath, JSON.stringify({ nodes: [], samples: [] }));
+      expect(() => execFileSync('python3', [
+        join(process.cwd(), 'scripts/performance-diagnostics/v4/summarize_profiles.py'), profilePath, outputPath,
+      ], { stdio: ['ignore', 'pipe', 'ignore'] })).toThrow();
+      await expect(readFile(outputPath, 'utf8')).rejects.toThrow();
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
+  it.skipIf(!hasPython)('rejects a summary output path outside the current workspace', async () => {
+    const workspace = await mkdtemp(join(process.cwd(), 'tests', '.nexus-summary-output-'));
+    const outside = await mkdtemp(join(tmpdir(), 'nexus-summary-output-outside-'));
+    try {
+      const profilePath = join(workspace, 'sample.cpuprofile');
+      const outputPath = join(outside, 'summary.json');
+      await writeFile(profilePath, JSON.stringify({ nodes: [], samples: [] }));
+      expect(() => execFileSync('python3', [
+        join(process.cwd(), 'scripts/performance-diagnostics/v4/summarize_profiles.py'), profilePath, outputPath,
+      ], { stdio: ['ignore', 'pipe', 'ignore'] })).toThrow();
+      await expect(readFile(outputPath, 'utf8')).rejects.toThrow();
+    } finally {
+      await rm(workspace, { recursive: true, force: true });
+      await rm(outside, { recursive: true, force: true });
+    }
+  });
+
+  it.skipIf(!hasPython)('rejects profile paths reached through a symlinked workspace directory', async () => {
+    const workspace = await mkdtemp(join(process.cwd(), 'tests', '.nexus-profile-symlink-'));
+    const outside = await mkdtemp(join(tmpdir(), 'nexus-profile-symlink-outside-'));
+    try {
+      const outsideProfile = join(outside, 'sample.cpuprofile');
+      const linkedDirectory = join(workspace, 'linked');
+      await writeFile(outsideProfile, JSON.stringify({ nodes: [], samples: [] }));
+      await symlink(outside, linkedDirectory, 'dir');
+      const outputPath = join(workspace, 'summary.json');
+      expect(() => execFileSync('python3', [
+        join(process.cwd(), 'scripts/performance-diagnostics/v4/summarize_profiles.py'),
+        join(linkedDirectory, 'sample.cpuprofile'), outputPath,
+      ], { stdio: ['ignore', 'pipe', 'ignore'] })).toThrow();
+      await expect(readFile(outputPath, 'utf8')).rejects.toThrow();
+    } finally {
+      await rm(workspace, { recursive: true, force: true });
+      await rm(outside, { recursive: true, force: true });
     }
   });
 });

@@ -4,10 +4,11 @@ This source directory is a versioned successor to the existing v3 archive. The v
 
 ## Files
 
-- `clock_conformance.py` launches only a short-lived Node clock probe. Capture a `start` record before a future diagnostic and an `end` record after it using the same Node executable. The TypeScript clock-domain parser and calibrator compare their boot ID, source, resolution, minimum-round-trip offset intervals, and uncertainty. This helper does not launch Vitest or a benchmark worker.
+- `clock_conformance.py` launches only a short-lived Node clock probe selected from `PATH`. Capture a `start` record before a future diagnostic and an `end` record after it with the same `PATH` configuration. The TypeScript clock-domain parser and calibrator compare their boot ID, source, resolution, minimum-round-trip offset intervals, and uncertainty. This helper does not launch Vitest or a benchmark worker.
 - `worker_profile_preload.cjs` is an opt-in Node preload. It does nothing unless `NEXUS_PERF_DIAGNOSTIC_REQUEST_FILE` names a valid request. The runner must create a mode-0600 request file and an owned mode-0700 run directory before enabling it.
 - `profile-event-sink.cjs` writes process-specific mode-0600 event and profile files under the validated run directory. It bounds event JSONL to 4,096 events/8 MiB and profile files to 64 MiB per segment. `profile-run-budget.cjs` serializes profile writes using an exclusively created run-owned lock and checks the total profile directory size against 512 MiB. A present or stale lock fails closed without deleting it. The supervisor must independently verify the run-wide budget and cleanup before admitting evidence.
 - `summarize_profiles.py` validates one profile under the 64 MiB segment limit and emits only sample counts and fixed source categories. It does not output function names, URLs, paths, or raw profile content.
+- Run `summarize_profiles.py` from a workspace directory containing both input and output paths; it rejects paths that resolve outside the current working directory.
 
 ## Status and evidence limits
 

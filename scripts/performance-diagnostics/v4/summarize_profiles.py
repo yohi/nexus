@@ -17,11 +17,13 @@ from __future__ import annotations
 
 import json
 import os
+import stat
 import sys
 from pathlib import Path
 from typing import TypedDict
 
 MAX_PROFILE_BYTES = 64 * 1024 * 1024
+type JsonValue = str | int | float | bool | None | list[JsonValue] | dict[str, JsonValue]
 
 
 class CallFrame(TypedDict):
@@ -53,10 +55,32 @@ class InvalidProfileError(ValueError):
         super().__init__(reason_code)
 
 
+def open_workspace_file(path: Path, flags: int, mode: int = 0o600) -> int:
+    """Open a workspace-relative file without following symlinks in any path component."""
+    workspace = Path.cwd().resolve()
+    absolute_path = Path(os.path.abspath(path))
+    try:
+        relative_path = absolute_path.relative_to(workspace)
+    except ValueError as error:
+        raise InvalidProfileError('path_outside_workspace') from error
+    if not relative_path.parts:
+        raise InvalidProfileError('invalid_workspace_file')
+
+    directory_fd = os.open(workspace, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        for component in relative_path.parts[:-1]:
+            child_fd = os.open(component, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=directory_fd)
+            os.close(directory_fd)
+            directory_fd = child_fd
+        return os.open(relative_path.name, flags | os.O_NOFOLLOW, mode, dir_fd=directory_fd)
+    finally:
+        os.close(directory_fd)
+
+
 def parse_profile(raw_profile: bytes) -> CpuProfile:
     """Parse untrusted Node CPU profile JSON into the minimal typed shape."""
     try:
-        raw_value = json.loads(raw_profile)
+        raw_value: JsonValue = json.loads(raw_profile)
     except (UnicodeDecodeError, json.JSONDecodeError) as error:
         raise InvalidProfileError('invalid_json') from error
     if not isinstance(raw_value, dict):
@@ -66,6 +90,12 @@ def parse_profile(raw_profile: bytes) -> CpuProfile:
     if not isinstance(raw_nodes, list) or not isinstance(raw_samples, list):
         raise InvalidProfileError('missing_profile_arrays')
 
+    nodes, node_ids = parse_nodes(raw_nodes)
+    samples = parse_samples(raw_samples, node_ids)
+    return {'nodes': nodes, 'samples': samples}
+
+
+def parse_nodes(raw_nodes: list[JsonValue]) -> tuple[list[CpuProfileNode], set[int]]:
     nodes: list[CpuProfileNode] = []
     node_ids: set[int] = set()
     for raw_node in raw_nodes:
@@ -83,13 +113,16 @@ def parse_profile(raw_profile: bytes) -> CpuProfile:
             raise InvalidProfileError('invalid_call_frame')
         node_ids.add(node_id)
         nodes.append({'id': node_id, 'callFrame': {'functionName': function_name, 'url': url}})
+    return nodes, node_ids
 
+
+def parse_samples(raw_samples: list[JsonValue], node_ids: set[int]) -> list[int]:
     samples: list[int] = []
     for sample in raw_samples:
         if not isinstance(sample, int) or isinstance(sample, bool) or sample not in node_ids:
             raise InvalidProfileError('sample_references_unknown_node')
         samples.append(sample)
-    return {'nodes': nodes, 'samples': samples}
+    return samples
 
 
 def categorize(frame: CallFrame) -> str:
@@ -138,7 +171,10 @@ def summarize_profile(profile: CpuProfile) -> RedactedSummary:
 
 def read_profile(path: Path) -> CpuProfile:
     """Read a profile under the per-segment byte ceiling and parse it."""
-    with path.open('rb') as profile_file:
+    descriptor = open_workspace_file(path, os.O_RDONLY)
+    with os.fdopen(descriptor, 'rb') as profile_file:
+        if not stat.S_ISREG(os.fstat(profile_file.fileno()).st_mode):
+            raise InvalidProfileError('invalid_profile_file')
         raw_profile = profile_file.read(MAX_PROFILE_BYTES + 1)
     if len(raw_profile) > MAX_PROFILE_BYTES:
         raise InvalidProfileError('profile_too_large')
@@ -147,7 +183,7 @@ def read_profile(path: Path) -> CpuProfile:
 
 def write_summary_exclusive(path: Path, summary: RedactedSummary) -> None:
     """Create a source-free summary without overwriting prior evidence."""
-    descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    descriptor = open_workspace_file(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL)
     with os.fdopen(descriptor, 'w', encoding='utf-8') as summary_file:
         json.dump(summary, summary_file, ensure_ascii=False, separators=(',', ':'))
         summary_file.write('\n')

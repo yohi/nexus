@@ -11,6 +11,10 @@ function withProfileRunBudget(runDirectoryFd, profileDirectoryFd, requestedBytes
   const lockFd = fs.openSync(lockPath,
     fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_EXCL | fs.constants.O_NOFOLLOW, 0o600);
   let lockIdentity;
+  let result = false;
+  let operationError;
+  let cleanupError;
+  let lockReplaced = false;
   try {
     lockIdentity = fs.fstatSync(lockFd);
     let usedBytes = 0;
@@ -20,24 +24,34 @@ function withProfileRunBudget(runDirectoryFd, profileDirectoryFd, requestedBytes
         throw new Error('profile_budget_invalid_entry');
       }
       usedBytes += entry.size;
-      if (!Number.isSafeInteger(usedBytes) || usedBytes > RUN_LIMIT_BYTES) return false;
+      if (!Number.isSafeInteger(usedBytes) || usedBytes > RUN_LIMIT_BYTES) break;
     }
-    if (requestedBytes > RUN_LIMIT_BYTES - usedBytes) return false;
-    write();
-    return true;
-  } finally {
-    try {
-      if (lockIdentity !== undefined) {
-        const current = fs.lstatSync(lockPath);
-        if (current.dev !== lockIdentity.dev || current.ino !== lockIdentity.ino) {
-          throw new Error('profile_budget_lock_replaced');
-        }
-        fs.unlinkSync(lockPath);
-      }
-    } finally {
-      fs.closeSync(lockFd);
+    if (usedBytes <= RUN_LIMIT_BYTES && requestedBytes <= RUN_LIMIT_BYTES - usedBytes) {
+      write();
+      result = true;
     }
+  } catch (error) {
+    operationError = error;
   }
+
+  try {
+    if (lockIdentity !== undefined) {
+      try {
+        const current = fs.lstatSync(lockPath);
+        if (current.dev !== lockIdentity.dev || current.ino !== lockIdentity.ino) lockReplaced = true;
+        else fs.unlinkSync(lockPath);
+      } catch (error) {
+        cleanupError = error;
+      }
+    }
+  } finally {
+    fs.closeSync(lockFd);
+  }
+
+  if (operationError !== undefined) throw operationError;
+  if (cleanupError !== undefined) throw cleanupError;
+  if (lockReplaced) throw new Error('profile_budget_lock_replaced');
+  return result;
 }
 
 module.exports = { withProfileRunBudget };
