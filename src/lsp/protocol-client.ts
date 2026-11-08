@@ -571,12 +571,8 @@ class LspProtocolClient implements ILspProvider {
         onSessionEnd = () => reject(new LspProtocolError('Language server connection closed'));
         this.session.signal.addEventListener('abort', onSessionEnd, { once: true });
         const fail = () => reject(new LspProtocolError('Language server request failed'));
-        try {
-          // Sanitized: never reflect server-provided error text.
-          void send(source.token).then(resolve).catch(fail);
-        } catch {
-          fail();
-        }
+        // Defer invocation so both synchronous throws and rejected requests reach the sanitizer.
+        void Promise.resolve().then(() => send(source.token)).then(resolve).catch(fail);
       });
     } finally {
       clearTimeout(timer);
