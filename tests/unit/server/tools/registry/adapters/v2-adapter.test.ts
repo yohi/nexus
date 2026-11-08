@@ -21,6 +21,9 @@ describe('v1/v2 schema parity', () => {
     get_file_outline: { filePath: 'src/a.ts' },
     get_symbol_source: { symbolId: 'symbol_v1_1234567890123456789012345678901234567890123' },
     get_symbol_context: { symbolId: 'symbol_v1_1234567890123456789012345678901234567890123', tokenBudget: 512 },
+    get_definition: { filePath: 'src/a.ts', line: 1, character: 0 },
+    get_references: { symbolId: 'symbol_v1_1234567890123456789012345678901234567890123', maxResults: 10 },
+    get_implementations: { filePath: 'src/a.ts', line: 3, character: 7 },
   };
 
   it('accepts the same valid inputs in v3 and v4', () => {
@@ -41,6 +44,30 @@ describe('v1/v2 schema parity', () => {
     expect(toZodV4Object(hybrid.input).safeParse({ query: 'auth', contextLines: 21 }).success).toBe(false);
     expect(z3.object(toZodV3Shape(grep.input)).safeParse({ pattern: 'x', maxResults: 1001 }).success).toBe(false);
     expect(toZodV4Object(grep.input).safeParse({ pattern: 'x', maxResults: 1001 }).success).toBe(false);
+  });
+
+  it('parses navigation targets equivalently in v3 and v4', () => {
+    const cases: Array<[string, Record<string, unknown>, boolean]> = [
+      ['get_definition', { filePath: 'src/a.ts', line: 1, character: 0 }, true],
+      ['get_definition', { filePath: 'src/a.ts', line: 0, character: 0 }, false],
+      ['get_definition', { filePath: 'src/a.ts', line: 1, character: -1 }, false],
+      ['get_definition', { symbolId: 'not-a-symbol' }, false],
+      ['get_implementations', { symbolId: 'symbol_v1_1234567890123456789012345678901234567890123' }, true],
+      ['get_references', { filePath: 'src/a.ts', line: 1, character: 0, maxResults: 1000 }, true],
+      ['get_references', { filePath: 'src/a.ts', line: 1, character: 0, maxResults: 1001 }, false],
+      ['get_references', { filePath: 'src/a.ts', line: 1, character: 0, maxResults: 0 }, false],
+    ];
+    for (const [name, args, expected] of cases) {
+      const definition = TOOL_DEFINITIONS.find((candidate) => candidate.name === name);
+      if (definition === undefined) throw new Error(`missing ${name}`);
+      expect(z3.object(toZodV3Shape(definition.input)).safeParse(args).success).toBe(expected);
+      expect(toZodV4Object(definition.input).safeParse(args).success).toBe(expected);
+    }
+    const definition = TOOL_DEFINITIONS.find((candidate) => candidate.name === 'get_definition');
+    if (definition === undefined) throw new Error('missing get_definition');
+    const v3 = z3.object(toZodV3Shape(definition.input)).parse({ filePath: 'src/a.ts', line: 2, character: 0 });
+    const v4 = toZodV4Object(definition.input).parse({ filePath: 'src/a.ts', line: 2, character: 0 });
+    expect(v4).toEqual(v3);
   });
 
   it('honours config-driven limit overrides', () => {
@@ -165,11 +192,25 @@ describe('v2 adapter over InMemoryTransport', () => {
         'get_file_outline',
         'get_symbol_source',
         'get_symbol_context',
+        'get_definition',
+        'get_references',
+        'get_implementations',
       ]);
 
       const result = await client.callTool({ name: 'grep_search', arguments: { pattern: 'authenticate' } });
       expect(result.isError).toBeUndefined();
       expect(result.structuredContent).toMatchObject({ matches: [{ filePath: expect.any(String) }] });
+
+      const navigation = await client.callTool({
+        name: 'get_references',
+        arguments: { filePath: 'src/auth.ts', line: 1, character: 0 },
+      });
+      expect(navigation.isError).toBeUndefined();
+      expect(navigation.structuredContent).toMatchObject({
+        status: 'unavailable',
+        capability: 'unavailable',
+        reasonCode: 'LSP_NOT_CONFIGURED',
+      });
     } finally {
       await client.close();
       await server.close();

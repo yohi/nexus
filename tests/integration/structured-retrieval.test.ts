@@ -88,7 +88,10 @@ describe('Structured retrieval MCP integration', () => {
     const names = tools.tools.map((tool) => tool.name).sort();
     expect(names).toEqual([
       'get_context',
+      'get_definition',
       'get_file_outline',
+      'get_implementations',
+      'get_references',
       'get_symbol_context',
       'get_symbol_source',
       'grep_search',

@@ -177,6 +177,9 @@ describe.skipIf(!isE2EEnabled)('nexus serve E2E', () => {
       'get_file_outline',
       'get_symbol_source',
       'get_symbol_context',
+      'get_definition',
+      'get_references',
+      'get_implementations',
     ]);
 
     const result = await client.callTool({ name: 'grep_search', arguments: { pattern: 'e2eGrepNeedle' } });
