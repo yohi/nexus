@@ -1,9 +1,11 @@
-# Nexus LSP-Backed Semantic Navigation — Design R0.1
+# Nexus LSP-Backed Semantic Navigation — Design R0.1.1
 
 **Issue:** [#298 — Add LSP-backed semantic navigation tools](https://github.com/yohi/nexus/issues/298)  
 **Date:** 2026-11-08 (JST)  
 **Decision:** Human Owner approved the TypeScript/JavaScript-first design direction in brainstorming; this document records that design.  
-**Scope:** DESIGN_ONLY; no implementation, test execution, or follow-on task authorization.  
+**Scope:** DESIGN_ONLY; F-001–F-003 limited documentation correction only. No implementation, test execution, gate change, or follow-on task authorization.  
+**Correction authority:** Owner approved this bounded documentation correction; formal adoption of the revised design is NOT_VERIFIED; implementation remains BLOCKED.  
+**Reviewed baseline:** `7da1764e03d6c35208005a6eeb3bac88a53d930f` (base `master`).  
 **Authoritative architecture:** [SPEC.md §6](../../../SPEC.md) and [Issue #296](https://github.com/yohi/nexus/issues/296).
 
 ## 1. Intent
@@ -84,10 +86,34 @@ Proposed internal responsibilities (file names are design guidance; implementati
 
 - `src/lsp/contracts.ts`: navigation target, capability/status, location and provider types.
 - `src/lsp/navigation-service.ts`: target resolution, request/capability dispatch, result normalization.
-- `src/lsp/target-resolver.ts`: verified catalog-identity resolution and current-source file/position validation.
-- `src/lsp/process-manager.ts`: lazy startup, shared in-flight startup, transport, cancellation and teardown.
+- `src/lsp/target-resolver.ts`: delegate `symbolId` resolution to the new internal `SymbolRetrievalService.resolveVerifiedNavigationTarget()` and separately validate explicit current-source file/position.
+- `src/lsp/process-manager.ts`: lazy startup, shared in-flight startup, approved execution, Microsoft LSP/JSON-RPC stdio transport, cancellation and teardown.
 - `src/lsp/result-validator.ts`: URI/range containment, current disk checks, partial-result reporting.
 - `src/server/tools/get-lsp-navigation.ts`: common executor called by the three public handlers.
+
+`SymbolRetrievalService` owns the internal `resolveVerifiedNavigationTarget()` entry point and TS AST identifier-token lookup (`6.1`); its existing `verifySymbol()` stays private. The navigation service must not duplicate catalog verification or guess another symbol identity. The provider/transport seam is the following exact internal interface:
+
+```typescript
+type LspNavigationKind = 'definition' | 'references' | 'implementations';
+interface ILspProvider {
+  start(input: { rootUri: string; signal?: AbortSignal }): Promise<{
+    definition: boolean; references: boolean; implementations: boolean;
+    positionEncoding: 'utf-16';
+  }>;
+  syncDocument(input: {
+    kind: 'open' | 'change' | 'close'; uri: string;
+    languageId: string; version: number; text?: string;
+  }): Promise<void>;
+  navigate(input: {
+    kind: LspNavigationKind; uri: string;
+    position: { line: number; character: number }; // LSP 0-based UTF-16
+    signal?: AbortSignal;
+  }): Promise<null | readonly (Location | LocationLink)[]>;
+  shutdown(): Promise<void>;
+}
+```
+
+`Location` and `LocationLink` are types from `vscode-languageserver-protocol`. `RuntimeLocalLspManager` owns the concrete `ILspProvider`, never an MCP client/handler.
 
 No modification to the existing search orchestrator or source-index persistence model is required. The manager is constructed with the runtime assembly and closed by the runtime cleanup path, including partial-initialization rollback.
 
@@ -125,9 +151,9 @@ interface NavigationLocation {
 interface NavigationResponse {
   status:
     | 'ok' | 'not_found' | 'stale_identity' | 'stale'
-    | 'index_incomplete' | 'excluded' | 'unsupported'
+    | 'index_incomplete' | 'not_indexed' | 'degraded' | 'excluded' | 'unsupported'
     | 'unavailable' | 'timeout' | 'cancelled' | 'error';
-  capability: 'supported' | 'unsupported' | 'unavailable';
+  capability: 'supported' | 'unsupported' | 'unavailable' | 'not_checked';
   locations: NavigationLocation[];
   truncated: boolean;
   sourceValidation: 'verified' | 'partial' | 'unknown';
@@ -140,6 +166,7 @@ interface NavigationResponse {
 Contract rules:
 
 - `status: 'ok'` plus an empty `locations` array means the server *supported and processed* the request and found no semantic locations. It is **not** equivalent to `unsupported` or `unavailable`.
+- Pre-launch identity failures use `capability: 'not_checked'` (not `unavailable`); a missing/index-incomplete source is different from a missing server. Underlying Structured `failed` outcomes become a sanitized `error`, and `not_indexed` / `degraded` remain separate public statuses.
 - The `not_found` status refers to an unresolved input identity/file, not to a valid zero-match navigation result.
 - `sourceValidation: 'verified'` means returned file positions were checked against current disk bytes; it **does not** prove complete project-wide semantic freshness or soundness of the language server.
 - An `ok` result may be `partial` if some LSP locations cannot be safely returned. Report `excludedResultCount`; never silently present an incomplete result as exhaustive.
@@ -149,11 +176,53 @@ Contract rules:
 
 ## 6. Target resolution, coordinates, and source authority
 
-### 6.1 Verified `symbolId`
+### 6.1 Verified `symbolId` — F-001
 
-Use the Structured Catalog's active generation, retirement state, and current file/symbol hashes before LSP invocation. A retired, missing, pending, stale, or excluded `symbolId` must return the respective explicit status: never map it to a similar name/declaration.
+Existing `SymbolRetrievalService.verifySymbol()` is **private**, and `getSymbolSource()` does not return declaration location. Implement this **new internal** method on the existing service, reusing the private method instead of exposing its return type or independently duplicating hash checks:
 
-An indexed declaration's *start* may be on an `export`, decorator, modifier, or keyword rather than its identifier. Therefore identify the actual symbol-name token in the **verified current source** with a language-aware in-memory resolver (TypeScript AST for TS/JS), constrained by the indexed declaration identity/range. If that identity/token cannot be established unambiguously, return an explicit non-success outcome. Do not send the start position blindly or choose a text match heuristically.
+```typescript
+interface VerifiedSymbolNavigationTarget {
+  readonly symbolId: string;
+  readonly filePath: string; // normalized project-relative
+  readonly languageId: 'typescript' | 'javascript';
+  readonly position: {
+    readonly line: number;      // Nexus 1-based
+    readonly character: number; // UTF-16, 0-based
+  };
+  readonly fileSha256: string;
+  readonly generationId: string;
+}
+type VerifiedSymbolNavigationResult =
+  | { readonly status: 'ok'; readonly target: VerifiedSymbolNavigationTarget }
+  | { readonly status:
+      'stale_identity' | 'stale' | 'not_found' | 'not_indexed' |
+      'index_incomplete' | 'excluded' | 'unsupported' |
+      'degraded' | 'error' | 'cancelled';
+      readonly reasonCode: string; readonly reindexRequired: boolean };
+class SymbolRetrievalService {
+  resolveVerifiedNavigationTarget(input: {
+    symbolId: string; signal?: AbortSignal;
+  }): Promise<VerifiedSymbolNavigationResult>;
+}
+```
+
+The new method calls private `verifySymbol({ symbolId, signal })` for existing active-generation, retirement, parser/index state, exclusion, file SHA-256, and exact declaration-slice SHA-256 checks. Also require `declaration.isExact`, read/verify the active generation ID and guard against its change, and verify the resolved source file remains within `PathSanitizer.resolveExisting()` canonical project-root containment **before launching** the LSP. Do not treat a textually similar symbol as a valid replacement.
+
+**AST identifier responsibility:** inside `SymbolRetrievalService`, reuse the TypeScript compiler API already in the repository to parse the verified current bytes. Find the uniquely corresponding declaration by indexed `kind`, `qualifiedName`, `signatureDiscriminator` and bounded indexed declaration range/occurrence; take the AST declaration's *name token* (identifier/private identifier), not the declaration's leading `export`, modifier, decorator or keyword. Validate token/name and byte bounds against the verified declaration and source; convert the token start to Nexus 1-based line/0-based UTF-16 character. Recheck file hash and active generation before returning `target`. If a unique token cannot be demonstrated, refuse to navigate (`degraded` / `IDENTIFIER_TOKEN_UNRESOLVED`), never guess a text occurrence. `LspNavigationService` alone translates Nexus line to LSP zero-based line.
+
+| Condition | Public status / reasonCode |
+| --- | --- |
+| Retired / absent symbol | `stale_identity` / `SYMBOL_RETIRED`; `not_found` / `SYMBOL_NOT_FOUND` |
+| Missing baseline | `not_indexed` / `STRUCTURED_INDEX_MISSING` |
+| Pending/missing generation or symbol-hash inconsistency | `index_incomplete` / existing `INDEX_PENDING_GENERATION`, `INDEX_GENERATION_MISSING`, `INDEX_SYMBOL_HASH_MISMATCH` |
+| Missing/changed file or generation race | `stale` / `INDEX_FILE_MISSING` or `INDEX_FILE_HASH_MISMATCH` |
+| Excluded source | `excluded` / `PATH_EXCLUDED` |
+| Unsupported parser/language | `unsupported` / `unsupported_language` or `STRUCTURED_SCHEMA_UNSUPPORTED` |
+| Partial parser coverage, nonexact declaration, unresolved/ambiguous token | `degraded` / `PARSER_COVERAGE_PARTIAL` or `IDENTIFIER_TOKEN_UNRESOLVED` |
+| Unexpected parse/invariant fault | `error` / `PARSE_ERROR` or `INVARIANT_VIOLATION` |
+| Cancelled verification | `cancelled` / `REQUEST_CANCELLED` |
+
+Maintain the existing failure's `reindexRequired` where meaningful; AST ambiguity alone uses `false`. All non-`ok` responses have no target and use public `capability: 'not_checked'`. The `filePath + position` route (`6.2`) bypasses catalog identity safely for saved dirty/unindexed source; it must not reassign a stale `symbolId`.
 
 ### 6.2 Explicit file and position
 
@@ -171,31 +240,117 @@ The LSP may internally analyze additional project files asynchronously; neither 
 
 ## 7. Runtime-local LSP lifecycle and capability negotiation
 
-A single `RuntimeLocalLspManager` belongs to one concrete canonical `projectRoot`. Its server processes, open documents, in-flight requests, timers, and cache are scoped exclusively to that runtime. Different linked Git worktrees are separate runtimes regardless of common Git history or branch name.
+### 7.1 Protocol and version ownership — F-002
 
-1. Validate the request and target before attempting process startup.
-2. On first supported request, spawn the configured executable directly (argument array, `shell: false`) with project-root working directory.
-3. Coalesce concurrent startup requests for the same language/server into one initialization.
-4. Perform LSP `initialize` / `initialized`, with `rootUri` and workspace folder restricted to the concrete worktree.
-5. Inspect server capabilities independently for definition, references, and implementation; report unavailable/unsupported instead of guessing.
-6. Reuse the initialized server while active; optional configurable idle timeout shuts it down.
-7. On idle timeout/runtime close, send `shutdown`, then `exit`, then bounded forced process termination if required. Cleanup must also cover startup failure, crash, cancellation, and runtime-assembly rollback.
+**Pinned initial implementation choice:** direct dependency `vscode-languageserver-protocol@3.18.4`, using the Microsoft Node-side protocol/transport exports from `vscode-languageserver-protocol/node`. Its compatible `vscode-jsonrpc@9.0.3` family is the messaging implementation **as a transitive dependency**, not an independently selected duplicate JSON-RPC stack. `RuntimeLocalLspManager` creates a `createMessageConnection` backed by `StreamMessageReader(child.stdout)` and `StreamMessageWriter(child.stdin)`; use the package's typed LSP messages, cancellation tokens, and error responses. Do not implement JSON-RPC framing manually or depend on VS Code extension-host-only `vscode-languageclient`.
 
-Default configuration requires an explicit, installed `typescript-language-server --stdio` (and compatible TypeScript runtime). No package auto-installation or automatic fallback to a different executable. Expose config guidance for executable path/arguments and timeouts. If disabled or not installed, existing Nexus retrieval remains available.
+Initial server: **`typescript-language-server@6.0.2` (major 6)**, externally installed and owner-approved; target project TypeScript 5.9.x. v6 requires Node >=22.22.2, compatible with Nexus Node >=24. Pin the integration fixture server; Python is later. Official version/API evidence: [Microsoft 3.18.4 / JSON-RPC 9.0.3 release notes](https://github.com/microsoft/vscode-languageserver-node/blob/main/README.md), [Node JSON-RPC transport](https://www.npmjs.com/package/vscode-jsonrpc), [TypeScript LSP 6.0.2](https://github.com/typescript-language-server/typescript-language-server/releases/tag/v6.0.2).
 
-Limit aggregate process count and request concurrency *within the runtime* conservatively; do not introduce a global pool or resource manager without #299/#303 measurement evidence.
+### 7.2 Client-to-server and result contracts — F-002
+
+| LSP method | Owner and exact behavior |
+| --- | --- |
+| `initialize`, `initialized` | `ILspProvider.start` sends initialize request then initialized notification; canonical `rootUri` and one worktree folder; advertise UTF-16/full-document sync/static navigation, `dynamicRegistration=false` |
+| `textDocument/didOpen` | `syncDocument(open)` sends current disk text, TypeScript/JavaScript languageId and initial version 1 |
+| `textDocument/didChange` | `syncDocument(change)` sends full disk content with monotonically increasing document version before a navigation request |
+| `textDocument/didClose` | `syncDocument(close)` closes tracked documents during release/teardown |
+| `textDocument/definition` | `navigate(definition)` with validated position |
+| `textDocument/references` | `navigate(references)`, `context.includeDeclaration=true` |
+| `textDocument/implementation` | `navigate(implementations)` with validated position |
+| `$/cancelRequest` | Library-managed notification for cancellation/deadline, keyed to the actual outstanding request |
+| `shutdown`, `exit` | On idle/runtime close: request shutdown, then exit notification, then bounded force termination if needed |
+
+Use the `initialize` response's `definitionProvider`, `referencesProvider` and `implementationProvider` booleans/options separately; unsupported capability => `unsupported` / `LSP_CAPABILITY_UNSUPPORTED`. No approved executable or failed spawn => `unavailable` / `LSP_NOT_CONFIGURED` or `LSP_START_FAILED`; unexpected protocol/transport error => `error` / `LSP_PROTOCOL_ERROR`; deadline => `timeout` / `LSP_REQUEST_TIMEOUT`; cancellation => `cancelled` / `REQUEST_CANCELLED`. Return no guessed semantic locations.
+
+`textDocument/definition` and `textDocument/implementation` may produce `null`, a single `Location`, `Location[]` or `LocationLink[]`; `references` produces `null` / `Location[]`. Normalize `null` to empty `[]` with `status:'ok'` (not unsupported). For `Location` take `uri` and `range`; for `LocationLink` take `targetUri` and **`targetSelectionRange`**, verifying its inclusion inside `targetRange`. Invalid mixed/unknown shapes => `error` / `LSP_PROTOCOL_ERROR`. Validate each result as an existing, nonexcluded in-worktree file and current range, deduplicate and sort, then apply bounded-result/truncation rules from `5–6`. Out-of-root/excluded locations are omitted with explicit `excludedResultCount` and `sourceValidation:'partial'`; do not claim exhaustive results.
+
+### 7.3 Server-originated messages — F-002
+
+Set inbound request handlers **before** `connection.listen()` and deny by default:
+
+- `workspace/configuration`: supported read-only handler, reply with one `null` per requested configuration item (no env/config/secrets disclosed); advertise `workspace.configuration=true`.
+- `workspace/workspaceFolders`: reply with the **single canonical current worktree** and no sibling roots.
+- `workspace/applyEdit`: always respond `{ applied: false, failureReason: 'Nexus LSP is read-only' }`. No workspace edit or source mutation.
+- `window/showMessageRequest`: respond `null` without a UI.
+- `window/showDocument`: respond `{ success: false }`; do not launch a UI.
+- `client/registerCapability`, `client/unregisterCapability`, unsolicited progress-creation, and unknown/unadvertised server requests: reject with JSON-RPC `MethodNotFound`. Dynamic registration is not advertised.
+- `textDocument/publishDiagnostics`, `window/logMessage`, `window/showMessage`, `$/progress` notifications: safely consume/ignore with sanitized diagnostics; no side effects.
+
+Server-initiated commands/file operations must never be executed. Refusal or protocol failure is LSP-local and cannot stop existing non-LSP tools.
+
+### 7.4 Config structure, precedence and lifecycle — F-003
+
+Add `lsp: LspConfig` to the existing `Config` type in `src/types/index.ts` and load/validate it through `src/config/index.ts`. Exact designed shape:
+
+```typescript
+interface LspConfig {
+  enabled: boolean; // default false
+  typescript: {
+    executable: string | null; // default null; absolute path only
+    args: string[];            // default ['--stdio']
+  };
+  startupTimeoutMs: number; // default 10000, accepted 1..60000
+  requestTimeoutMs: number; // default 10000, accepted 1..60000
+  idleTimeoutMs: number;    // default 60000, accepted 1000..3600000
+}
+```
+
+`.nexus.json` structure (a config request, **not** owner execution approval):
+
+```json
+{
+  "lsp": {
+    "enabled": true,
+    "typescript": {
+      "executable": "/opt/nexus-lsp/bin/typescript-language-server",
+      "args": ["--stdio"]
+    },
+    "startupTimeoutMs": 10000,
+    "requestTimeoutMs": 10000,
+    "idleTimeoutMs": 60000
+  }
+}
+```
+
+**Per-field precedence:** process env > `.nexus.json` > defaults (existing `loadConfig` convention). Exact environment variable names: `NEXUS_LSP_ENABLED` (strict true/false), `NEXUS_LSP_TYPESCRIPT_EXECUTABLE`, `NEXUS_LSP_TYPESCRIPT_ARGS_JSON` (JSON array of strings), `NEXUS_LSP_STARTUP_TIMEOUT_MS`, `NEXUS_LSP_REQUEST_TIMEOUT_MS` and `NEXUS_LSP_IDLE_TIMEOUT_MS`. A configured alternative `LoadConfigOptions.configFileName` retains the file tier. LSP-only invalid config is `unavailable` / `LSP_CONFIG_INVALID` without failing existing search tools. Neither env nor `.nexus.json` can override independent Owner trust (`8.1`).
+
+Manager ownership is **per NexusRuntime/projectRoot**. Construct with `src/server/runtime-assembly.ts`, hold via internal `NexusRuntimeOptions`, and close in runtime `close()` and initialization rollback. Before spawning: validate input/target, effective config, approved executable and trusted worktree. Launch lazily (`shell:false`, root cwd); coalesce starts; initialize; sync on-disk document; capability-check; navigate; verify results. One TS/JS process per runtime; no cross-worktree sharing. On idle timeout/exit/crash close open documents where possible, send shutdown/exit, clean child and timers with bounded termination; cancelled request IDs must not be reused against late responses. No auto-install, `npx` fallback, command lookup from PATH, Global Manager or new repository identity.
 
 ## 8. Security and failure isolation
 
-Language servers can execute code, load plugins and configuration, and traverse dependencies: **LSP is not an isolation boundary**. Use only trusted project worktrees and owner-approved server executables; running untrusted repositories requires an external sandbox/process isolation policy.
+LSP can load code/plugins/configuration and access local files: **LSP is not an OS sandbox**. The following decisions are fail-closed, independent of `.nexus.json` and env.
 
-- Reject path traversal and escaping symlinks for request targets and returned locations. Resolve real paths for existing files and normalize file URIs.
-- Honor existing ignore/exclusion rules; do not expose excluded files or external dependency paths as normal successful locations. Report omission/partialness.
-- Spawn with argument arrays and no shell; do not download servers or grant additional host/network privileges.
-- Bound output collection, request duration, concurrent requests, process lifetime, and result counts.
-- Cancellation must terminate the request and leave reusable process state coherent; a wedged server may be restarted lazily for later requests.
-- Sanitize logged exceptions and child stderr. Do not leak secrets from environment, path, or file content through a status.
-- LSP launch failure, unsupported operation, crash, and timeout must not prevent `semantic_search`, `hybrid_search`, `grep_search`, `get_context`, or Structured Catalog tools from operating.
+### 8.1 Trusted worktree + Owner-approved executable — F-003
+
+Before each lazy spawn require both:
+
+1. Canonical `realpath(projectRoot)` exactly appears in an owner-controlled trust store **outside all project/worktree roots**. Linked worktrees need separate exact-root approvals; never trust by branch name or shared Git metadata.
+2. Configured executable is an **absolute** path to an existing regular executable, canonicalized through `realpath`, and its canonical path, SHA-256 of executable file bytes, exact ordered `args` and approved server version match the trust entry. No arbitrary PATH lookup or shell resolution.
+
+Trust-store path on POSIX: `$XDG_CONFIG_HOME/nexus/lsp-trust.json` (fallback `$HOME/.config/nexus/lsp-trust.json`); require ownership by current user, file mode `0600`, secure non-group/world-writable parent directories, and reject symlink trust-store or parent escape. On Windows use `%APPDATA%/Nexus/lsp-trust.json` only if equivalent restrictive owner-only ACL checks are implemented; otherwise LSP is unavailable. Nexus **reads** this store only; owner provisions/updates it out of band. No new approval-writing CLI, automatic permission prompt, or implicit worktree approval. Project-local `.nexus.json` cannot serve as a trust record.
+
+```json
+{
+  "version": 1,
+  "approvals": [
+    {
+      "projectRoot": "/absolute/canonical/worktree",
+      "executable": "/absolute/canonical/typescript-language-server",
+      "executableSha256": "<64 lowercase hex characters>",
+      "args": ["--stdio"],
+      "serverVersion": "6.0.2"
+    }
+  ]
+}
+```
+
+The approved executable SHA/path/args must match **before any execution**, including a version check; then verify the running server version is the pinned 6.0.2 before navigation. A trust record pins the entry script, not every transitive package, so the project is still treated as trusted code, not sandboxed code. Missing/unreadable/unsafe trust data => `unavailable` / `LSP_TRUST_REQUIRED`; executable, digest, args or version mismatch => `unavailable` / `LSP_EXECUTABLE_NOT_APPROVED`. No child is started on denied approval. Other Nexus retrieval stays operational.
+
+### 8.2 Child process environment and isolation — F-003
+
+Spawn `shell:false` with canonical project-root cwd and an **explicit child environment allowlist**, never raw `process.env`. Initial allowed names: `HOME`, `TMPDIR`, `LANG`, `LC_ALL` and a fixed safe `PATH` containing the trusted Node runtime directory and vetted system directories. Deny `NODE_OPTIONS`, `NODE_PATH`, credentials, API keys, SSH/cloud tokens, proxy environment, arbitrary `NEXUS_*` values, and project-provided environment overrides. Do not inherit ambient PATH for executable selection. Child environment minimization is **not** security isolation against reading credentials from disk; untrusted repositories require a separately approved sandbox.
+
+Reject escaping file paths/symlinks and unapproved file: URIs; honor existing ignore/exclusion rules. Bound process count, requests, result size, timeouts, diagnostics and stderr retention, and sanitize public/logged errors. A failed LSP launch, untrusted root, malformed LSP config, unsupported capability, crash, timeout or rejected server write request must affect **only LSP**. `semantic_search`, `hybrid_search`, `grep_search`, `get_context` and Structured Catalog retrieval continue independently. No source mutation, semantic graph persistence, install/download, or shell command is authorized.
 
 ## 9. Validation and acceptance evidence
 
@@ -204,9 +359,12 @@ Test implementation in small, executable units; no broad review/repair cycle is 
 **Unit / protocol tests**
 
 - Neutral v1 and v2 schema adapters accept `character: 0` and reject malformed or mixed target shapes.
-- Verified `symbolId` maps to an identifier token; stale/retired/pending/missing identities are fail-closed.
+- `resolveVerifiedNavigationTarget` reuses private verification; TS AST selects a unique identifier, while stale/retired/pending/missing/nonexact/ambiguous identity and changed generation/hash fail closed.
 - LSP capability flags are independently respected; an `ok` empty result differs from unsupported/unavailable.
 - UTF-16/non-BMP/CRLF/zero positions and LSP URI/range conversions are correct.
+- Microsoft protocol/JSON-RPC 3.18.4/9.0.3 covers initialize/initialized, didOpen/didChange/didClose, all three navigation requests, cancel, shutdown/exit, null/Location/LocationLink, and distinct unsupported/error statuses.
+- Server-originated config/folders are read-only; workspace/applyEdit, showDocument, dynamic registration and unknown requests never mutate files.
+- LSP config env > file > defaults; invalid config, disabled LSP, missing trust, mismatched executable SHA/args/version, different worktree, weak trust-store permissions and child-environment secret injection fail closed only for LSP.
 - Startup is coalesced; idle cleanup, abrupt exit, timeout, cancellation, and runtime shutdown close processes.
 - Out-of-root, symlink, excluded, deleted, and changed-during-request sources are never represented as verified current locations.
 
@@ -216,7 +374,8 @@ Test implementation in small, executable units; no broad review/repair cycle is 
 - Saved uncommitted edits are observed through explicit file/position requests without waiting for structured reindexing.
 - A stale catalog `symbolId` is refused and cannot be silently remapped.
 - Two divergent sibling worktrees with the same relative file paths receive no cross-worktree document/process/result state.
-- Failure or absence of TypeScript LSP does not fail unrelated retrieval tools.
+- A controlled trusted worktree with pinned `typescript-language-server@6.0.2` demonstrates the three operations and safe config/approval flow.
+- Failure or absence of TypeScript LSP, invalid trust/config, and rejected server edit requests do not fail unrelated retrieval tools.
 - Existing MCP tool registration, verification and runtime-shutdown tests remain compatible with three added tool names.
 
 After the first implementation exists, #320 may incorporate deterministic LSP current-worktree cases and a direct/live LSP baseline. #299 may separately measure startup/request/process overhead. Those are **separate, explicitly authorized tasks**, not additional blockers automatically triggered by this design.
@@ -234,4 +393,5 @@ The initial implementation meets #298's bounded goal when TS/JS navigation works
 ## 11. Decision log
 
 - **2026-11-08:** Human Owner selected TypeScript/JavaScript-first, Python second. Generic provider plus runtime-local lazy LSP manager selected. No persistent semantic graph or automated installation.
+- **R0.1.1 limited correction:** F-001: verified symbol navigation API/AST token; F-002: pinned protocol/server and complete message responsibilities; F-003: config precedence, independent owner trust and child process limits. This correction is not owner adoption or implementation authorization.
 - This document is a committed *design artifact*, not evidence that implementation, integration tests, deployment, or correctness benchmarking have run.
