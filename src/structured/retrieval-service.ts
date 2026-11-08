@@ -598,9 +598,9 @@ export class SymbolRetrievalService {
         switch (error.failure) {
           case 'escaped':
           case 'excluded':
-          case 'not_file':
             return { status: 'excluded', reasonCode: 'PATH_EXCLUDED' };
           case 'missing':
+          case 'not_file':
             return { status: 'stale', reasonCode: 'INDEX_FILE_MISSING' };
           case 'changed':
             return { status: 'stale', reasonCode: 'INDEX_FILE_HASH_MISMATCH' };

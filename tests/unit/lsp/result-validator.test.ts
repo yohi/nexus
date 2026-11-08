@@ -323,6 +323,16 @@ describe('validateNavigationResults', () => {
     expect(result).toMatchObject({ locations: [], sourceValidation: 'partial', excludedResultCount: 1 });
   });
 
+  it.each(['\u2028', '\u2029'])('omits result locations for source containing U+%s', async (separator) => {
+    const ctx = await setup();
+    await write(ctx.root, 'src/separator.ts', `const value = 1;${separator}const next = 2;`);
+    await expect(validate(ctx, [{ uri: ctx.uri('src/separator.ts'), range: range(0, 0, 0, 1) }])).resolves.toMatchObject({
+      locations: [],
+      sourceValidation: 'partial',
+      excludedResultCount: 1,
+    });
+  });
+
   it('deduplicates and sorts deterministically regardless of input order or result shape', async () => {
     const ctx = await setup();
     const entries: (Location | LocationLink)[] = [

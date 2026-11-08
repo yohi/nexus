@@ -825,6 +825,17 @@ describe('SymbolRetrievalService', () => {
         .resolves.toEqual({ status: 'stale', reasonCode: 'INDEX_FILE_MISSING', reindexRequired: true });
     });
 
+    it('returns stale when an indexed file is replaced by a directory', async () => {
+      const indexed = await indexParsed('src/a.ts', 'export function foo() {}');
+      const symbolId = symbolIdOf(indexed.declarations, 'foo');
+
+      await unlink(join(projectRoot, 'src/a.ts'));
+      await mkdir(join(projectRoot, 'src/a.ts'));
+
+      await expect(service.resolveVerifiedNavigationTarget({ symbolId }))
+        .resolves.toEqual({ status: 'stale', reasonCode: 'INDEX_FILE_MISSING', reindexRequired: true });
+    });
+
     it('returns stale when the file changes after initial verification', async () => {
       const indexed = await indexParsed('src/a.ts', 'export function foo() {}');
       const symbolId = symbolIdOf(indexed.declarations, 'foo');

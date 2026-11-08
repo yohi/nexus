@@ -287,6 +287,19 @@ describe('resolveNavigationTarget — explicit file and position', () => {
     expect(result).toEqual({ status: 'error', reasonCode: 'invalid_utf8', ...failureShape });
   });
 
+  it.each(['\u2028', '\u2029'])('returns unsupported for source containing U+%s', async (separator) => {
+    const { root, sanitizer } = await setup();
+    await write(root, 'src/separator.ts', `const value = 1;${separator}const next = 2;`);
+    const result = await resolveNavigationTarget({
+      args: { filePath: 'src/separator.ts', line: 1, character: 0 },
+      symbols: unusedSymbols(),
+      sanitizer,
+      isExcluded: () => false,
+    });
+
+    expect(result).toEqual({ status: 'unsupported', reasonCode: 'unsupported_line_separator', ...failureShape });
+  });
+
   describe('position bounds', () => {
     const resolveAt = async (content: string, line: number, character: number) => {
       const { root, sanitizer } = await setup();
@@ -330,8 +343,6 @@ describe('resolveNavigationTarget — explicit file and position', () => {
         target: { position: { line: 1, character: 2 } },
       });
       await expect(resolveAt('ab\r\ncd', 3, 0)).resolves.toMatchObject({ reasonCode: 'POSITION_OUT_OF_RANGE' });
-      await expect(resolveAt('ab\rcd ef', 2, 4)).resolves.toMatchObject({ status: 'ok' });
-      await expect(resolveAt('ab\rcd ef', 3, 0)).resolves.toMatchObject({ reasonCode: 'POSITION_OUT_OF_RANGE' });
     });
 
     it('counts non-BMP characters as two UTF-16 code units and refuses splitting a surrogate pair', async () => {

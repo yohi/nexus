@@ -161,6 +161,8 @@ export const createLspLineTable = (text: string): LspLineTable => {
   return { starts, lengths };
 };
 
+export const containsUnsupportedLspLineSeparator = (text: string): boolean => /[\u2028\u2029]/u.test(text);
+
 export type LspPositionCheck = 'ok' | 'out_of_range' | 'inside_surrogate_pair';
 
 /** Checks a zero-based line / UTF-16 character position against current source text. */
@@ -442,6 +444,7 @@ async function readTargetSource(
   } catch {
     return failure('error', 'invalid_utf8');
   }
+  if (containsUnsupportedLspLineSeparator(text)) return failure('unsupported', 'unsupported_line_separator');
   input.signal?.throwIfAborted();
 
   return {
