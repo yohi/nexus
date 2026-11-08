@@ -244,6 +244,7 @@ export class RuntimeLocalLspManager {
   private async launch(startup: Startup): Promise<LspProviderAcquisition> {
     const signal = startup.controller.signal;
     const timer = setTimeout(() => this.abortStartup(startup, 'timeout'), this.lsp.startupTimeoutMs);
+    timer.unref();
     try {
       // Owner approval is re-resolved for every new launch; nothing is cached across launches.
       const decision = await this.resolveLaunch({
@@ -278,6 +279,7 @@ export class RuntimeLocalLspManager {
           await waitForExit(session.child, Math.min(this.killGraceMs, CRASH_CLASSIFY_MS), () => session.exited);
         }
         const failure = this.mapStartFailure(error, startup, session);
+        clearTimeout(timer); // the startup outcome is decided; teardown has its own bounds
         // The failed child is reclaimed (bounded) before the failure is reported.
         await this.retire(session, true);
         return failure;
@@ -315,19 +317,9 @@ export class RuntimeLocalLspManager {
       return null; // raw spawn errors (paths, errno text) are never surfaced
     }
 
-    const failed = new AbortController();
-    const markFailed = (failure: SessionFailure) => {
-      if (session.failure === null) session.failure = failure;
-      failed.abort();
-    };
-    // Always observe child errors so a failed spawn can never become an unhandled 'error'.
-    child.on('error', () => markFailed('exit'));
-    child.once('exit', () => {
-      session.exited = true;
-      markFailed('exit');
-      if (!session.retired) void this.retire(session, false);
-    });
-
+    // A plain no-op 'error' listener is attached first so a failed spawn can never surface as an
+    // unhandled 'error' event; session-dependent listeners are attached only once `session` exists.
+    child.on('error', noop);
     const { stdin, stdout, stderr } = child;
     const onStderr = (chunk: Buffer | string) => this.recordStderr(chunk);
     stderr?.on('data', onStderr);
@@ -349,12 +341,18 @@ export class RuntimeLocalLspManager {
       }
     }
     if (provider === null) {
-      void terminate(child, this.killGraceMs);
-      stderr?.removeListener('data', onStderr);
+      // No session was created: reclaim the child (tracked so close() awaits it) and keep draining.
+      const reclaim = terminate(child, this.killGraceMs).finally(() => {
+        stderr?.removeListener('data', onStderr);
+        stderr?.resume();
+        stdout?.resume();
+        this.teardowns.delete(reclaim);
+      });
+      this.teardowns.add(reclaim);
       return null;
     }
 
-    // Attached after the Protocol Client's reader so no frame is consumed before it listens.
+    const failed = new AbortController();
     let stdoutBytes = 0;
     const onStdout = (chunk: Buffer | string) => {
       stdoutBytes += typeof chunk === 'string' ? Buffer.byteLength(chunk) : chunk.length;
@@ -363,7 +361,6 @@ export class RuntimeLocalLspManager {
         void this.retire(session, false);
       }
     };
-    stdout?.on('data', onStdout);
 
     this.stderrBytesSeen = 0;
     this.stderrTail = '';
@@ -386,6 +383,20 @@ export class RuntimeLocalLspManager {
         stderr?.resume();
       },
     };
+    const markFailed = (failure: SessionFailure) => {
+      if (session.failure === null) session.failure = failure;
+      failed.abort();
+    };
+
+    // Session-dependent listeners: attached only after `session` is initialized.
+    child.on('error', () => markFailed('exit'));
+    child.once('exit', () => {
+      session.exited = true;
+      markFailed('exit');
+      if (!session.retired) void this.retire(session, false);
+    });
+    // Attached after the Protocol Client's reader so no frame is consumed before it listens.
+    stdout?.on('data', onStdout);
     return session;
   }
 
