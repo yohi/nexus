@@ -98,7 +98,11 @@ type LspNavigationKind = 'definition' | 'references' | 'implementations';
 // LSP text-document IDs are distinct from the Structured Catalog's parser/language IDs.
 type LspDocumentLanguageId = 'typescript' | 'typescriptreact' | 'javascript' | 'javascriptreact';
 interface ILspProvider {
-  start(input: { rootUri: string; signal?: AbortSignal }): Promise<{
+  start(input: {
+    rootUri: string;
+    expectedServerVersion: '6.0.2'; // passed from Owner-approved ApprovedLspLaunch.serverVersion
+    signal?: AbortSignal;
+  }): Promise<{
     definition: boolean; references: boolean; implementations: boolean;
     positionEncoding: 'utf-16';
   }>;
@@ -113,9 +117,13 @@ interface ILspProvider {
   }): Promise<null | readonly (Location | LocationLink)[]>;
   shutdown(): Promise<void>;
 }
+// Exported by src/lsp/protocol-client.ts (Task 5); no untrusted version text in error messages.
+class LspServerVersionMismatchError extends Error {
+  readonly reasonCode = 'LSP_EXECUTABLE_NOT_APPROVED' as const;
+}
 ```
 
-`Location` and `LocationLink` are types from `vscode-languageserver-protocol`. `RuntimeLocalLspManager` owns the concrete `ILspProvider`, never an MCP client/handler.
+`Location` and `LocationLink` are types from `vscode-languageserver-protocol`. `RuntimeLocalLspManager` owns the concrete `ILspProvider`, never an MCP client/handler. For F-003, the manager obtains `expectedServerVersion` **only** from the successful Owner-approved `ApprovedLspLaunch.serverVersion` returned by the trust gate and passes it unchanged to `ILspProvider.start()`. The protocol client compares any explicitly reported `InitializeResult.serverInfo.version` with that exact expected value; omission is allowed. An explicit nonmatching value (including malformed/non-string values) raises an internal `LspServerVersionMismatchError` with fixed `reasonCode: 'LSP_EXECUTABLE_NOT_APPROVED'`. The manager catches this specific error, terminates the failed provider/child and returns the existing public `unavailable` / `LSP_EXECUTABLE_NOT_APPROVED` outcome without navigation. This error is not a new public status and is not a general protocol-error fallback.
 
 **F-005 — exact LSP document-ID conversion:** `src/lsp/target-resolver.ts` owns `lspDocumentLanguageIdForPath(filePath: string): LspDocumentLanguageId | null`. Match the normalized project-relative file extension (case-sensitive) with the following exhaustive table; do not infer the LSP ID from the Structured Catalog's `languageId`:
 
@@ -361,7 +369,9 @@ Trust-store path on POSIX: `$XDG_CONFIG_HOME/nexus/lsp-trust.json` (fallback `$H
 
 **F-003 — Owner-approved version-assurance boundary:** Before **any execution**, validate the canonical worktree root, absolute executable path and canonical target, executable-byte SHA-256, exact ordered args, and Owner-maintained `serverVersion: "6.0.2"` metadata against the trusted approval record. The approved version is an **Owner assertion bound to the reviewed executable digest**, not an independently observed runtime version; no unapproved `--version` probe is allowed. Missing/unreadable/unsafe trust data => `unavailable` / `LSP_TRUST_REQUIRED`; path/digest/args/approval-version mismatch => `unavailable` / `LSP_EXECUTABLE_NOT_APPROVED`. No child starts on denied approval.
 
-After an approved start, verify that the LSP `initialize` exchange succeeds, UTF-16 is negotiated, and each requested semantic capability is actually advertised before navigation. **Do not require `InitializeResult.serverInfo.version`: `typescript-language-server@6.0.2` does not provide that field.** Absence of `serverInfo.version` is not a failure; if a version is explicitly reported and contradicts the approved version, refuse the navigation (`unavailable` / `LSP_EXECUTABLE_NOT_APPROVED`). The former unconditional post-launch independent running-server-version attestation requirement is **withdrawn by Human Owner decision**; no weaker path/digest/args or capability check is permitted.
+After the Owner-approved launch, `RuntimeLocalLspManager` passes `ApprovedLspLaunch.serverVersion` unchanged as `ILspProvider.start({ rootUri, expectedServerVersion: '6.0.2', signal })`. The `ILspProvider` protocol client examines the LSP `initialize` response **before returning capabilities or allowing navigation**: successful protocol initialization, negotiated UTF-16 and advertised capabilities are still required. **Do not require `InitializeResult.serverInfo.version`: `typescript-language-server@6.0.2` does not provide that field.** The exact three outcomes are: (1) `serverInfo.version === expectedServerVersion` -> version check passes; (2) `serverInfo` or its `version` property is missing -> version check passes without claiming an independent version attestation; (3) `version` is explicitly present but differs from the approved value or is not a valid string -> the client throws `LspServerVersionMismatchError` (`reasonCode: 'LSP_EXECUTABLE_NOT_APPROVED'`), and the manager closes the child and returns `unavailable` / `LSP_EXECUTABLE_NOT_APPROVED`. No successful provider acquisition or navigation is permitted on mismatch. This error is **not** reported as `error/LSP_PROTOCOL_ERROR` or `unsupported`.
+
+The former unconditional post-launch independent running-server-version attestation requirement is **withdrawn by Human Owner decision**; no weaker prelaunch root/path/digest/args/Owner-version check or postlaunch protocol/encoding/capability check is permitted.
 
 **Residual risk:** SHA-256 pins only the approved executable file, not its transitive Node packages, imported project TypeScript modules, plugins or other runtime dependencies. The trust-store version string plus protocol/capability validation **cannot prove the loaded server code is exactly v6.0.2** or that dependencies are immutable. Treat the worktree and dependency installation as trusted input; LSP remains outside an OS sandbox. This documented limit does not authorize unsafe execution, automatic approval, or guessing capability support. Other Nexus retrieval stays operational.
 
@@ -384,7 +394,7 @@ Test implementation in small, executable units; no broad review/repair cycle is 
 - Microsoft protocol/JSON-RPC 3.18.4/9.0.3 covers initialize/initialized, didOpen/didChange/didClose, all three navigation requests, cancel, shutdown/exit, null/Location/LocationLink, and distinct unsupported/error statuses.
 - Server-originated config/folders are read-only; workspace/applyEdit, showDocument, dynamic registration and unknown requests never mutate files.
 - LSP config env > file > defaults; invalid config, disabled LSP, missing trust, mismatched executable SHA/args/Owner-approved version metadata, different worktree, weak trust-store permissions and child-environment secret injection fail closed only for LSP.
-- With a protocol stub emulating `typescript-language-server@6.0.2`, `initialize` without `serverInfo.version` is accepted **only after** approved path/digest/args/root validation and capability/encoding checks; contradictory reported version, bad capability, or bad digest fails closed. Document that transitive dependencies are not pinned by the executable digest.
+- With a protocol stub emulating `typescript-language-server@6.0.2`, cover the exact approved-version comparison outcomes: explicit matching `serverInfo.version` and missing `serverInfo.version` are accepted **only after** approved path/digest/args/root validation and capability/encoding checks; explicit mismatching or malformed version fails closed as `unavailable/LSP_EXECUTABLE_NOT_APPROVED`. Bad capability and bad digest also fail closed. Document that transitive dependencies are not pinned by the executable digest.
 - `didOpen` emits the exact four LSP document IDs for `.ts`/`.mts`/`.cts`, `.tsx`, `.js`/`.mjs`/`.cjs`, `.jsx` for **both** navigation target forms; an unknown extension is `unsupported`.
 - Startup is coalesced; idle cleanup, abrupt exit, timeout, cancellation, and runtime shutdown close processes.
 - Out-of-root, symlink, excluded, deleted, and changed-during-request sources are never represented as verified current locations.
