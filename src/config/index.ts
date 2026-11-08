@@ -3,7 +3,7 @@ import { lookup } from 'node:dns/promises';
 import { isIP } from 'node:net';
 import path from 'node:path';
 
-import type { Config, EmbeddingConfig, IndexingConfig } from '../types/index.js';
+import type { Config, EmbeddingConfig, IndexingConfig, LspConfig } from '../types/index.js';
 
 export interface LoadConfigOptions {
   projectRoot: string;
@@ -36,6 +36,14 @@ const DEFAULT_INDEXING: IndexingConfig = {
   maxChunkChars: 6_000,
   chunkConcurrency: 2,
   embedBatchWindowSize: 16,
+};
+
+const DEFAULT_LSP: LspConfig = {
+  enabled: false,
+  typescript: { executable: null, args: ['--stdio'] },
+  startupTimeoutMs: 10_000,
+  requestTimeoutMs: 10_000,
+  idleTimeoutMs: 60_000,
 };
 
 export const SECRET_IGNORE_PATHS = ['.env', '.env.*'];
@@ -90,6 +98,7 @@ const DEFAULT_CONFIG = (projectRoot: string): Config => ({
   embedding: { ...DEFAULT_EMBEDDING },
   indexing: { ...DEFAULT_INDEXING },
   packageMode: false,
+  lsp: { ...DEFAULT_LSP, typescript: { ...DEFAULT_LSP.typescript, args: [...DEFAULT_LSP.typescript.args] } },
 });
 
 export const loadConfig = async (options: LoadConfigOptions): Promise<Config> => {
@@ -98,6 +107,8 @@ export const loadConfig = async (options: LoadConfigOptions): Promise<Config> =>
   const defaults = DEFAULT_CONFIG(options.projectRoot);
   const fileConfig = await readJsonFile(configPath);
   const projectName = validateString(fileConfig.projectName) ?? asString(env.NEXUS_PROJECT_NAME);
+
+  const lspResult = resolveLspConfig(env, fileConfig.lsp);
 
   const merged: Config = {
     projectRoot: options.projectRoot,
@@ -207,6 +218,7 @@ export const loadConfig = async (options: LoadConfigOptions): Promise<Config> =>
       asBoolean(env.NEXUS_PACKAGE_MODE) ??
       validateBoolean(fileConfig.packageMode) ??
       false,
+    lsp: lspResult.lsp,
   };
 
   assertEmbeddingApiKeyTransport(merged.embedding);
@@ -215,7 +227,108 @@ export const loadConfig = async (options: LoadConfigOptions): Promise<Config> =>
     await assertHttpV2Constraints(merged);
   }
 
-  return projectName === undefined ? merged : { ...merged, projectName };
+  const withLsp: Config = lspResult.error === undefined ? merged : { ...merged, lspConfigError: lspResult.error };
+  return projectName === undefined ? withLsp : { ...withLsp, projectName };
+};
+
+type LspResolution = { lsp: LspConfig; error?: 'LSP_CONFIG_INVALID' };
+
+const LSP_INVALID = Symbol('lsp-invalid');
+type Parsed<T> = T | undefined | typeof LSP_INVALID;
+
+/** Parses strict boolean environment values; other supplied values are invalid. */
+const lspEnvBoolean = (raw: string | undefined): Parsed<boolean> => {
+  if (raw === undefined) return undefined;
+  if (raw === 'true') return true;
+  if (raw === 'false') return false;
+  return LSP_INVALID;
+};
+
+/** Parses a file boolean, preserving undefined and rejecting non-boolean values. */
+const lspFileBoolean = (value: unknown): Parsed<boolean> => {
+  if (value === undefined) return undefined;
+  if (typeof value === 'boolean') return value;
+  return LSP_INVALID;
+};
+
+const lspBoundedInt = (value: unknown, min: number, max: number): Parsed<number> => {
+  if (value === undefined) return undefined;
+  return typeof value === 'number' && Number.isInteger(value) && value >= min && value <= max ? value : LSP_INVALID;
+};
+const lspEnvBoundedInt = (raw: string | undefined, min: number, max: number): Parsed<number> => {
+  if (raw === undefined) return undefined;
+  return /^\d+$/.test(raw) ? lspBoundedInt(Number.parseInt(raw, 10), min, max) : LSP_INVALID;
+};
+
+const lspExecutable = (value: unknown): Parsed<string> => {
+  if (value === undefined || value === null) return undefined;
+  return typeof value === 'string' && path.isAbsolute(value) ? value : LSP_INVALID;
+};
+
+const lspArgs = (value: unknown): Parsed<string[]> => {
+  if (value === undefined) return undefined;
+  return Array.isArray(value) && value.every((v) => typeof v === 'string') ? [...value] : LSP_INVALID;
+};
+const lspEnvArgs = (raw: string | undefined): Parsed<string[]> => {
+  if (raw === undefined) return undefined;
+  try {
+    return lspArgs(JSON.parse(raw) as unknown);
+  } catch {
+    return LSP_INVALID;
+  }
+};
+
+/** Per-field precedence env > file > defaults. Any invalid supplied value invalidates LSP only. */
+const resolveLspConfig = (env: NodeJS.ProcessEnv, fileLsp: unknown): LspResolution => {
+  const fallback: LspResolution = {
+    lsp: { ...DEFAULT_LSP, typescript: { ...DEFAULT_LSP.typescript, args: [...DEFAULT_LSP.typescript.args] } },
+    error: 'LSP_CONFIG_INVALID',
+  };
+  if (fileLsp !== undefined && (fileLsp === null || typeof fileLsp !== 'object' || Array.isArray(fileLsp))) return fallback;
+  const file = (fileLsp ?? {}) as Record<string, unknown>;
+  const fileTs = file.typescript;
+  if (fileTs !== undefined && (fileTs === null || typeof fileTs !== 'object' || Array.isArray(fileTs))) return fallback;
+  const ts = (fileTs ?? {}) as Record<string, unknown>;
+
+  const pick = <T>(envValue: Parsed<T>, fileValue: Parsed<T>, dflt: T): T | typeof LSP_INVALID => {
+    if (envValue === LSP_INVALID || fileValue === LSP_INVALID) return LSP_INVALID;
+    return envValue ?? fileValue ?? dflt;
+  };
+
+  const enabled = pick(lspEnvBoolean(env.NEXUS_LSP_ENABLED), lspFileBoolean(file.enabled), DEFAULT_LSP.enabled);
+  const executable = pick<string | null>(
+    lspExecutable(env.NEXUS_LSP_TYPESCRIPT_EXECUTABLE),
+    lspExecutable(ts.executable),
+    null,
+  );
+  const args = pick(lspEnvArgs(env.NEXUS_LSP_TYPESCRIPT_ARGS_JSON), lspArgs(ts.args), [...DEFAULT_LSP.typescript.args]);
+  const startupTimeoutMs = pick(
+    lspEnvBoundedInt(env.NEXUS_LSP_STARTUP_TIMEOUT_MS, 1, 60_000),
+    lspBoundedInt(file.startupTimeoutMs, 1, 60_000),
+    DEFAULT_LSP.startupTimeoutMs,
+  );
+  const requestTimeoutMs = pick(
+    lspEnvBoundedInt(env.NEXUS_LSP_REQUEST_TIMEOUT_MS, 1, 60_000),
+    lspBoundedInt(file.requestTimeoutMs, 1, 60_000),
+    DEFAULT_LSP.requestTimeoutMs,
+  );
+  const idleTimeoutMs = pick(
+    lspEnvBoundedInt(env.NEXUS_LSP_IDLE_TIMEOUT_MS, 1000, 3_600_000),
+    lspBoundedInt(file.idleTimeoutMs, 1000, 3_600_000),
+    DEFAULT_LSP.idleTimeoutMs,
+  );
+
+  if (
+    enabled === LSP_INVALID ||
+    executable === LSP_INVALID ||
+    args === LSP_INVALID ||
+    startupTimeoutMs === LSP_INVALID ||
+    requestTimeoutMs === LSP_INVALID ||
+    idleTimeoutMs === LSP_INVALID
+  ) {
+    return fallback;
+  }
+  return { lsp: { enabled, typescript: { executable, args }, startupTimeoutMs, requestTimeoutMs, idleTimeoutMs } };
 };
 
 /**

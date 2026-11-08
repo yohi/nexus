@@ -233,6 +233,17 @@ export interface HttpConfig {
   maxResultsLimit: number;
 }
 
+export interface LspConfig {
+  enabled: boolean;
+  typescript: {
+    executable: string | null;
+    args: string[];
+  };
+  startupTimeoutMs: number;
+  requestTimeoutMs: number;
+  idleTimeoutMs: number;
+}
+
 export interface Config {
   projectRoot: string;
   projectName?: string;
@@ -245,6 +256,9 @@ export interface Config {
   metricsPort?: number;
   aggregatorPort?: number;
   packageMode: boolean;
+  lsp: LspConfig;
+  /** Internal diagnostic: set when LSP config was invalid (lsp then holds disabled defaults). */
+  lspConfigError?: 'LSP_CONFIG_INVALID';
 }
 
 export interface DeadLetterEntry {

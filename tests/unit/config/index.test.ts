@@ -2,7 +2,7 @@ import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { loadConfig, SECRET_IGNORE_PATHS } from '../../../src/config/index.js';
 
@@ -600,4 +600,133 @@ describe('loadConfig', () => {
       expect(config.packageMode).toBe(false);
     },
   );
+});
+
+describe('loadConfig lsp', () => {
+  let dir: string;
+  beforeEach(async () => {
+    dir = await mkdtemp(path.join(os.tmpdir(), 'nexus-lsp-config-'));
+  });
+  afterEach(async () => {
+    await rm(dir, { recursive: true, force: true });
+  });
+  const writeCfg = (value: unknown) => writeFile(path.join(dir, '.nexus.json'), JSON.stringify(value), 'utf8');
+
+  it('uses disabled defaults', async () => {
+    const config = await loadConfig({ projectRoot: dir, env: {} });
+    expect(config.lsp).toEqual({
+      enabled: false,
+      typescript: { executable: null, args: ['--stdio'] },
+      startupTimeoutMs: 10_000,
+      requestTimeoutMs: 10_000,
+      idleTimeoutMs: 60_000,
+    });
+    expect(config.lspConfigError).toBeUndefined();
+  });
+
+  it('reads all six env keys', async () => {
+    const config = await loadConfig({
+      projectRoot: dir,
+      env: {
+        NEXUS_LSP_ENABLED: 'true',
+        NEXUS_LSP_TYPESCRIPT_EXECUTABLE: '/opt/x/tsserver-lsp',
+        NEXUS_LSP_TYPESCRIPT_ARGS_JSON: '["--stdio","--log-level=1"]',
+        NEXUS_LSP_STARTUP_TIMEOUT_MS: '5000',
+        NEXUS_LSP_REQUEST_TIMEOUT_MS: '6000',
+        NEXUS_LSP_IDLE_TIMEOUT_MS: '7000',
+      },
+    });
+    expect(config.lsp).toEqual({
+      enabled: true,
+      typescript: { executable: '/opt/x/tsserver-lsp', args: ['--stdio', '--log-level=1'] },
+      startupTimeoutMs: 5000,
+      requestTimeoutMs: 6000,
+      idleTimeoutMs: 7000,
+    });
+  });
+
+  it('allows the environment executable to override an explicit null file value', async () => {
+    await writeCfg({ lsp: { typescript: { executable: null } } });
+
+    const config = await loadConfig({
+      projectRoot: dir,
+      env: { NEXUS_LSP_TYPESCRIPT_EXECUTABLE: '/opt/x/tsserver-lsp' },
+    });
+
+    expect(config.lsp.typescript.executable).toBe('/opt/x/tsserver-lsp');
+    expect(config.lspConfigError).toBeUndefined();
+  });
+
+  it('applies per-field precedence env > file > defaults, also with configFileName', async () => {
+    await writeFile(
+      path.join(dir, 'alt.json'),
+      JSON.stringify({ lsp: { enabled: true, startupTimeoutMs: 2000, requestTimeoutMs: 3000 } }),
+      'utf8',
+    );
+    const config = await loadConfig({
+      projectRoot: dir,
+      configFileName: 'alt.json',
+      env: { NEXUS_LSP_STARTUP_TIMEOUT_MS: '4000' },
+    });
+    expect(config.lsp.enabled).toBe(true);
+    expect(config.lsp.startupTimeoutMs).toBe(4000);
+    expect(config.lsp.requestTimeoutMs).toBe(3000);
+    expect(config.lsp.idleTimeoutMs).toBe(60_000);
+  });
+
+  it.each([
+    ['NEXUS_LSP_STARTUP_TIMEOUT_MS', '1', true],
+    ['NEXUS_LSP_STARTUP_TIMEOUT_MS', '60000', true],
+    ['NEXUS_LSP_STARTUP_TIMEOUT_MS', '0', false],
+    ['NEXUS_LSP_STARTUP_TIMEOUT_MS', '60001', false],
+    ['NEXUS_LSP_REQUEST_TIMEOUT_MS', '1', true],
+    ['NEXUS_LSP_REQUEST_TIMEOUT_MS', '60000', true],
+    ['NEXUS_LSP_REQUEST_TIMEOUT_MS', '60001', false],
+    ['NEXUS_LSP_IDLE_TIMEOUT_MS', '1000', true],
+    ['NEXUS_LSP_IDLE_TIMEOUT_MS', '3600000', true],
+    ['NEXUS_LSP_IDLE_TIMEOUT_MS', '999', false],
+    ['NEXUS_LSP_IDLE_TIMEOUT_MS', '3600001', false],
+    ['NEXUS_LSP_IDLE_TIMEOUT_MS', '1.5', false],
+  ])('bounds %s=%s valid=%s', async (key, value, valid) => {
+    const config = await loadConfig({ projectRoot: dir, env: { [key]: value } });
+    expect(config.lspConfigError).toBe(valid ? undefined : 'LSP_CONFIG_INVALID');
+  });
+
+  it('applies the same bounds to file values', async () => {
+    await writeCfg({ lsp: { idleTimeoutMs: 999 } });
+    expect((await loadConfig({ projectRoot: dir, env: {} })).lspConfigError).toBe('LSP_CONFIG_INVALID');
+  });
+
+  it.each(['yes', 'TRUE', '1', ''])('rejects non-strict boolean %j', async (value) => {
+    const config = await loadConfig({ projectRoot: dir, env: { NEXUS_LSP_ENABLED: value } });
+    expect(config.lspConfigError).toBe('LSP_CONFIG_INVALID');
+    expect(config.lsp.enabled).toBe(false);
+  });
+
+  it('accepts strict false env over file true', async () => {
+    await writeCfg({ lsp: { enabled: true } });
+    const config = await loadConfig({ projectRoot: dir, env: { NEXUS_LSP_ENABLED: 'false' } });
+    expect(config.lsp.enabled).toBe(false);
+    expect(config.lspConfigError).toBeUndefined();
+  });
+
+  it.each(['not json', '{"a":1}', '[1]', '["--stdio", 2]'])('rejects malformed args JSON %j', async (value) => {
+    const config = await loadConfig({ projectRoot: dir, env: { NEXUS_LSP_TYPESCRIPT_ARGS_JSON: value } });
+    expect(config.lspConfigError).toBe('LSP_CONFIG_INVALID');
+    expect(config.lsp.typescript.args).toEqual(['--stdio']);
+  });
+
+  it('rejects non-absolute executable', async () => {
+    const config = await loadConfig({ projectRoot: dir, env: { NEXUS_LSP_TYPESCRIPT_EXECUTABLE: 'typescript-language-server' } });
+    expect(config.lspConfigError).toBe('LSP_CONFIG_INVALID');
+    expect(config.lsp.typescript.executable).toBeNull();
+  });
+
+  it('isolates invalid lsp config from unrelated retrieval config', async () => {
+    await writeCfg({ lsp: 'bad', watcher: { debounceMs: 250 } });
+    const config = await loadConfig({ projectRoot: dir, env: {} });
+    expect(config.lspConfigError).toBe('LSP_CONFIG_INVALID');
+    expect(config.lsp.enabled).toBe(false);
+    expect(config.watcher.debounceMs).toBe(250);
+  });
 });

@@ -20,6 +20,8 @@ export function createBenchmarkRuntimeFactory(root: string, observer?: RuntimeOb
     indexing: { maxFileBytes: 1_048_576, maxChunkChars: 4096, chunkConcurrency: 2, embedBatchWindowSize: 16 },
     watcher: { debounceMs: 100, maxQueueSize: 10_000, fullScanThreshold: 5_000,
       ignorePaths: ['.git', '.nexus', 'node_modules'] },
+    lsp: { enabled: false, typescript: { executable: null, args: ['--stdio'] },
+      startupTimeoutMs: 10_000, requestTimeoutMs: 10_000, idleTimeoutMs: 60_000 },
   };
   return async (signal) => {
     signal.throwIfAborted();
