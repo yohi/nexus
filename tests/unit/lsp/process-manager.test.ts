@@ -622,6 +622,49 @@ posixOnly('RuntimeLocalLspManager', () => {
       expect(result).toEqual({ status: 'unavailable', reasonCode: 'LSP_START_FAILED' });
     });
 
+    it.each([
+      ['createProtocolClient throws', 'throw'],
+      ['child stdin is null', 'stdin'],
+      ['child stdout is null', 'stdout'],
+    ] as const)(
+      'no session (%s): late child exit/error events never throw and the child is terminated',
+      async (_label, mode) => {
+        const uncaught: unknown[] = [];
+        const onUncaught = (error: unknown) => uncaught.push(error);
+        process.on('uncaughtException', onUncaught);
+        try {
+          const manager = makeManager({
+            spawnProcess: (command, args, options) => {
+              const child = fakeSpawn(command, args, options) as FakeChild;
+              if (mode !== 'throw') Object.defineProperty(child, mode, { value: null });
+              return child;
+            },
+            ...(mode === 'throw'
+              ? {
+                  createProtocolClient: () => {
+                    throw new Error(`client failure ${exe}`);
+                  },
+                }
+              : {}),
+          });
+          expect(await manager.acquire()).toEqual({ status: 'unavailable', reasonCode: 'LSP_START_FAILED' });
+          const child = children[0]!;
+          // EventEmitter dispatch is synchronous: a listener reading an uninitialized binding would throw here.
+          expect(() => child.emit('error', new Error('late spawn error'))).not.toThrow();
+          await vi.waitFor(() => expect(child.exited).toBe(true));
+          expect(child.signals).toContain('SIGTERM');
+          expect(() => child.emit('exit', 1, null)).not.toThrow();
+          expect(() => child.emit('error', new Error('late error after exit'))).not.toThrow();
+          await new Promise((resolve) => setTimeout(resolve, 20));
+          await manager.close();
+          expect(manager.hasLiveProcess()).toBe(false);
+          expect(uncaught).toEqual([]);
+        } finally {
+          process.removeListener('uncaughtException', onUncaught);
+        }
+      },
+    );
+
     it('child error event during startup => unavailable/LSP_START_FAILED', async () => {
       behaviors.push({ stub: { handlers: { initialize: () => new Promise(() => undefined) } } });
       const manager = makeManager();
