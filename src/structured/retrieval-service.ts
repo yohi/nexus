@@ -7,8 +7,11 @@ import type {
   StructuredIndexState,
   StructuredTombstone,
 } from '../storage/interfaces/structured-catalog.js';
-import type { PathSanitizer } from '../server/path-sanitizer.js';
+import { PathTraversalError, type PathSanitizer } from '../server/path-sanitizer.js';
+import type { VerifiedSymbolNavigationResult } from '../lsp/contracts.js';
+import { resolveTsIdentifierPosition } from '../lsp/identifier-locator.js';
 import { sha256Hex, decodeUtf8 } from './hash.js';
+import { Utf8SourceError } from './utf8-offsets.js';
 import type { StructuredDeclaration, StructuredRetrievalReasonCode } from './contracts.js';
 import { packRelatedImports, tokenCounter } from './tokenizer.js';
 
@@ -44,8 +47,53 @@ type GlobalStateStatus =
     };
 
 type VerifiedSymbol =
-  | { readonly ok: true; readonly bytes: Uint8Array; readonly declaration: StructuredDeclaration; readonly filePath: string }
+  | {
+      readonly ok: true;
+      readonly bytes: Uint8Array;
+      readonly declaration: StructuredDeclaration;
+      readonly filePath: string;
+      /** Active generation checked during verification. */
+      readonly generationId: string;
+      readonly fileSha256: string;
+      readonly fileCompleteness: 'complete' | 'partial';
+    }
   | { readonly ok: false; readonly status: SourceStatus & { request?: { symbolId: string } } };
+
+type NavigationFailure = Exclude<VerifiedSymbolNavigationResult, { readonly status: 'ok' }>;
+
+const navigationFailure = (
+  status: NavigationFailure['status'],
+  reasonCode: string,
+  reindexRequired: boolean,
+): NavigationFailure => ({ status, reasonCode, reindexRequired });
+
+const defaultReindexRequired: Readonly<Record<NavigationFailure['status'], boolean>> = {
+  stale_identity: false,
+  stale: true,
+  not_found: false,
+  not_indexed: true,
+  index_incomplete: true,
+  excluded: false,
+  unsupported: false,
+  degraded: false,
+  error: false,
+  cancelled: false,
+};
+
+/** Maps a private verifySymbol() failure onto the navigation result contract (Design §6.1). */
+const navigationFailureFromStatus = (status: SourceStatus): NavigationFailure => {
+  if (status.status === 'failed') {
+    return navigationFailure('error', status.reasonCode === 'parse_error' ? 'PARSE_ERROR' : 'INVARIANT_VIOLATION', false);
+  }
+  if (status.status === 'ok') {
+    return navigationFailure('error', 'INVARIANT_VIOLATION', false);
+  }
+  return navigationFailure(
+    status.status,
+    status.reasonCode,
+    status.reindexRequired ?? defaultReindexRequired[status.status],
+  );
+};
 
 export interface SymbolRetrievalServiceOptions {
   catalog: IStructuredCatalog;
@@ -279,6 +327,106 @@ export class SymbolRetrievalService {
     };
   }
 
+  /**
+   * Resolves a catalog `symbolId` to the verified AST identifier token of its declaration.
+   * Fails closed: any stale, ambiguous or unsupported state returns a non-`ok` status without a target.
+   * Unexpected I/O errors other than cancellation propagate, as with getSymbolSource().
+   */
+  async resolveVerifiedNavigationTarget(input: {
+    symbolId: string;
+    signal?: AbortSignal;
+  }): Promise<VerifiedSymbolNavigationResult> {
+    try {
+      return await this.resolveVerifiedNavigationTargetUnsafe(input);
+    } catch (error) {
+      if (input.signal?.aborted || (error as Error | undefined)?.name === 'AbortError') {
+        return navigationFailure('cancelled', 'REQUEST_CANCELLED', false);
+      }
+      throw error;
+    }
+  }
+
+  private async resolveVerifiedNavigationTargetUnsafe(input: {
+    symbolId: string;
+    signal?: AbortSignal;
+  }): Promise<VerifiedSymbolNavigationResult> {
+    input.signal?.throwIfAborted();
+    const verified = await this.verifySymbol(input);
+    if (!verified.ok) {
+      return navigationFailureFromStatus(verified.status);
+    }
+
+    const { declaration, filePath } = verified;
+    if (!declaration.isExact || verified.fileCompleteness !== 'complete') {
+      return navigationFailure('degraded', 'PARSER_COVERAGE_PARTIAL', false);
+    }
+    const languageId = declaration.languageId;
+    if (languageId !== 'typescript' && languageId !== 'javascript') {
+      return navigationFailure('unsupported', 'unsupported_language', false);
+    }
+
+    const containment = await this.checkCanonicalContainment(filePath);
+    if (containment !== undefined) return containment;
+
+    let position: { line: number; character: number } | null;
+    try {
+      position = resolveTsIdentifierPosition({ bytes: verified.bytes, declaration, filePath });
+    } catch (error) {
+      return navigationFailure('error', error instanceof Utf8SourceError ? 'INVARIANT_VIOLATION' : 'PARSE_ERROR', false);
+    }
+    if (position === null) {
+      return navigationFailure('degraded', 'IDENTIFIER_TOKEN_UNRESOLVED', false);
+    }
+
+    // Recheck before returning: canonical containment, active generation, symbol identity, then current bytes.
+    input.signal?.throwIfAborted();
+    const recheckContainment = await this.checkCanonicalContainment(filePath);
+    if (recheckContainment !== undefined) return recheckContainment;
+    const currentFile = await this.options.catalog.resolveFile(filePath);
+    if (currentFile.kind !== 'active' || currentFile.generationId !== verified.generationId) {
+      return navigationFailure('stale', 'INDEX_FILE_HASH_MISMATCH', true);
+    }
+    const currentSymbol = await this.resolveSymbol(input.symbolId);
+    if (currentSymbol.kind !== 'active' || currentSymbol.filePath !== filePath) {
+      return navigationFailure('stale', 'INDEX_FILE_HASH_MISMATCH', true);
+    }
+    const reread = await this.readCurrentBytes(filePath, this.options.sanitizer.getProjectRoot(), input.signal);
+    if (reread.status !== 'ok') {
+      return navigationFailure('stale', reread.reasonCode, true);
+    }
+    if (sha256Hex(reread.bytes) !== verified.fileSha256) {
+      return navigationFailure('stale', 'INDEX_FILE_HASH_MISMATCH', true);
+    }
+    input.signal?.throwIfAborted();
+
+    return {
+      status: 'ok',
+      target: {
+        symbolId: input.symbolId,
+        filePath,
+        languageId,
+        position,
+        fileSha256: verified.fileSha256,
+        generationId: verified.generationId,
+      },
+    };
+  }
+
+  private async checkCanonicalContainment(filePath: string): Promise<VerifiedSymbolNavigationResult | undefined> {
+    try {
+      await this.options.sanitizer.resolveExisting(filePath);
+      return undefined;
+    } catch (error) {
+      if (error instanceof PathTraversalError) {
+        return navigationFailure('excluded', 'PATH_EXCLUDED', false);
+      }
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+        return navigationFailure('stale', 'INDEX_FILE_MISSING', true);
+      }
+      throw error;
+    }
+  }
+
   private async resolveSymbol(symbolId: string): Promise<
     | { readonly kind: 'active'; readonly declaration: StructuredDeclaration; readonly filePath: string }
     | { readonly kind: 'pending'; readonly declaration: StructuredDeclaration }
@@ -380,7 +528,15 @@ export class SymbolRetrievalService {
       return { ok: false, status: { status: 'index_incomplete', reasonCode: 'INDEX_SYMBOL_HASH_MISMATCH', request: { symbolId: input.symbolId } } };
     }
 
-    return { ok: true, bytes: readResult.bytes, declaration: resolution.declaration, filePath };
+    return {
+      ok: true,
+      bytes: readResult.bytes,
+      declaration: resolution.declaration,
+      filePath,
+      generationId: activeGeneration,
+      fileSha256: fileHash,
+      fileCompleteness: generation.fileCompleteness,
+    };
   }
 
   private verifyImports(
