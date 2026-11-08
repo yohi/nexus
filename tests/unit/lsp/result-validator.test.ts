@@ -154,29 +154,125 @@ describe('validateNavigationResults', () => {
     });
   });
 
+  // Well-shaped but semantically unusable ranges are omitted (partial), not protocol errors.
   it.each<[string, Range]>([
-    ['start after end', range(0, 10, 0, 5)],
-    ['start line after end line', range(1, 0, 0, 3)],
-    ['negative line', range(-1, 0, 0, 3)],
-    ['negative character', range(0, -1, 0, 3)],
-    ['fractional character', range(0, 1.5, 0, 3)],
+    ['start after end (inverted)', range(0, 10, 0, 5)],
+    ['start line after end line (inverted)', range(1, 0, 0, 3)],
     ['character beyond line length', range(0, 0, 0, 24)],
-  ])('omits an invalid range: %s', async (_name, invalidRange) => {
-    const ctx = await setup();
-    const result = await validate(ctx, [{ uri: ctx.uri('src/a.ts'), range: invalidRange }]);
-    expect(result).toEqual({ locations: [], truncated: false, sourceValidation: 'partial', excludedResultCount: 1 });
-  });
-
-  it('omits malformed range objects', async () => {
+    ['line beyond end of file', range(9, 0, 9, 0)],
+  ])('omits a well-shaped but unusable range: %s', async (_name, unusableRange) => {
     const ctx = await setup();
     const result = await validate(ctx, [
-      { uri: ctx.uri('src/a.ts') },
-      { uri: ctx.uri('src/a.ts'), range: { start: { line: 0 }, end: { line: 0, character: 1 } } },
-      { uri: ctx.uri('src/a.ts'), range: { start: { line: '0', character: 0 }, end: { line: 0, character: 1 } } },
-      42,
-      null,
+      { uri: ctx.uri('src/a.ts'), range: unusableRange },
+      { uri: ctx.uri('src/a.ts'), range: range(0, 0, 0, 1) },
     ]);
-    expect(result).toEqual({ locations: [], truncated: false, sourceValidation: 'partial', excludedResultCount: 5 });
+    expect(result).toEqual({
+      locations: [{ filePath: 'src/a.ts', startLine: 1, startCharacter: 0, endLine: 1, endCharacter: 1 }],
+      truncated: false,
+      sourceValidation: 'partial',
+      excludedResultCount: 1,
+    });
+  });
+
+  it('omits an inverted LocationLink targetRange as partial', async () => {
+    const ctx = await setup();
+    const link = {
+      targetUri: ctx.uri('src/a.ts'),
+      targetRange: range(0, 20, 0, 0),
+      targetSelectionRange: range(0, 13, 0, 18),
+    };
+    await expect(validate(ctx, [link])).resolves.toMatchObject({
+      locations: [],
+      sourceValidation: 'partial',
+      excludedResultCount: 1,
+    });
+  });
+
+  describe('shape-invalid entries reject the whole reply as LSP_PROTOCOL_ERROR', () => {
+    const okRange = range(0, 0, 0, 1);
+    const cases: [string, (uri: (p: string) => string) => unknown][] = [
+      ['non-record entry (number)', () => 42],
+      ['non-record entry (null)', () => null],
+      ['non-record entry (string)', (uri) => uri('src/a.ts')],
+      ['record that is neither Location nor LocationLink', () => ({ foo: 1 })],
+      ['Location missing range', (uri) => ({ uri: uri('src/a.ts') })],
+      ['Location with non-object range', (uri) => ({ uri: uri('src/a.ts'), range: 'x' })],
+      ['Location range missing end', (uri) => ({ uri: uri('src/a.ts'), range: { start: { line: 0, character: 0 } } })],
+      [
+        'Location position missing character',
+        (uri) => ({ uri: uri('src/a.ts'), range: { start: { line: 0 }, end: { line: 0, character: 1 } } }),
+      ],
+      [
+        'Location position with string line',
+        (uri) => ({ uri: uri('src/a.ts'), range: { start: { line: '0', character: 0 }, end: { line: 0, character: 1 } } }),
+      ],
+      ['Location negative line', (uri) => ({ uri: uri('src/a.ts'), range: range(-1, 0, 0, 3) })],
+      ['Location negative character', (uri) => ({ uri: uri('src/a.ts'), range: range(0, -1, 0, 3) })],
+      ['Location fractional character', (uri) => ({ uri: uri('src/a.ts'), range: range(0, 1.5, 0, 3) })],
+      ['Location non-string uri', () => ({ uri: 42, range: okRange })],
+      ['LocationLink non-string targetUri', () => ({ targetUri: null, targetRange: okRange, targetSelectionRange: okRange })],
+      [
+        'LocationLink missing targetRange',
+        (uri) => ({ targetUri: uri('src/a.ts'), targetSelectionRange: okRange }),
+      ],
+      [
+        'LocationLink malformed targetRange',
+        (uri) => ({ targetUri: uri('src/a.ts'), targetRange: { start: {}, end: {} }, targetSelectionRange: okRange }),
+      ],
+      [
+        'LocationLink missing targetSelectionRange',
+        (uri) => ({ targetUri: uri('src/a.ts'), targetRange: okRange }),
+      ],
+    ];
+
+    it.each(cases)('%s', async (_name, makeEntry) => {
+      const ctx = await setup();
+      const valid = { uri: ctx.uri('src/a.ts'), range: okRange };
+      // A malformed entry anywhere in the array rejects the reply, even next to valid ones.
+      await expect(validate(ctx, [valid, makeEntry(ctx.uri)])).resolves.toEqual({
+        status: 'error',
+        reasonCode: 'LSP_PROTOCOL_ERROR',
+      });
+    });
+
+    it.each(cases.filter(([, makeEntry]) => {
+      const entry = makeEntry((p) => p);
+      return typeof entry === 'object' && entry !== null;
+    }))('%s as a single non-array reply', async (_name, makeEntry) => {
+      const ctx = await setup();
+      await expect(validate(ctx, makeEntry(ctx.uri))).resolves.toEqual({
+        status: 'error',
+        reasonCode: 'LSP_PROTOCOL_ERROR',
+      });
+    });
+  });
+
+  it('validates symlink aliases of one file against a single canonical source read', async () => {
+    const ctx = await setup();
+    await fs.symlink(path.join(ctx.root, 'src', 'a.ts'), path.join(ctx.root, 'src', 'alias.ts'));
+    const seen: string[] = [];
+    const result = await validate(
+      ctx,
+      [
+        { uri: ctx.uri('src/alias.ts'), range: range(0, 13, 0, 18) },
+        { uri: ctx.uri('src/a.ts'), range: range(0, 13, 0, 18) },
+      ],
+      {
+        isExcluded: (p) => {
+          seen.push(p);
+          return false;
+        },
+      },
+    );
+    expect(result).toEqual({
+      locations: [{ filePath: 'src/a.ts', startLine: 1, startCharacter: 13, endLine: 1, endCharacter: 18 }],
+      truncated: false,
+      sourceValidation: 'verified',
+      excludedResultCount: 0,
+    });
+    // The alias is exclusion-checked itself; the canonical file is checked (and read) once.
+    expect(seen.filter((p) => p === 'src/a.ts')).toHaveLength(1);
+    expect(seen).toContain('src/alias.ts');
   });
 
   it('omits invalid, non-file, escaping, excluded and missing URIs', async () => {
@@ -193,7 +289,6 @@ describe('validateNavigationResults', () => {
       { uri: `${ctx.uri('src/a.ts')}#frag`, range: r },
       { uri: 'file://remote-host/src/a.ts', range: r },
       { uri: 'src/a.ts', range: r },
-      { uri: 42, range: r },
       { uri: pathToFileURL(outsideFile).href, range: r },
       { uri: ctx.uri('src/link.ts'), range: r },
       { uri: ctx.uri('secrets/key.ts'), range: r },
