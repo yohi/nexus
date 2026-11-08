@@ -236,12 +236,20 @@ type LspResolution = { lsp: LspConfig; error?: 'LSP_CONFIG_INVALID' };
 const LSP_INVALID = Symbol('lsp-invalid');
 type Parsed<T> = T | undefined | typeof LSP_INVALID;
 
+/** Parses strict boolean environment values; other supplied values are invalid. */
 const lspEnvBoolean = (raw: string | undefined): Parsed<boolean> => {
   if (raw === undefined) return undefined;
-  return raw === 'true' ? true : raw === 'false' ? false : LSP_INVALID;
+  if (raw === 'true') return true;
+  if (raw === 'false') return false;
+  return LSP_INVALID;
 };
-const lspFileBoolean = (value: unknown): Parsed<boolean> =>
-  value === undefined ? undefined : typeof value === 'boolean' ? value : LSP_INVALID;
+
+/** Parses a file boolean, preserving undefined and rejecting non-boolean values. */
+const lspFileBoolean = (value: unknown): Parsed<boolean> => {
+  if (value === undefined) return undefined;
+  if (typeof value === 'boolean') return value;
+  return LSP_INVALID;
+};
 
 const lspBoundedInt = (value: unknown, min: number, max: number): Parsed<number> => {
   if (value === undefined) return undefined;
