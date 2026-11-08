@@ -13,10 +13,15 @@ export interface V2ToolLimits {
 
 const DEFAULT_V2_TOOL_LIMITS: V2ToolLimits = { topK: 100, maxResults: 1000 };
 
-const limitFor = (fieldName: string, declaredMaximum: number, limits: V2ToolLimits): number => {
-  if (fieldName === 'topK') return limits.topK;
-  if (fieldName === 'maxResults') return limits.maxResults;
-  return declaredMaximum;
+const limitFor = (
+  fieldName: string,
+  declaredMaximum: number,
+  limits: V2ToolLimits,
+  hardMaximum = false,
+): number => {
+  const configured = fieldName === 'topK' ? limits.topK : fieldName === 'maxResults' ? limits.maxResults : undefined;
+  if (configured === undefined) return declaredMaximum;
+  return hardMaximum ? Math.min(declaredMaximum, configured) : configured;
 };
 
 const schemaDescription = (field: NeutralField): { readonly description?: string } =>
@@ -40,7 +45,7 @@ const toV2JsonSchemaField = (
         ...description,
         type: 'integer',
         minimum: field.minimum ?? 1,
-        ...(field.maximum === undefined ? {} : { maximum: limitFor(name, field.maximum, limits) }),
+        ...(field.maximum === undefined ? {} : { maximum: limitFor(name, field.maximum, limits, field.hardMaximum) }),
       };
     case 'number':
       return { ...description, type: 'number' };
@@ -90,7 +95,7 @@ const toZodV4Field = (name: string, field: NeutralField, limits: V2ToolLimits): 
       // Default to positive (>= 1); an explicit schema minimum (e.g. 0) overrides it.
       let integer = z.number().int().min(field.minimum ?? 1);
       if (field.maximum !== undefined) {
-        integer = integer.max(limitFor(name, field.maximum, limits));
+        integer = integer.max(limitFor(name, field.maximum, limits, field.hardMaximum));
       }
       return integer;
     }

@@ -165,6 +165,7 @@ export const GET_REFERENCES_DEFINITION: ToolDefinition = {
       optional: true,
       minimum: 1,
       maximum: 1000,
+      hardMaximum: true,
       description: 'Maximum references to return (default 100, maximum 1000); see truncated.',
     },
   },

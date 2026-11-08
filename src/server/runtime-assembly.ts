@@ -17,6 +17,8 @@ import { MetricsCollector } from '../observability/metrics-collector.js';
 import { SymbolRetrievalService } from '../structured/retrieval-service.js';
 import { StructuredIndexCoordinator } from '../indexer/structured-index-coordinator.js';
 import { ProjectWriteCoordinator } from '../indexer/project-write-coordinator.js';
+import { RuntimeLocalLspManager } from '../lsp/process-manager.js';
+import { LspNavigationService, lspNavigationLockTimeoutMs } from '../lsp/navigation-service.js';
 import type { Config } from '../types/index.js';
 import type { RuntimeAssembly, RuntimeAssemblyDependencies } from './runtime/assembly-types.js';
 import { DirectoryScanner } from './runtime/directory-scan.js';
@@ -58,6 +60,7 @@ async function createRuntimeAssemblyCore(config: Config,
   let stores: Awaited<ReturnType<typeof StorageManager.initializeStores>> | undefined;
   let logging: ReturnType<typeof createRuntimeLogging> | undefined;
   let stopEvents: (() => Promise<void>) | undefined;
+  let lspManager: RuntimeLocalLspManager | undefined;
   try {
     const { metadataStore, vectorStore } = await StorageManager.initializeStores(config);
     stores = { metadataStore, vectorStore };
@@ -112,16 +115,30 @@ async function createRuntimeAssemblyCore(config: Config,
     const symbolRetrievalService = new SymbolRetrievalService({
       catalog: metadataStore, sanitizer, isExcluded: (filePath) => symbolIgnoreMatcher(filePath),
     });
+    // Runtime-local LSP: lazy (no process until the first navigation), Owner approval is
+    // re-resolved by the manager on every new launch, and failures stay LSP-local.
+    const canonicalRoot = sanitizer.getProjectRoot();
+    const manager = new RuntimeLocalLspManager({
+      projectRoot: canonicalRoot, lsp: config.lsp,
+      ...(config.lspConfigError === undefined ? {} : { configError: config.lspConfigError }),
+    });
+    lspManager = manager;
+    const lspNavigationService = new LspNavigationService({
+      projectRoot: canonicalRoot, sanitizer, symbols: symbolRetrievalService,
+      isExcluded: (filePath) => symbolIgnoreMatcher(filePath),
+      acquireProvider: (input) => manager.acquire(input),
+      lockTimeoutMs: lspNavigationLockTimeoutMs(config.lsp),
+    });
     let closePromise: Promise<void> | undefined;
     const runReindex = () => DirectoryScanner.scan(projectRoot, projectRoot, ignorePaths, onLog);
     const options: NexusRuntimeOptions = {
       projectRoot, sanitizer, semanticSearch, grepEngine, orchestrator, vectorStore,
       metadataStore, pipeline, eventQueue, pluginRegistry, watcher, loadFileContent,
-      contentStore, symbolRetrievalService, metricsCollectorRegistry: metricsCollector.registry,
+      contentStore, symbolRetrievalService, lspNavigationService, metricsCollectorRegistry: metricsCollector.registry,
       metricsPort: config.metricsPort, storageDir: config.storage.rootDir, projectName: config.projectName,
       metricsHooks: metricsCollector, aggregatorPort: config.aggregatorPort, packageMode: config.packageMode,
       onClose: () => closePromise ??= closeResources([
-        onClose, () => vectorStore.close(), () => metadataStore.close(),
+        () => manager.close(), onClose, () => vectorStore.close(), () => metadataStore.close(),
         () => runtimeLogging.close(), () => projectLock.release(),
       ]),
       runReindex,
@@ -146,6 +163,7 @@ async function createRuntimeAssemblyCore(config: Config,
   } catch (error) {
     try {
       await closeResources([
+        () => lspManager?.close() ?? Promise.resolve(),
         () => stopEvents?.() ?? Promise.resolve(),
         () => stores?.metadataStore.close() ?? Promise.resolve(),
         () => stores?.vectorStore.close() ?? Promise.resolve(),

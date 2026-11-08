@@ -23,6 +23,26 @@ describe('MCP tool verification contracts', () => {
     expect(verifier.validateToolList([...verifier.EXPECTED_TOOL_NAMES])).toEqual({ ok: true });
   });
 
+  it('expects the twelve registered tools including the three LSP navigation tools', () => {
+    expect(verifier.EXPECTED_TOOL_NAMES).toHaveLength(12);
+    expect(verifier.EXPECTED_TOOL_NAMES.slice(-3)).toEqual(['get_definition', 'get_references', 'get_implementations']);
+    expect(verifier.validateToolList(verifier.EXPECTED_TOOL_NAMES.slice(0, 9))).toMatchObject({ ok: false });
+  });
+
+  it('requires a deterministic unavailable outcome from LSP tools when no approval exists', () => {
+    const unavailable = {
+      status: 'unavailable', capability: 'unavailable', locations: [], truncated: false,
+      sourceValidation: 'unknown', reasonCode: 'LSP_NOT_CONFIGURED',
+    };
+    for (const tool of ['get_definition', 'get_references', 'get_implementations']) {
+      expect(verifier.validateToolResult(tool, unavailable)).toEqual({ ok: true });
+      expect(verifier.validateToolResult(tool, { ...unavailable, reasonCode: 'LSP_TRUST_REQUIRED' })).toEqual({ ok: true });
+      expect(verifier.validateToolResult(tool, { ...unavailable, status: 'ok', capability: 'supported' })).toMatchObject({ ok: false });
+      expect(verifier.validateToolResult(tool, { ...unavailable, reasonCode: 'LSP_START_FAILED' })).toMatchObject({ ok: false });
+      expect(verifier.validateToolResult(tool, { ...unavailable, locations: [{ filePath: 'fixture.ts' }] })).toMatchObject({ ok: false });
+    }
+  });
+
   it('reports a missing registered tool', () => {
     const names = verifier.EXPECTED_TOOL_NAMES.filter((name) => name !== 'get_symbol_context');
 

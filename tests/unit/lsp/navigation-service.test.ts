@@ -14,7 +14,11 @@ import type {
   NavigationToolArgs,
   VerifiedSymbolNavigationResult,
 } from '../../../src/lsp/contracts.js';
-import { LspNavigationService } from '../../../src/lsp/navigation-service.js';
+import {
+  LSP_NAVIGATION_DEFAULT_LOCK_TIMEOUT_MS,
+  LspNavigationService,
+  lspNavigationLockTimeoutMs,
+} from '../../../src/lsp/navigation-service.js';
 import type { LspProviderAcquisition } from '../../../src/lsp/process-manager.js';
 import { RuntimeLocalLspManager } from '../../../src/lsp/process-manager.js';
 import {
@@ -635,10 +639,13 @@ describe('LspNavigationService same-URI request lock', () => {
       order.push(input.position.character);
       return null;
     };
-    const requests = [16, 17, 18].map((character) =>
-      service.navigate({ kind: 'definition', args: fileArgs('src/a.ts', 1, character) }),
-    );
-    await tick();
+    // FIFO is defined from lock-queue entry, which follows async pre-lock target resolution;
+    // stagger the starts so each request is queued before the next one begins resolving.
+    const requests: Promise<unknown>[] = [];
+    for (const character of [16, 17, 18]) {
+      requests.push(service.navigate({ kind: 'definition', args: fileArgs('src/a.ts', 1, character) }));
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
     release.resolve();
     await Promise.all(requests);
     expect(order).toEqual([16, 17, 18]);
@@ -718,5 +725,14 @@ describe('LspNavigationService same-URI request lock', () => {
     const aSyncs = provider.syncInputs.filter((s) => s.uri === uriOf(root, 'src/a.ts'));
     expect(new Set(aSyncs.map((s) => s.text))).toEqual(new Set([A_TEXT]));
     expect(provider.open.size).toBe(1);
+  });
+});
+
+describe('lspNavigationLockTimeoutMs', () => {
+  it('covers a cold start plus one navigation request so queued requests outlast a provider startup', () => {
+    expect(lspNavigationLockTimeoutMs({ startupTimeoutMs: 10_000, requestTimeoutMs: 10_000 })).toBe(21_000);
+    expect(lspNavigationLockTimeoutMs({ startupTimeoutMs: 60_000, requestTimeoutMs: 60_000 })).toBe(121_000);
+    // Never below the historical 10s default.
+    expect(lspNavigationLockTimeoutMs({ startupTimeoutMs: 1, requestTimeoutMs: 1 })).toBe(LSP_NAVIGATION_DEFAULT_LOCK_TIMEOUT_MS);
   });
 });

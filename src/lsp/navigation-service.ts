@@ -49,6 +49,21 @@ export interface LspNavigationServiceOptions {
 
 export const LSP_NAVIGATION_DEFAULT_LOCK_TIMEOUT_MS = 10_000;
 
+/** Slack for local disk reads/hashing and result validation inside one gate-held transaction. */
+const LSP_NAVIGATION_LOCK_MARGIN_MS = 1_000;
+
+/**
+ * Runtime lock wait bound: the gate holder may spend up to one provider cold start plus one
+ * navigation request, so a queued request must be able to outlast that (never below 10s).
+ */
+export const lspNavigationLockTimeoutMs = (
+  lsp: { readonly startupTimeoutMs: number; readonly requestTimeoutMs: number },
+): number =>
+  Math.max(
+    LSP_NAVIGATION_DEFAULT_LOCK_TIMEOUT_MS,
+    lsp.startupTimeoutMs + lsp.requestTimeoutMs + LSP_NAVIGATION_LOCK_MARGIN_MS,
+  );
+
 type Status = NavigationResponse['status'];
 type Capability = NavigationResponse['capability'];
 

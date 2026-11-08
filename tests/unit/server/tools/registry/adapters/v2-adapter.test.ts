@@ -80,6 +80,25 @@ describe('v1/v2 schema parity', () => {
     expect(schema.safeParse({ query: 'auth', topK: 26 }).success).toBe(false);
   });
 
+  it('never lets a configured maxResults limit raise the get_references hard maximum', () => {
+    const references = TOOL_DEFINITIONS.find((definition) => definition.name === 'get_references');
+    const grep = TOOL_DEFINITIONS.find((definition) => definition.name === 'grep_search');
+    if (references === undefined || grep === undefined) throw new Error('expected definitions are missing');
+    const raised = { topK: 100, maxResults: 5000 };
+    expect(toV2JsonSchema(references.input, raised)).toMatchObject({
+      properties: { maxResults: { maximum: 1000 } },
+    });
+    const base = { filePath: 'src/a.ts', line: 1, character: 0 };
+    expect(toZodV4Object(references.input, raised).safeParse({ ...base, maxResults: 1000 }).success).toBe(true);
+    expect(toZodV4Object(references.input, raised).safeParse({ ...base, maxResults: 1001 }).success).toBe(false);
+    // A lower configured limit still lowers it.
+    const lowered = { topK: 100, maxResults: 50 };
+    expect(toZodV4Object(references.input, lowered).safeParse({ ...base, maxResults: 51 }).success).toBe(false);
+    // grep_search keeps its config-driven behavior.
+    expect(toV2JsonSchema(grep.input, raised)).toMatchObject({ properties: { maxResults: { maximum: 5000 } } });
+    expect(toZodV4Object(grep.input, raised).safeParse({ pattern: 'x', maxResults: 5000 }).success).toBe(true);
+  });
+
   it('converts neutral schemas to SDK-compatible JSON Schema', () => {
     const hybrid = TOOL_DEFINITIONS.find((definition) => definition.name === 'hybrid_search');
     if (hybrid === undefined) {
