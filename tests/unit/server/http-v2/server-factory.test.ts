@@ -64,7 +64,7 @@ const createHandler = async () => {
 };
 
 describe('createV2McpHandler', () => {
-  it('lists all nine tools without a session header', async () => {
+  it('lists all twelve tools without a session header', async () => {
     const handler = await createHandler();
     const response = await handler.fetch(
       post({ jsonrpc: '2.0', id: 1, method: 'tools/list', params: modernParams() }),
@@ -84,6 +84,9 @@ describe('createV2McpHandler', () => {
       'get_file_outline',
       'get_symbol_source',
       'get_symbol_context',
+      'get_definition',
+      'get_references',
+      'get_implementations',
     ]);
     await handler.close();
   });

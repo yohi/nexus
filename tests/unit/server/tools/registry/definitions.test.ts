@@ -7,7 +7,7 @@ import {
 } from '../../../../../src/server/tools/registry/definitions.js';
 
 describe('tool definitions', () => {
-  it('contains the 9 known tools in registration order', () => {
+  it('contains the 12 known tools in registration order', () => {
     expect(TOOL_DEFINITIONS.map((definition) => definition.name)).toEqual([
       'semantic_search',
       'grep_search',
@@ -18,7 +18,30 @@ describe('tool definitions', () => {
       'get_file_outline',
       'get_symbol_source',
       'get_symbol_context',
+      'get_definition',
+      'get_references',
+      'get_implementations',
     ]);
+  });
+
+  it('declares flat navigation target fields with maxResults only on get_references', () => {
+    const target = {
+      symbolId: { kind: 'string', optional: true, pattern: '^symbol_v1_[A-Za-z0-9_-]{43}$' },
+      filePath: { kind: 'string', optional: true },
+      line: { kind: 'integer', optional: true, minimum: 1 },
+      character: { kind: 'integer', optional: true, minimum: 0 },
+    };
+    for (const name of ['get_definition', 'get_references', 'get_implementations']) {
+      const definition = TOOL_DEFINITIONS.find((candidate) => candidate.name === name);
+      expect(definition?.input).toMatchObject(target);
+      expect(Object.keys(definition?.input ?? {})).toEqual(
+        name === 'get_references'
+          ? ['symbolId', 'filePath', 'line', 'character', 'maxResults']
+          : ['symbolId', 'filePath', 'line', 'character'],
+      );
+    }
+    const references = TOOL_DEFINITIONS.find((candidate) => candidate.name === 'get_references');
+    expect(references?.input.maxResults).toMatchObject({ kind: 'integer', optional: true, minimum: 1, maximum: 1000 });
   });
 
   it('mirrors the legacy get_context schema', () => {
