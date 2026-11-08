@@ -533,6 +533,25 @@ describe('SymbolRetrievalService', () => {
       });
     });
 
+    it('returns excluded when an unindexed symlink escapes the project root', async () => {
+      const outsideRoot = await mkdtemp(join(tmpdir(), 'nexus-retrieval-outside-'));
+      const outsideFile = join(outsideRoot, 'outside.ts');
+      await writeFile(outsideFile, 'export function outside() {}');
+      await symlink(outsideFile, join(projectRoot, 'src/linked.ts'));
+
+      try {
+        const result = await service.getFileOutline({ filePath: 'src/linked.ts' });
+        expect(result).toMatchObject({
+          status: 'excluded',
+          freshness: 'unknown',
+          reindexRequired: false,
+          reasonCode: 'PATH_EXCLUDED',
+        });
+      } finally {
+        await rm(outsideRoot, { recursive: true, force: true });
+      }
+    });
+
     it('returns not_indexed when the file exists but has no active catalog', async () => {
       await writeFile(join(projectRoot, 'src/exists.ts'), 'export function b() {}');
 

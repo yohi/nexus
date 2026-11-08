@@ -139,6 +139,15 @@ export class SymbolRetrievalService {
       }
 
       const readResult = await this.readCurrentBytes(relativePath, input.signal);
+      if (readResult.status === 'excluded') {
+        return {
+          status: 'excluded',
+          freshness: 'unknown',
+          reindexRequired: false,
+          reasonCode: 'PATH_EXCLUDED',
+          request: { filePath: input.filePath },
+        };
+      }
       if (resolution.kind === 'missing') {
         if (readResult.status !== 'ok') {
           return {
@@ -159,15 +168,6 @@ export class SymbolRetrievalService {
       }
 
       // Active file: verify freshness before returning metadata.
-      if (readResult.status === 'excluded') {
-        return {
-          status: 'excluded',
-          freshness: 'unknown',
-          reindexRequired: false,
-          reasonCode: 'PATH_EXCLUDED',
-          request: { filePath: input.filePath },
-        };
-      }
       if (readResult.status !== 'ok') {
         return {
           status: 'stale',
