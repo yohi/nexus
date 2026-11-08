@@ -173,14 +173,12 @@ export const lspDocumentEnd = (text: string): Position => {
     } else if (code === 0x0a) {
       line += 1;
       character = 0;
-    } else {
+    } else if (code > 0xffff) {
       // LSP positions count UTF-16 code units, including both halves of surrogate pairs.
-      if (code > 0xffff) {
-        index += 1;
-        character += 2;
-      } else {
-        character += 1;
-      }
+      index += 1;
+      character += 2;
+    } else {
+      character += 1;
     }
   }
   return { line, character };
@@ -575,7 +573,7 @@ class LspProtocolClient implements ILspProvider {
         const fail = () => reject(new LspProtocolError('Language server request failed'));
         try {
           // Sanitized: never reflect server-provided error text.
-          void send(source.token).then(resolve, fail);
+          void send(source.token).then(resolve).catch(fail);
         } catch {
           fail();
         }
