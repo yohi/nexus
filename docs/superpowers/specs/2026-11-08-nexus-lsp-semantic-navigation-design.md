@@ -1,11 +1,11 @@
-# Nexus LSP-Backed Semantic Navigation — Design R0.1.1
+# Nexus LSP-Backed Semantic Navigation — Design R0.1.2
 
 **Issue:** [#298 — Add LSP-backed semantic navigation tools](https://github.com/yohi/nexus/issues/298)  
 **Date:** 2026-11-08 (JST)  
 **Decision:** Human Owner approved the TypeScript/JavaScript-first design direction in brainstorming; this document records that design.  
-**Scope:** DESIGN_ONLY; F-001–F-003 limited documentation correction only. No implementation, test execution, gate change, or follow-on task authorization.  
+**Scope:** DESIGN_ONLY; limited F-003 (version assurance), F-004 (plan dependency ordering), and F-005 (LSP language IDs) documentation correction; no implementation, tests, environment changes, gate change, or follow-on task authorization.  
 **Correction authority:** Owner approved this bounded documentation correction; formal adoption of the revised design is NOT_VERIFIED; implementation remains BLOCKED.  
-**Reviewed baseline:** `7da1764e03d6c35208005a6eeb3bac88a53d930f` (base `master`).  
+**Current correction baseline:** `b07f5337b3c0f03b444a7a58cb7cca0227aa948e` (base `master`); original R0.1.1 source blob `932587eecab736a7cbad56c15727687b31905783`.  
 **Authoritative architecture:** [SPEC.md §6](../../../SPEC.md) and [Issue #296](https://github.com/yohi/nexus/issues/296).
 
 ## 1. Intent
@@ -95,6 +95,8 @@ Proposed internal responsibilities (file names are design guidance; implementati
 
 ```typescript
 type LspNavigationKind = 'definition' | 'references' | 'implementations';
+// LSP text-document IDs are distinct from the Structured Catalog's parser/language IDs.
+type LspDocumentLanguageId = 'typescript' | 'typescriptreact' | 'javascript' | 'javascriptreact';
 interface ILspProvider {
   start(input: { rootUri: string; signal?: AbortSignal }): Promise<{
     definition: boolean; references: boolean; implementations: boolean;
@@ -102,7 +104,7 @@ interface ILspProvider {
   }>;
   syncDocument(input: {
     kind: 'open' | 'change' | 'close'; uri: string;
-    languageId: string; version: number; text?: string;
+    languageId: LspDocumentLanguageId; version: number; text?: string;
   }): Promise<void>;
   navigate(input: {
     kind: LspNavigationKind; uri: string;
@@ -114,6 +116,17 @@ interface ILspProvider {
 ```
 
 `Location` and `LocationLink` are types from `vscode-languageserver-protocol`. `RuntimeLocalLspManager` owns the concrete `ILspProvider`, never an MCP client/handler.
+
+**F-005 — exact LSP document-ID conversion:** `src/lsp/target-resolver.ts` owns `lspDocumentLanguageIdForPath(filePath: string): LspDocumentLanguageId | null`. Match the normalized project-relative file extension (case-sensitive) with the following exhaustive table; do not infer the LSP ID from the Structured Catalog's `languageId`:
+
+| File extension | `LspDocumentLanguageId` |
+| --- | --- |
+| `.ts`, `.mts`, `.cts` | `typescript` |
+| `.tsx` | `typescriptreact` |
+| `.js`, `.mjs`, `.cjs` | `javascript` |
+| `.jsx` | `javascriptreact` |
+
+Both verified-`symbolId` and explicit `filePath`/position targets use this **same** conversion after resolving/validating the current file path. Unknown extensions return `unsupported` before `didOpen` and do not guess a language. The existing Structured Catalog `languageId` field, indexed identity, parser semantics, and stored records are unchanged.
 
 No modification to the existing search orchestrator or source-index persistence model is required. The manager is constructed with the runtime assembly and closed by the runtime cleanup path, including partial-initialization rollback.
 
@@ -184,7 +197,7 @@ Existing `SymbolRetrievalService.verifySymbol()` is **private**, and `getSymbolS
 interface VerifiedSymbolNavigationTarget {
   readonly symbolId: string;
   readonly filePath: string; // normalized project-relative
-  readonly languageId: 'typescript' | 'javascript';
+  readonly languageId: 'typescript' | 'javascript'; // Structured Catalog ID, NOT LSP document languageId
   readonly position: {
     readonly line: number;      // Nexus 1-based
     readonly character: number; // UTF-16, 0-based
@@ -228,11 +241,13 @@ Maintain the existing failure's `reindexRequired` where meaningful; AST ambiguit
 
 Accept saved, dirty on-disk files even when their structured catalog generation is stale or absent. Validate the path lexically and by realpath, enforce project-root containment and configured exclusions, read the current UTF-8 source, then check the UTF-16 character offset and line bounds.
 
+Resolve `LspDocumentLanguageId` using the **same** `lspDocumentLanguageIdForPath(filePath)` mapping defined in §4 for both `symbolId` and file/position inputs. Keep Catalog language IDs separate; unsupported extensions fail closed without an LSP request.
+
 The input contract uses 1-based lines and 0-based UTF-16 characters. Convert to standard LSP zero-based lines and the negotiated position encoding. Initially advertise/require UTF-16; fail with `unsupported` if the server selects an unsupported encoding. Cover non-BMP Unicode, CRLF, empty lines, and position zero in tests.
 
 ### 6.3 Document synchronization and consistency
 
-The authoritative input is disk, not an editor buffer. For the target document, use `textDocument/didOpen` or `didChange` with full current source and monotonically increasing document versions before requesting navigation. Keep runtime-local document state, not cross-worktree state.
+The authoritative input is disk, not an editor buffer. For the target document, use `textDocument/didOpen` with the extension-derived `LspDocumentLanguageId` (§4), or `didChange` with full current source and monotonically increasing document versions before requesting navigation. Keep runtime-local document state, not cross-worktree state.
 
 Apply cancellation and finite request deadlines. Check the relevant current disk snapshots before and after an LSP request and validate returned locations (file URI, root containment, range bounds, current file contents). If target files change during a request or the source cannot be validated, return an explicit `stale`/partial/unknown result rather than claiming freshness.
 
@@ -251,7 +266,7 @@ Initial server: **`typescript-language-server@6.0.2` (major 6)**, externally ins
 | LSP method | Owner and exact behavior |
 | --- | --- |
 | `initialize`, `initialized` | `ILspProvider.start` sends initialize request then initialized notification; canonical `rootUri` and one worktree folder; advertise UTF-16/full-document sync/static navigation, `dynamicRegistration=false` |
-| `textDocument/didOpen` | `syncDocument(open)` sends current disk text, TypeScript/JavaScript languageId and initial version 1 |
+| `textDocument/didOpen` | `syncDocument(open)` sends current disk text, the `LspDocumentLanguageId` mapped from the validated file extension (§4), and initial version 1; `.tsx`/`.jsx` use React-specific IDs |
 | `textDocument/didChange` | `syncDocument(change)` sends full disk content with monotonically increasing document version before a navigation request |
 | `textDocument/didClose` | `syncDocument(close)` closes tracked documents during release/teardown |
 | `textDocument/definition` | `navigate(definition)` with validated position |
@@ -344,7 +359,11 @@ Trust-store path on POSIX: `$XDG_CONFIG_HOME/nexus/lsp-trust.json` (fallback `$H
 }
 ```
 
-The approved executable SHA/path/args must match **before any execution**, including a version check; then verify the running server version is the pinned 6.0.2 before navigation. A trust record pins the entry script, not every transitive package, so the project is still treated as trusted code, not sandboxed code. Missing/unreadable/unsafe trust data => `unavailable` / `LSP_TRUST_REQUIRED`; executable, digest, args or version mismatch => `unavailable` / `LSP_EXECUTABLE_NOT_APPROVED`. No child is started on denied approval. Other Nexus retrieval stays operational.
+**F-003 — Owner-approved version-assurance boundary:** Before **any execution**, validate the canonical worktree root, absolute executable path and canonical target, executable-byte SHA-256, exact ordered args, and Owner-maintained `serverVersion: "6.0.2"` metadata against the trusted approval record. The approved version is an **Owner assertion bound to the reviewed executable digest**, not an independently observed runtime version; no unapproved `--version` probe is allowed. Missing/unreadable/unsafe trust data => `unavailable` / `LSP_TRUST_REQUIRED`; path/digest/args/approval-version mismatch => `unavailable` / `LSP_EXECUTABLE_NOT_APPROVED`. No child starts on denied approval.
+
+After an approved start, verify that the LSP `initialize` exchange succeeds, UTF-16 is negotiated, and each requested semantic capability is actually advertised before navigation. **Do not require `InitializeResult.serverInfo.version`: `typescript-language-server@6.0.2` does not provide that field.** Absence of `serverInfo.version` is not a failure; if a version is explicitly reported and contradicts the approved version, refuse the navigation (`unavailable` / `LSP_EXECUTABLE_NOT_APPROVED`). The former unconditional post-launch independent running-server-version attestation requirement is **withdrawn by Human Owner decision**; no weaker path/digest/args or capability check is permitted.
+
+**Residual risk:** SHA-256 pins only the approved executable file, not its transitive Node packages, imported project TypeScript modules, plugins or other runtime dependencies. The trust-store version string plus protocol/capability validation **cannot prove the loaded server code is exactly v6.0.2** or that dependencies are immutable. Treat the worktree and dependency installation as trusted input; LSP remains outside an OS sandbox. This documented limit does not authorize unsafe execution, automatic approval, or guessing capability support. Other Nexus retrieval stays operational.
 
 ### 8.2 Child process environment and isolation — F-003
 
@@ -364,7 +383,9 @@ Test implementation in small, executable units; no broad review/repair cycle is 
 - UTF-16/non-BMP/CRLF/zero positions and LSP URI/range conversions are correct.
 - Microsoft protocol/JSON-RPC 3.18.4/9.0.3 covers initialize/initialized, didOpen/didChange/didClose, all three navigation requests, cancel, shutdown/exit, null/Location/LocationLink, and distinct unsupported/error statuses.
 - Server-originated config/folders are read-only; workspace/applyEdit, showDocument, dynamic registration and unknown requests never mutate files.
-- LSP config env > file > defaults; invalid config, disabled LSP, missing trust, mismatched executable SHA/args/version, different worktree, weak trust-store permissions and child-environment secret injection fail closed only for LSP.
+- LSP config env > file > defaults; invalid config, disabled LSP, missing trust, mismatched executable SHA/args/Owner-approved version metadata, different worktree, weak trust-store permissions and child-environment secret injection fail closed only for LSP.
+- With a protocol stub emulating `typescript-language-server@6.0.2`, `initialize` without `serverInfo.version` is accepted **only after** approved path/digest/args/root validation and capability/encoding checks; contradictory reported version, bad capability, or bad digest fails closed. Document that transitive dependencies are not pinned by the executable digest.
+- `didOpen` emits the exact four LSP document IDs for `.ts`/`.mts`/`.cts`, `.tsx`, `.js`/`.mjs`/`.cjs`, `.jsx` for **both** navigation target forms; an unknown extension is `unsupported`.
 - Startup is coalesced; idle cleanup, abrupt exit, timeout, cancellation, and runtime shutdown close processes.
 - Out-of-root, symlink, excluded, deleted, and changed-during-request sources are never represented as verified current locations.
 
@@ -374,7 +395,8 @@ Test implementation in small, executable units; no broad review/repair cycle is 
 - Saved uncommitted edits are observed through explicit file/position requests without waiting for structured reindexing.
 - A stale catalog `symbolId` is refused and cannot be silently remapped.
 - Two divergent sibling worktrees with the same relative file paths receive no cross-worktree document/process/result state.
-- A controlled trusted worktree with pinned `typescript-language-server@6.0.2` demonstrates the three operations and safe config/approval flow.
+- A controlled trusted worktree with an Owner-approved `typescript-language-server@6.0.2` executable demonstrates the three operations and safe config/approval flow; no unsupported post-launch server-version assertion is required.
+- Test source files for all eight supported extensions verify the actual `textDocument/didOpen` `languageId`, for both `symbolId`-resolved and explicit file/position inputs where available.
 - Failure or absence of TypeScript LSP, invalid trust/config, and rejected server edit requests do not fail unrelated retrieval tools.
 - Existing MCP tool registration, verification and runtime-shutdown tests remain compatible with three added tool names.
 
@@ -394,4 +416,5 @@ The initial implementation meets #298's bounded goal when TS/JS navigation works
 
 - **2026-11-08:** Human Owner selected TypeScript/JavaScript-first, Python second. Generic provider plus runtime-local lazy LSP manager selected. No persistent semantic graph or automated installation.
 - **R0.1.1 limited correction:** F-001: verified symbol navigation API/AST token; F-002: pinned protocol/server and complete message responsibilities; F-003: config precedence, independent owner trust and child process limits. This correction is not owner adoption or implementation authorization.
-- This document is a committed *design artifact*, not evidence that implementation, integration tests, deployment, or correctness benchmarking have run.
+- **R0.1.2 limited correction (local only):** Human Owner approved withdrawing the unimplementable independent post-launch running-version attestation while preserving SHA-256/Owner trust and protocol/capability checks (F-003). Define four extension-derived LSP `languageId` values without altering Structured Catalog identity (F-005). F-004 modifies plan Task 1/5 dependencies only. No change authorizes implementation, commit/push, or formal design adoption.
+- R0.1.1 was a committed design artifact at the reviewed HEAD; this R0.1.2 local correction is **uncommitted** and is not evidence that implementation, integration tests, deployment, or correctness benchmarking have run.
