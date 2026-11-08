@@ -165,24 +165,33 @@ export const lspDocumentEnd = (text: string): Position => {
   let line = 0;
   let character = 0;
   for (let index = 0; index < text.length; index += 1) {
-    const code = text.charCodeAt(index);
+    const code = text.codePointAt(index) ?? 0;
     if (code === 0x0d) {
-      if (text.charCodeAt(index + 1) === 0x0a) index += 1;
+      if (text.codePointAt(index + 1) === 0x0a) index += 1;
       line += 1;
       character = 0;
     } else if (code === 0x0a) {
       line += 1;
       character = 0;
     } else {
-      // JS strings are UTF-16: a non-BMP code point contributes its two code units.
-      character += 1;
+      // LSP positions count UTF-16 code units, including both halves of surrogate pairs.
+      if (code > 0xffff) {
+        index += 1;
+        character += 2;
+      } else {
+        character += 1;
+      }
     }
   }
   return { line, character };
 };
 
 const parseTextDocumentSync = (value: unknown): SyncKind => {
-  const kindOf = (kind: unknown): SyncKind | null => (kind === 1 ? 'full' : kind === 2 ? 'incremental' : null);
+  const kindOf = (kind: unknown): SyncKind | null => {
+    if (kind === 1) return 'full';
+    if (kind === 2) return 'incremental';
+    return null;
+  };
   if (typeof value === 'number') {
     const kind = kindOf(value);
     if (kind !== null) return kind;
@@ -191,6 +200,39 @@ const parseTextDocumentSync = (value: unknown): SyncKind => {
     if (kind !== null) return kind;
   }
   throw new LspSyncUnsupportedError();
+};
+
+const parseInitializeResult = (result: unknown, expectedServerVersion: string): {
+  syncKind: SyncKind;
+  capabilities: LspCapabilities;
+} => {
+  if (!isObject(result)) throw new LspProtocolError('Language server returned a malformed initialize result');
+
+  const serverInfo = result.serverInfo;
+  if (serverInfo !== undefined && !isObject(serverInfo)) {
+    throw new LspProtocolError('Language server returned malformed serverInfo');
+  }
+  if (isObject(serverInfo) && Object.hasOwn(serverInfo, 'version') && serverInfo.version !== expectedServerVersion) {
+    throw new LspServerVersionMismatchError();
+  }
+
+  const serverCapabilities = result.capabilities;
+  if (!isObject(serverCapabilities)) {
+    throw new LspProtocolError('Language server returned malformed capabilities');
+  }
+  if (serverCapabilities.positionEncoding !== undefined && serverCapabilities.positionEncoding !== 'utf-16') {
+    throw new LspProtocolError('Language server negotiated an unsupported position encoding');
+  }
+
+  return {
+    syncKind: parseTextDocumentSync(serverCapabilities.textDocumentSync),
+    capabilities: Object.freeze({
+      definition: isAdvertised(serverCapabilities.definitionProvider),
+      references: isAdvertised(serverCapabilities.referencesProvider),
+      implementations: isAdvertised(serverCapabilities.implementationProvider),
+      positionEncoding: 'utf-16',
+    }),
+  };
 };
 
 const workspaceFolderName = (rootUri: string): string => {
@@ -306,34 +348,11 @@ class LspProtocolClient implements ILspProvider {
         (token) => this.connection.sendRequest(InitializeRequest.type, params, token),
         input.signal,
       );
-      if (!isObject(result)) throw new LspProtocolError('Language server returned a malformed initialize result');
-
-      // Version attestation precedes any capability negotiation: absence is accepted, an explicit
-      // unequal or malformed value is a contradiction of the Owner-approved executable.
-      const serverInfo = result.serverInfo;
-      if (serverInfo !== undefined) {
-        if (!isObject(serverInfo)) throw new LspProtocolError('Language server returned malformed serverInfo');
-        if (Object.hasOwn(serverInfo, 'version') && serverInfo.version !== input.expectedServerVersion) {
-          throw new LspServerVersionMismatchError();
-        }
-      }
-
-      const serverCapabilities = result.capabilities;
-      if (!isObject(serverCapabilities)) {
-        throw new LspProtocolError('Language server returned malformed capabilities');
-      }
-      if (serverCapabilities.positionEncoding !== undefined && serverCapabilities.positionEncoding !== 'utf-16') {
-        throw new LspProtocolError('Language server negotiated an unsupported position encoding');
-      }
-      this.syncKind = parseTextDocumentSync(serverCapabilities.textDocumentSync);
+      const initialized = parseInitializeResult(result, input.expectedServerVersion);
+      this.syncKind = initialized.syncKind;
 
       await this.notify(() => this.connection.sendNotification(InitializedNotification.type, {}));
-      this.capabilities = Object.freeze({
-        definition: isAdvertised(serverCapabilities.definitionProvider),
-        references: isAdvertised(serverCapabilities.referencesProvider),
-        implementations: isAdvertised(serverCapabilities.implementationProvider),
-        positionEncoding: 'utf-16',
-      });
+      this.capabilities = initialized.capabilities;
       this.state = 'ready';
       return this.capabilities;
     } catch (error) {
@@ -400,7 +419,7 @@ class LspProtocolClient implements ILspProvider {
   }
 
   listOpenDocumentUris(): readonly string[] {
-    return Object.freeze([...this.documents.keys()].sort());
+    return Object.freeze([...this.documents.keys()].sort((left, right) => left.localeCompare(right)));
   }
 
   navigate(input: {
@@ -418,7 +437,7 @@ class LspProtocolClient implements ILspProvider {
         throw new LspProtocolError('Document is not synchronized for navigation');
       }
       const capabilities = this.capabilities;
-      if (capabilities === null || !capabilities[kind]) throw new LspCapabilityUnsupportedError();
+      if (!capabilities?.[kind]) throw new LspCapabilityUnsupportedError();
       const textDocument = { uri };
       const result: unknown = await this.request((token) => {
         switch (kind) {
@@ -556,7 +575,7 @@ class LspProtocolClient implements ILspProvider {
         const fail = () => reject(new LspProtocolError('Language server request failed'));
         try {
           // Sanitized: never reflect server-provided error text.
-          send(source.token).then(resolve, fail);
+          void send(source.token).then(resolve, fail);
         } catch {
           fail();
         }

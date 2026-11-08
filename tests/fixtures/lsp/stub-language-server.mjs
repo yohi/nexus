@@ -63,7 +63,7 @@ export function startStubLanguageServer({ input, output, config = {} }) {
   const settleWaiters = () => {
     for (let i = waiters.length - 1; i >= 0; i -= 1) {
       const waiter = waiters[i];
-      const match = received.find(waiter.predicate);
+      const match = received.find((message) => waiter.predicate(message));
       if (match !== undefined) {
         waiters.splice(i, 1);
         waiter.resolve(match);
@@ -138,7 +138,7 @@ export function startStubLanguageServer({ input, output, config = {} }) {
       return received.filter((message) => message.method === method);
     },
     waitFor(predicate) {
-      const match = received.find(predicate);
+      const match = received.find((message) => predicate(message));
       if (match !== undefined) return Promise.resolve(match);
       return new Promise((resolve) => waiters.push({ predicate, resolve }));
     },
@@ -170,5 +170,6 @@ if (isMain) {
   const rawConfig = process.env.NEXUS_LSP_STUB_CONFIG;
   const config = rawConfig === undefined ? {} : JSON.parse(rawConfig);
   const stub = startStubLanguageServer({ input: process.stdin, output: process.stdout, config });
-  void stub.waitFor((message) => message.method === 'exit').then(() => process.exit(0));
+  await stub.waitFor((message) => message.method === 'exit');
+  process.exit(0);
 }
