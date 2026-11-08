@@ -1,10 +1,11 @@
-import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, rm, symlink, unlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { SymbolRetrievalService } from '../../../src/structured/retrieval-service.js';
+import { TypeScriptStructuredParser } from '../../../src/plugins/languages/typescript-structured.js';
 import { PathSanitizer } from '../../../src/server/path-sanitizer.js';
 import { createGenerationId, createSymbolId } from '../../../src/structured/identity.js';
 import { sha256Hex } from '../../../src/structured/hash.js';
@@ -532,6 +533,25 @@ describe('SymbolRetrievalService', () => {
       });
     });
 
+    it('returns excluded when an unindexed symlink escapes the project root', async () => {
+      const outsideRoot = await mkdtemp(join(tmpdir(), 'nexus-retrieval-outside-'));
+      const outsideFile = join(outsideRoot, 'outside.ts');
+      await writeFile(outsideFile, 'export function outside() {}');
+      await symlink(outsideFile, join(projectRoot, 'src/linked.ts'));
+
+      try {
+        const result = await service.getFileOutline({ filePath: 'src/linked.ts' });
+        expect(result).toMatchObject({
+          status: 'excluded',
+          freshness: 'unknown',
+          reindexRequired: false,
+          reasonCode: 'PATH_EXCLUDED',
+        });
+      } finally {
+        await rm(outsideRoot, { recursive: true, force: true });
+      }
+    });
+
     it('returns not_indexed when the file exists but has no active catalog', async () => {
       await writeFile(join(projectRoot, 'src/exists.ts'), 'export function b() {}');
 
@@ -678,6 +698,312 @@ describe('SymbolRetrievalService', () => {
         reindexRequired: true,
         reasonCode: 'INDEX_PENDING_GENERATION',
         request: { symbolId: 'symbol_v1_any_000000000000000000000000000000000000' },
+      });
+    });
+  });
+
+  describe('resolveVerifiedNavigationTarget', () => {
+    const indexParsed = async (
+      filePath: string,
+      text: string,
+      options: {
+        readonly fileCompleteness?: 'complete' | 'partial';
+        readonly mutate?: (declaration: StructuredDeclaration) => StructuredDeclaration;
+      } = {},
+    ): Promise<{ generationId: string; contentHash: string; declarations: readonly StructuredDeclaration[] }> => {
+      const source = createStructuredSource(filePath, text);
+      const parsed = await new TypeScriptStructuredParser().parseStructured(source);
+      const contentHash = sha256Hex(source.bytes);
+      const generationId = createGenerationId({ schemaVersion: 1, parserId: 'typescript', parserVersion: 'test', contentHash });
+      const declarations = parsed.declarations.map(options.mutate ?? ((declaration) => declaration));
+      await mkdir(join(projectRoot, filePath, '..'), { recursive: true });
+      await writeFile(join(projectRoot, filePath), text);
+      await coordinator.runFullRebuild({
+        files: [{
+          source,
+          generationId,
+          contentHash,
+          fileCompleteness: options.fileCompleteness ?? 'complete',
+          declarations,
+          imports: [],
+        }],
+        merkleSnapshot: [],
+      });
+      return { generationId, contentHash, declarations };
+    };
+
+    const symbolIdOf = (declarations: readonly StructuredDeclaration[], qualifiedName: string): string => {
+      const matches = declarations.filter((declaration) => declaration.qualifiedName === qualifiedName);
+      expect(matches).toHaveLength(1);
+      return (matches[0] as StructuredDeclaration).symbolId;
+    };
+
+    it('returns the verified AST name token for an exported function', async () => {
+      const text = '// header\nexport function foo() { return 1; }';
+      const indexed = await indexParsed('src/a.ts', text);
+      const symbolId = symbolIdOf(indexed.declarations, 'foo');
+
+      const result = await service.resolveVerifiedNavigationTarget({ symbolId });
+      expect(result).toEqual({
+        status: 'ok',
+        target: {
+          symbolId,
+          filePath: 'src/a.ts',
+          languageId: 'typescript',
+          position: { line: 2, character: 16 },
+          fileSha256: indexed.contentHash,
+          generationId: indexed.generationId,
+        },
+      });
+    });
+
+    it('resolves nested methods and Unicode positions in UTF-16', async () => {
+      const text = 'const s = "😀";\nexport class Café {\n  /** doc */\n  static métodó() {}\n}';
+      const indexed = await indexParsed('src/a.ts', text);
+
+      await expect(service.resolveVerifiedNavigationTarget({ symbolId: symbolIdOf(indexed.declarations, 'Café') }))
+        .resolves.toMatchObject({ status: 'ok', target: { position: { line: 2, character: 13 } } });
+      await expect(service.resolveVerifiedNavigationTarget({ symbolId: symbolIdOf(indexed.declarations, 'Café.métodó') }))
+        .resolves.toMatchObject({ status: 'ok', target: { position: { line: 4, character: 9 } } });
+    });
+
+    it('returns LSP coordinates after U+2028 and U+2029 comment terminators', async () => {
+      for (const separator of ['\u2028', '\u2029']) {
+        const indexed = await indexParsed('src/a.ts', `// before${separator}export function foo() {}`);
+        await expect(service.resolveVerifiedNavigationTarget({ symbolId: symbolIdOf(indexed.declarations, 'foo') }))
+          .resolves.toMatchObject({ status: 'ok', target: { position: { line: 1, character: 26 } } });
+      }
+    });
+
+    it('distinguishes overloads and same-name symbols without fall-through', async () => {
+      const text = [
+        'export function f(a: string): void;',
+        'export function f(a: unknown): void {}',
+        'namespace A { export function run() {} }',
+        'namespace B { export function run() {} }',
+      ].join('\n');
+      const indexed = await indexParsed('src/a.ts', text);
+      const overloads = indexed.declarations.filter((declaration) => declaration.qualifiedName === 'f');
+      expect(overloads).toHaveLength(2);
+
+      const lines = await Promise.all(overloads.map(async (declaration) => {
+        const result = await service.resolveVerifiedNavigationTarget({ symbolId: declaration.symbolId });
+        return result.status === 'ok' ? result.target.position.line : null;
+      }));
+      expect(lines).toEqual([1, 2]);
+      await expect(service.resolveVerifiedNavigationTarget({ symbolId: symbolIdOf(indexed.declarations, 'B.run') }))
+        .resolves.toMatchObject({ status: 'ok', target: { position: { line: 4, character: 30 } } });
+    });
+
+    it('refuses default anonymous constructs as degraded IDENTIFIER_TOKEN_UNRESOLVED', async () => {
+      const indexed = await indexParsed('src/a.ts', 'export default () => 1;');
+      const result = await service.resolveVerifiedNavigationTarget({ symbolId: symbolIdOf(indexed.declarations, 'default') });
+      expect(result).toEqual({ status: 'degraded', reasonCode: 'IDENTIFIER_TOKEN_UNRESOLVED', reindexRequired: false });
+    });
+
+    it('refuses nonexact declarations as degraded PARSER_COVERAGE_PARTIAL', async () => {
+      const indexed = await indexParsed('src/a.ts', 'export function foo() {}', {
+        mutate: (declaration) => ({ ...declaration, isExact: false }),
+      });
+      const result = await service.resolveVerifiedNavigationTarget({ symbolId: symbolIdOf(indexed.declarations, 'foo') });
+      expect(result).toEqual({ status: 'degraded', reasonCode: 'PARSER_COVERAGE_PARTIAL', reindexRequired: false });
+    });
+
+    it('refuses declarations from a partial generation as degraded PARSER_COVERAGE_PARTIAL', async () => {
+      const indexed = await indexParsed('src/a.ts', 'export function foo() {}', { fileCompleteness: 'partial' });
+      const result = await service.resolveVerifiedNavigationTarget({ symbolId: symbolIdOf(indexed.declarations, 'foo') });
+      expect(result).toEqual({ status: 'degraded', reasonCode: 'PARSER_COVERAGE_PARTIAL', reindexRequired: false });
+    });
+
+    it('refuses a declaration whose indexed range does not match an AST declaration', async () => {
+      const text = 'export function foo() { return 1; }';
+      const indexed = await indexParsed('src/a.ts', text, {
+        mutate: (declaration) => {
+          const startByte = declaration.startByte + 7;
+          return {
+            ...declaration,
+            startByte,
+            sourceHash: sha256Hex(Buffer.from(text, 'utf8').subarray(startByte, declaration.endByte)),
+          };
+        },
+      });
+      const result = await service.resolveVerifiedNavigationTarget({ symbolId: symbolIdOf(indexed.declarations, 'foo') });
+      expect(result).toEqual({ status: 'degraded', reasonCode: 'IDENTIFIER_TOKEN_UNRESOLVED', reindexRequired: false });
+    });
+
+    it('returns stale for a changed or deleted file', async () => {
+      const indexed = await indexParsed('src/a.ts', 'export function foo() {}');
+      const symbolId = symbolIdOf(indexed.declarations, 'foo');
+
+      await writeFile(join(projectRoot, 'src/a.ts'), 'export function foo() { return 2; }');
+      await expect(service.resolveVerifiedNavigationTarget({ symbolId }))
+        .resolves.toEqual({ status: 'stale', reasonCode: 'INDEX_FILE_HASH_MISMATCH', reindexRequired: true });
+
+      await unlink(join(projectRoot, 'src/a.ts'));
+      await expect(service.resolveVerifiedNavigationTarget({ symbolId }))
+        .resolves.toEqual({ status: 'stale', reasonCode: 'INDEX_FILE_MISSING', reindexRequired: true });
+    });
+
+    it('returns stale when an indexed file is replaced by a directory', async () => {
+      const indexed = await indexParsed('src/a.ts', 'export function foo() {}');
+      const symbolId = symbolIdOf(indexed.declarations, 'foo');
+
+      await unlink(join(projectRoot, 'src/a.ts'));
+      await mkdir(join(projectRoot, 'src/a.ts'));
+
+      await expect(service.resolveVerifiedNavigationTarget({ symbolId }))
+        .resolves.toEqual({ status: 'stale', reasonCode: 'INDEX_FILE_MISSING', reindexRequired: true });
+    });
+
+    it('returns stale when the file changes after initial verification', async () => {
+      const indexed = await indexParsed('src/a.ts', 'export function foo() {}');
+      const symbolId = symbolIdOf(indexed.declarations, 'foo');
+      const original = catalog.resolveFile.bind(catalog);
+      let calls = 0;
+      vi.spyOn(catalog, 'resolveFile').mockImplementation(async (filePath) => {
+        calls += 1;
+        if (calls === 2) {
+          await writeFile(join(projectRoot, 'src/a.ts'), 'export function foo() { return 2; }');
+        }
+        return original(filePath);
+      });
+
+      await expect(service.resolveVerifiedNavigationTarget({ symbolId }))
+        .resolves.toEqual({ status: 'stale', reasonCode: 'INDEX_FILE_HASH_MISMATCH', reindexRequired: true });
+    });
+
+    it('returns stale when the active generation changes during resolution', async () => {
+      const indexed = await indexParsed('src/a.ts', 'export function foo() {}');
+      const symbolId = symbolIdOf(indexed.declarations, 'foo');
+      const original = catalog.resolveFile.bind(catalog);
+      let calls = 0;
+      vi.spyOn(catalog, 'resolveFile').mockImplementation(async (filePath) => {
+        calls += 1;
+        if (calls >= 2) {
+          return { kind: 'active', generationId: 'gen_changed' };
+        }
+        return original(filePath);
+      });
+
+      await expect(service.resolveVerifiedNavigationTarget({ symbolId }))
+        .resolves.toEqual({ status: 'stale', reasonCode: 'INDEX_FILE_HASH_MISMATCH', reindexRequired: true });
+    });
+
+    it('returns stale_identity for retired and not_found for absent symbols', async () => {
+      const first = await indexParsed('src/a.ts', 'export function oldFn() {}');
+      const oldId = symbolIdOf(first.declarations, 'oldFn');
+      await indexParsed('src/a.ts', 'export function newFn() {}');
+
+      await expect(service.resolveVerifiedNavigationTarget({ symbolId: oldId }))
+        .resolves.toEqual({ status: 'stale_identity', reasonCode: 'SYMBOL_RETIRED', reindexRequired: false });
+      await expect(service.resolveVerifiedNavigationTarget({ symbolId: 'symbol_v1_missing_0000000000000000000000000000000000' }))
+        .resolves.toEqual({ status: 'not_found', reasonCode: 'SYMBOL_NOT_FOUND', reindexRequired: false });
+    });
+
+    it('returns index_incomplete for a pending symbol', async () => {
+      const stage = createStructuredStage('src/a.ts', 'export function a() { return 1; }', 'a');
+      await stageStructuredFile(coordinator, stage);
+      await expect(service.resolveVerifiedNavigationTarget({ symbolId: stage.symbolId }))
+        .resolves.toEqual({ status: 'index_incomplete', reasonCode: 'INDEX_PENDING_GENERATION', reindexRequired: true });
+    });
+
+    it('returns index_incomplete for a symbol hash mismatch', async () => {
+      const indexed = await indexParsed('src/a.ts', 'export function foo() {}', {
+        mutate: (declaration) => ({ ...declaration, sourceHash: 'f'.repeat(64) }),
+      });
+      await expect(service.resolveVerifiedNavigationTarget({ symbolId: symbolIdOf(indexed.declarations, 'foo') }))
+        .resolves.toEqual({ status: 'index_incomplete', reasonCode: 'INDEX_SYMBOL_HASH_MISMATCH', reindexRequired: true });
+    });
+
+    it('returns not_indexed when the structured baseline is missing', async () => {
+      await catalog.setStructuredRebuildState({ rebuildState: 'failed' });
+      await expect(service.resolveVerifiedNavigationTarget({ symbolId: 'symbol_v1_any_000000000000000000000000000000000000' }))
+        .resolves.toEqual({ status: 'not_indexed', reasonCode: 'STRUCTURED_INDEX_MISSING', reindexRequired: true });
+    });
+
+    it('returns excluded for an excluded source', async () => {
+      const indexed = await indexParsed('src/a.ts', 'export function foo() {}');
+      const excludedService = new SymbolRetrievalService({ catalog, sanitizer, isExcluded: () => true });
+      await expect(excludedService.resolveVerifiedNavigationTarget({ symbolId: symbolIdOf(indexed.declarations, 'foo') }))
+        .resolves.toEqual({ status: 'excluded', reasonCode: 'PATH_EXCLUDED', reindexRequired: false });
+    });
+
+    it('returns unsupported for an unsupported language', async () => {
+      const indexed = await indexParsed('src/a.ts', 'export function foo() {}');
+      const unsupportedService = new SymbolRetrievalService({ catalog, sanitizer, isSupportedLanguage: () => false });
+      await expect(unsupportedService.resolveVerifiedNavigationTarget({ symbolId: symbolIdOf(indexed.declarations, 'foo') }))
+        .resolves.toEqual({ status: 'unsupported', reasonCode: 'unsupported_language', reindexRequired: false });
+    });
+
+    it('refuses a source whose symlink escapes the canonical project root', async () => {
+      const text = 'export function foo() {}';
+      const indexed = await indexParsed('src/a.ts', text);
+      const outsideDir = await mkdtemp(join(tmpdir(), 'nexus-retrieval-outside-'));
+      try {
+        await writeFile(join(outsideDir, 'a.ts'), text);
+        await unlink(join(projectRoot, 'src/a.ts'));
+        await symlink(join(outsideDir, 'a.ts'), join(projectRoot, 'src/a.ts'));
+
+        await expect(service.resolveVerifiedNavigationTarget({ symbolId: symbolIdOf(indexed.declarations, 'foo') }))
+          .resolves.toEqual({ status: 'excluded', reasonCode: 'PATH_EXCLUDED', reindexRequired: false });
+      } finally {
+        await rm(outsideDir, { recursive: true, force: true });
+      }
+    });
+
+    it('returns excluded before checking content when a source symlink escapes the project root', async () => {
+      const text = 'export function foo() {}';
+      const indexed = await indexParsed('src/a.ts', text);
+      const outsideDir = await mkdtemp(join(tmpdir(), 'nexus-retrieval-outside-'));
+      try {
+        await writeFile(join(outsideDir, 'a.ts'), 'different outside content');
+        await unlink(join(projectRoot, 'src/a.ts'));
+        await symlink(join(outsideDir, 'a.ts'), join(projectRoot, 'src/a.ts'));
+
+        await expect(service.resolveVerifiedNavigationTarget({ symbolId: symbolIdOf(indexed.declarations, 'foo') }))
+          .resolves.toEqual({ status: 'excluded', reasonCode: 'PATH_EXCLUDED', reindexRequired: false });
+      } finally {
+        await rm(outsideDir, { recursive: true, force: true });
+      }
+    });
+
+    it('returns excluded when an in-project symlink resolves to an excluded canonical path', async () => {
+      const text = 'export function foo() {}';
+      const indexed = await indexParsed('src/a.ts', text);
+      await mkdir(join(projectRoot, 'secrets'), { recursive: true });
+      await writeFile(join(projectRoot, 'secrets/a.ts'), text);
+      await unlink(join(projectRoot, 'src/a.ts'));
+      await symlink(join(projectRoot, 'secrets/a.ts'), join(projectRoot, 'src/a.ts'));
+      const excludedService = new SymbolRetrievalService({
+        catalog,
+        sanitizer,
+        isExcluded: (filePath) => filePath.startsWith('secrets/'),
+      });
+
+      await expect(excludedService.resolveVerifiedNavigationTarget({ symbolId: symbolIdOf(indexed.declarations, 'foo') }))
+        .resolves.toEqual({ status: 'excluded', reasonCode: 'PATH_EXCLUDED', reindexRequired: false });
+    });
+
+    it('returns cancelled for an aborted request', async () => {
+      const indexed = await indexParsed('src/a.ts', 'export function foo() {}');
+      const controller = new AbortController();
+      controller.abort();
+      await expect(service.resolveVerifiedNavigationTarget({
+        symbolId: symbolIdOf(indexed.declarations, 'foo'),
+        signal: controller.signal,
+      })).resolves.toEqual({ status: 'cancelled', reasonCode: 'REQUEST_CANCELLED', reindexRequired: false });
+    });
+
+    it('leaves getSymbolSource output unchanged for the same symbol', async () => {
+      const text = 'export function foo() {}';
+      const indexed = await indexParsed('src/a.ts', text);
+      const symbolId = symbolIdOf(indexed.declarations, 'foo');
+      await expect(service.getSymbolSource({ symbolId })).resolves.toEqual({
+        status: 'ok',
+        freshness: 'fresh',
+        reindexRequired: false,
+        source: text,
+        request: { symbolId },
       });
     });
   });
