@@ -1,5 +1,4 @@
-import { readFile } from 'node:fs/promises';
-import { join } from 'node:path';
+import path from 'node:path';
 
 import type {
   IStructuredCatalog,
@@ -10,6 +9,7 @@ import type {
 import { PathTraversalError, type PathSanitizer } from '../server/path-sanitizer.js';
 import type { VerifiedSymbolNavigationResult } from '../lsp/contracts.js';
 import { resolveTsIdentifierPosition } from '../lsp/identifier-locator.js';
+import { CanonicalSourceError, readCanonicalSource } from '../lsp/target-resolver.js';
 import { sha256Hex, decodeUtf8 } from './hash.js';
 import { Utf8SourceError } from './utf8-offsets.js';
 import type { StructuredDeclaration, StructuredRetrievalReasonCode } from './contracts.js';
@@ -126,7 +126,6 @@ export class SymbolRetrievalService {
       }
     }
 
-    const projectRoot = this.options.sanitizer.getProjectRoot();
     for (let attempt = 0; attempt < 2; attempt += 1) {
       const resolution = await this.options.catalog.resolveFile(relativePath);
       if (resolution.kind === 'pending') {
@@ -139,7 +138,7 @@ export class SymbolRetrievalService {
         };
       }
 
-      const readResult = await this.readCurrentBytes(relativePath, projectRoot, input.signal);
+      const readResult = await this.readCurrentBytes(relativePath, input.signal);
       if (resolution.kind === 'missing') {
         if (readResult.status !== 'ok') {
           return {
@@ -160,6 +159,15 @@ export class SymbolRetrievalService {
       }
 
       // Active file: verify freshness before returning metadata.
+      if (readResult.status === 'excluded') {
+        return {
+          status: 'excluded',
+          freshness: 'unknown',
+          reindexRequired: false,
+          reasonCode: 'PATH_EXCLUDED',
+          request: { filePath: input.filePath },
+        };
+      }
       if (readResult.status !== 'ok') {
         return {
           status: 'stale',
@@ -390,7 +398,8 @@ export class SymbolRetrievalService {
     if (currentSymbol.kind !== 'active' || currentSymbol.filePath !== filePath) {
       return navigationFailure('stale', 'INDEX_FILE_HASH_MISMATCH', true);
     }
-    const reread = await this.readCurrentBytes(filePath, this.options.sanitizer.getProjectRoot(), input.signal);
+    const reread = await this.readCurrentBytes(filePath, input.signal);
+    if (reread.status === 'excluded') return navigationFailure('excluded', 'PATH_EXCLUDED', false);
     if (reread.status !== 'ok') {
       return navigationFailure('stale', reread.reasonCode, true);
     }
@@ -414,7 +423,11 @@ export class SymbolRetrievalService {
 
   private async checkCanonicalContainment(filePath: string): Promise<VerifiedSymbolNavigationResult | undefined> {
     try {
-      await this.options.sanitizer.resolveExisting(filePath);
+      const canonicalPath = await this.options.sanitizer.resolveExisting(filePath);
+      const canonicalRelativePath = path.relative(this.options.sanitizer.getProjectRoot(), canonicalPath).split(path.sep).join('/');
+      if (this.options.isExcluded && await this.options.isExcluded(canonicalRelativePath)) {
+        return navigationFailure('excluded', 'PATH_EXCLUDED', false);
+      }
       return undefined;
     } catch (error) {
       if (error instanceof PathTraversalError) {
@@ -511,8 +524,10 @@ export class SymbolRetrievalService {
       return { ok: false, status: { status: 'index_incomplete', reasonCode: 'INDEX_GENERATION_MISSING', request: { symbolId: input.symbolId } } };
     }
 
-    const projectRoot = this.options.sanitizer.getProjectRoot();
-    const readResult = await this.readCurrentBytes(filePath, projectRoot, input.signal);
+    const readResult = await this.readCurrentBytes(filePath, input.signal);
+    if (readResult.status === 'excluded') {
+      return { ok: false, status: { status: 'excluded', reasonCode: 'PATH_EXCLUDED', request: { symbolId: input.symbolId } } };
+    }
     if (readResult.status !== 'ok') {
       return { ok: false, status: { status: 'stale', reasonCode: readResult.reasonCode, request: { symbolId: input.symbolId } } };
     }
@@ -564,17 +579,32 @@ export class SymbolRetrievalService {
 
   private async readCurrentBytes(
     filePath: string,
-    projectRoot: string,
     signal?: AbortSignal,
-  ): Promise<{ status: 'ok'; bytes: Uint8Array } | { status: 'stale'; reasonCode: 'INDEX_FILE_MISSING' }> {
+  ): Promise<
+    | { status: 'ok'; bytes: Uint8Array }
+    | { status: 'stale'; reasonCode: 'INDEX_FILE_MISSING' | 'INDEX_FILE_HASH_MISMATCH' }
+    | { status: 'excluded'; reasonCode: 'PATH_EXCLUDED' }
+  > {
     try {
-      const absolutePath = join(projectRoot, filePath);
-      const buffer = await readFile(absolutePath, { signal });
-      return { status: 'ok', bytes: new Uint8Array(buffer) };
+      const snapshot = await readCanonicalSource({
+        filePath,
+        sanitizer: this.options.sanitizer,
+        isExcluded: this.options.isExcluded ?? (() => false),
+        signal,
+      });
+      return { status: 'ok', bytes: snapshot.bytes };
     } catch (error) {
-      const code = (error as NodeJS.ErrnoException).code;
-      if (code === 'ENOENT') {
-        return { status: 'stale', reasonCode: 'INDEX_FILE_MISSING' };
+      if (error instanceof CanonicalSourceError) {
+        switch (error.failure) {
+          case 'escaped':
+          case 'excluded':
+          case 'not_file':
+            return { status: 'excluded', reasonCode: 'PATH_EXCLUDED' };
+          case 'missing':
+            return { status: 'stale', reasonCode: 'INDEX_FILE_MISSING' };
+          case 'changed':
+            return { status: 'stale', reasonCode: 'INDEX_FILE_HASH_MISMATCH' };
+        }
       }
       throw error;
     }

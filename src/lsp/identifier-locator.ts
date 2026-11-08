@@ -107,6 +107,15 @@ export const resolveTsIdentifierPosition = (input: {
     return null;
   }
 
-  const { line, character } = sourceFile.getLineAndCharacterOfPosition(tokenStart);
-  return { line: line + 1, character };
+  let line = 0;
+  let lineStart = 0;
+  for (let index = 0; index < tokenStart; index += 1) {
+    const code = text.charCodeAt(index);
+    if (code === 0x0a || code === 0x0d) {
+      if (code === 0x0d && text.charCodeAt(index + 1) === 0x0a) index += 1;
+      line += 1;
+      lineStart = index + 1;
+    }
+  }
+  return { line: line + 1, character: tokenStart - lineStart };
 };
