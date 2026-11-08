@@ -140,7 +140,7 @@ function trustStorePath(env: NodeJS.ProcessEnv): string | null {
 
 function isInside(root: string, candidate: string): boolean {
   const relative = path.relative(root, candidate);
-  return relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative));
+  return relative === '' || (relative !== '..' && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative));
 }
 
 /** Returns parsed approvals, or null for any missing/unreadable/unsafe trust data. */

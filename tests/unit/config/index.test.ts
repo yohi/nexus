@@ -645,6 +645,18 @@ describe('loadConfig lsp', () => {
     });
   });
 
+  it('allows the environment executable to override an explicit null file value', async () => {
+    await writeCfg({ lsp: { typescript: { executable: null } } });
+
+    const config = await loadConfig({
+      projectRoot: dir,
+      env: { NEXUS_LSP_TYPESCRIPT_EXECUTABLE: '/opt/x/tsserver-lsp' },
+    });
+
+    expect(config.lsp.typescript.executable).toBe('/opt/x/tsserver-lsp');
+    expect(config.lspConfigError).toBeUndefined();
+  });
+
   it('applies per-field precedence env > file > defaults, also with configFileName', async () => {
     await writeFile(
       path.join(dir, 'alt.json'),

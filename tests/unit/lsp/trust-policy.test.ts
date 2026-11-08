@@ -162,6 +162,20 @@ posixOnly('resolveApprovedLspLaunch', () => {
     ).toEqual({ status: 'unavailable', reasonCode: 'LSP_TRUST_REQUIRED' });
   });
 
+  it('rejects a trust store inside the project root when its first path segment starts with two dots', async () => {
+    const inner = path.join(projectRoot, '..config', 'nexus');
+    await mkdir(inner, { recursive: true });
+    await chmod(path.join(projectRoot, '..config'), 0o700);
+    await chmod(inner, 0o700);
+    const innerStore = path.join(inner, 'lsp-trust.json');
+    await writeFile(innerStore, JSON.stringify({ version: 1, approvals: [approval()] }), 'utf8');
+    await chmod(innerStore, 0o600);
+
+    expect(
+      await resolveApprovedLspLaunch({ projectRoot, lsp: lspFor(), env: { ...env, XDG_CONFIG_HOME: path.join(projectRoot, '..config') } }),
+    ).toEqual({ status: 'unavailable', reasonCode: 'LSP_TRUST_REQUIRED' });
+  });
+
   it.each(['{not json', JSON.stringify({ version: 2, approvals: [] }), JSON.stringify({ version: 1 })])(
     'rejects invalid trust data %s',
     async (content) => {

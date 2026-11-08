@@ -253,7 +253,7 @@ const lspEnvBoundedInt = (raw: string | undefined, min: number, max: number): Pa
 };
 
 const lspExecutable = (value: unknown): Parsed<string> => {
-  if (value === undefined) return undefined;
+  if (value === undefined || value === null) return undefined;
   return typeof value === 'string' && path.isAbsolute(value) ? value : LSP_INVALID;
 };
 
