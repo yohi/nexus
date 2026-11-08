@@ -1,10 +1,12 @@
-import { mkdir, mkdtemp, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { loadConfig } from '../../../src/config/index.js';
+import type { Config } from '../../../src/types/index.js';
+import { lspNavigationLockTimeoutMs } from '../../../src/lsp/navigation-service.js';
 import { RuntimeLocalLspManager } from '../../../src/lsp/process-manager.js';
 import { createRuntimeAssembly } from '../../../src/server/runtime-assembly.js';
 import { createSyntheticProvider, syntheticEmbeddingConfig } from '../../benchmarks/performance/synthetic-provider.js';
@@ -67,6 +69,28 @@ describe('runtime assembly LSP ownership', () => {
     navigationServiceControl.fail = false;
     const reopened = await assemble();
     await reopened.runtime.close();
+  });
+
+  it('starts with defaults when Config.lsp is absent and LSP reports unavailable/LSP_NOT_CONFIGURED', async () => {
+    await writeFile(join(root, 'a.ts'), 'export const needle = 1;\n');
+    const loaded = await loadConfig({ projectRoot: root, env: {} });
+    // Simulates a Config built without loadConfig (e.g. by an embedder) that omits `lsp`.
+    const { lsp: _omitted, ...withoutLsp } = loaded;
+    const config = { ...withoutLsp, embedding: syntheticEmbeddingConfig } as unknown as Config;
+    const assembly = await createRuntimeAssembly(config, { createEmbeddingProvider: createSyntheticProvider });
+    try {
+      expect(navigationServiceControl.lastOptions).toMatchObject({ lockTimeoutMs: lspNavigationLockTimeoutMs(loaded.lsp) });
+      await assembly.runtime.initialize();
+      const matches = await assembly.options.grepEngine.search({ query: 'needle', cwd: root });
+      expect(matches.length).toBeGreaterThan(0);
+      const navigation = await assembly.options.lspNavigationService?.navigate({
+        kind: 'definition',
+        args: { filePath: 'a.ts', line: 1, character: 13 },
+      });
+      expect(navigation).toMatchObject({ status: 'unavailable', reasonCode: 'LSP_NOT_CONFIGURED', locations: [] });
+    } finally {
+      await assembly.runtime.close();
+    }
   });
 
   it('closes the LSP manager through runtime close even after initialization rejected', async () => {

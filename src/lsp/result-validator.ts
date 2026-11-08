@@ -9,6 +9,7 @@ import type { NavigationLocation, NavigationResponse } from './contracts.js';
 import {
   checkLspPosition,
   createLspLineTable,
+  hasLspIncompatibleLineTerminator,
   readCanonicalSource,
   type LspLineTable,
 } from './target-resolver.js';
@@ -273,6 +274,8 @@ async function readValidatedSource(canonicalPath: string, input: ValidateInput):
       signal,
     });
     const text = decodeUtf8(snapshot.bytes);
+    // U+2028/U+2029 make server-reported positions unverifiable: omit (counted as partial).
+    if (hasLspIncompatibleLineTerminator(text)) return null;
     return { filePath: snapshot.filePath, text, table: createLspLineTable(text) };
   } catch (error) {
     if (isAbortLike(error, signal)) throw error;

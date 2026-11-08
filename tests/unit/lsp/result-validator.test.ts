@@ -323,6 +323,25 @@ describe('validateNavigationResults', () => {
     expect(result).toMatchObject({ locations: [], sourceValidation: 'partial', excludedResultCount: 1 });
   });
 
+  it.each([
+    ['U+2028', '/* a\u2028b */\nconst y = 2;\nconst x = 1;\nconst z = 3;\n'],
+    ['U+2029', '/* a\u2029b */\nconst y = 2;\nconst x = 1;\nconst z = 3;\n'],
+  ])('omits locations in files containing %s (LSP-incompatible line terminator)', async (_name, content) => {
+    const ctx = await setup();
+    await write(ctx.root, 'src/sep.ts', content);
+    // tsserver would report `x` at line 3 (0-based), which in LSP coordinates is `z`.
+    const result = await validate(ctx, [
+      { uri: ctx.uri('src/sep.ts'), range: range(3, 6, 3, 7) },
+      { uri: ctx.uri('src/a.ts'), range: range(0, 13, 0, 18) },
+    ]);
+    expect(result).toEqual({
+      locations: [{ filePath: 'src/a.ts', startLine: 1, startCharacter: 13, endLine: 1, endCharacter: 18 }],
+      truncated: false,
+      sourceValidation: 'partial',
+      excludedResultCount: 1,
+    });
+  });
+
   it('deduplicates and sorts deterministically regardless of input order or result shape', async () => {
     const ctx = await setup();
     const entries: (Location | LocationLink)[] = [

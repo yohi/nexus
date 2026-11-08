@@ -19,6 +19,7 @@ import { StructuredIndexCoordinator } from '../indexer/structured-index-coordina
 import { ProjectWriteCoordinator } from '../indexer/project-write-coordinator.js';
 import { RuntimeLocalLspManager } from '../lsp/process-manager.js';
 import { LspNavigationService, lspNavigationLockTimeoutMs } from '../lsp/navigation-service.js';
+import { defaultLspConfig } from '../config/index.js';
 import type { Config } from '../types/index.js';
 import type { RuntimeAssembly, RuntimeAssemblyDependencies } from './runtime/assembly-types.js';
 import { DirectoryScanner } from './runtime/directory-scan.js';
@@ -118,8 +119,10 @@ async function createRuntimeAssemblyCore(config: Config,
     // Runtime-local LSP: lazy (no process until the first navigation), Owner approval is
     // re-resolved by the manager on every new launch, and failures stay LSP-local.
     const canonicalRoot = sanitizer.getProjectRoot();
+    // A Config built without loadConfig may omit `lsp`; fall back to the disabled default.
+    const lsp = config.lsp ?? defaultLspConfig();
     const manager = new RuntimeLocalLspManager({
-      projectRoot: canonicalRoot, lsp: config.lsp,
+      projectRoot: canonicalRoot, lsp,
       ...(config.lspConfigError === undefined ? {} : { configError: config.lspConfigError }),
     });
     lspManager = manager;
@@ -127,7 +130,7 @@ async function createRuntimeAssemblyCore(config: Config,
       projectRoot: canonicalRoot, sanitizer, symbols: symbolRetrievalService,
       isExcluded: (filePath) => symbolIgnoreMatcher(filePath),
       acquireProvider: (input) => manager.acquire(input),
-      lockTimeoutMs: lspNavigationLockTimeoutMs(config.lsp),
+      lockTimeoutMs: lspNavigationLockTimeoutMs(lsp),
     });
     let closePromise: Promise<void> | undefined;
     const runReindex = () => DirectoryScanner.scan(projectRoot, projectRoot, ignorePaths, onLog);

@@ -506,6 +506,27 @@ describe('LspNavigationService cross-file freshness (runtime navigation gate)', 
     expect(provider.events).toEqual([{ op: 'close', uri: uriOf(root, 'src/a.ts') }]);
   });
 
+  it('treats an open document that gained U+2028 as unsafe: closes it and aborts without syncing', async () => {
+    const { service, provider, root } = await createHarness();
+    await service.navigate({ kind: 'definition', args: fileArgs('src/a.ts', 1, 16) });
+    await write(root, 'src/a.ts', '/* a\u2028b */\nconst y = 2;\nconst x = 1;\nconst z = 3;\n');
+    provider.events.length = 0;
+
+    const response = await service.navigate({ kind: 'definition', args: fileArgs('src/b.ts', 2, 21) });
+
+    expect(response).toMatchObject({ status: 'stale', reasonCode: 'INDEX_FILE_HASH_MISMATCH', locations: [] });
+    expect(response.sourceValidation).not.toBe('verified');
+    expect(provider.events).toEqual([{ op: 'close', uri: uriOf(root, 'src/a.ts') }]);
+  });
+
+  it('returns unsupported/UNSUPPORTED_LINE_TERMINATOR for a target containing U+2029 without any LSP call', async () => {
+    const { service, provider, root } = await createHarness();
+    await write(root, 'src/sep.ts', '/* a\u2029b */\nconst y = 2;\nconst x = 1;\nconst z = 3;\n');
+    const response = await service.navigate({ kind: 'definition', args: fileArgs('src/sep.ts', 3, 6) });
+    expect(response).toMatchObject({ status: 'unsupported', reasonCode: 'UNSUPPORTED_LINE_TERMINATOR', locations: [] });
+    expect(provider.events).toEqual([]);
+  });
+
   it('aborts navigation when open document A became excluded', async () => {
     let excludeA = false;
     const { service, provider, root } = await createHarness({ isExcluded: (p) => excludeA && p === 'src/a.ts' });

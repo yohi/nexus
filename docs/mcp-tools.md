@@ -158,6 +158,7 @@ interface NavigationResponse {
 | `unsupported` / `unsupported_language`, `STRUCTURED_SCHEMA_UNSUPPORTED` | Extension or parser not supported | No |
 | `degraded` / `PARSER_COVERAGE_PARTIAL`, `IDENTIFIER_TOKEN_UNRESOLVED` | No unique name token could be proven for the `symbolId` | Use the file/position form |
 | `unsupported` / `LSP_CAPABILITY_UNSUPPORTED` | The server does not advertise this operation | No |
+| `unsupported` / `UNSUPPORTED_LINE_TERMINATOR` | The target file contains U+2028 or U+2029. TypeScript counts these as line breaks but LSP does not, so positions cannot be mapped safely. Result locations in such files are omitted (`partial`), and an open document that gains one aborts the request as `stale` / `INDEX_FILE_HASH_MISMATCH` | After removing the characters |
 | `unavailable` / `LSP_NOT_CONFIGURED` | LSP is disabled or no executable is configured (the default) | After configuration |
 | `unavailable` / `LSP_CONFIG_INVALID` | An `lsp` config value is invalid. Only LSP is affected | After fixing config |
 | `unavailable` / `LSP_TRUST_REQUIRED` | Trust store is missing, unreadable, or unsafe, or this worktree is not approved | After Owner approval |
@@ -166,7 +167,7 @@ interface NavigationResponse {
 | `unavailable` / `LSP_SYNC_UNSUPPORTED` | The server cannot accept open/close plus Full or Incremental document sync | No |
 | `timeout` / `LSP_REQUEST_TIMEOUT` | Startup, request, or navigation-lock wait exceeded its bound | Yes |
 | `cancelled` / `REQUEST_CANCELLED` | The caller cancelled the request | Yes |
-| `error` / `LSP_PROTOCOL_ERROR` | Protocol or transport failure. The session is discarded and the next request starts a fresh process | Yes |
+| `error` / `LSP_PROTOCOL_ERROR` | Protocol or transport failure, or a malformed or error reply. A failed document sync or close, or a process exit, discards the session so the next request starts a fresh process. A malformed reply or error response to the navigation request itself keeps the session | Yes |
 | `error` / `FILE_READ_ERROR`, `TARGET_RESOLUTION_FAILED`, `invalid_utf8` | The target source could not be read or decoded | After fixing the file |
 | `error` / `RESULT_VALIDATION_FAILED`, `INVARIANT_VIOLATION`, `PARSE_ERROR` | Internal validation fault. No locations are returned | Report if persistent |
 
