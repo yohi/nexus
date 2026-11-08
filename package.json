@@ -82,6 +82,7 @@
     "tree-sitter-rust": "0.23.1",
     "apache-arrow": "18.1.0",
     "typescript": "^5.9.3",
+    "vscode-languageserver-protocol": "3.18.4",
     "xxhash-wasm": "^1.1.0",
     "zod": "^4.6.7",
     "zod-v4": "npm:zod@^4.6.7"

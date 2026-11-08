@@ -87,10 +87,8 @@ const toZodV4Field = (name: string, field: NeutralField, limits: V2ToolLimits): 
       return stringField;
     }
     case 'integer': {
-      let integer = z.number().int().positive();
-      if (field.minimum !== undefined) {
-        integer = integer.min(field.minimum);
-      }
+      // Default to positive (>= 1); an explicit schema minimum (e.g. 0) overrides it.
+      let integer = z.number().int().min(field.minimum ?? 1);
       if (field.maximum !== undefined) {
         integer = integer.max(limitFor(name, field.maximum, limits));
       }

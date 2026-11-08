@@ -83,6 +83,28 @@ describe('v1/v2 schema parity', () => {
   });
 });
 
+describe('v2 integer minimum handling', () => {
+  it('accepts zero only when the explicit minimum is zero', () => {
+    const schema = toZodV4Object({ character: { kind: 'integer', minimum: 0 } });
+    expect(schema.safeParse({ character: 0 }).success).toBe(true);
+    expect(schema.safeParse({ character: 5 }).success).toBe(true);
+    expect(schema.safeParse({ character: -1 }).success).toBe(false);
+    expect(schema.safeParse({ character: 1.5 }).success).toBe(false);
+  });
+
+  it('keeps rejecting zero when no minimum is declared', () => {
+    const schema = toZodV4Object({ line: { kind: 'integer' } });
+    expect(schema.safeParse({ line: 0 }).success).toBe(false);
+    expect(schema.safeParse({ line: 1 }).success).toBe(true);
+  });
+
+  it('keeps rejecting zero when the explicit minimum is one', () => {
+    const schema = toZodV4Object({ line: { kind: 'integer', minimum: 1 } });
+    expect(schema.safeParse({ line: 0 }).success).toBe(false);
+    expect(schema.safeParse({ line: 1 }).success).toBe(true);
+  });
+});
+
 describe('withErrorCode', () => {
   it('adds NEXUS_CONTENT_NOT_FOUND to classified error results', () => {
     const result = withErrorCode({
