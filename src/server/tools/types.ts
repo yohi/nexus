@@ -1,5 +1,6 @@
 import type { MetricsHooks } from '../../observability/types.js';
 import type { EventQueue } from '../../indexer/event-queue.js';
+import type { LspNavigationService } from '../../lsp/navigation-service.js';
 import type { PluginRegistry } from '../../plugins/registry.js';
 import type { SearchOrchestrator } from '../../search/orchestrator.js';
 import type { IContentStore } from '../../storage/interfaces/content-store.js';
@@ -32,6 +33,8 @@ export interface NexusServerOptions {
   packageMode?: boolean;
   eventQueue?: EventQueue;
   symbolRetrievalService?: SymbolRetrievalService;
+  /** Internal assembly seam: runtime-local LSP navigation (absent => unavailable/LSP_NOT_CONFIGURED). */
+  lspNavigationService?: LspNavigationService;
 }
 
 export interface NexusToolCallResult {

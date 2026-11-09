@@ -9,7 +9,10 @@ export type ToolName =
   | 'reindex'
   | 'get_file_outline'
   | 'get_symbol_source'
-  | 'get_symbol_context';
+  | 'get_symbol_context'
+  | 'get_definition'
+  | 'get_references'
+  | 'get_implementations';
 
 export interface ToolDefinition {
   name: ToolName;
@@ -125,6 +128,54 @@ export const GET_SYMBOL_CONTEXT_DEFINITION: ToolDefinition = {
   },
 };
 
+const NAVIGATION_TARGET_INPUT: NeutralSchema = {
+  symbolId: {
+    kind: 'string',
+    optional: true,
+    pattern: '^symbol_v1_[A-Za-z0-9_-]{43}$',
+    description: 'Structured symbol ID. Provide either symbolId alone or filePath + line + character.',
+  },
+  filePath: {
+    kind: 'string',
+    optional: true,
+    description: 'Project-relative file path (requires line and character).',
+  },
+  line: { kind: 'integer', optional: true, minimum: 1, description: '1-based line number.' },
+  character: {
+    kind: 'integer',
+    optional: true,
+    minimum: 0,
+    description: '0-based UTF-16 code-unit offset within the line; 0 is valid.',
+  },
+};
+
+export const GET_DEFINITION_DEFINITION: ToolDefinition = {
+  name: 'get_definition',
+  description: 'Return live LSP definition locations for a symbolId or file position (TS/JS).',
+  input: { ...NAVIGATION_TARGET_INPUT },
+};
+
+export const GET_REFERENCES_DEFINITION: ToolDefinition = {
+  name: 'get_references',
+  description: 'Return live LSP reference locations for a symbolId or file position (TS/JS).',
+  input: {
+    ...NAVIGATION_TARGET_INPUT,
+    maxResults: {
+      kind: 'integer',
+      optional: true,
+      minimum: 1,
+      maximum: 1000,
+      description: 'Maximum references to return (default 100, maximum 1000); see truncated.',
+    },
+  },
+};
+
+export const GET_IMPLEMENTATIONS_DEFINITION: ToolDefinition = {
+  name: 'get_implementations',
+  description: 'Return live LSP implementation locations for a symbolId or file position (TS/JS).',
+  input: { ...NAVIGATION_TARGET_INPUT },
+};
+
 export const TOOL_DEFINITIONS: readonly ToolDefinition[] = [
   SEMANTIC_SEARCH_DEFINITION,
   GREP_SEARCH_DEFINITION,
@@ -135,4 +186,7 @@ export const TOOL_DEFINITIONS: readonly ToolDefinition[] = [
   GET_FILE_OUTLINE_DEFINITION,
   GET_SYMBOL_SOURCE_DEFINITION,
   GET_SYMBOL_CONTEXT_DEFINITION,
+  GET_DEFINITION_DEFINITION,
+  GET_REFERENCES_DEFINITION,
+  GET_IMPLEMENTATIONS_DEFINITION,
 ];

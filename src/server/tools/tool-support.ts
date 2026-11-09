@@ -1,7 +1,9 @@
 import { sanitizeErrorMessage } from '../../utils/error-utils.js';
 import type { IContentStore } from '../../storage/interfaces/content-store.js';
 import { withToolMetrics } from '../tool-instrumentation.js';
+import type { LspNavigationKind, NavigationToolArgs } from '../../lsp/contracts.js';
 import { executeGetContext } from './get-context.js';
+import { executeLspNavigation } from './get-lsp-navigation.js';
 import type { GetContextToolArgs } from './get-context-schema.js';
 import { executeGrepSearch, type GrepSearchToolArgs } from './grep-search.js';
 import { executeHybridSearch, type HybridSearchToolArgs } from './hybrid-search.js';
@@ -84,6 +86,27 @@ export const createContentReader = (
     }
   };
 };
+
+const lspNavigationHandler = (
+  name: ToolName,
+  kind: LspNavigationKind,
+  options: NexusServerOptions,
+  awaitInitialize?: () => Promise<void>,
+): ToolHandler =>
+  withToolMetrics(name, options.metricsHooks, async (args: unknown, extra?: { signal?: AbortSignal }) => {
+    try {
+      if (awaitInitialize) await awaitInitialize();
+      const result = await executeLspNavigation(
+        options.lspNavigationService,
+        kind,
+        args as NavigationToolArgs,
+        extra?.signal,
+      );
+      return toolResult(result);
+    } catch (error) {
+      return errorResult(error);
+    }
+  });
 
 export const buildToolHandlers = (
   options: NexusServerOptions,
@@ -278,5 +301,8 @@ export const buildToolHandlers = (
         }
       },
     ),
+    get_definition: lspNavigationHandler('get_definition', 'definition', options, awaitInitialize),
+    get_references: lspNavigationHandler('get_references', 'references', options, awaitInitialize),
+    get_implementations: lspNavigationHandler('get_implementations', 'implementations', options, awaitInitialize),
   };
 };

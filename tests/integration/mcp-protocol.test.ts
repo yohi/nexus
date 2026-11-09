@@ -65,7 +65,10 @@ describe('Phase 2 MCP protocol integration', () => {
     const tools = await mcpClient.listTools();
     expect(tools.tools.map((tool) => tool.name).sort()).toEqual([
       'get_context',
+      'get_definition',
       'get_file_outline',
+      'get_implementations',
+      'get_references',
       'get_symbol_context',
       'get_symbol_source',
       'grep_search',
@@ -76,7 +79,10 @@ describe('Phase 2 MCP protocol integration', () => {
     ]);
     expect(Object.fromEntries(tools.tools.map((tool) => [tool.name, tool.description]))).toEqual({
       get_context: 'Return a specific line range from a file; prefer partial reads.',
+      get_definition: 'Return live LSP definition locations for a symbolId or file position (TS/JS).',
       get_file_outline: 'Return a source-free structured outline of a known file.',
+      get_implementations: 'Return live LSP implementation locations for a symbolId or file position (TS/JS).',
+      get_references: 'Return live LSP reference locations for a symbolId or file position (TS/JS).',
       get_symbol_context: 'Return bounded context (verified imports + exact symbol source) for a symbol ID.',
       get_symbol_source: 'Return exact source for a structured symbol ID.',
       grep_search: 'Exact string search for symbols, errors, or code fragments.',
@@ -98,7 +104,10 @@ describe('Phase 2 MCP protocol integration', () => {
       ),
     ).toEqual({
       get_context: ['endLine', 'filePath', 'mode', 'startLine', 'symbolName'],
+      get_definition: ['character', 'filePath', 'line', 'symbolId'],
       get_file_outline: ['filePath'],
+      get_implementations: ['character', 'filePath', 'line', 'symbolId'],
+      get_references: ['character', 'filePath', 'line', 'maxResults', 'symbolId'],
       get_symbol_context: ['symbolId', 'tokenBudget'],
       get_symbol_source: ['symbolId'],
       grep_search: ['caseSensitive', 'filePattern', 'filePatterns', 'maxResults', 'pattern'],
@@ -163,6 +172,22 @@ describe('Phase 2 MCP protocol integration', () => {
       reconciliation: { added: 0, modified: 0, deleted: 0, unchanged: 0 },
       chunksIndexed: 0,
     });
+
+    for (const name of ['get_definition', 'get_references', 'get_implementations']) {
+      const navigation = await mcpClient.callTool({
+        name,
+        arguments: { filePath: 'src/auth.ts', line: 1, character: 0 },
+      });
+      expect(navigation.isError).toBeFalsy();
+      expect(parseResult(navigation)).toEqual({
+        status: 'unavailable',
+        capability: 'unavailable',
+        locations: [],
+        truncated: false,
+        sourceValidation: 'unknown',
+        reasonCode: 'LSP_NOT_CONFIGURED',
+      });
+    }
   });
 
   it('records the preview line count via onContextLinesFetched for deferred get_context calls', async () => {
