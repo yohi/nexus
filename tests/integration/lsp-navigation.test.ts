@@ -251,6 +251,18 @@ const setupStub = async (options: { env?: Record<string, string>; server?: Recor
 // Deterministic stub-server integration (always runs; CI evidence for production wiring)
 
 describe('LSP navigation through the production runtime assembly (recording stub server)', () => {
+  it.each<[string, string]>([
+    ['U+2028', '\u2028'],
+    ['U+2029', '\u2029'],
+  ])('returns the public unsupported line separator reasonCode for %s', async (_label, separator) => {
+    const { root, runtime } = await setupStub();
+    await fs.writeFile(path.join(root, 'shapes.ts'), `export const shape = 1;${separator}\n`);
+
+    const response = await navigate(runtime, 'get_definition', { filePath: 'shapes.ts', line: 1, character: 13 });
+
+    expect(response).toMatchObject({ status: 'unsupported', reasonCode: 'unsupported_line_separator' });
+  });
+
   it('routes all three tools through an Owner-approved, runtime-local language server', async () => {
     const { root, server, runtime } = await setupStub();
     const shapes = uriOf(root, 'shapes.ts');

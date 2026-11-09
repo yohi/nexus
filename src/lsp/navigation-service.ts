@@ -26,6 +26,7 @@ import {
 import { validateNavigationResults } from './result-validator.js';
 import {
   CanonicalSourceError,
+  containsUnsupportedLspLineSeparator,
   lspDocumentLanguageIdForPath,
   readCanonicalSource,
   resolveNavigationTarget,
@@ -497,6 +498,7 @@ export class LspNavigationService {
       const languageId = lspDocumentLanguageIdForPath(snapshot.filePath);
       if (languageId === null) return unsafe;
       const text = decodeUtf8(snapshot.bytes);
+      if (containsUnsupportedLspLineSeparator(text)) return unsafe;
       return { status: 'ok', filePath: snapshot.filePath, text, fileSha256: sha256Hex(snapshot.bytes), languageId };
     } catch (error) {
       if (isAbortLike(error, signal)) return { status: 'cancelled' };

@@ -505,6 +505,36 @@ describe('LspNavigationService cross-file freshness (runtime navigation gate)', 
     expect(provider.events[0]).toMatchObject({ text: changedA, languageId: 'typescript' });
   });
 
+  it.each<[string, string]>([
+    ['U+2028', '\u2028'],
+    ['U+2029', '\u2029'],
+  ])('closes open document A containing %s and aborts B navigation', async (_label, separator) => {
+    const { service, provider, root } = await createHarness();
+    await service.navigate({ kind: 'definition', args: fileArgs('src/a.ts', 1, 16) });
+    await write(root, 'src/a.ts', `export function alpha(): number {${separator}  return 2;\n}\n`);
+    provider.events.length = 0;
+
+    const response = await service.navigate({ kind: 'definition', args: fileArgs('src/b.ts', 2, 21) });
+
+    expect(response).toMatchObject({ status: 'stale', reasonCode: 'INDEX_FILE_HASH_MISMATCH', locations: [] });
+    expect(response.sourceValidation).not.toBe('verified');
+    expect(provider.events).toEqual([{ op: 'close', uri: uriOf(root, 'src/a.ts') }]);
+  });
+
+  it('fails closed when closing an open document containing an unsupported line separator fails', async () => {
+    const { service, provider, root } = await createHarness();
+    await service.navigate({ kind: 'definition', args: fileArgs('src/a.ts', 1, 16) });
+    await write(root, 'src/a.ts', `export function alpha(): number {\u2028  return 2;\n}\n`);
+    provider.events.length = 0;
+    provider.closeImpl = () => Promise.reject(new LspProtocolError());
+
+    const response = await service.navigate({ kind: 'definition', args: fileArgs('src/b.ts', 2, 21) });
+
+    expect(response).toMatchObject({ status: 'error', reasonCode: 'LSP_PROTOCOL_ERROR', locations: [] });
+    expect(response.sourceValidation).not.toBe('verified');
+    expect(provider.events).toEqual([{ op: 'close', uri: uriOf(root, 'src/a.ts') }]);
+  });
+
   it.each<[string, (root: string) => Promise<void>, string]>([
     ['deleted', (root) => fs.rm(path.join(root, 'src/a.ts')), 'INDEX_FILE_MISSING'],
     ['replaced by an escaping symlink', async (root) => {
