@@ -464,6 +464,24 @@ describe('LspNavigationService dispatch and result mapping', () => {
 });
 
 describe('LspNavigationService cross-file freshness (runtime navigation gate)', () => {
+  it('refreshes open documents in locale-aware URI order', async () => {
+    const { service, provider, root } = await createHarness();
+    const uppercasePath = 'src/A.ts';
+    const lowercasePath = 'src/a.ts';
+    await write(root, uppercasePath, 'export const upper = 1;\n');
+    await provider.syncDocument({ uri: uriOf(root, lowercasePath), languageId: 'typescript', text: A_TEXT });
+    await provider.syncDocument({ uri: uriOf(root, uppercasePath), languageId: 'typescript', text: 'export const upper = 1;\n' });
+    provider.events.length = 0;
+
+    await service.navigate({ kind: 'definition', args: fileArgs('src/b.ts', 2, 21) });
+
+    expect(provider.events.filter((event) => event.op === 'sync').map((event) => event.uri)).toEqual([
+      uriOf(root, lowercasePath),
+      uriOf(root, uppercasePath),
+      uriOf(root, 'src/b.ts'),
+    ]);
+  });
+
   it('re-syncs a changed open document A before navigating from B', async () => {
     const { service, provider, root } = await createHarness();
     await service.navigate({ kind: 'definition', args: fileArgs('src/a.ts', 1, 16) });

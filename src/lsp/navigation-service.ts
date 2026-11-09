@@ -165,6 +165,9 @@ interface DiskIdentity {
 }
 
 type PreflightResult = { status: 'ok'; identities: DiskIdentity[] } | { status: 'failed'; response: NavigationResponse };
+type OpenDocumentRefreshResult =
+  | { readonly status: 'ok'; readonly identity: DiskIdentity }
+  | { readonly status: 'failed'; readonly response: NavigationResponse };
 
 /**
  * Runtime-local LSP navigation: target resolution against current disk, a request-level
@@ -259,24 +262,39 @@ export class LspNavigationService {
     input: { kind: LspNavigationKind; args: NavigationToolArgs; signal?: AbortSignal },
     lockedUri: string,
   ): Promise<NavigationResponse> {
-    const { kind, signal } = input;
+    const { signal } = input;
     if (aborted(signal)) return CANCELLED('not_checked');
 
-    const acquisition = await this.safeAcquire(signal);
+    const prepared = await this.prepareTransaction(input, lockedUri);
+    if ('response' in prepared) return prepared.response;
+    const raw = await this.runNavigation(input, prepared.provider, prepared.target);
+    if (raw !== null && 'status' in raw) return raw;
+    return this.validateAndRecheck(input, prepared, raw);
+  }
+
+  private async prepareTransaction(
+    input: { kind: LspNavigationKind; args: NavigationToolArgs; signal?: AbortSignal },
+    lockedUri: string,
+  ): Promise<
+    | { readonly response: NavigationResponse }
+    | {
+        readonly provider: ILspProvider;
+        readonly identities: readonly DiskIdentity[];
+        readonly target: ResolvedNavigationTarget;
+        readonly verifiedSymbol: VerifiedSymbolNavigationResult | undefined;
+        readonly isSymbol: boolean;
+      }
+  > {
+    const acquisition = await this.safeAcquire(input.signal);
     if (acquisition.status !== 'ok') {
-      return response(
-        acquisition.status,
-        acquisition.status === 'unavailable' ? 'unavailable' : 'not_checked',
-        acquisition.reasonCode,
-      );
+      return { response: response(acquisition.status, acquisition.status === 'unavailable' ? 'unavailable' : 'not_checked', acquisition.reasonCode) };
     }
-    if (!acquisition.capabilities[kind]) return response('unsupported', 'unsupported', 'LSP_CAPABILITY_UNSUPPORTED');
-    const { provider } = acquisition;
+    if (!acquisition.capabilities[input.kind]) {
+      return { response: response('unsupported', 'unsupported', 'LSP_CAPABILITY_UNSUPPORTED') };
+    }
+    const preflight = await this.refreshOpenDocuments(acquisition.provider, lockedUri, input.signal);
+    if (preflight.status !== 'ok') return { response: preflight.response };
 
-    const preflight = await this.refreshOpenDocuments(provider, lockedUri, signal);
-    if (preflight.status !== 'ok') return preflight.response;
-
-    // In-lock re-resolution against current disk (and active generation for symbolId).
     let verifiedSymbol: VerifiedSymbolNavigationResult | undefined;
     const recording: NavigationSymbols = {
       resolveVerifiedNavigationTarget: async (request) => {
@@ -284,43 +302,67 @@ export class LspNavigationService {
         return verifiedSymbol;
       },
     };
-    const resolved = await this.resolveTarget(input.args, signal, recording);
-    if (!('target' in resolved)) return resolved;
-    const { target } = resolved;
+    const resolved = await this.resolveTarget(input.args, input.signal, recording);
+    if (!('target' in resolved)) return { response: resolved };
     const isSymbol = input.args.symbolId !== undefined;
-    if (target.uri !== lockedUri) return response('stale', 'supported', 'INDEX_FILE_HASH_MISMATCH', isSymbol || undefined);
-    if (aborted(signal)) return CANCELLED('supported');
+    if (resolved.target.uri !== lockedUri) {
+      return { response: response('stale', 'supported', 'INDEX_FILE_HASH_MISMATCH', isSymbol || undefined) };
+    }
+    if (aborted(input.signal)) return { response: CANCELLED('supported') };
+    return {
+      provider: acquisition.provider,
+      identities: preflight.identities,
+      target: resolved.target,
+      verifiedSymbol,
+      isSymbol,
+    };
+  }
 
-    let raw: null | readonly (Location | LocationLink)[];
+  private async runNavigation(
+    input: { kind: LspNavigationKind; args: NavigationToolArgs; signal?: AbortSignal },
+    provider: ILspProvider,
+    target: ResolvedNavigationTarget,
+  ): Promise<null | readonly (Location | LocationLink)[] | NavigationResponse> {
     try {
       await provider.syncDocument({ uri: target.uri, languageId: target.languageId, text: target.text });
-      if (aborted(signal)) return CANCELLED('supported');
-      raw = await provider.navigate({ kind, uri: target.uri, position: target.position, signal });
+      if (aborted(input.signal)) return CANCELLED('supported');
+      const raw = await provider.navigate({ kind: input.kind, uri: target.uri, position: target.position, signal: input.signal });
+      return aborted(input.signal) ? CANCELLED('supported') : raw;
     } catch (error) {
-      return providerFailure(error, signal);
+      return providerFailure(error, input.signal);
     }
-    if (aborted(signal)) return CANCELLED('supported');
+  }
 
-    if (kind === 'references' && !isReferencesShape(raw)) {
+  private async validateAndRecheck(
+    input: { kind: LspNavigationKind; args: NavigationToolArgs; signal?: AbortSignal },
+    prepared: {
+      readonly target: ResolvedNavigationTarget;
+      readonly identities: readonly DiskIdentity[];
+      readonly verifiedSymbol: VerifiedSymbolNavigationResult | undefined;
+      readonly isSymbol: boolean;
+    },
+    raw: null | readonly (Location | LocationLink)[],
+  ): Promise<NavigationResponse> {
+    if (input.kind === 'references' && !isReferencesShape(raw)) {
       return response('error', 'supported', 'LSP_PROTOCOL_ERROR');
     }
-
-    const maxResults =
-      kind === 'references'
-        ? (input.args.maxResults ?? LSP_REFERENCES_DEFAULT_MAX_RESULTS)
-        : LSP_NAVIGATION_INTERNAL_MAX_RESULTS;
     const validated = await validateNavigationResults({
       raw,
       sanitizer: this.sanitizer,
       isExcluded: this.isExcluded,
-      maxResults,
-      signal,
+      maxResults: input.kind === 'references'
+        ? (input.args.maxResults ?? LSP_REFERENCES_DEFAULT_MAX_RESULTS)
+        : LSP_NAVIGATION_INTERNAL_MAX_RESULTS,
+      signal: input.signal,
     });
     if ('status' in validated) return response(validated.status, 'supported', validated.reasonCode);
-
-    const recheck = await this.recheckIdentities(target, isSymbol ? verifiedSymbol : undefined, preflight.identities, signal);
+    const recheck = await this.recheckIdentities(
+      prepared.target,
+      prepared.isSymbol ? prepared.verifiedSymbol : undefined,
+      prepared.identities,
+      input.signal,
+    );
     if (recheck !== null) return recheck;
-
     return {
       status: 'ok',
       capability: 'supported',
@@ -367,34 +409,51 @@ export class LspNavigationService {
     targetUri: string,
     signal?: AbortSignal,
   ): Promise<PreflightResult> {
-    let openUris: string[];
+    const openUris = this.sortedOpenUris(provider, signal);
+    if ('status' in openUris) return { status: 'failed', response: openUris.response };
+    const identities: DiskIdentity[] = [];
+    for (const uri of openUris.uris) {
+      if (uri === targetUri) continue;
+      const refreshed = await this.refreshOpenDocument(provider, uri, signal);
+      if (refreshed.status !== 'ok') return refreshed;
+      identities.push(refreshed.identity);
+    }
+    return { status: 'ok', identities };
+  }
+
+  private sortedOpenUris(
+    provider: ILspProvider,
+    signal?: AbortSignal,
+  ): { readonly uris: string[] } | { readonly status: 'failed'; readonly response: NavigationResponse } {
     try {
-      openUris = [...provider.listOpenDocumentUris()].sort();
+      return { uris: [...provider.listOpenDocumentUris()].sort((left, right) => left.localeCompare(right)) };
     } catch (error) {
       return { status: 'failed', response: providerFailure(error, signal) };
     }
-    const identities: DiskIdentity[] = [];
-    for (const uri of openUris) {
-      if (uri === targetUri) continue;
-      if (aborted(signal)) return { status: 'failed', response: CANCELLED('supported') };
-      const current = await this.readOpenDocument(uri, signal);
-      if (current.status !== 'ok') {
-        if (current.status === 'cancelled') return { status: 'failed', response: CANCELLED('supported') };
-        try {
-          await provider.closeDocument({ uri });
-        } catch (error) {
-          return { status: 'failed', response: providerFailure(error, signal) };
-        }
-        return { status: 'failed', response: current.response };
-      }
+  }
+
+  private async refreshOpenDocument(
+    provider: ILspProvider,
+    uri: string,
+    signal?: AbortSignal,
+  ): Promise<OpenDocumentRefreshResult> {
+    if (aborted(signal)) return { status: 'failed', response: CANCELLED('supported') };
+    const current = await this.readOpenDocument(uri, signal);
+    if (current.status === 'cancelled') return { status: 'failed', response: CANCELLED('supported') };
+    if (current.status === 'failed') {
       try {
-        await provider.syncDocument({ uri, languageId: current.languageId, text: current.text });
+        await provider.closeDocument({ uri });
       } catch (error) {
         return { status: 'failed', response: providerFailure(error, signal) };
       }
-      identities.push({ uri, filePath: current.filePath, fileSha256: current.fileSha256 });
+      return { status: 'failed', response: current.response };
     }
-    return { status: 'ok', identities };
+    try {
+      await provider.syncDocument({ uri, languageId: current.languageId, text: current.text });
+    } catch (error) {
+      return { status: 'failed', response: providerFailure(error, signal) };
+    }
+    return { status: 'ok', identity: { uri, filePath: current.filePath, fileSha256: current.fileSha256 } };
   }
 
   private async readOpenDocument(
