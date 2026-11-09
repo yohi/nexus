@@ -628,6 +628,7 @@ describe('LspNavigationService same-URI request lock', () => {
     await waitForNavigationCount(provider, 1);
     // A captures its pre-lock view of v1 and waits.
     const a = service.navigate({ kind: 'definition', args: fileArgs('src/a.ts', 1, 16) });
+    await new Promise<void>((resolve) => setTimeout(resolve, 5));
     const v2 = 'export function alpha(): number {\n  return 22;\n}\n';
     await write(root, 'src/a.ts', v2);
     // B (same URI) starts after the change and sees v2.
