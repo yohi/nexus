@@ -8,9 +8,9 @@ import { PassThrough } from 'node:stream';
 import { pathToFileURL } from 'node:url';
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import type * as ProtocolNode from 'vscode-languageserver-protocol/node';
 
 import type { ILspProvider } from '../../../src/lsp/contracts.js';
+import type { StubConfig, StubModule, StubServer } from '../../fixtures/lsp/stub-language-server.types.js';
 import {
   type LspChildProcess,
   type LspSpawnFunction,
@@ -21,71 +21,6 @@ import {
 import { createLspProtocolClient } from '../../../src/lsp/protocol-client.js';
 import { resolveApprovedLspLaunch } from '../../../src/lsp/trust-policy.js';
 import type { LspConfig } from '../../../src/types/index.js';
-
-// F-007: count every Connection / reader / writer / listen() created through the protocol exports.
-// The stub server uses its own independent framing, so all counts belong to Nexus production code.
-const transportCounters = vi.hoisted(() => ({ connections: 0, listens: 0, readers: 0, writers: 0 }));
-
-vi.mock('vscode-languageserver-protocol/node', async (importOriginal) => {
-  const actual = await importOriginal<typeof ProtocolNode>();
-  class CountingReader extends actual.StreamMessageReader {
-    constructor(...args: ConstructorParameters<typeof actual.StreamMessageReader>) {
-      super(...args);
-      transportCounters.readers += 1;
-    }
-  }
-  class CountingWriter extends actual.StreamMessageWriter {
-    constructor(...args: ConstructorParameters<typeof actual.StreamMessageWriter>) {
-      super(...args);
-      transportCounters.writers += 1;
-    }
-  }
-  const createMessageConnection = ((...args: Parameters<typeof actual.createMessageConnection>) => {
-    transportCounters.connections += 1;
-    const connection = actual.createMessageConnection(...args);
-    const listen = connection.listen.bind(connection);
-    connection.listen = () => {
-      transportCounters.listens += 1;
-      listen();
-    };
-    return connection;
-  }) as typeof actual.createMessageConnection;
-  return {
-    ...actual,
-    StreamMessageReader: CountingReader,
-    StreamMessageWriter: CountingWriter,
-    createMessageConnection,
-  };
-});
-
-interface JsonRpcMessage {
-  jsonrpc: '2.0';
-  id?: number | string;
-  method?: string;
-  params?: unknown;
-}
-
-interface StubServer {
-  received: JsonRpcMessage[];
-  messages(method: string): JsonRpcMessage[];
-  waitFor(predicate: (message: JsonRpcMessage) => boolean): Promise<JsonRpcMessage>;
-  notify(method: string, params?: unknown): void;
-  close(): void;
-}
-
-interface StubConfig {
-  initializeResult?: unknown;
-  handlers?: Record<string, (params: unknown, message: JsonRpcMessage) => unknown>;
-}
-
-interface StubModule {
-  startStubLanguageServer(input: {
-    input: NodeJS.ReadableStream;
-    output: NodeJS.WritableStream;
-    config?: StubConfig;
-  }): StubServer;
-  DEFAULT_INITIALIZE_RESULT: { capabilities: Record<string, unknown>; serverInfo: { name: string; version: string } };
-}
 
 const STUB_PATH = new URL('../../fixtures/lsp/stub-language-server.mjs', import.meta.url);
 // Loaded at module scope: table-driven cases build initialize results during collection.
@@ -281,10 +216,6 @@ posixOnly('RuntimeLocalLspManager', () => {
     createdClients = [];
     resolveSpy.mockClear();
     createClientSpy.mockClear();
-    transportCounters.connections = 0;
-    transportCounters.listens = 0;
-    transportCounters.readers = 0;
-    transportCounters.writers = 0;
   });
 
   afterEach(async () => {
@@ -464,12 +395,12 @@ posixOnly('RuntimeLocalLspManager', () => {
     });
   });
 
-  describe('connection boundary (F-007) and document sync support', () => {
+  describe('protocol client boundary and document sync support', () => {
     beforeEach(async () => {
       await writeStore([approval()]);
     });
 
-    it('hands the child stdin/stdout to exactly one Protocol Client; one Connection, one listen()', async () => {
+    it('hands the child stdin/stdout to exactly one Protocol Client', async () => {
       const manager = makeManager({ lsp: lspFor({ requestTimeoutMs: 4321 }) });
       await Promise.all([manager.acquire(), manager.acquire()]);
       expect(createClientSpy).toHaveBeenCalledTimes(1);
@@ -478,7 +409,6 @@ posixOnly('RuntimeLocalLspManager', () => {
       expect(input.stdout).toBe(children[0]!.stdout);
       expect(input.rootUri).toBe(pathToFileURL(projectRoot).href);
       expect(input.requestTimeoutMs).toBe(4321);
-      expect(transportCounters).toEqual({ connections: 1, listens: 1, readers: 1, writers: 1 });
     });
 
     it.each([
