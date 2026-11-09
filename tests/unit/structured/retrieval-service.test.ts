@@ -533,6 +533,25 @@ describe('SymbolRetrievalService', () => {
       });
     });
 
+    it('returns excluded when an unindexed symlink escapes the project root', async () => {
+      const outsideRoot = await mkdtemp(join(tmpdir(), 'nexus-retrieval-outside-'));
+      const outsideFile = join(outsideRoot, 'outside.ts');
+      await writeFile(outsideFile, 'export function outside() {}');
+      await symlink(outsideFile, join(projectRoot, 'src/linked.ts'));
+
+      try {
+        const result = await service.getFileOutline({ filePath: 'src/linked.ts' });
+        expect(result).toMatchObject({
+          status: 'excluded',
+          freshness: 'unknown',
+          reindexRequired: false,
+          reasonCode: 'PATH_EXCLUDED',
+        });
+      } finally {
+        await rm(outsideRoot, { recursive: true, force: true });
+      }
+    });
+
     it('returns not_indexed when the file exists but has no active catalog', async () => {
       await writeFile(join(projectRoot, 'src/exists.ts'), 'export function b() {}');
 
@@ -748,6 +767,14 @@ describe('SymbolRetrievalService', () => {
         .resolves.toMatchObject({ status: 'ok', target: { position: { line: 4, character: 9 } } });
     });
 
+    it('returns LSP coordinates after U+2028 and U+2029 comment terminators', async () => {
+      for (const separator of ['\u2028', '\u2029']) {
+        const indexed = await indexParsed('src/a.ts', `// before${separator}export function foo() {}`);
+        await expect(service.resolveVerifiedNavigationTarget({ symbolId: symbolIdOf(indexed.declarations, 'foo') }))
+          .resolves.toMatchObject({ status: 'ok', target: { position: { line: 1, character: 26 } } });
+      }
+    });
+
     it('distinguishes overloads and same-name symbols without fall-through', async () => {
       const text = [
         'export function f(a: string): void;',
@@ -813,6 +840,17 @@ describe('SymbolRetrievalService', () => {
         .resolves.toEqual({ status: 'stale', reasonCode: 'INDEX_FILE_HASH_MISMATCH', reindexRequired: true });
 
       await unlink(join(projectRoot, 'src/a.ts'));
+      await expect(service.resolveVerifiedNavigationTarget({ symbolId }))
+        .resolves.toEqual({ status: 'stale', reasonCode: 'INDEX_FILE_MISSING', reindexRequired: true });
+    });
+
+    it('returns stale when an indexed file is replaced by a directory', async () => {
+      const indexed = await indexParsed('src/a.ts', 'export function foo() {}');
+      const symbolId = symbolIdOf(indexed.declarations, 'foo');
+
+      await unlink(join(projectRoot, 'src/a.ts'));
+      await mkdir(join(projectRoot, 'src/a.ts'));
+
       await expect(service.resolveVerifiedNavigationTarget({ symbolId }))
         .resolves.toEqual({ status: 'stale', reasonCode: 'INDEX_FILE_MISSING', reindexRequired: true });
     });
@@ -911,6 +949,39 @@ describe('SymbolRetrievalService', () => {
       } finally {
         await rm(outsideDir, { recursive: true, force: true });
       }
+    });
+
+    it('returns excluded before checking content when a source symlink escapes the project root', async () => {
+      const text = 'export function foo() {}';
+      const indexed = await indexParsed('src/a.ts', text);
+      const outsideDir = await mkdtemp(join(tmpdir(), 'nexus-retrieval-outside-'));
+      try {
+        await writeFile(join(outsideDir, 'a.ts'), 'different outside content');
+        await unlink(join(projectRoot, 'src/a.ts'));
+        await symlink(join(outsideDir, 'a.ts'), join(projectRoot, 'src/a.ts'));
+
+        await expect(service.resolveVerifiedNavigationTarget({ symbolId: symbolIdOf(indexed.declarations, 'foo') }))
+          .resolves.toEqual({ status: 'excluded', reasonCode: 'PATH_EXCLUDED', reindexRequired: false });
+      } finally {
+        await rm(outsideDir, { recursive: true, force: true });
+      }
+    });
+
+    it('returns excluded when an in-project symlink resolves to an excluded canonical path', async () => {
+      const text = 'export function foo() {}';
+      const indexed = await indexParsed('src/a.ts', text);
+      await mkdir(join(projectRoot, 'secrets'), { recursive: true });
+      await writeFile(join(projectRoot, 'secrets/a.ts'), text);
+      await unlink(join(projectRoot, 'src/a.ts'));
+      await symlink(join(projectRoot, 'secrets/a.ts'), join(projectRoot, 'src/a.ts'));
+      const excludedService = new SymbolRetrievalService({
+        catalog,
+        sanitizer,
+        isExcluded: (filePath) => filePath.startsWith('secrets/'),
+      });
+
+      await expect(excludedService.resolveVerifiedNavigationTarget({ symbolId: symbolIdOf(indexed.declarations, 'foo') }))
+        .resolves.toEqual({ status: 'excluded', reasonCode: 'PATH_EXCLUDED', reindexRequired: false });
     });
 
     it('returns cancelled for an aborted request', async () => {

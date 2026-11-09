@@ -9,6 +9,7 @@ import type * as ProtocolNode from 'vscode-languageserver-protocol/node';
 import type { InitializeParams } from 'vscode-languageserver-protocol/node';
 
 import type { ILspProvider, LspDocumentLanguageId } from '../../../src/lsp/contracts.js';
+import type { StubConfig, StubModule, StubServer } from '../../fixtures/lsp/stub-language-server.types.js';
 import {
   createLspProtocolClient,
   LspCapabilityUnsupportedError,
@@ -55,38 +56,6 @@ vi.mock('vscode-languageserver-protocol/node', async (importOriginal) => {
     createMessageConnection,
   };
 });
-
-interface JsonRpcMessage {
-  jsonrpc: '2.0';
-  id?: number | string;
-  method?: string;
-  params?: unknown;
-  result?: unknown;
-  error?: { code: number; message: string };
-}
-
-interface StubServer {
-  received: JsonRpcMessage[];
-  messages(method: string): JsonRpcMessage[];
-  waitFor(predicate: (message: JsonRpcMessage) => boolean): Promise<JsonRpcMessage>;
-  request(method: string, params?: unknown): Promise<JsonRpcMessage>;
-  notify(method: string, params?: unknown): void;
-  close(): void;
-}
-
-interface StubConfig {
-  initializeResult?: unknown;
-  handlers?: Record<string, (params: unknown, message: JsonRpcMessage) => unknown>;
-}
-
-interface StubModule {
-  startStubLanguageServer(input: {
-    input: NodeJS.ReadableStream;
-    output: NodeJS.WritableStream;
-    config?: StubConfig;
-  }): StubServer;
-  DEFAULT_INITIALIZE_RESULT: { capabilities: Record<string, unknown>; serverInfo: { name: string; version: string } };
-}
 
 let stubModule: StubModule;
 
@@ -540,6 +509,40 @@ describe('createLspProtocolClient: document synchronization (F-006)', () => {
     expect(stub.messages('textDocument/definition')).toHaveLength(0);
     expect(stub.messages('textDocument/didChange')).toHaveLength(0);
   });
+
+  it('times out a stalled notification and poisons the session', async () => {
+    const clientToServer = new PassThrough();
+    let stallWrites = false;
+    let releaseStalledWrite: (() => void) | undefined;
+    const stdin = new Writable({
+      write(chunk: Buffer, _encoding, callback) {
+        if (stallWrites) {
+          releaseStalledWrite = () => clientToServer.write(chunk, callback);
+          return;
+        }
+        clientToServer.write(chunk, callback);
+      },
+    });
+    stdin.on('error', () => undefined);
+    const serverToClient = new PassThrough();
+    const stub = stubModule.startStubLanguageServer({ input: clientToServer, output: serverToClient });
+    const client = createLspProtocolClient({ stdin, stdout: serverToClient, rootUri: ROOT_URI, requestTimeoutMs: 30 });
+    cleanups.push(async () => {
+      stallWrites = false;
+      releaseStalledWrite?.();
+      await client.shutdown();
+      stub.close();
+    });
+    await client.start({ rootUri: ROOT_URI, expectedServerVersion: '6.0.2' });
+
+    stallWrites = true;
+    await expect(client.syncDocument({ uri: fileUri('a.ts'), languageId: 'typescript', text: 'x' })).rejects.toBeInstanceOf(
+      LspProtocolError,
+    );
+    await expect(client.navigate({ kind: 'definition', uri: fileUri('a.ts'), position: { line: 0, character: 0 } })).rejects.toBeInstanceOf(
+      LspProtocolError,
+    );
+  });
 });
 
 describe('createLspProtocolClient: per-URI FIFO and Task 7 coordination (F-006)', () => {
@@ -991,5 +994,68 @@ describe('createLspProtocolClient: shutdown', () => {
     );
     await expect(client.shutdown()).resolves.toBeUndefined();
     await stub.waitFor((message) => message.method === 'exit');
+  });
+
+  it('completes shutdown when the exit notification write stalls', async () => {
+    const clientToServer = new PassThrough();
+    let stallExit = false;
+    let releaseExit: (() => void) | undefined;
+    const stdin = new Writable({
+      write(chunk: Buffer, _encoding, callback) {
+        if (stallExit && chunk.toString().includes('"method":"exit"')) {
+          releaseExit = () => clientToServer.write(chunk, callback);
+          return;
+        }
+        clientToServer.write(chunk, callback);
+      },
+    });
+    stdin.on('error', () => undefined);
+    const serverToClient = new PassThrough();
+    const stub = stubModule.startStubLanguageServer({ input: clientToServer, output: serverToClient });
+    const client = createLspProtocolClient({ stdin, stdout: serverToClient, rootUri: ROOT_URI, requestTimeoutMs: 30 });
+    cleanups.push(async () => {
+      releaseExit?.();
+      await client.shutdown();
+      stub.close();
+    });
+    await client.start({ rootUri: ROOT_URI, expectedServerVersion: '6.0.2' });
+    stallExit = true;
+
+    await expect(client.shutdown()).resolves.toBeUndefined();
+  });
+
+  it('does not return capabilities or restore ready after shutdown interrupts startup', async () => {
+    const clientToServer = new PassThrough();
+    let releaseInitialized: (() => void) | undefined;
+    let initializedWriteStarted: (() => void) | undefined;
+    const initializedStarted = new Promise<void>((resolve) => {
+      initializedWriteStarted = resolve;
+    });
+    const stdin = new Writable({
+      write(chunk: Buffer, _encoding, callback) {
+        if (chunk.toString().includes('"method":"initialized"')) {
+          initializedWriteStarted?.();
+          releaseInitialized = () => clientToServer.write(chunk, callback);
+          return;
+        }
+        clientToServer.write(chunk, callback);
+      },
+    });
+    stdin.on('error', () => undefined);
+    const serverToClient = new PassThrough();
+    const stub = stubModule.startStubLanguageServer({ input: clientToServer, output: serverToClient });
+    const client = createLspProtocolClient({ stdin, stdout: serverToClient, rootUri: ROOT_URI, requestTimeoutMs: 30 });
+    cleanups.push(async () => {
+      releaseInitialized?.();
+      await client.shutdown();
+      stub.close();
+    });
+    const starting = client.start({ rootUri: ROOT_URI, expectedServerVersion: '6.0.2' });
+    await initializedStarted;
+    const shutdown = client.shutdown();
+
+    await expect(starting).rejects.toBeInstanceOf(LspProtocolError);
+    await expect(shutdown).resolves.toBeUndefined();
+    expect(releaseInitialized).toBeDefined();
   });
 });

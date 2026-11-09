@@ -165,16 +165,19 @@ export const lspDocumentEnd = (text: string): Position => {
   let line = 0;
   let character = 0;
   for (let index = 0; index < text.length; index += 1) {
-    const code = text.charCodeAt(index);
+    const code = text.codePointAt(index) ?? 0;
     if (code === 0x0d) {
-      if (text.charCodeAt(index + 1) === 0x0a) index += 1;
+      if (text.codePointAt(index + 1) === 0x0a) index += 1;
       line += 1;
       character = 0;
     } else if (code === 0x0a) {
       line += 1;
       character = 0;
+    } else if (code > 0xffff) {
+      // LSP positions count UTF-16 code units, including both halves of surrogate pairs.
+      index += 1;
+      character += 2;
     } else {
-      // JS strings are UTF-16: a non-BMP code point contributes its two code units.
       character += 1;
     }
   }
@@ -182,7 +185,11 @@ export const lspDocumentEnd = (text: string): Position => {
 };
 
 const parseTextDocumentSync = (value: unknown): SyncKind => {
-  const kindOf = (kind: unknown): SyncKind | null => (kind === 1 ? 'full' : kind === 2 ? 'incremental' : null);
+  const kindOf = (kind: unknown): SyncKind | null => {
+    if (kind === 1) return 'full';
+    if (kind === 2) return 'incremental';
+    return null;
+  };
   if (typeof value === 'number') {
     const kind = kindOf(value);
     if (kind !== null) return kind;
@@ -191,6 +198,39 @@ const parseTextDocumentSync = (value: unknown): SyncKind => {
     if (kind !== null) return kind;
   }
   throw new LspSyncUnsupportedError();
+};
+
+const parseInitializeResult = (result: unknown, expectedServerVersion: string): {
+  syncKind: SyncKind;
+  capabilities: LspCapabilities;
+} => {
+  if (!isObject(result)) throw new LspProtocolError('Language server returned a malformed initialize result');
+
+  const serverInfo = result.serverInfo;
+  if (serverInfo !== undefined && !isObject(serverInfo)) {
+    throw new LspProtocolError('Language server returned malformed serverInfo');
+  }
+  if (isObject(serverInfo) && Object.hasOwn(serverInfo, 'version') && serverInfo.version !== expectedServerVersion) {
+    throw new LspServerVersionMismatchError();
+  }
+
+  const serverCapabilities = result.capabilities;
+  if (!isObject(serverCapabilities)) {
+    throw new LspProtocolError('Language server returned malformed capabilities');
+  }
+  if (serverCapabilities.positionEncoding !== undefined && serverCapabilities.positionEncoding !== 'utf-16') {
+    throw new LspProtocolError('Language server negotiated an unsupported position encoding');
+  }
+
+  return {
+    syncKind: parseTextDocumentSync(serverCapabilities.textDocumentSync),
+    capabilities: Object.freeze({
+      definition: isAdvertised(serverCapabilities.definitionProvider),
+      references: isAdvertised(serverCapabilities.referencesProvider),
+      implementations: isAdvertised(serverCapabilities.implementationProvider),
+      positionEncoding: 'utf-16',
+    }),
+  };
 };
 
 const workspaceFolderName = (rootUri: string): string => {
@@ -306,34 +346,13 @@ class LspProtocolClient implements ILspProvider {
         (token) => this.connection.sendRequest(InitializeRequest.type, params, token),
         input.signal,
       );
-      if (!isObject(result)) throw new LspProtocolError('Language server returned a malformed initialize result');
+      const initialized = parseInitializeResult(result, input.expectedServerVersion);
+      this.syncKind = initialized.syncKind;
 
-      // Version attestation precedes any capability negotiation: absence is accepted, an explicit
-      // unequal or malformed value is a contradiction of the Owner-approved executable.
-      const serverInfo = result.serverInfo;
-      if (serverInfo !== undefined) {
-        if (!isObject(serverInfo)) throw new LspProtocolError('Language server returned malformed serverInfo');
-        if (Object.hasOwn(serverInfo, 'version') && serverInfo.version !== input.expectedServerVersion) {
-          throw new LspServerVersionMismatchError();
-        }
-      }
-
-      const serverCapabilities = result.capabilities;
-      if (!isObject(serverCapabilities)) {
-        throw new LspProtocolError('Language server returned malformed capabilities');
-      }
-      if (serverCapabilities.positionEncoding !== undefined && serverCapabilities.positionEncoding !== 'utf-16') {
-        throw new LspProtocolError('Language server negotiated an unsupported position encoding');
-      }
-      this.syncKind = parseTextDocumentSync(serverCapabilities.textDocumentSync);
-
+      this.assertStarting();
       await this.notify(() => this.connection.sendNotification(InitializedNotification.type, {}));
-      this.capabilities = Object.freeze({
-        definition: isAdvertised(serverCapabilities.definitionProvider),
-        references: isAdvertised(serverCapabilities.referencesProvider),
-        implementations: isAdvertised(serverCapabilities.implementationProvider),
-        positionEncoding: 'utf-16',
-      });
+      this.assertStarting();
+      this.capabilities = initialized.capabilities;
       this.state = 'ready';
       return this.capabilities;
     } catch (error) {
@@ -400,7 +419,7 @@ class LspProtocolClient implements ILspProvider {
   }
 
   listOpenDocumentUris(): readonly string[] {
-    return Object.freeze([...this.documents.keys()].sort());
+    return Object.freeze([...this.documents.keys()].sort((left, right) => left.localeCompare(right)));
   }
 
   navigate(input: {
@@ -418,7 +437,7 @@ class LspProtocolClient implements ILspProvider {
         throw new LspProtocolError('Document is not synchronized for navigation');
       }
       const capabilities = this.capabilities;
-      if (capabilities === null || !capabilities[kind]) throw new LspCapabilityUnsupportedError();
+      if (!capabilities?.[kind]) throw new LspCapabilityUnsupportedError();
       const textDocument = { uri };
       const result: unknown = await this.request((token) => {
         switch (kind) {
@@ -456,7 +475,7 @@ class LspProtocolClient implements ILspProvider {
     }
     if (transportOpen || wasReady) {
       try {
-        await this.connection.sendNotification(ExitNotification.type);
+        await this.notify(() => this.connection.sendNotification(ExitNotification.type));
       } catch {
         // Transport already gone.
       }
@@ -513,6 +532,12 @@ class LspProtocolClient implements ILspProvider {
     }
   }
 
+  private assertStarting(): void {
+    if (this.state !== 'starting' || this.session.signal.aborted) {
+      throw new LspProtocolError('Language server startup was interrupted');
+    }
+  }
+
   private invalidateSession(): void {
     if (!this.session.signal.aborted) this.session.abort();
   }
@@ -520,11 +545,19 @@ class LspProtocolClient implements ILspProvider {
   /** Sends a notification; a local send failure poisons the session. */
   private async notify(send: () => Promise<void>): Promise<void> {
     if (this.session.signal.aborted) throw new LspProtocolError('Language server session is not usable');
+    let timer: NodeJS.Timeout | undefined;
     try {
-      await send();
+      await Promise.race([
+        send(),
+        new Promise<never>((_resolve, reject) => {
+          timer = setTimeout(() => reject(new LspProtocolError('Language server notification timed out')), this.requestTimeoutMs);
+        }),
+      ]);
     } catch {
       this.invalidateSession();
       throw new LspProtocolError('Failed to send a message to the language server');
+    } finally {
+      clearTimeout(timer);
     }
   }
 
@@ -554,12 +587,8 @@ class LspProtocolClient implements ILspProvider {
         onSessionEnd = () => reject(new LspProtocolError('Language server connection closed'));
         this.session.signal.addEventListener('abort', onSessionEnd, { once: true });
         const fail = () => reject(new LspProtocolError('Language server request failed'));
-        try {
-          // Sanitized: never reflect server-provided error text.
-          send(source.token).then(resolve, fail);
-        } catch {
-          fail();
-        }
+        // Defer invocation so both synchronous throws and rejected requests reach the sanitizer.
+        void Promise.resolve().then(() => send(source.token)).then(resolve).catch(fail);
       });
     } finally {
       clearTimeout(timer);

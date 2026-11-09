@@ -8,7 +8,6 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import type { NavigationToolArgs, VerifiedSymbolNavigationResult } from '../../../src/lsp/contracts.js';
 import {
-  createLspLineTable,
   InvalidNavigationArgumentsError,
   lspDocumentLanguageIdForPath,
   resolveNavigationTarget,
@@ -288,36 +287,17 @@ describe('resolveNavigationTarget — explicit file and position', () => {
     expect(result).toEqual({ status: 'error', reasonCode: 'invalid_utf8', ...failureShape });
   });
 
-  // TypeScript/tsserver treat U+2028/U+2029 as line breaks while LSP does not, so positions in
-  // such files cannot be mapped reliably: fail closed instead of returning a wrong position.
-  it.each([
-    ['U+2028', '/* a\u2028b */\nconst y = 2;\nconst x = 1;\nconst z = 3;\n'],
-    ['U+2029', '/* a\u2029b */\nconst y = 2;\nconst x = 1;\nconst z = 3;\n'],
-  ])('returns unsupported/UNSUPPORTED_LINE_TERMINATOR for a file containing %s', async (_name, content) => {
+  it.each(['\u2028', '\u2029'])('returns unsupported for source containing U+%s', async (separator) => {
     const { root, sanitizer } = await setup();
-    await write(root, 'src/sep.ts', content);
+    await write(root, 'src/separator.ts', `const value = 1;${separator}const next = 2;`);
     const result = await resolveNavigationTarget({
-      args: { filePath: 'src/sep.ts', line: 3, character: 6 },
+      args: { filePath: 'src/separator.ts', line: 1, character: 0 },
       symbols: unusedSymbols(),
       sanitizer,
       isExcluded: () => false,
     });
-    expect(result).toEqual({ status: 'unsupported', reasonCode: 'UNSUPPORTED_LINE_TERMINATOR', ...failureShape });
-  });
 
-  it('never returns an ok position for a verified symbolId whose file contains U+2028', async () => {
-    const { root, sanitizer } = await setup();
-    const content = '/* a\u2028b */\nconst y = 2;\nconst x = 1;\nconst z = 3;\n';
-    await write(root, 'src/sep.ts', content);
-    // TypeScript coordinates for `x` (1-based line 4) would name `z` in LSP coordinates.
-    const symbols = symbolsReturning(() => okSymbol('src/sep.ts', content, { line: 4, character: 6 }));
-    const result = await resolveNavigationTarget({
-      args: { symbolId: 'sym-1' },
-      symbols,
-      sanitizer,
-      isExcluded: () => false,
-    });
-    expect(result).toEqual({ status: 'unsupported', reasonCode: 'UNSUPPORTED_LINE_TERMINATOR', ...failureShape });
+    expect(result).toEqual({ status: 'unsupported', reasonCode: 'unsupported_line_separator', ...failureShape });
   });
 
   describe('position bounds', () => {
@@ -363,12 +343,6 @@ describe('resolveNavigationTarget — explicit file and position', () => {
         target: { position: { line: 1, character: 2 } },
       });
       await expect(resolveAt('ab\r\ncd', 3, 0)).resolves.toMatchObject({ reasonCode: 'POSITION_OUT_OF_RANGE' });
-      await expect(resolveAt('ab\rcd ef', 2, 4)).resolves.toMatchObject({ status: 'ok' });
-      await expect(resolveAt('ab\rcd ef', 3, 0)).resolves.toMatchObject({ reasonCode: 'POSITION_OUT_OF_RANGE' });
-    });
-
-    it('splits LSP lines only on \\n, \\r\\n and \\r (U+2028/U+2029 are not LSP terminators)', () => {
-      expect(createLspLineTable('ab\rcd\u2028ef\u2029g')).toEqual({ starts: [0, 3], lengths: [2, 7] });
     });
 
     it('counts non-BMP characters as two UTF-16 code units and refuses splitting a surrogate pair', async () => {

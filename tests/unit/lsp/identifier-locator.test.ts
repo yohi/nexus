@@ -115,6 +115,11 @@ describe('resolveTsIdentifierPosition', () => {
     expect(locate(bytes, only(declarations, '𝒳'))).toEqual({ line: 2, character: 6 });
   });
 
+  it.each(['\u2028', '\u2029'])('uses LSP line endings after U+%s in a comment', async (separator) => {
+    const { bytes, declarations } = await parse(`// before${separator}export function foo() {}`);
+    expect(locate(bytes, only(declarations, 'foo'))).toEqual({ line: 1, character: 26 });
+  });
+
   it('refuses default anonymous constructs without an unambiguous identifier', async () => {
     for (const text of [
       'export default function () { return 1; }',

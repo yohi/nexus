@@ -161,12 +161,7 @@ export const createLspLineTable = (text: string): LspLineTable => {
   return { starts, lengths };
 };
 
-/**
- * True when text contains U+2028 or U+2029. TypeScript and tsserver count these as line breaks
- * while LSP does not, so no position in such a file can be mapped between the two coordinate
- * systems reliably; every LSP layer refuses these files fail-closed.
- */
-export const hasLspIncompatibleLineTerminator = (text: string): boolean => /[\u2028\u2029]/u.test(text);
+export const containsUnsupportedLspLineSeparator = (text: string): boolean => /[\u2028\u2029]/u.test(text);
 
 export type LspPositionCheck = 'ok' | 'out_of_range' | 'inside_surrogate_pair';
 
@@ -449,8 +444,8 @@ async function readTargetSource(
   } catch {
     return failure('error', 'invalid_utf8');
   }
+  if (containsUnsupportedLspLineSeparator(text)) return failure('unsupported', 'unsupported_line_separator');
   input.signal?.throwIfAborted();
-  if (hasLspIncompatibleLineTerminator(text)) return failure('unsupported', 'UNSUPPORTED_LINE_TERMINATOR');
 
   return {
     text,
