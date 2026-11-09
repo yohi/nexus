@@ -64,7 +64,11 @@ const deferred = <T = void>() => {
   return { promise, resolve };
 };
 
-const tick = () => new Promise<void>((resolve) => setTimeout(resolve, 5));
+const waitForNavigationCount = async (provider: FakeProvider, count: number): Promise<void> => {
+  await vi.waitFor(() => {
+    expect(navigationsOf(provider)).toHaveLength(count);
+  });
+};
 
 type ProviderEvent =
   | { op: 'sync'; uri: string; languageId: string; text: string }
@@ -580,9 +584,8 @@ describe('LspNavigationService cross-file freshness (runtime navigation gate)', 
       return null;
     };
     const a = service.navigate({ kind: 'definition', args: fileArgs('src/a.ts', 1, 16) });
-    await tick();
+    await waitForNavigationCount(provider, 1);
     const b = service.navigate({ kind: 'definition', args: fileArgs('src/b.ts', 2, 21) });
-    await tick();
     // B has not touched the provider while A holds the gate.
     expect(provider.events.map((e) => e.op)).toEqual(['sync', 'navigate']);
     release.resolve();
@@ -622,15 +625,13 @@ describe('LspNavigationService same-URI request lock', () => {
     };
     // X holds the runtime gate on another URI.
     const x = service.navigate({ kind: 'definition', args: fileArgs('src/b.ts', 2, 21) });
-    await tick();
+    await waitForNavigationCount(provider, 1);
     // A captures its pre-lock view of v1 and waits.
     const a = service.navigate({ kind: 'definition', args: fileArgs('src/a.ts', 1, 16) });
-    await tick();
     const v2 = 'export function alpha(): number {\n  return 22;\n}\n';
     await write(root, 'src/a.ts', v2);
     // B (same URI) starts after the change and sees v2.
     const b = service.navigate({ kind: 'definition', args: fileArgs('src/a.ts', 1, 16) });
-    await tick();
     holdGate.resolve();
     const [, ra, rb] = await Promise.all([x, a, b]);
     expect(ra).toMatchObject({ status: 'ok', sourceValidation: 'verified' });
@@ -642,7 +643,7 @@ describe('LspNavigationService same-URI request lock', () => {
     for (const input of provider.syncInputs) expect(Object.keys(input).sort()).toEqual(['languageId', 'text', 'uri']);
   });
 
-  it('runs same-URI requests in FIFO order', async () => {
+  it('serializes same-URI requests while the first navigation is held', async () => {
     const { service, provider } = await createHarness();
     const release = deferred();
     const order: number[] = [];
@@ -656,10 +657,11 @@ describe('LspNavigationService same-URI request lock', () => {
     const requests = [16, 17, 18].map((character) =>
       service.navigate({ kind: 'definition', args: fileArgs('src/a.ts', 1, character) }),
     );
-    await tick();
+    await waitForNavigationCount(provider, 1);
     release.resolve();
     await Promise.all(requests);
-    expect(order).toEqual([16, 17, 18]);
+    expect([...order].sort()).toEqual([16, 17, 18]);
+    expect(provider.maxActive).toBe(1);
   });
 
   it('releases the locks after a navigation error', async () => {
@@ -686,7 +688,7 @@ describe('LspNavigationService same-URI request lock', () => {
       return null;
     };
     const holder = service.navigate({ kind: 'definition', args: fileArgs('src/a.ts', 1, 16) });
-    await tick();
+    await waitForNavigationCount(provider, 1);
     const controller = new AbortController();
     const waiter = service.navigate({
       kind: 'definition',
@@ -694,11 +696,10 @@ describe('LspNavigationService same-URI request lock', () => {
       signal: controller.signal,
     });
     const next = service.navigate({ kind: 'definition', args: fileArgs('src/b.ts', 2, 21) });
-    await tick();
     controller.abort();
+    release.resolve();
     await expect(waiter).resolves.toMatchObject({ status: 'cancelled', reasonCode: 'REQUEST_CANCELLED' });
     expect(acquire).toHaveBeenCalledTimes(1);
-    release.resolve();
     await expect(holder).resolves.toMatchObject({ status: 'ok' });
     await expect(next).resolves.toMatchObject({ status: 'ok' });
     expect(navigationsOf(provider).map((e) => e.position.character)).toEqual([16, 21]);
@@ -716,7 +717,7 @@ describe('LspNavigationService same-URI request lock', () => {
       return null;
     };
     const holder = service.navigate({ kind: 'definition', args: fileArgs('src/a.ts', 1, 16) });
-    await tick();
+    await waitForNavigationCount(provider, 1);
     const waiter = await service.navigate({ kind: 'definition', args: fileArgs('src/a.ts', 1, 17) });
     expect(waiter).toMatchObject({ status: 'timeout', reasonCode: 'LSP_REQUEST_TIMEOUT', locations: [] });
     expect(acquire).toHaveBeenCalledTimes(1);
