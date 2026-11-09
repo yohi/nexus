@@ -1,6 +1,7 @@
 
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
-import { errorResult, toolResult, initializeNexusRuntime } from '../../../src/server/index.js';
+import { buildNexusRuntime, errorResult, toolResult, initializeNexusRuntime } from '../../../src/server/index.js';
+import type { NexusRuntimeOptions } from '../../../src/server/index.js';
 import { PathTraversalError } from '../../../src/server/path-sanitizer.js';
 import * as metricsPortUtils from '../../../src/server/metrics-port.js';
 import { buildToolHandlers } from '../../../src/server/tools/tool-support.js';
@@ -203,6 +204,41 @@ describe('NexusServer helpers', () => {
       stopDeferred.resolve();
       await initPromise.catch(() => {});
       expect(stopDeferred.called).toBe(true);
+    });
+  });
+
+  describe('runtime-local LSP navigation wiring', () => {
+    it('routes navigation tools to the injected runtime service and keeps its failures LSP-local', async () => {
+      const navigate = vi.fn()
+        .mockResolvedValueOnce({
+          status: 'ok', capability: 'supported', locations: [], truncated: false, sourceValidation: 'verified',
+        })
+        .mockRejectedValueOnce(new Error('unexpected provider failure'));
+      const options = createMockNexusRuntimeOptions({
+        lspNavigationService: { navigate } as unknown as NonNullable<NexusRuntimeOptions['lspNavigationService']>,
+      });
+      const handlers = buildToolHandlers(options);
+
+      const ok = await handlers.get_definition({ filePath: 'src/a.ts', line: 1, character: 0 });
+      expect(ok.structuredContent).toMatchObject({ status: 'ok', capability: 'supported' });
+      expect(navigate).toHaveBeenCalledWith({ kind: 'definition', args: { filePath: 'src/a.ts', line: 1, character: 0 } });
+
+      const failed = await handlers.get_references({ filePath: 'src/a.ts', line: 1, character: 0 });
+      expect(failed.isError).toBe(true);
+      expect(navigate).toHaveBeenCalledTimes(2);
+    });
+
+    it('runs onClose (which owns the LSP manager) on close after a failed initialization', async () => {
+      const onClose = vi.fn().mockResolvedValue(undefined);
+      const options = createMockNexusRuntimeOptions({
+        watcher: { start: vi.fn().mockRejectedValue(new Error('init failure')), stop: vi.fn().mockResolvedValue(undefined) },
+        projectRoot: '/tmp',
+        onClose,
+      });
+      const runtime = buildNexusRuntime(options);
+      await expect(runtime.initialize()).rejects.toThrow('init failure');
+      await runtime.close();
+      expect(onClose).toHaveBeenCalledTimes(1);
     });
   });
 

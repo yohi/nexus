@@ -49,6 +49,18 @@ export interface LspNavigationServiceOptions {
 
 export const LSP_NAVIGATION_DEFAULT_LOCK_TIMEOUT_MS = 10_000;
 
+const LSP_NAVIGATION_LOCK_MARGIN_MS = 1_000;
+
+/** A queued request must outlast one provider cold start plus one navigation request. */
+export const lspNavigationLockTimeoutMs = (lsp: {
+  readonly startupTimeoutMs: number;
+  readonly requestTimeoutMs: number;
+}): number =>
+  Math.max(
+    LSP_NAVIGATION_DEFAULT_LOCK_TIMEOUT_MS,
+    lsp.startupTimeoutMs + lsp.requestTimeoutMs + LSP_NAVIGATION_LOCK_MARGIN_MS,
+  );
+
 type Status = NavigationResponse['status'];
 type Capability = NavigationResponse['capability'];
 

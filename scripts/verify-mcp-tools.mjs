@@ -8,7 +8,13 @@ import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
 export const EXPECTED_TOOL_NAMES = Object.freeze([
   'semantic_search', 'grep_search', 'hybrid_search', 'get_context', 'index_status',
   'reindex', 'get_file_outline', 'get_symbol_source', 'get_symbol_context',
+  'get_definition', 'get_references', 'get_implementations',
 ]);
+
+const LSP_NAVIGATION_TOOLS = Object.freeze(['get_definition', 'get_references', 'get_implementations']);
+// The verifier fixture has no Owner approval (LSP is disabled by default), so the only
+// deterministic outcome is an LSP-local `unavailable` with an approval/config reason code.
+const NO_APPROVAL_REASON_CODES = Object.freeze(['LSP_NOT_CONFIGURED', 'LSP_TRUST_REQUIRED', 'LSP_EXECUTABLE_NOT_APPROVED']);
 
 const asRecord = (value) => value !== null && typeof value === 'object' && !Array.isArray(value) ? value : {};
 const textOf = (value) => typeof value === 'string' ? value : JSON.stringify(value);
@@ -74,6 +80,15 @@ export const validateToolResult = (toolName, result, marker) => {
     case 'get_symbol_context':
       return data.status === 'ok' && hasMarker(data.context, marker)
         ? { ok: true } : { ok: false, reason: 'get_symbol_context did not return marked context' };
+    case 'get_definition':
+    case 'get_references':
+    case 'get_implementations':
+      return data.status === 'unavailable'
+        && data.capability === 'unavailable'
+        && Array.isArray(data.locations) && data.locations.length === 0
+        && NO_APPROVAL_REASON_CODES.includes(data.reasonCode)
+        ? { ok: true }
+        : { ok: false, reason: `${toolName} expected unavailable without approval; status=${String(data.status ?? 'missing')} reasonCode=${String(data.reasonCode ?? 'missing')}` };
     default:
       return { ok: false, reason: `unknown tool: ${toolName}` };
   }
@@ -184,6 +199,9 @@ export const runVerification = async ({ cliPath, json = false } = {}) => {
     await record(records, 'cold-start', 'hybrid_search', first.client, { query: 'function returning the verification marker', grepPattern: fixture.marker, topK: 5 }, fixture.marker);
     await record(records, 'cold-start', 'get_context', first.client, { filePath: 'fixture.ts', startLine: 1, endLine: 1, mode: 'eager' }, fixture.marker);
     await record(records, 'cold-start', 'get_file_outline', first.client, { filePath: 'fixture.ts' }, fixture.marker);
+    for (const toolName of LSP_NAVIGATION_TOOLS) {
+      await record(records, 'cold-start', toolName, first.client, { filePath: 'fixture.ts', line: 1, character: 16 }, fixture.marker);
+    }
     await record(records, 'cold-start', 'reindex', first.client, { fullRebuild: true, reason: 'manual' }, fixture.marker);
     const postReindexStatus = await waitForIndex(first.client);
     records.push(summarizeToolResult('post-reindex', 'index_status', { data: postReindexStatus }));

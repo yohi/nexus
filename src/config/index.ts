@@ -46,6 +46,12 @@ const DEFAULT_LSP: LspConfig = {
   idleTimeoutMs: 60_000,
 };
 
+/** Returns a fresh, deep-enough copy of the default LSP config (disabled, no executable). */
+export const defaultLspConfig = (): LspConfig => ({
+  ...DEFAULT_LSP,
+  typescript: { ...DEFAULT_LSP.typescript, args: [...DEFAULT_LSP.typescript.args] },
+});
+
 export const SECRET_IGNORE_PATHS = ['.env', '.env.*'];
 
 export const DEFAULT_BATCH_SIZE = 1000;
@@ -98,7 +104,7 @@ const DEFAULT_CONFIG = (projectRoot: string): Config => ({
   embedding: { ...DEFAULT_EMBEDDING },
   indexing: { ...DEFAULT_INDEXING },
   packageMode: false,
-  lsp: { ...DEFAULT_LSP, typescript: { ...DEFAULT_LSP.typescript, args: [...DEFAULT_LSP.typescript.args] } },
+  lsp: defaultLspConfig(),
 });
 
 export const loadConfig = async (options: LoadConfigOptions): Promise<Config> => {
@@ -281,7 +287,7 @@ const lspEnvArgs = (raw: string | undefined): Parsed<string[]> => {
 /** Per-field precedence env > file > defaults. Any invalid supplied value invalidates LSP only. */
 const resolveLspConfig = (env: NodeJS.ProcessEnv, fileLsp: unknown): LspResolution => {
   const fallback: LspResolution = {
-    lsp: { ...DEFAULT_LSP, typescript: { ...DEFAULT_LSP.typescript, args: [...DEFAULT_LSP.typescript.args] } },
+    lsp: defaultLspConfig(),
     error: 'LSP_CONFIG_INVALID',
   };
   if (fileLsp !== undefined && (fileLsp === null || typeof fileLsp !== 'object' || Array.isArray(fileLsp))) return fallback;
