@@ -1,5 +1,67 @@
 # Changelog
 
+## [2.8.0](https://github.com/yohi/nexus/compare/v2.7.0...v2.8.0) (2026-11-09)
+
+
+### Features
+
+* add retrieval performance baselines ([bf4feec](https://github.com/yohi/nexus/commit/bf4feec5ad3e7903250a5f2134ec3155a0960a76))
+* **nexus:** add read-only LSP protocol client ([3182fe1](https://github.com/yohi/nexus/commit/3182fe11cab9c7d3c5c02d57f28b8a8009317c52))
+* **nexus:** add read-only LSP protocol client ([1b2e054](https://github.com/yohi/nexus/commit/1b2e05486cc8eeca1fe52ef7566990ae886b3b76))
+* **nexus:** add read-only LSP protocol client ([0151e68](https://github.com/yohi/nexus/commit/0151e689ff1918b22c3c8045159945f58f0b9276))
+* **nexus:** define LSP navigation contracts ([ee23eea](https://github.com/yohi/nexus/commit/ee23eeaa7ef84888908fe1fc0babcc7bbc02f75e))
+* **nexus:** expose three LSP navigation tools ([e47b592](https://github.com/yohi/nexus/commit/e47b592267ca11ae10510cfa6ecccd148f7c58ac))
+* **nexus:** expose three LSP navigation tools ([feb2012](https://github.com/yohi/nexus/commit/feb2012af071182ea798d8faf1624c8aaa09f74c))
+* **nexus:** expose three LSP navigation tools ([25ef5c6](https://github.com/yohi/nexus/commit/25ef5c6c1c64813dee3c247dde0e53cd89201d7a))
+* **nexus:** integrate worktree-local LSP navigation ([89c51e3](https://github.com/yohi/nexus/commit/89c51e30cb6253035c0e00cf3fbf1e8509ff567d))
+* **nexus:** manage per-worktree LSP lifecycle ([e13c1ae](https://github.com/yohi/nexus/commit/e13c1ae0724e80421e31c1c828d646c708b0ff31))
+* **nexus:** manage per-worktree LSP lifecycle ([ab1b684](https://github.com/yohi/nexus/commit/ab1b68487a556702b842a2ae23de0a9b03730421))
+* **nexus:** require LSP config and owner trust ([1b4c3b4](https://github.com/yohi/nexus/commit/1b4c3b4a4692da1df5d50fddc0241a88e1e89090))
+* **nexus:** validate current-source LSP targets and locations ([60e7773](https://github.com/yohi/nexus/commit/60e77732921b199c97968c81b4bcb8f2cc96ad97))
+* **nexus:** verify LSP symbol navigation targets ([44d616c](https://github.com/yohi/nexus/commit/44d616cf4dffa0f84917bcf4a206b28c678c8f55))
+* R5診断実行ゲートを安全化 ([9dd17e0](https://github.com/yohi/nexus/commit/9dd17e0d312b1aa8774404895e3604acb37726ee))
+* 検索性能の診断計測を追加 ([a0a352a](https://github.com/yohi/nexus/commit/a0a352adb2b81c17255ff82cfe7b0dad41121232))
+
+
+### Bug Fixes
+
+* LSPの区切り文字と欠落ファイル分類を修正 ([37bada8](https://github.com/yohi/nexus/commit/37bada83c482df837489a62a22bba895b924e42a))
+* LSP位置とシンボリックリンク検証を修正 ([5a23edd](https://github.com/yohi/nexus/commit/5a23eddbe62a5c45cd740a96a6702af7566335c5))
+* LSP設定とtrust store判定を修正 ([ff9d8be](https://github.com/yohi/nexus/commit/ff9d8be4e213c47f3bafc1dd61b2b0fa66b42dd5))
+* LSP通知の停止と起動競合を防止 ([4b874f7](https://github.com/yohi/nexus/commit/4b874f7ec5e14eeba5f062a98541bc29061167fc))
+* **nexus:** align LSP line separator handling and fail-closed navigation ([4a03c8c](https://github.com/yohi/nexus/commit/4a03c8c857f36bd73d98a14cbff6a97a8e4c7ace))
+* **nexus:** align LSP line separator handling and fail-closed navigation ([d93d96e](https://github.com/yohi/nexus/commit/d93d96e6de8e09645e17361cd5dc5e231e7fb8f5))
+* **nexus:** fail closed on LSP-incompatible line terminators and missing lsp config ([8d6b9d8](https://github.com/yohi/nexus/commit/8d6b9d80d26d6a794fa7af81667d989c3ce70c6c))
+* **nexus:** guard LSP child listeners before session init ([a556375](https://github.com/yohi/nexus/commit/a5563751f7a702938f2ffc95565512c25773204c))
+* **nexus:** guard LSP child listeners before session init ([aeb81e6](https://github.com/yohi/nexus/commit/aeb81e6a29056c6dea8fdaa536395e146e6e19ab))
+* **nexus:** LSP競合を解消してナビゲーションを統合 ([e1f7c5b](https://github.com/yohi/nexus/commit/e1f7c5bb66fa88a38d21fcadbfb43c7139132f71))
+* **nexus:** reject malformed LSP location shapes ([f878ad9](https://github.com/yohi/nexus/commit/f878ad903b5cf4e6dfdfc8b3525697a92dc4accc))
+* PR [#341](https://github.com/yohi/nexus/issues/341) の失敗checkを修正 ([57e2a80](https://github.com/yohi/nexus/commit/57e2a80a0bb97360b25ca423b1e08ac3af283f26))
+* SonarCloudの品質ゲート指摘を修正 ([419a0c7](https://github.com/yohi/nexus/commit/419a0c7e5b3a44e9a18d2de930987549d9f23b31))
+* SonarCloudの品質ゲート指摘を修正 ([2abecae](https://github.com/yohi/nexus/commit/2abecaec8b6a2a6d6ee277a38d34649b61113482))
+* SonarCloud品質ゲートの指摘を修正 ([fdcd260](https://github.com/yohi/nexus/commit/fdcd26085577cfd9347844c40f8a4b8af4d322a1))
+* SonarCloud品質ゲート失敗を修正 ([9f1834b](https://github.com/yohi/nexus/commit/9f1834b37c8e72aa4f954a36071e0a37fd330663))
+* SonarのPromise拒否処理を整理 ([f663a8e](https://github.com/yohi/nexus/commit/f663a8ea254532e9fdee154131fe6baeff71a345))
+* Sonarの非同期エラー指摘を修正 ([5ba70bb](https://github.com/yohi/nexus/commit/5ba70bbfb3ac58f4289e0e5fbb5bd69f055e344d))
+* update gitignore ([7bd27fe](https://github.com/yohi/nexus/commit/7bd27fe97de092eb9ae91b1360b3fd19c37abea2))
+* update gitignore ([373ada2](https://github.com/yohi/nexus/commit/373ada24916dd3b22b28bb7b53f4b685640e1b4e))
+* Vitest関連の依存バージョンを同期 ([45d24f1](https://github.com/yohi/nexus/commit/45d24f1aa37902e9781301af7b93ec5d65c003c3))
+* 古いホストスナップショットの失敗を記録 ([f643ffa](https://github.com/yohi/nexus/commit/f643ffa88db17ee1a16a1c5043ddd2d34b5245e2))
+* 埋め込みキャッシュを設定互換性で分離 ([f910558](https://github.com/yohi/nexus/commit/f9105586915f7a99984dff49c5d4dde8d7a4f7f5))
+* 埋め込みキャッシュを設定互換性で分離 ([deaf485](https://github.com/yohi/nexus/commit/deaf485946b0b50a1f18a2d0305ca0d9d50ab0ca))
+* 埋め込みキャッシュを設定互換性で分離 ([6b077d6](https://github.com/yohi/nexus/commit/6b077d622911d6350926e29d01d1f21cf7fc0a32))
+* 埋め込みキャッシュ互換性と境界仕様を更新 ([51c0a21](https://github.com/yohi/nexus/commit/51c0a21d909c65a9e05a21a0fba0d6e8886a2402))
+* 性能計測の失敗処理を修正 ([40b8256](https://github.com/yohi/nexus/commit/40b82567b0d3f5ddedc477f908e495ebbc15d59e))
+* 性能計測ブランチのマージ競合を解決 ([4951818](https://github.com/yohi/nexus/commit/49518185c1db57c13be8b85d6fd39dcd94b67d88))
+* 性能計測レビュー指摘を修正 ([9f599e7](https://github.com/yohi/nexus/commit/9f599e70a6d0ceb633c7afde4847d920f2aba10a))
+* 性能診断テストのLintと重複指摘を修正 ([937bcd1](https://github.com/yohi/nexus/commit/937bcd12d8de35ce0af1da08659d9ffd8c24797e))
+* 未登録の除外パスを正しく分類 ([0683db1](https://github.com/yohi/nexus/commit/0683db192ec15eeeb627f4bf0b2f67984294f298))
+* 本番依存の脆弱性を修正 ([7c7208a](https://github.com/yohi/nexus/commit/7c7208ad08ce27724521cb40adde3780ec79be7c))
+* 本番依存の脆弱性を解消 ([7c5bcce](https://github.com/yohi/nexus/commit/7c5bcce82a8a49c925b2a6a247f0e3b99d070569))
+* 診断ゲートのレビュー指摘を修正 ([7ad46e0](https://github.com/yohi/nexus/commit/7ad46e0c8c80a05edd55b703503dd84acdf56e92))
+* 診断コンテキスト外のインデックス処理を維持 ([7e3bead](https://github.com/yohi/nexus/commit/7e3beadcffc3cf71956a0b86c56a604647bd5020))
+* 読み取り不能時の性能計測フィンガープリントを安定化 ([b02dacd](https://github.com/yohi/nexus/commit/b02dacd82d8e0556a1896070beb545e45b68805f))
+
 ## [2.7.0](https://github.com/yohi/nexus/compare/v2.6.0...v2.7.0) (2026-10-04)
 
 
