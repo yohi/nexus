@@ -251,6 +251,49 @@ const setupStub = async (options: { env?: Record<string, string>; server?: Recor
 // Deterministic stub-server integration (always runs; CI evidence for production wiring)
 
 describe('LSP navigation through the production runtime assembly (recording stub server)', () => {
+  it.each<[string, string]>([
+    ['U+2028', '\u2028'],
+    ['U+2029', '\u2029'],
+  ])('returns the public unsupported line separator reasonCode for %s', async (_label, separator) => {
+    const { root, runtime } = await setupStub();
+    await fs.writeFile(path.join(root, 'shapes.ts'), `export const shape = 1;${separator}\n`);
+
+    const response = await navigate(runtime, 'get_definition', { filePath: 'shapes.ts', line: 1, character: 13 });
+
+    expect(response).toMatchObject({ status: 'unsupported', reasonCode: 'unsupported_line_separator' });
+  });
+
+  it.each<[string, string]>([
+    ['U+2028', '\u2028'],
+    ['U+2029', '\u2029'],
+  ])('closes unsafe open document A containing %s and aborts navigation from B', async (_label, separator) => {
+    const { root, server, runtime } = await setupStub();
+    const shapes = uriOf(root, 'shapes.ts');
+    const main = uriOf(root, 'main.ts');
+    await server.configure({ responses: { 'textDocument/definition': [] } });
+
+    await navigate(runtime, 'get_definition', { filePath: 'shapes.ts', line: 5, character: 16 });
+    const changedA = `${TS_JS_PROJECT_FILES['shapes.ts']!}${separator}\n`;
+    await fs.writeFile(path.join(root, 'shapes.ts'), changedA);
+
+    const response = await navigate(runtime, 'get_definition', { filePath: 'main.ts', line: 3, character: 21 });
+
+    expect(response).toMatchObject({
+      status: 'stale',
+      reasonCode: 'INDEX_FILE_HASH_MISMATCH',
+      locations: [],
+    });
+    expect(response.sourceValidation).not.toBe('verified');
+    await waitUntil(async () =>
+      byMethod(await readLog(server.logPath), 'textDocument/didClose').some(
+        (entry) => entry.message.params.textDocument.uri === shapes,
+      ));
+    const log = await readLog(server.logPath);
+    expect(byMethod(log, 'textDocument/definition').some(
+      (entry) => entry.message.params.textDocument.uri === main,
+    )).toBe(false);
+  });
+
   it('routes all three tools through an Owner-approved, runtime-local language server', async () => {
     const { root, server, runtime } = await setupStub();
     const shapes = uriOf(root, 'shapes.ts');
