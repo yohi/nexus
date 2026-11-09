@@ -349,7 +349,9 @@ class LspProtocolClient implements ILspProvider {
       const initialized = parseInitializeResult(result, input.expectedServerVersion);
       this.syncKind = initialized.syncKind;
 
+      this.assertStarting();
       await this.notify(() => this.connection.sendNotification(InitializedNotification.type, {}));
+      this.assertStarting();
       this.capabilities = initialized.capabilities;
       this.state = 'ready';
       return this.capabilities;
@@ -473,7 +475,7 @@ class LspProtocolClient implements ILspProvider {
     }
     if (transportOpen || wasReady) {
       try {
-        await this.connection.sendNotification(ExitNotification.type);
+        await this.notify(() => this.connection.sendNotification(ExitNotification.type));
       } catch {
         // Transport already gone.
       }
@@ -530,6 +532,12 @@ class LspProtocolClient implements ILspProvider {
     }
   }
 
+  private assertStarting(): void {
+    if (this.state !== 'starting' || this.session.signal.aborted) {
+      throw new LspProtocolError('Language server startup was interrupted');
+    }
+  }
+
   private invalidateSession(): void {
     if (!this.session.signal.aborted) this.session.abort();
   }
@@ -537,11 +545,19 @@ class LspProtocolClient implements ILspProvider {
   /** Sends a notification; a local send failure poisons the session. */
   private async notify(send: () => Promise<void>): Promise<void> {
     if (this.session.signal.aborted) throw new LspProtocolError('Language server session is not usable');
+    let timer: NodeJS.Timeout | undefined;
     try {
-      await send();
+      await Promise.race([
+        send(),
+        new Promise<never>((_resolve, reject) => {
+          timer = setTimeout(() => reject(new LspProtocolError('Language server notification timed out')), this.requestTimeoutMs);
+        }),
+      ]);
     } catch {
       this.invalidateSession();
       throw new LspProtocolError('Failed to send a message to the language server');
+    } finally {
+      clearTimeout(timer);
     }
   }
 
