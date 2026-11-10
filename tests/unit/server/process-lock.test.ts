@@ -7,7 +7,8 @@ import os from 'node:os';
 import {
   acquireProcessLock, releaseOwnedProcessLock, releaseOwnedProcessLockSync, releaseProcessLock,
 } from '../../../src/server/process-lock.js';
-import { storageOwnershipAdmissionService, type WriterAdmission } from '../../../src/server/storage-ownership/admission.js';
+import { processCoordinationRoot, storageOwnershipAdmissionService, type WriterAdmission } from '../../../src/server/storage-ownership/admission.js';
+import { resourceKey, WRITER_LOCK_DIR } from '../../../src/server/storage-ownership/claims.js';
 import type { Config } from '../../../src/types/index.js';
 
 describe('ProcessLock', () => {
@@ -102,6 +103,58 @@ describe('ProcessLock', () => {
     // Verify directory exists
     const dirStat = await stat(nestedDir);
     expect(dirStat.isDirectory()).toBe(true);
+  });
+
+  it('rejects a forged admission before creating a new storage directory', async () => {
+    const storageDir = path.join(testDir, `uncreated-${randomUUID()}`);
+    const config = { storage: { rootDir: storageDir, metadataDbPath: path.join(storageDir, 'metadata.db'),
+      vectorDbPath: path.join(storageDir, 'vectors') } } as unknown as Config;
+
+    await expect(acquireProcessLock(storageDir, { handle: {} as WriterAdmission, config }))
+      .rejects.toMatchObject({ code: 'invalid_writer_admission' });
+    await expect(stat(storageDir)).rejects.toMatchObject({ code: 'ENOENT' });
+    await expect(stat(path.join(storageDir, 'nexus.pid'))).rejects.toMatchObject({ code: 'ENOENT' });
+  });
+
+  it('rejects a released admission before creating a new PID file', async () => {
+    const admission = await admitted(testDir);
+    await admission.handle.release();
+
+    await expect(acquireProcessLock(testDir, admission))
+      .rejects.toMatchObject({ code: 'invalid_writer_admission' });
+    await expect(stat(path.join(testDir, 'nexus.pid'))).rejects.toMatchObject({ code: 'ENOENT' });
+  });
+
+  it('rejects a consumed admission before creating a new PID file', async () => {
+    const admission = await admitted(testDir);
+    const lease = await storageOwnershipAdmissionService.consumeWriterAdmission(admission.handle, admission.config);
+    releases.push(() => lease.release());
+
+    await expect(acquireProcessLock(testDir, admission))
+      .rejects.toMatchObject({ code: 'invalid_writer_admission' });
+    await expect(stat(path.join(testDir, 'nexus.pid'))).rejects.toMatchObject({ code: 'ENOENT' });
+  });
+
+  it('rejects a lost writer lease before creating a new PID file', async () => {
+    const admission = await admitted(testDir);
+    const lockPath = path.join(await processCoordinationRoot(), WRITER_LOCK_DIR,
+      `${resourceKey(admission.handle.targets.rootDir.path)}.lock`);
+    await rm(lockPath);
+    await writeFile(lockPath, '');
+
+    await expect(acquireProcessLock(testDir, admission))
+      .rejects.toMatchObject({ code: 'invalid_writer_admission' });
+    await expect(stat(path.join(testDir, 'nexus.pid'))).rejects.toMatchObject({ code: 'ENOENT' });
+  });
+
+  it('rejects an admission when the effective storage configuration changed before creating a PID file', async () => {
+    const admission = await admitted(testDir);
+    const config = { ...admission.config, storage: { ...admission.config.storage,
+      metadataDbPath: path.join(testDir, 'different-metadata.db') } };
+
+    await expect(acquireProcessLock(testDir, { ...admission, config }))
+      .rejects.toMatchObject({ code: 'target_mismatch' });
+    await expect(stat(path.join(testDir, 'nexus.pid'))).rejects.toMatchObject({ code: 'ENOENT' });
   });
 
   // Nexus #297: shutdown/exit cleanup only ever removes a PID file this process wrote.

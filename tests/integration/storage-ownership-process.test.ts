@@ -173,8 +173,8 @@ describe('storage ownership collisions (red evidence against unchanged implement
     const before = await digest(pidPath);
     // Second owner holds no writer admission for this root (Task 4 made the admission parameter mandatory).
     const unadmitted = { handle: {} as WriterAdmission, config: { storage: { rootDir: join(base, 'elsewhere') } } as Config };
-    const lock = await acquireProcessLock(storageDir, unadmitted);
-    expect(lock.acquired).toBe(false);
+    await expect(acquireProcessLock(storageDir, unadmitted))
+      .rejects.toMatchObject({ code: 'invalid_writer_admission' });
     expect(await digest(pidPath)).toEqual(before); // foreign PID bytes must survive a refused startup
   });
 

@@ -28,6 +28,11 @@ export const LOCK_FILENAME = 'nexus.pid';
  */
 export async function acquireProcessLock(storageDir: string,
   admission: { readonly handle: WriterAdmission; readonly config: Config }): Promise<LockResult> {
+  await assertLiveWriterAdmission(admission.handle, admission.config);
+  if (path.resolve(admission.config.storage.rootDir) !== path.resolve(storageDir)) {
+    return { acquired: false };
+  }
+
   const lockPath = path.join(storageDir, LOCK_FILENAME);
   const mayReclaim = async (): Promise<boolean> => {
     if (path.resolve(admission.config.storage.rootDir) !== path.resolve(storageDir)) return false;
