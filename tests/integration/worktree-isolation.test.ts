@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
 import { afterEach, describe, expect, it } from 'vitest';
+import type { TestContext } from 'vitest';
 import { loadConfig } from '../../src/config/index.js';
 import { createRuntimeAssembly } from '../../src/server/runtime-assembly.js';
 import type { RuntimeAssembly } from '../../src/server/runtime/assembly-types.js';
@@ -20,9 +21,9 @@ const sentinelSymbol = (role: Role) => `uniqueSentinel${role}Marker`;
 const cleanups: Array<() => Promise<void>> = [];
 afterEach(async () => { for (const cleanup of cleanups.splice(0).reverse()) await cleanup().catch(() => undefined); });
 
-async function openWorktrees(): Promise<DisposableWorktreeSet | undefined> {
+async function openWorktrees(ctx: TestContext): Promise<DisposableWorktreeSet> {
   const set = await createDisposableWorktreeSet('smoke', new AbortController().signal);
-  if (set.status === 'skipped') return undefined; // environment unavailable: git missing
+  if (set.status === 'skipped') ctx.skip('environment unavailable: git is missing');
   cleanups.push(set.dispose);
   return set;
 }
@@ -64,14 +65,17 @@ async function assertIsolated(role: Role, assembly: RuntimeAssembly): Promise<vo
   }
   const own = await assembly.options.orchestrator.search({ query: sentinelSymbol(role), topK: 20 });
   expect(hasFile(own, sentinelFile(role))).toBe(true);
+  for (const other of roles.filter((candidate) => candidate !== role)) {
+    const foreign = await assembly.diagnostics.metadataStore.getFileDeclarations(sentinelFile(other));
+    expect(foreign.map((declaration) => declaration.name)).not.toContain(sentinelSymbol(other));
+  }
   const declarations = await assembly.diagnostics.metadataStore.getFileDeclarations(sentinelFile(role));
   expect(declarations.map((declaration) => declaration.name)).toContain(sentinelSymbol(role));
 }
 
 describe('worktree isolation (disposable git worktrees)', () => {
-  it('W01_primary_git_directory_and_linked_git_file', { timeout: 120_000 }, async () => {
-    const set = await openWorktrees();
-    if (set === undefined) return;
+  it('W01_primary_git_directory_and_linked_git_file', { timeout: 120_000 }, async (ctx) => {
+    const set = await openWorktrees(ctx);
     expect((await lstat(join(set.primary, '.git'))).isDirectory()).toBe(true);
     for (const linked of [set.linkedA, set.linkedB]) {
       expect((await lstat(join(linked, '.git'))).isFile()).toBe(true);
@@ -85,9 +89,8 @@ describe('worktree isolation (disposable git worktrees)', () => {
     }
   });
 
-  it('W02_independent_search_catalog_and_vector', { timeout: 180_000 }, async () => {
-    const set = await openWorktrees();
-    if (set === undefined) return;
+  it('W02_independent_search_catalog_and_vector', { timeout: 180_000 }, async (ctx) => {
+    const set = await openWorktrees(ctx);
     await writeSentinels(set);
     const assemblies = new Map<Role, RuntimeAssembly>();
     for (const role of roles) assemblies.set(role, await startRuntime(set[role]));
@@ -103,9 +106,8 @@ describe('worktree isolation (disposable git worktrees)', () => {
     expect(roots.size).toBe(6); // distinct default .nexus roots for metadata and vectors
   });
 
-  it('W03_detached_and_dirty_current_source', { timeout: 180_000 }, async () => {
-    const set = await openWorktrees();
-    if (set === undefined) return;
+  it('W03_detached_and_dirty_current_source', { timeout: 180_000 }, async (ctx) => {
+    const set = await openWorktrees(ctx);
     const head = (await git('git', ['rev-parse', 'HEAD'], { cwd: set.primary })).stdout.trim();
     expect((await git('git', ['rev-parse', 'HEAD'], { cwd: set.linkedA })).stdout.trim()).toBe(head);
     expect((await git('git', ['symbolic-ref', '-q', 'HEAD'], { cwd: set.linkedA }).catch((error: { code?: number }) => error.code)))
@@ -115,6 +117,7 @@ describe('worktree isolation (disposable git worktrees)', () => {
     const assemblyA = await startRuntime(set.linkedA);
     const assemblyB = await startRuntime(set.linkedB);
     await assertIsolated('linkedA', assemblyA);
+    await assertIsolated('linkedB', assemblyB);
     const dirty = await assemblyB.options.orchestrator.search({ query: 'DIRTY_LINKED_B', topK: 20 });
     expect(hasFile(dirty, sentinelFile('linkedB'))).toBe(true);
     const clean = await assemblyA.options.orchestrator.search({ query: 'DIRTY_LINKED_B', topK: 20 });

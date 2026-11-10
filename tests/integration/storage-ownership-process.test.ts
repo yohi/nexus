@@ -58,9 +58,29 @@ async function open(config: Config): Promise<RuntimeAssembly> {
   return assembly;
 }
 
-async function attempt(config: Config): Promise<{ admitted: boolean; error?: unknown }> {
-  try { await open(config); return { admitted: true }; }
-  catch (error) { return { admitted: false, error }; }
+/** Starts the runtime and drives a real full index so that stores are genuinely written (or refused). */
+async function startAndIndex(assembly: RuntimeAssembly): Promise<void> {
+  await assembly.runtime.initialize();
+  await assembly.runtime.reindex(true);
+  await assembly.options.pipeline.waitForActiveReindex();
+  const deadline = Date.now() + 30_000;
+  while (assembly.options.pipeline.getProgress().status !== 'idle' && Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+}
+
+async function attempt(config: Config, index = false): Promise<{ admitted: boolean; error?: unknown }> {
+  try {
+    const assembly = await open(config);
+    if (index) await startAndIndex(assembly);
+    return { admitted: true };
+  } catch (error) { return { admitted: false, error }; }
+}
+
+/** Opens owner A and drives a real index so its stores hold data; A stays live (holding its locks). */
+async function liveOwner(config: Config): Promise<void> {
+  const assembly = await open(config);
+  await startAndIndex(assembly);
 }
 
 /** Byte-level digest of every file below each path (SQLite sidecars and Lance tables included). */
@@ -87,6 +107,10 @@ const foreignEndpoint = (projectRoot: string, pid: number) =>
 const DEAD_PID = 2_147_483_000;
 
 describe('storage ownership collisions (red evidence against unchanged implementation)', () => {
+  // CONTROL, not a red gap: the pre-existing proper-lockfile project lock on rootDir already refuses a second owner of
+  // the same root. The foreign endpoint.json/nexus.pid below are test-seeded bytes (assembly itself never writes them),
+  // so this passes because of the lock, not because of ownership logic. The red S01 cases are the two stale-foreign
+  // descriptor/PID tests that follow.
   it('S01_red_shared_root', { timeout: 60_000 }, async () => {
     const base = await sandbox();
     const [rootA, rootB] = [await project(base, 'ownerA'), await project(base, 'ownerB')];
@@ -102,6 +126,7 @@ describe('storage ownership collisions (red evidence against unchanged implement
       shared.metadataDbPath, `${shared.metadataDbPath}-wal`, `${shared.metadataDbPath}-shm`, shared.vectorDbPath);
     expect(after).toEqual(before);
     expect(b.admitted).toBe(false);
+    expect(String((b.error as Error | undefined)?.message)).toMatch(/Another Nexus process is already running/); // lock, not ownership
   });
 
   it('S01_red_shared_root_stale_foreign_descriptor_via_bridge', { timeout: 60_000 }, async () => {
@@ -143,10 +168,10 @@ describe('storage ownership collisions (red evidence against unchanged implement
     const sharedMetadata = join(base, 'shared-meta', 'metadata.db');
     const a = targetsFor(join(base, 'storage-a'));
     const b = targetsFor(join(base, 'storage-b'));
-    expect((await attempt(configFor(rootA, { ...a, metadataDbPath: sharedMetadata }))).admitted).toBe(true);
+    await liveOwner(configFor(rootA, { ...a, metadataDbPath: sharedMetadata }));
     const files = [sharedMetadata, `${sharedMetadata}-wal`, `${sharedMetadata}-shm`, a.vectorDbPath];
     const before = await digest(...files);
-    const second = await attempt(configFor(rootB, { ...b, metadataDbPath: sharedMetadata }));
+    const second = await attempt(configFor(rootB, { ...b, metadataDbPath: sharedMetadata }), true);
     expect(await digest(...files)).toEqual(before);
     expect(second.admitted).toBe(false);
   });
@@ -157,9 +182,9 @@ describe('storage ownership collisions (red evidence against unchanged implement
     const sharedVectors = join(base, 'shared-vectors');
     const a = targetsFor(join(base, 'storage-a'));
     const b = targetsFor(join(base, 'storage-b'));
-    expect((await attempt(configFor(rootA, { ...a, vectorDbPath: sharedVectors }))).admitted).toBe(true);
+    await liveOwner(configFor(rootA, { ...a, vectorDbPath: sharedVectors }));
     const before = await digest(sharedVectors, a.metadataDbPath, b.metadataDbPath);
-    const second = await attempt(configFor(rootB, { ...b, vectorDbPath: sharedVectors }));
+    const second = await attempt(configFor(rootB, { ...b, vectorDbPath: sharedVectors }), true);
     expect(await digest(sharedVectors, a.metadataDbPath)).toEqual(
       Object.fromEntries(Object.entries(before).filter(([key]) => !key.startsWith(b.metadataDbPath))));
     expect(second.admitted).toBe(false);
@@ -171,14 +196,14 @@ describe('storage ownership collisions (red evidence against unchanged implement
       const [rootA, rootB] = [await project(base, 'ownerA'), await project(base, 'ownerB')];
       const a = targetsFor(join(base, 'storage-a'));
       const b = targetsFor(join(base, 'storage-b'));
-      expect((await attempt(configFor(rootA, a))).admitted).toBe(true);
+      await liveOwner(configFor(rootA, a));
       const alias = join(base, `alias-${target}`);
       let colliding: Targets;
       if (target === 'root') { await symlink(a.root, alias, 'dir'); colliding = { ...b, root: alias }; }
       else if (target === 'metadata') { await symlink(a.root, alias, 'dir'); colliding = { ...b, metadataDbPath: join(alias, 'metadata.db') }; }
       else { await symlink(a.vectorDbPath, alias, 'dir'); colliding = { ...b, vectorDbPath: alias }; }
       const before = await digest(a.root);
-      const second = await attempt(configFor(rootB, colliding));
+      const second = await attempt(configFor(rootB, colliding), true);
       const after = await digest(a.root);
       expect(after).toEqual(before);
       expect(second.admitted).toBe(false); // collision must follow real paths, not lexical spelling
@@ -191,10 +216,10 @@ describe('storage ownership collisions (red evidence against unchanged implement
     const sharedMetadata = join(base, 'shared-meta', 'metadata.db');
     const a = { ...targetsFor(join(base, 'storage-a')), metadataDbPath: sharedMetadata, vectorDbPath: 'memory://' };
     const b = { ...targetsFor(join(base, 'storage-b')), metadataDbPath: sharedMetadata, vectorDbPath: 'memory://' };
-    expect((await attempt(configFor(rootA, a))).admitted).toBe(true);
+    await liveOwner(configFor(rootA, a));
     const files = [sharedMetadata, `${sharedMetadata}-wal`, `${sharedMetadata}-shm`];
     const before = await digest(...files);
-    const second = await attempt(configFor(rootB, b));
+    const second = await attempt(configFor(rootB, b), true);
     expect(await digest(...files)).toEqual(before);
     expect(second.admitted).toBe(false); // ephemeral vectors must not mask a shared persistent metadata store
   });
