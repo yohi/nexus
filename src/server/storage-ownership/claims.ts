@@ -1,7 +1,10 @@
 // Physical resource identity, account-private coordination root, kernel-backed locks and atomic claim I/O
 // (Nexus #297, Design §4.3 F-002/F-004). Internal only; not a public API.
 import { createHash, randomBytes } from 'node:crypto';
-import { closeSync, constants as fsConstants, fsyncSync, linkSync, lstatSync, openSync, readFileSync, statfsSync, unlinkSync, writeSync } from 'node:fs';
+import {
+  closeSync, constants as fsConstants, fsyncSync, linkSync, lstatSync, openSync, readdirSync, readFileSync, renameSync, statfsSync,
+  unlinkSync, writeSync,
+} from 'node:fs';
 import { lstat, mkdir, realpath } from 'node:fs/promises';
 import { userInfo } from 'node:os';
 import { dirname, join, sep } from 'node:path';
@@ -179,6 +182,57 @@ export const sqliteFcntlLockBackend: KernelLockBackend = {
     };
   },
 };
+
+// ---------------------------------------------------------------------------------------------------------------
+// Writer path records (overlap detection between independent admissions)
+// ---------------------------------------------------------------------------------------------------------------
+
+const WRITER_PATH_SUFFIX = '.path';
+const MAX_PATH_RECORD_BYTES = 16 * 1024;
+
+/**
+ * Record the canonical target path for `writer/<key>.lock`. Written only while holding both the admission gate and
+ * that key's writer lease. Content is deterministic per key, so an atomic rename over an older record is idempotent.
+ * The record is metadata for overlap probing only; liveness is always decided by the kernel lock itself.
+ */
+export function writeWriterPathRecord(writerDir: string, key: string, canonicalPath: string): void {
+  const finalPath = join(writerDir, `${key}${WRITER_PATH_SUFFIX}`);
+  const tempPath = `${finalPath}.tmp-${process.pid}-${randomBytes(6).toString('hex')}`;
+  const fd = openSync(tempPath, fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_EXCL | fsConstants.O_NOFOLLOW, 0o600);
+  try {
+    try { writeSync(fd, canonicalPath); fsyncSync(fd); } finally { closeSync(fd); }
+    renameSync(tempPath, finalPath);
+  } catch (error) {
+    try { unlinkSync(tempPath); } catch { /* attempt-owned temp already gone */ }
+    throw error;
+  }
+}
+
+export interface WriterEntry {
+  readonly key: string;
+  /** Verified canonical path (record present, regular file and hashing to `key`), otherwise undefined. */
+  readonly path: string | undefined;
+}
+
+/** List every writer lock key in the coordination root with its verified path record, if any. */
+export function listWriterEntries(writerDir: string): WriterEntry[] {
+  const entries: WriterEntry[] = [];
+  for (const name of readdirSync(writerDir)) {
+    if (!name.endsWith('.lock')) continue;
+    const key = name.slice(0, -'.lock'.length);
+    let path: string | undefined;
+    try {
+      const recordPath = join(writerDir, `${key}${WRITER_PATH_SUFFIX}`);
+      const stat = lstatSync(recordPath);
+      if (stat.isFile() && stat.size <= MAX_PATH_RECORD_BYTES) {
+        const text = readFileSync(recordPath, 'utf8');
+        if (resourceKey(text) === key) path = text;
+      }
+    } catch { /* missing/unreadable record: path unknown, caller must probe liveness */ }
+    entries.push({ key, path });
+  }
+  return entries;
+}
 
 // ---------------------------------------------------------------------------------------------------------------
 // Bootstrap directories and atomic claims

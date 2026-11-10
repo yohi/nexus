@@ -398,3 +398,44 @@ describe('storage writer admission across processes (Task 3)', () => {
     expect(await digest(storage)).toEqual(before);
   });
 });
+
+describe('nested same-owner overlap across processes (Task 3 fix round 1)', () => {
+  it('S09_nested_descendant_targets_of_live_writer_are_rejected', { timeout: 60_000 }, async () => {
+    const base = await sandbox();
+    const owner = await project(base, 'owner');
+    const coord = join(base, 'coord');
+    const storageA = join(base, 'storage-a');
+    const holder = spawnAdmission(specFor(owner, storageA, coord, { hold: true }));
+    expect((await holder.outcome()).event).toBe('admitted');
+    const before = await digest(storageA);
+    // B: rootDir nested inside A's live vector directory.
+    const b = spawnAdmission(specFor(owner, join(storageA, 'vectors', 'inner'), coord));
+    expect(await b.outcome()).toMatchObject({ event: 'refused', code: 'writer_busy' });
+    // C: distinct root, but vectorDbPath nested inside A's live vector directory.
+    const c = spawnAdmission(specFor(owner, join(base, 'storage-c'), coord, { vectorDbPath: join(storageA, 'vectors', 'v2') }));
+    expect(await c.outcome()).toMatchObject({ event: 'refused', code: 'writer_busy' });
+    expect(await digest(storageA)).toEqual(before); // refused before any mkdir/claim inside A's tree
+    await expect(lstat(join(base, 'storage-c'))).rejects.toThrow();
+    await holder.release();
+  });
+
+  it('S09_nested_ancestor_target_of_live_writer_is_rejected', { timeout: 60_000 }, async () => {
+    const base = await sandbox();
+    const owner = await project(base, 'owner');
+    const coord = join(base, 'coord');
+    const outer = join(base, 'outer');
+    // The outer tree is first claimed (and released) by the same owner, so claimed directories are not content-scanned.
+    const seed = spawnAdmission(specFor(owner, outer, coord));
+    expect((await seed.outcome()).event).toBe('admitted');
+    await seed.exited;
+    const inner = join(outer, 'inner');
+    const holder = spawnAdmission(specFor(owner, inner, coord, { hold: true }));
+    expect((await holder.outcome()).event).toBe('admitted');
+    const ancestor = spawnAdmission(specFor(owner, outer, coord));
+    expect(await ancestor.outcome()).toMatchObject({ event: 'refused', code: 'writer_busy' });
+    await holder.release();
+    const after = spawnAdmission(specFor(owner, outer, coord)); // overlap only excluded while the inner writer is live
+    expect((await after.outcome()).event).toBe('admitted');
+    await after.exited;
+  });
+});

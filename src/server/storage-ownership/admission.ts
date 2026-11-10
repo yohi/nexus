@@ -5,8 +5,8 @@ import { dirname, join } from 'node:path';
 import type { Config } from '../../types/index.js';
 import { claimPathFor, DIRECTORY_CLAIM_FILENAME, readOwnerClaim, type ClaimKind } from './claim-format.js';
 import {
-  ADMISSION_LOCK_FILENAME, defaultCoordinationRoot, isWithin, mkdirVerified, prepareCoordinationRoot, publishClaim,
-  RESOURCE_LOCK_DIR, resourceKey, sqliteFcntlLockBackend, WRITER_LOCK_DIR, type KernelLock, type KernelLockBackend,
+  ADMISSION_LOCK_FILENAME, defaultCoordinationRoot, isWithin, listWriterEntries, mkdirVerified, prepareCoordinationRoot, publishClaim,
+  RESOURCE_LOCK_DIR, resourceKey, sqliteFcntlLockBackend, WRITER_LOCK_DIR, writeWriterPathRecord, type KernelLock, type KernelLockBackend,
 } from './claims.js';
 import { inspectStorageOwnership } from './preflight.js';
 import { assertNotHardlinked, canonicalize, resolveStorageOwnershipTargets, storageTargetsFingerprint } from './targets.js';
@@ -261,6 +261,29 @@ export function createStorageOwnershipAdmissionService(options: AdmissionInterna
         const lease = tryLock(join(coordinationRoot, WRITER_LOCK_DIR, `${r.key}.lock`));
         if (!lease) throw new StorageOwnershipError('writer_busy', `${r.role} already has a live writer`);
         leases.push(lease);
+      }
+
+      // 2b. Overlap exclusion across independent admissions (even for the same owner): any *live* writer whose
+      // canonical path is an ancestor/descendant of a requested target refuses. Unknown records are probed too.
+      // Liveness is decided only by the kernel lock (nonblocking probe), never by time or PID.
+      const writerDir = join(coordinationRoot, WRITER_LOCK_DIR);
+      const ownKeys = new Set(resources.map((r) => r.key));
+      for (const other of listWriterEntries(writerDir)) {
+        if (ownKeys.has(other.key)) continue;
+        const otherPath = other.path;
+        if (otherPath !== undefined &&
+          !resources.some((r) => isWithin(r.path, otherPath) || isWithin(otherPath, r.path))) continue;
+        const probe = tryLock(join(writerDir, `${other.key}.lock`));
+        if (!probe) {
+          throw new StorageOwnershipError('writer_busy',
+            otherPath === undefined ? 'a live writer with an unverifiable target exists' : `live writer on overlapping target ${otherPath}`);
+        }
+        probe.release(); // not live: its record is stale metadata only
+      }
+      try {
+        for (const r of resources) writeWriterPathRecord(writerDir, r.key, r.path);
+      } catch (error) {
+        throw new StorageOwnershipError('lock_unavailable', `cannot record writer target: ${(error as Error).message}`, { cause: error });
       }
 
       // 3. Validate the complete set before any Storage mkdir or claim publication.

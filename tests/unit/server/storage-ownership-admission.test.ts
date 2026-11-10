@@ -268,17 +268,27 @@ describe('F-004 bootstrap and partial claims', () => {
     const base = await sandbox();
     const owner = await project(base, 'owner');
     const p = pathsFor(join(base, 'storage'));
-    await (await admit(service(base), cfg(owner, p))).release();
+    // Root + metadata already claimed (via an earlier memory:// admission) and holding live-looking data; the
+    // persistent vector directory is absent, so a fresh admission must bootstrap it and publish exactly one claim.
+    await (await admit(service(base), cfg(owner, { ...p, vector: 'memory://' }))).release();
     await writeFile(p.metadata, 'existing-sqlite-bytes');
-    await writeFile(join(p.vector, 'table.lance'), 'existing-vector-bytes');
+    await writeFile(`${p.metadata}-wal`, 'existing-wal-bytes');
     await writeFile(join(p.root, 'nexus.pid'), '4242\n');
     await writeFile(join(p.root, 'endpoint.json'), '{"pid":4242}\n');
-    await rm(claimPathFor(p.vector, 'directory')); // vector claim must be re-published -> becomes unclaimed nonempty
-    const before = await digest(p.root);
-    const failing = service(base, { beforeClaimPublish: () => { throw new Error('io'); } });
-    const error = await refusal(admit(failing, cfg(owner, p)));
-    expect(['owner_unknown', 'claim_io_failed']).toContain(error.code);
-    expect(await digest(p.root)).toEqual(before);
+    const existing = [p.metadata, `${p.metadata}-wal`, join(p.root, 'nexus.pid'), join(p.root, 'endpoint.json'),
+      claimPathFor(p.root, 'directory'), claimPathFor(p.metadata, 'file')];
+    const before = await digest(...existing);
+    const attempted: string[] = [];
+    const failing = service(base, { beforeClaimPublish: (path) => { attempted.push(path); throw new Error('io'); } });
+    let handle: WriterAdmission | undefined;
+    const error = await refusal(failing.admitStorageWriter(await failing.resolveStorageOwnershipTargets(cfg(owner, p)))
+      .then((h) => { handle = h; return h; }));
+    expect(error.code).toBe('claim_io_failed');
+    expect(handle).toBeUndefined();
+    expect(attempted).toEqual([p.vector]); // failure happened at publication, after bootstrap
+    expect(await digest(...existing)).toEqual(before);
+    expect(await readdir(p.vector)).toEqual([]); // only the permitted empty bootstrap directory remains
+    expect((await readdir(p.root)).filter((n) => n.includes('.tmp'))).toEqual([]);
   });
 
   it('S07_foreign_owner_refused_before_any_directory_creation', async () => {
