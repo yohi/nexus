@@ -57,7 +57,7 @@ async function verifyPrivateDirectory(path: string, uid: number): Promise<void> 
   if (await realpath(path) !== path) throw new Error(`coordination path ${path} is reached through an alias`);
 }
 
-async function ensurePrivateDirectory(path: string, uid: number): Promise<void> {
+export async function ensurePrivateDirectory(path: string, uid: number): Promise<void> {
   try { await mkdir(path, { mode: 0o700 }); }
   catch (error) { if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error; }
   await verifyPrivateDirectory(path, uid);

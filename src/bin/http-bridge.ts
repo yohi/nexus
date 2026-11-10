@@ -282,31 +282,46 @@ export async function runBridgeCli(
     createTransport: (transportUrl) => new StreamableHTTPClientTransport(transportUrl),
   });
 }
+/**
+ * Nexus #297 (Design §4.4 F-001): build Connector options from the effective config. All three effective storage
+ * targets come from `resolveStorageOwnershipTargets(loadConfig({ projectRoot, env }))`; metadata/vector paths are
+ * never reconstructed from `rootDir`. Read-only: resolving targets creates nothing.
+ */
+export async function createProjectConnectorOptions(
+  projectRoot: string,
+  env: NodeJS.ProcessEnv,
+  overrides: Pick<ProjectConnectorOptions, "spawn" | "fetch"> & Partial<ProjectConnectorOptions> = { spawn, fetch: globalThis.fetch },
+): Promise<ProjectConnectorOptions> {
+  const { loadConfig } = await import("../config/index.js");
+  const { resolveStorageOwnershipTargets } = await import("../server/storage-ownership/index.js");
+  const resolvedConfig = await loadConfig({ projectRoot, env });
+  const storageOwnershipTargets = await resolveStorageOwnershipTargets(resolvedConfig);
+  // A source checkout resolves to the sibling `nexus.ts`, which has no
+  // execute permission and (even if it did) cannot be exec'd directly by
+  // the OS: Node cannot resolve this project's `.js`-suffixed relative
+  // imports against `.ts` files without a loader such as tsx. Route
+  // through the current Node binary, replaying whatever loader flags
+  // (`process.execArgv`) are already registered for this process, so
+  // both the compiled `.js` entry and the TypeScript source entry can be
+  // spawned the same way this process itself was launched.
+  const childExecutable = overrides.childExecutable ?? process.execPath;
+  const childArgs = overrides.childArgs ??
+    (overrides.childExecutable === undefined ? [...process.execArgv, resolveNexusExecutable(import.meta.url)] : undefined);
+  return {
+    ...overrides,
+    projectRoot,
+    storageDir: resolvedConfig.storage.rootDir,
+    storageOwnershipTargets,
+    childExecutable,
+    ...(childArgs === undefined ? {} : { childArgs }),
+    env,
+  };
+}
+
 export async function main(args: string[] = process.argv.slice(2)): Promise<void> {
   await runBridgeCli(args, process.env, {
-    ensureProjectEndpoint: async ({ projectRoot, env }) => {
-      const { loadConfig } = await import("../config/index.js");
-      const resolvedConfig = await loadConfig({ projectRoot, env });
-      const resolvedExecutable = resolveNexusExecutable(import.meta.url);
-      // A source checkout resolves to the sibling `nexus.ts`, which has no
-      // execute permission and (even if it did) cannot be exec'd directly by
-      // the OS: Node cannot resolve this project's `.js`-suffixed relative
-      // imports against `.ts` files without a loader such as tsx. Route
-      // through the current Node binary, replaying whatever loader flags
-      // (`process.execArgv`) are already registered for this process, so
-      // both the compiled `.js` entry and the TypeScript source entry can be
-      // spawned the same way this process itself was launched.
-      const options: ProjectConnectorOptions = {
-        projectRoot,
-        storageDir: resolvedConfig.storage.rootDir,
-        childExecutable: process.execPath,
-        childArgs: [...process.execArgv, resolvedExecutable],
-        env,
-        spawn,
-        fetch: globalThis.fetch,
-      };
-      return ensureProjectEndpoint(options);
-    },
+    ensureProjectEndpoint: async ({ projectRoot, env }) =>
+      ensureProjectEndpoint(await createProjectConnectorOptions(projectRoot, env)),
     runHttpBridge,
     bridgeStreams: {
       input: process.stdin,

@@ -12,7 +12,9 @@ import { ensureProjectEndpoint } from '../../src/server/project-connector.js';
 import type { SpawnFn } from '../../src/server/project-connector.js';
 import { createRuntimeAssembly } from '../../src/server/runtime-assembly.js';
 import type { RuntimeAssembly } from '../../src/server/runtime/assembly-types.js';
-import { claimPathFor, DIRECTORY_CLAIM_FILENAME, readOwnerClaim, type WriterAdmission } from '../../src/server/storage-ownership/index.js';
+import {
+  claimPathFor, DIRECTORY_CLAIM_FILENAME, readOwnerClaim, resolveStorageOwnershipTargets, type WriterAdmission,
+} from '../../src/server/storage-ownership/index.js';
 import type { Config } from '../../src/types/index.js';
 import { createSyntheticProvider, syntheticEmbeddingConfig } from '../benchmarks/performance/synthetic-provider.js';
 
@@ -153,7 +155,9 @@ describe('storage ownership collisions (red evidence against unchanged implement
       setImmediate(() => child.emit('error', new Error('fixture_spawn_refused')));
       return child;
     };
-    const outcome = await ensureProjectEndpoint({ projectRoot: rootB, storageDir, childExecutable: 'unused', env: {},
+    // Task 5: the Bridge passes the full effective target set and runs a read-only preflight first.
+    const storageOwnershipTargets = await resolveStorageOwnershipTargets(configFor(rootB, targetsFor(storageDir)));
+    const outcome = await ensureProjectEndpoint({ projectRoot: rootB, storageDir, storageOwnershipTargets, childExecutable: 'unused', env: {},
       spawn, fetch: () => Promise.reject(new Error('fixture_no_network')), startupTimeoutMs: 1_000, pollIntervalMs: 20 })
       .then(() => 'resolved', () => 'rejected');
     expect(outcome).toBe('rejected');

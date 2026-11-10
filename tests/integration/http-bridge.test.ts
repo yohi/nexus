@@ -6,7 +6,21 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { JSONRPCMessageSchema, LATEST_PROTOCOL_VERSION, type JSONRPCMessage } from '@modelcontextprotocol/sdk/types.js';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
-import { runHttpBridge } from '../../src/bin/http-bridge.js';
+import { EventEmitter } from 'node:events';
+import { mkdtemp, readFile, realpath, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import type { ChildProcess } from 'node:child_process';
+
+import { createProjectConnectorOptions, runHttpBridge } from '../../src/bin/http-bridge.js';
+import { loadConfig } from '../../src/config/index.js';
+import type { NexusRuntime } from '../../src/server/index.js';
+import { startManagedHttpServer, type ManagedHttpServer } from '../../src/server/managed-http-server.js';
+import { ensureProjectEndpoint, type SpawnFn } from '../../src/server/project-connector.js';
+import { PROJECT_ENDPOINT_FILENAME } from '../../src/server/project-endpoint.js';
+import {
+  admitStorageWriter, resolveStorageOwnershipTargets, storageTargetsFingerprint, type WriterAdmission,
+} from '../../src/server/storage-ownership/index.js';
 import { createStreamableHttpHandler } from '../../src/server/transport.js';
 
 interface OutputCapture {
@@ -199,5 +213,90 @@ describe('HTTP bridge integration', () => {
     for (const record of records) {
       expect(JSONRPCMessageSchema.safeParse(JSON.parse(record)).success).toBe(true);
     }
+  });
+});
+
+// Nexus #297 (Design §4.4 F-001): a discovery-only Bridge reuses an admitted, healthy same-owner managed runtime only
+// for the same three effective storage targets, without spawning or taking a writer lease.
+describe('managed endpoint discovery through the Bridge (Nexus #297)', () => {
+  let projectRoot: string;
+  let admission: WriterAdmission | undefined;
+  let managed: ManagedHttpServer | undefined;
+
+  beforeEach(async () => {
+    projectRoot = await realpath(await mkdtemp(join(tmpdir(), 'nexus-bridge-discovery-')));
+    const targets = await resolveStorageOwnershipTargets(await loadConfig({ projectRoot, env: {} }));
+    admission = await admitStorageWriter(targets);
+    const runtime = {
+      createServer: () => createTestMcpServer(),
+      initialize: async () => {},
+      close: async () => { await admission?.release(); },
+      reindex: async () => {},
+      registrationClient: null,
+    } as unknown as NexusRuntime;
+    managed = await startManagedHttpServer({
+      instanceId: 'admitted-managed', projectRoot, storageDir: join(projectRoot, '.nexus'),
+      storageTargetsFingerprint: storageTargetsFingerprint(targets), runtime,
+    });
+  });
+
+  afterEach(async () => {
+    await managed?.close();
+    await admission?.release();
+    await rm(projectRoot, { recursive: true, force: true });
+  });
+
+  const refusingSpawn = (): { spawn: SpawnFn; calls: () => number } => {
+    let calls = 0;
+    return {
+      calls: () => calls,
+      spawn: () => {
+        calls += 1;
+        const child = new EventEmitter() as unknown as ChildProcess;
+        (child as unknown as { unref: () => void }).unref = () => undefined;
+        setImmediate(() => child.emit('close', 1, null));
+        return child;
+      },
+    };
+  };
+
+  it('same_owner_healthy_endpoint_reused', async () => {
+    const spawner = refusingSpawn();
+    const options = await createProjectConnectorOptions(projectRoot, {}, {
+      spawn: spawner.spawn, fetch: globalThis.fetch, childExecutable: '/unused', startupTimeoutMs: 5_000, pollIntervalMs: 20,
+    });
+
+    const url = await ensureProjectEndpoint(options);
+
+    expect(url.href).toBe(managed!.url.href);
+    expect(spawner.calls()).toBe(0);
+
+    const input = new PassThrough();
+    const output = createOutputCapture();
+    const bridge = runHttpBridge({
+      url, input, output: output.stream, errorOutput: createOutputCapture().stream,
+      createTransport: (transportUrl) => new StreamableHTTPClientTransport(transportUrl),
+    });
+    await new Promise<void>((resolve) => { setImmediate(resolve); });
+    input.end([initializeRequest, initializedNotification, toolsListRequest].map((m) => `${JSON.stringify(m)}\n`).join(''));
+    await bridge;
+    expect(resultOf(responseWithId(outputRecords(output.text()), 2))).toMatchObject({
+      tools: [expect.objectContaining({ name: 'ping' })],
+    });
+  });
+
+  it('S13_internal_endpoint_fingerprint_prevents_wrong_reuse', async () => {
+    const descriptor = join(projectRoot, '.nexus', PROJECT_ENDPOINT_FILENAME);
+    const before = await readFile(descriptor, 'utf8');
+    const spawner = refusingSpawn();
+    // Same owner and Storage Root, but a different effective vector target: the live runtime is not reused.
+    const options = await createProjectConnectorOptions(projectRoot, { NEXUS_STORAGE_VECTOR_DB_PATH: 'memory://' }, {
+      spawn: spawner.spawn, fetch: globalThis.fetch, childExecutable: '/unused', startupTimeoutMs: 5_000, pollIntervalMs: 20,
+    });
+
+    await expect(ensureProjectEndpoint(options)).rejects.toThrow('Managed nexus child exited');
+
+    expect(spawner.calls()).toBe(1);
+    expect(await readFile(descriptor, 'utf8')).toBe(before);
   });
 });

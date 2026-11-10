@@ -1,6 +1,6 @@
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { once } from 'node:events';
-import { access, mkdtemp, rm } from 'node:fs/promises';
+import { access, lstat, mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -206,6 +206,26 @@ describe('project auto-connector CLI', () => {
     // See src/server/managed-http-server.ts close().
 await expect(access(lockPath)).rejects.toThrow();
 await expect(readProjectEndpoint(storageDir)).resolves.toBeUndefined();
+  });
+
+  it('S13_child_revalidates_config_change', async () => {
+    // Nexus #297: the managed child re-resolves its own effective targets and refuses BEFORE writer admission when
+    // they differ from the fingerprint the Bridge inspected (internal spawn channel). Nothing is created under Storage
+    // and no coordination-root lock is taken, because the refusal precedes admission.
+    const projectRoot = await mkdtemp(join(tmpdir(), 'nexus-auto-connector-e2e-'));
+    projectRoots.push(projectRoot);
+    const storageDir = join(projectRoot, '.nexus');
+    const child = spawn(process.execPath, [cliPath, '--project-root', projectRoot, '--port', '0', '--managed'], {
+      stdio: ['pipe', 'pipe', 'pipe'],
+      env: { ...process.env, NEXUS_INTERNAL_STORAGE_TARGETS_FINGERPRINT: 'f'.repeat(64) },
+    });
+    managedProcesses.push(child);
+    let stderr = '';
+    child.stderr.on('data', (chunk: Buffer) => { stderr += chunk.toString('utf8'); });
+    const [exitCode] = await once(child, 'exit');
+    expect(exitCode).toBe(1);
+    expect(stderr).toContain('target_mismatch');
+    await expect(lstat(storageDir)).rejects.toThrow();
   });
 
   it('keeps the detached managed child running after the spawning bridge process receives SIGTERM', async () => {

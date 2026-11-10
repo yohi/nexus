@@ -1,7 +1,8 @@
 import { createServer } from 'node:http';
-import { releaseOwnedProcessLock } from './process-lock.js';
+import { isProcessAlive, releaseOwnedProcessLock } from './process-lock.js';
 import { createStreamableHttpHandler } from './transport.js';
 import {
+  inspectProjectEndpoint,
   writeProjectEndpoint,
   removeProjectEndpointIfMatching,
   type ProjectEndpoint,
@@ -12,6 +13,11 @@ export interface ManagedHttpServerOptions {
   instanceId: string;
   projectRoot: string;
   storageDir: string;
+  /**
+   * Internal (Nexus #297): `storageTargetsFingerprint()` of the targets this runtime holds a WriterAdmission for. It is
+   * published in the Endpoint so a discovery-only Bridge reuses this runtime only for the same three effective targets.
+   */
+  storageTargetsFingerprint: string;
   runtime: NexusRuntime;
   port?: number;
   idleShutdownMs?: number;
@@ -26,6 +32,52 @@ export interface ManagedHttpServer {
   instanceId: string;
   closed: Promise<void>;
   close(): Promise<void>;
+}
+
+const STALE_ENDPOINT_HEALTH_TIMEOUT_MS = 1_000;
+
+async function endpointAnswersHealth(endpoint: ProjectEndpoint): Promise<boolean> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), STALE_ENDPOINT_HEALTH_TIMEOUT_MS);
+  try {
+    const response = await fetch(new URL('/health', endpoint.url), { signal: controller.signal });
+    if (!response.ok) {
+      return false;
+    }
+    const body = (await response.json()) as Record<string, unknown> | null;
+    return body !== null && body.instanceId === endpoint.instanceId && body.projectRoot === endpoint.projectRoot;
+  } catch {
+    return false;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/**
+ * Nexus #297 (Design §4.4 F-001): only the managed child, while it holds its WriterAdmission for these targets, may
+ * clean up a stale SAME-OWNER descriptor, and only by compare-before-delete. A foreign, unverifiable or still-live
+ * descriptor is never deleted or overwritten: publication refuses instead. Callers must invoke this only after
+ * authentic writer admission (managed mode in `nexus.ts`).
+ */
+async function clearStaleSameOwnerEndpoint(storageDir: string, projectRoot: string): Promise<void> {
+  const existing = await inspectProjectEndpoint(storageDir);
+  if (existing.state === 'absent') {
+    return;
+  }
+  if (existing.state === 'invalid') {
+    throw new Error('Refusing to replace an unverifiable endpoint descriptor');
+  }
+  const stale = existing.endpoint;
+  if (stale.projectRoot !== projectRoot) {
+    throw new Error('Refusing to replace an endpoint descriptor owned by a different project');
+  }
+  if (isProcessAlive(stale.pid) && (await endpointAnswersHealth(stale))) {
+    throw new Error('Refusing to replace the endpoint descriptor of a live managed runtime');
+  }
+  await removeProjectEndpointIfMatching(storageDir, stale);
+  if ((await inspectProjectEndpoint(storageDir)).state !== 'absent') {
+    throw new Error('Endpoint descriptor changed during stale cleanup');
+  }
 }
 
 export async function startManagedHttpServer(
@@ -159,13 +211,16 @@ export async function startManagedHttpServer(
   try {
     const url = await listenPromise;
 
-    endpoint = {
+    await clearStaleSameOwnerEndpoint(options.storageDir, options.projectRoot);
+    const published: ProjectEndpoint = {
       instanceId: options.instanceId,
       pid: process.pid,
       projectRoot: options.projectRoot,
       url: url.toString(),
+      storageTargetsFingerprint: options.storageTargetsFingerprint,
     };
-    await writeProjectEndpoint(options.storageDir, endpoint);
+    await writeProjectEndpoint(options.storageDir, published);
+    endpoint = published;
 
     if (options.startupGraceMs !== undefined) {
       startupGraceTimer = setTimeout(() => {

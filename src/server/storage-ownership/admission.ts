@@ -405,6 +405,11 @@ const processServiceOptions: AdmissionInternalOptions = {
   },
 };
 
+/** Coordination root used by every process-wide caller (writer admission and the Bridge startup gate). */
+export async function processCoordinationRoot(): Promise<string> {
+  return processServiceOptions.coordinationRoot ?? await defaultCoordinationRoot();
+}
+
 /** Process-wide service using the verified OS-account coordination root. */
 export const storageOwnershipAdmissionService: StorageOwnershipAdmissionService =
   createStorageOwnershipAdmissionService(processServiceOptions);

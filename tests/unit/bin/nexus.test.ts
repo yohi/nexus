@@ -45,10 +45,17 @@ vi.mock("../../../src/server/process-lock.js", () => ({
   LOCK_FILENAME: "nexus.pid",
 }));
 
-vi.mock("../../../src/server/storage-ownership/index.js", () => ({
-  admitStorageWriter: mocks.admitStorageWriter,
-  resolveStorageOwnershipTargets: mocks.resolveStorageOwnershipTargets,
-}));
+vi.mock("../../../src/server/storage-ownership/index.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../../src/server/storage-ownership/index.js")>();
+  return {
+    admitStorageWriter: mocks.admitStorageWriter,
+    resolveStorageOwnershipTargets: mocks.resolveStorageOwnershipTargets,
+    storageTargetsFingerprint: () => "f".repeat(64),
+    assertExpectedStorageTargetsFingerprint: actual.assertExpectedStorageTargetsFingerprint,
+    INTERNAL_TARGETS_FINGERPRINT_ENV: actual.INTERNAL_TARGETS_FINGERPRINT_ENV,
+    isBridgeStartupLogPath: async () => false,
+  };
+});
 
 vi.mock("../../../src/bin/index-progress.js", () => ({
   readIndexProgress: mocks.readIndexProgress,

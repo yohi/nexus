@@ -24,7 +24,11 @@ import {
 } from "../server/process-lock.js";
 import {
   admitStorageWriter,
+  assertExpectedStorageTargetsFingerprint,
+  INTERNAL_TARGETS_FINGERPRINT_ENV,
+  isBridgeStartupLogPath,
   resolveStorageOwnershipTargets,
+  storageTargetsFingerprint,
   type WriterAdmission,
 } from "../server/storage-ownership/index.js";
 import type { ManagedHttpServer } from "../server/managed-http-server.js";
@@ -140,13 +144,33 @@ async function main(args: string[]): Promise<void> {
   ).trim();
   const root = rawProjectRoot ? path.resolve(rawProjectRoot) : process.cwd();
 
+  const isManagedMode = values["managed"] === true;
+  // Nexus #297: the Bridge hands its inspected target fingerprint to a managed child through an internal-only spawn
+  // environment entry. Consume it so it never leaks into grandchildren; it is ignored outside managed mode.
+  const expectedTargetsFingerprint = process.env[INTERNAL_TARGETS_FINGERPRINT_ENV];
+  delete process.env[INTERNAL_TARGETS_FINGERPRINT_ENV];
+  const redirectedStartupLogs = isManagedMode
+    ? await redirectBridgeStartupLogs(
+      (values["startup-stdout-log"] as string | undefined) ?? process.env.NEXUS_STARTUP_STDOUT_LOG,
+      (values["startup-stderr-log"] as string | undefined) ?? process.env.NEXUS_STARTUP_STDERR_LOG,
+    )
+    : false;
+
   const config = await loadConfig({ projectRoot: root });
 
   // Nexus #297: storage writer admission precedes every PID/Endpoint mutation, project lock, storage directory
   // initialization, store open and runtime logging. A refusal leaves all storage and PID bytes untouched.
+  // A managed child re-resolves its own effective targets; a mismatch with the Bridge preflight refuses early
+  // (fail-fast only: a match authorizes nothing and admission still runs in full).
   let admission: WriterAdmission;
+  let targetsFingerprint: string;
   try {
-    admission = await admitStorageWriter(await resolveStorageOwnershipTargets(config));
+    const targets = await resolveStorageOwnershipTargets(config);
+    targetsFingerprint = storageTargetsFingerprint(targets);
+    if (isManagedMode) {
+      assertExpectedStorageTargetsFingerprint(targetsFingerprint, expectedTargetsFingerprint);
+    }
+    admission = await admitStorageWriter(targets);
   } catch (error) {
     console.error(
       `\u274c Nexus refused to start: ${error instanceof Error ? error.message : String(error)}\n` +
@@ -208,7 +232,7 @@ async function main(args: string[]): Promise<void> {
 
   if (values["port"]) {
     const port = Number(values["port"]);
-    const isManaged = values["managed"] === true;
+    const isManaged = isManagedMode;
     if (Number.isNaN(port) || port < 0 || port > 65535 || (port === 0 && !isManaged)) {
       console.error(`\u274c Invalid port: ${values["port"]}`);
       process.exit(1);
@@ -225,6 +249,8 @@ async function main(args: string[]): Promise<void> {
         runtime,
         startupStdoutLog: values["startup-stdout-log"] as string | undefined,
         startupStderrLog: values["startup-stderr-log"] as string | undefined,
+        startupLogsRedirected: redirectedStartupLogs,
+        storageTargetsFingerprint: targetsFingerprint,
       });
 
       return;
@@ -256,6 +282,8 @@ interface ManagedModeOptions extends RuntimeModeOptions {
   readonly port: number;
   readonly startupStdoutLog: string | undefined;
   readonly startupStderrLog: string | undefined;
+  readonly startupLogsRedirected: boolean;
+  readonly storageTargetsFingerprint: string;
 }
 
 interface HttpModeOptions extends RuntimeModeOptions {
@@ -294,14 +322,19 @@ async function startManagedMode({
   runtime,
   startupStdoutLog,
   startupStderrLog,
+  startupLogsRedirected,
+  storageTargetsFingerprint: publishedTargetsFingerprint,
 }: ManagedModeOptions): Promise<void> {
-  const stdoutLogPath = startupStdoutLog ?? process.env.NEXUS_STARTUP_STDOUT_LOG;
-  const stderrLogPath = startupStderrLog ?? process.env.NEXUS_STARTUP_STDERR_LOG;
-  if (stdoutLogPath !== undefined) {
-    redirectStream(process.stdout, stdoutLogPath);
-  }
-  if (stderrLogPath !== undefined) {
-    redirectStream(process.stderr, stderrLogPath);
+  if (!startupLogsRedirected) {
+    // Arbitrary (non-Bridge) log paths are opened only now, after writer admission.
+    const stdoutLogPath = startupStdoutLog ?? process.env.NEXUS_STARTUP_STDOUT_LOG;
+    const stderrLogPath = startupStderrLog ?? process.env.NEXUS_STARTUP_STDERR_LOG;
+    if (stdoutLogPath !== undefined) {
+      redirectStream(process.stdout, stdoutLogPath);
+    }
+    if (stderrLogPath !== undefined) {
+      redirectStream(process.stderr, stderrLogPath);
+    }
   }
 
   const idleShutdownMs = Number(idleShutdownMsRaw);
@@ -316,6 +349,7 @@ async function startManagedMode({
     instanceId: randomUUID(),
     projectRoot: root,
     storageDir: config.storage.rootDir,
+    storageTargetsFingerprint: publishedTargetsFingerprint,
     runtime,
     port,
     idleShutdownMs,
@@ -334,6 +368,23 @@ async function startManagedMode({
     handleFatalError("Nexus background initialization failed", error);
   });
 }
+/**
+ * Nexus #297: Bridge attempt logs live in the coordination root (`startup-logs/`), never under Storage, so a managed
+ * child may redirect into them before writer admission and pre-admission refusals reach the Bridge. Redirects only
+ * when BOTH supplied paths are Bridge attempt logs; otherwise redirection waits until after admission.
+ */
+async function redirectBridgeStartupLogs(stdoutLogPath: string | undefined, stderrLogPath: string | undefined): Promise<boolean> {
+  if (stdoutLogPath === undefined || stderrLogPath === undefined) {
+    return false;
+  }
+  if (!(await isBridgeStartupLogPath(stdoutLogPath)) || !(await isBridgeStartupLogPath(stderrLogPath))) {
+    return false;
+  }
+  redirectStream(process.stdout, stdoutLogPath);
+  redirectStream(process.stderr, stderrLogPath);
+  return true;
+}
+
 function redirectStream(source: NodeJS.WriteStream, logPath: string): void {
   const originalWrite = source.write.bind(source);
   source.write = (

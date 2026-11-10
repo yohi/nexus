@@ -11,3 +11,8 @@ export type {
 export type {
   CanonicalPath, OwnershipPreflight, PersistentTarget, ResolvedStorageOwnershipTargets, VectorTarget,
 } from './types.js';
+export {
+  assertExpectedStorageTargetsFingerprint, INTERNAL_TARGETS_FINGERPRINT_ENV, isBridgeStartupLogPath, openBridgeStartupCoordination,
+  readAttemptLog, STARTUP_LOCK_DIR, STARTUP_LOGS_DIR, startupGateKey,
+} from './startup-gate.js';
+export type { BridgeStartupCoordination, BridgeStartupCoordinationOptions, StartupAttemptLogs } from './startup-gate.js';

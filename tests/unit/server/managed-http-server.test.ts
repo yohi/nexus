@@ -9,6 +9,7 @@ import { readProjectEndpoint, writeProjectEndpoint } from '../../../src/server/p
 import type { NexusRuntime } from '../../../src/server/index.js';
 
 const trackedServers: ManagedHttpServer[] = [];
+const TEST_FINGERPRINT = 'c'.repeat(64);
 
 function createMockRuntime(): NexusRuntime {
   return {
@@ -85,6 +86,7 @@ describe('managed-http-server', () => {
       instanceId: `test-instance-${randomUUID()}`,
       projectRoot,
       storageDir,
+      storageTargetsFingerprint: TEST_FINGERPRINT,
       runtime: createMockRuntime(),
     };
   });
@@ -298,6 +300,57 @@ describe('managed-http-server', () => {
       expect(runtime.close).toHaveBeenCalledOnce();
       expect(await readFile(endpointPath(), 'utf8')).toBe(foreignEndpoint);
       expect(await readFile(pidPath(), 'utf8')).toBe('2147483000\n');
+    });
+  });
+
+  // Nexus #297 (Design §4.4 F-001): only the admitted managed child publishes the internal fingerprint and may
+  // compare-and-delete a stale SAME-OWNER descriptor; foreign/unverifiable/live descriptors are never replaced.
+  describe('admitted child descriptor ownership (Nexus #297)', () => {
+    const endpointPath = () => join(storageDir, 'endpoint.json');
+    const DEAD_PID = 2_147_483_000;
+
+    it('publishes the internal storage targets fingerprint', async () => {
+      const server = await trackServer(options);
+      await expect(readProjectEndpoint(storageDir)).resolves.toEqual({
+        instanceId: options.instanceId, pid: process.pid, projectRoot, url: server.url.toString(),
+        storageTargetsFingerprint: TEST_FINGERPRINT,
+      });
+    });
+
+    it('same_owner_stale_endpoint_cleanup_is_child_writer_only: replaces a dead same-owner descriptor', async () => {
+      // e.g. left behind by a predecessor that exited 75 after writer lease loss
+      await writeProjectEndpoint(storageDir, {
+        instanceId: 'dead-predecessor', pid: DEAD_PID, projectRoot, url: 'http://127.0.0.1:9/', storageTargetsFingerprint: TEST_FINGERPRINT,
+      });
+      const server = await trackServer(options);
+      await expect(readProjectEndpoint(storageDir)).resolves.toMatchObject({ instanceId: options.instanceId, url: server.url.toString() });
+    });
+
+    it('replaces a same-owner descriptor whose live PID no longer answers health for it', async () => {
+      await writeProjectEndpoint(storageDir, { instanceId: 'pid-reused', pid: process.pid, projectRoot, url: 'http://127.0.0.1:9/' });
+      await trackServer(options);
+      await expect(readProjectEndpoint(storageDir)).resolves.toMatchObject({ instanceId: options.instanceId });
+    });
+
+    it('S13_foreign_endpoint_not_deleted: refuses to publish over a foreign descriptor', async () => {
+      await writeProjectEndpoint(storageDir, { instanceId: 'foreign', pid: DEAD_PID, projectRoot: '/other/project', url: 'http://127.0.0.1:9/' });
+      const before = await readFile(endpointPath(), 'utf8');
+      await expect(startManagedHttpServer(options)).rejects.toThrow('different project');
+      expect(await readFile(endpointPath(), 'utf8')).toBe(before);
+    });
+
+    it('refuses to publish over an unverifiable descriptor', async () => {
+      await writeFile(endpointPath(), '{not json');
+      await expect(startManagedHttpServer(options)).rejects.toThrow('unverifiable');
+      expect(await readFile(endpointPath(), 'utf8')).toBe('{not json');
+    });
+
+    it('refuses to replace the descriptor of a live healthy runtime', async () => {
+      const first = await trackServer(options);
+      const before = await readFile(endpointPath(), 'utf8');
+      await expect(startManagedHttpServer({ ...options, instanceId: `second-${randomUUID()}` })).rejects.toThrow('live managed runtime');
+      expect(await readFile(endpointPath(), 'utf8')).toBe(before);
+      await first.close();
     });
   });
 });
