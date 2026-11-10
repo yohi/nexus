@@ -19,7 +19,7 @@
 - One worktree = one runtime; owner key is the effective canonical `realpath(projectRoot)`, never branch, revision, `repositoryId`, `worktreeId`, or `revisionId`.
 - Support primary `.git` directory, linked `.git` file, detached HEAD, dirty source, same-owner restart, and non-Git projects.
 - Evaluate `storage.rootDir`, `storage.metadataDbPath`, and `storage.vectorDbPath` independently, using the *same effective filesystem path semantics* as production stores. Default and genuinely disjoint custom storage must continue to function.
-- Only exact `storage.vectorDbPath === 'memory://'` is ephemeral; retain `LanceVectorStore` per-runtime temporary-directory behavior. Do not canonicalize, persist a claim, or take a cross-runtime writer lease for the ephemeral vector. Root and metadata validation are still mandatory.
+- Only exact `storage.vectorDbPath === 'memory://'` and exact empty string `''` (LanceVectorStore falsy fallback; direct `createRuntimeAssembly()` callers) are ephemeral; retain `LanceVectorStore` per-runtime temporary-directory behavior. Do not canonicalize, persist a claim, or take a cross-runtime writer lease for the ephemeral vector. Root and metadata validation are still mandatory.
 - Unknown, foreign, malformed, ambiguous, dangling-symlink, or unsafe unclaimed nonempty persistent resource => refuse before mutating foreign state. No automatic legacy adoption, migration, deletion, or repair.
 - Read-only preflight is **not writer authority**. Admission precedes any PID/Endpoint mutation, project lock, **normal** `StorageManager` directory initialization, SQLite/LanceDB open, runtime logging or Endpoint publication. **F-004 exception:** Inside `admitStorageWriter()` only, after all owners/targets are validated under the complete stable admission/claim lock set and acquired kernel lifetime writer leases, create missing *empty claim-required directories and metadata claim parent*, then publish atomic no-overwrite claims and verify before returning the handle. Bridge does **not** create Storage directories.
 - Resolve all target identities and acquire the complete deterministic resource-lock set; recheck *all* claims and targets before first new claim write. Per-file atomic claim publication is allowed; cross-file all-or-nothing publication is not claimed. A partial claim never grants writer access.
@@ -33,7 +33,7 @@
 | File | Responsibility |
 | --- | --- |
 | `src/server/storage-ownership/types.ts` **new** | Internal spec-exact `ResolvedStorageOwnershipTargets`, `OwnershipPreflight`, `WriterAdmission` types |
-| `src/server/storage-ownership/targets.ts` **new** | Canonical effective path resolution and exact `memory://` classification; no mutation |
+| `src/server/storage-ownership/targets.ts` **new** | Canonical effective path resolution and exact `memory://` and `''` ephemeral classification; no mutation |
 | `src/server/storage-ownership/preflight.ts` **new** | Read-only owner/claim inspection across persistent targets |
 | `src/server/storage-ownership/claims.ts` **new** | Internal versioned claim format, physical resource identity, atomic claim I/O and claim locks |
 | `src/server/storage-ownership/admission.ts` **new** | Multi-resource ordered admission, active writer leases and failure cleanup |
