@@ -15,6 +15,16 @@ const mocks = vi.hoisted(() => ({
   releaseProcessLock: vi.fn(),
   readIndexProgress: vi.fn(),
   startManagedHttpServer: vi.fn(),
+  isBridgeStartupLogPath: vi.fn(),
+  openBridgeStartupLog: vi.fn(),
+  redirectStreamToFd: vi.fn(),
+  redirectStreamToPath: vi.fn(),
+}));
+
+vi.mock("../../../src/bin/stream-redirect.js", () => ({
+  openBridgeStartupLog: mocks.openBridgeStartupLog,
+  redirectStreamToFd: mocks.redirectStreamToFd,
+  redirectStreamToPath: mocks.redirectStreamToPath,
 }));
 
 vi.mock("node:http", () => ({
@@ -53,7 +63,7 @@ vi.mock("../../../src/server/storage-ownership/index.js", async (importOriginal)
     storageTargetsFingerprint: () => "f".repeat(64),
     assertExpectedStorageTargetsFingerprint: actual.assertExpectedStorageTargetsFingerprint,
     INTERNAL_TARGETS_FINGERPRINT_ENV: actual.INTERNAL_TARGETS_FINGERPRINT_ENV,
-    isBridgeStartupLogPath: async () => false,
+    isBridgeStartupLogPath: mocks.isBridgeStartupLogPath,
   };
 });
 
@@ -116,6 +126,9 @@ describe("nexus CLI shutdown", () => {
     mocks.readIndexProgress.mockResolvedValue(undefined);
     mocks.loadConfig.mockResolvedValue(config);
     mocks.createRestApiHandler.mockReturnValue(vi.fn(async () => {}));
+    mocks.isBridgeStartupLogPath.mockResolvedValue(false);
+    mocks.redirectStreamToFd.mockImplementation(() => ({ detach: vi.fn() }));
+    mocks.redirectStreamToPath.mockImplementation(() => ({ detach: vi.fn() }));
   });
 
   afterEach(() => {
@@ -130,6 +143,8 @@ describe("nexus CLI shutdown", () => {
       }
     }
     process.argv = originalArgv;
+    delete process.env.NEXUS_STARTUP_STDOUT_LOG;
+    delete process.env.NEXUS_STARTUP_STDERR_LOG;
     if (originalExitDescriptor !== undefined) {
       Object.defineProperty(process, "exit", originalExitDescriptor);
     }
@@ -423,5 +438,110 @@ describe("nexus CLI shutdown", () => {
     expect(error.mock.calls.flat().join("\n")).toContain("lease lost");
     expect(runtime.close).not.toHaveBeenCalled();
     leaseLoss.setWriterLeaseLostHandler(undefined);
+  });
+
+  // Nexus #297 (Design §4.4 F-001): Bridge attempt logs (coordination root) may be opened before writer admission,
+  // through a descriptor opened once without O_CREAT, and are detached once the managed Endpoint is published. Any
+  // other log path is opened only after admission.
+  describe("managed startup log redirection (Nexus #297)", () => {
+    const managedRuntime = () => ({
+      close: vi.fn(async () => {}), createServer: vi.fn(), initialize: vi.fn(async () => {}),
+      orchestrator: {}, reindex: vi.fn(async () => {}), sanitizer: {},
+    });
+    const servers: Array<{ close: ReturnType<typeof vi.fn> }> = [];
+    const managedServer = () => {
+      const server = {
+        close: vi.fn(async () => {}), closed: Promise.resolve(), instanceId: "managed-test", url: new URL("http://127.0.0.1:43123"),
+      };
+      servers.push(server);
+      return server;
+    };
+
+    // Shut managed runs down while process.exit is still mocked (the outer afterEach restores it).
+    afterEach(async () => {
+      const newSigterm = () => process.rawListeners("SIGTERM").filter((listener) => !initialSigtermListeners.has(listener));
+      if (servers.length > 0) await vi.waitFor(() => expect(newSigterm().length).toBeGreaterThan(0));
+      for (const listener of process.rawListeners("SIGTERM")) {
+        if (!initialSigtermListeners.has(listener)) Reflect.apply(listener, process, ["SIGTERM"]);
+      }
+      await vi.waitFor(() => expect(servers.every((server) => server.close.mock.calls.length > 0)).toBe(true));
+      if (servers.length > 0) await vi.waitFor(() => expect(process.exit).toHaveBeenCalledWith(0));
+      servers.length = 0;
+    });
+
+    beforeEach(() => {
+      process.env.NEXUS_STARTUP_STDOUT_LOG = "/coord/startup-logs/" + "a".repeat(32) + "-stdout.log";
+      process.env.NEXUS_STARTUP_STDERR_LOG = "/coord/startup-logs/" + "a".repeat(32) + "-stderr.log";
+      vi.spyOn(console, "error").mockImplementation(() => undefined);
+    });
+
+    it("redirects Bridge attempt logs before admission via descriptors and detaches after the Endpoint is published", async () => {
+      const detachers: Array<ReturnType<typeof vi.fn>> = [];
+      mocks.isBridgeStartupLogPath.mockResolvedValue(true);
+      mocks.openBridgeStartupLog.mockReturnValueOnce(41).mockReturnValueOnce(42);
+      mocks.redirectStreamToFd.mockImplementation(() => {
+        const detach = vi.fn();
+        detachers.push(detach);
+        return { detach };
+      });
+      mocks.createRuntime.mockResolvedValue(managedRuntime());
+      mocks.startManagedHttpServer.mockResolvedValue(managedServer());
+
+      await runCli(["--port", "0", "--managed"]);
+      await vi.waitFor(() => expect(detachers.every((d) => d.mock.calls.length === 1) && detachers.length === 2).toBe(true));
+
+      expect(mocks.openBridgeStartupLog.mock.calls.map((c) => c[0])).toEqual([
+        process.env.NEXUS_STARTUP_STDOUT_LOG, process.env.NEXUS_STARTUP_STDERR_LOG,
+      ]);
+      expect(mocks.redirectStreamToFd.mock.calls.map((c) => c[1])).toEqual([41, 42]);
+      const firstOpen = mocks.openBridgeStartupLog.mock.invocationCallOrder[0]!;
+      expect(firstOpen).toBeLessThan(mocks.admitStorageWriter.mock.invocationCallOrder[0]!);
+      const published = mocks.startManagedHttpServer.mock.invocationCallOrder[0]!;
+      for (const detach of detachers) expect(detach.mock.invocationCallOrder[0]!).toBeGreaterThan(published);
+      expect(mocks.redirectStreamToPath).not.toHaveBeenCalled();
+    });
+
+    it("keeps pre-admission Bridge log redirection even when admission refuses, and never falls back to path appends", async () => {
+      mocks.isBridgeStartupLogPath.mockResolvedValue(true);
+      mocks.openBridgeStartupLog.mockReturnValueOnce(41).mockReturnValueOnce(42);
+      mocks.admitStorageWriter.mockRejectedValue(ownershipRefusal());
+
+      await runCli(["--port", "0", "--managed"]);
+      await vi.waitFor(() => expect(process.exit).toHaveBeenCalledWith(1));
+
+      expect(mocks.redirectStreamToFd).toHaveBeenCalledTimes(2);
+      expect(mocks.redirectStreamToPath).not.toHaveBeenCalled();
+    });
+
+    it("does not redirect at all when a Bridge log cannot be opened safely (no O_CREAT fallback)", async () => {
+      mocks.isBridgeStartupLogPath.mockResolvedValue(true);
+      mocks.openBridgeStartupLog.mockImplementation(() => { throw Object.assign(new Error("ELOOP"), { code: "ELOOP" }); });
+      mocks.createRuntime.mockResolvedValue(managedRuntime());
+      mocks.startManagedHttpServer.mockResolvedValue(managedServer());
+
+      await runCli(["--port", "0", "--managed"]);
+      await vi.waitFor(() => expect(mocks.startManagedHttpServer).toHaveBeenCalledOnce());
+
+      expect(mocks.redirectStreamToFd).not.toHaveBeenCalled();
+      expect(mocks.redirectStreamToPath).not.toHaveBeenCalled();
+    });
+
+    it("opens non-Bridge log paths only after admission and never on refusal", async () => {
+      mocks.admitStorageWriter.mockRejectedValueOnce(ownershipRefusal());
+      await runCli(["--port", "0", "--managed"]);
+      await vi.waitFor(() => expect(process.exit).toHaveBeenCalledWith(1));
+      expect(mocks.openBridgeStartupLog).not.toHaveBeenCalled();
+      expect(mocks.redirectStreamToPath).not.toHaveBeenCalled();
+
+      vi.resetModules();
+      mocks.admitStorageWriter.mockResolvedValue(admission);
+      mocks.createRuntime.mockResolvedValue(managedRuntime());
+      mocks.startManagedHttpServer.mockResolvedValue(managedServer());
+      await runCli(["--port", "0", "--managed"]);
+      await vi.waitFor(() => expect(mocks.redirectStreamToPath).toHaveBeenCalledTimes(2));
+      const lastAdmission = mocks.admitStorageWriter.mock.invocationCallOrder.at(-1)!;
+      for (const order of mocks.redirectStreamToPath.mock.invocationCallOrder) expect(order).toBeGreaterThan(lastAdmission);
+      expect(mocks.openBridgeStartupLog).not.toHaveBeenCalled();
+    });
   });
 });

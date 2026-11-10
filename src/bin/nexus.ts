@@ -5,7 +5,6 @@ import path from "node:path";
 import { parseArgs } from "node:util";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { appendFileSync } from "node:fs";
 
 import { loadConfig } from "../config/index.js";
 import { handleFatalError } from "./fatal-error.js";
@@ -35,6 +34,12 @@ import type { ManagedHttpServer } from "../server/managed-http-server.js";
 import { setWriterLeaseLostHandler } from "../server/runtime/writer-lease-loss.js";
 import type { Config } from "../types/index.js";
 import { readIndexProgress } from "./index-progress.js";
+import {
+  openBridgeStartupLog,
+  redirectStreamToFd,
+  redirectStreamToPath,
+  type StreamRedirection,
+} from "./stream-redirect.js";
 
 interface CliCommand {
   readonly name: string;
@@ -154,7 +159,7 @@ async function main(args: string[]): Promise<void> {
       (values["startup-stdout-log"] as string | undefined) ?? process.env.NEXUS_STARTUP_STDOUT_LOG,
       (values["startup-stderr-log"] as string | undefined) ?? process.env.NEXUS_STARTUP_STDERR_LOG,
     )
-    : false;
+    : undefined;
 
   const config = await loadConfig({ projectRoot: root });
 
@@ -249,7 +254,7 @@ async function main(args: string[]): Promise<void> {
         runtime,
         startupStdoutLog: values["startup-stdout-log"] as string | undefined,
         startupStderrLog: values["startup-stderr-log"] as string | undefined,
-        startupLogsRedirected: redirectedStartupLogs,
+        bridgeStartupLogs: redirectedStartupLogs,
         storageTargetsFingerprint: targetsFingerprint,
       });
 
@@ -282,7 +287,7 @@ interface ManagedModeOptions extends RuntimeModeOptions {
   readonly port: number;
   readonly startupStdoutLog: string | undefined;
   readonly startupStderrLog: string | undefined;
-  readonly startupLogsRedirected: boolean;
+  readonly bridgeStartupLogs: StreamRedirection | undefined;
   readonly storageTargetsFingerprint: string;
 }
 
@@ -322,18 +327,18 @@ async function startManagedMode({
   runtime,
   startupStdoutLog,
   startupStderrLog,
-  startupLogsRedirected,
+  bridgeStartupLogs,
   storageTargetsFingerprint: publishedTargetsFingerprint,
 }: ManagedModeOptions): Promise<void> {
-  if (!startupLogsRedirected) {
+  if (bridgeStartupLogs === undefined) {
     // Arbitrary (non-Bridge) log paths are opened only now, after writer admission.
     const stdoutLogPath = startupStdoutLog ?? process.env.NEXUS_STARTUP_STDOUT_LOG;
     const stderrLogPath = startupStderrLog ?? process.env.NEXUS_STARTUP_STDERR_LOG;
     if (stdoutLogPath !== undefined) {
-      redirectStream(process.stdout, stdoutLogPath);
+      redirectStreamToPath(process.stdout, stdoutLogPath);
     }
     if (stderrLogPath !== undefined) {
-      redirectStream(process.stderr, stderrLogPath);
+      redirectStreamToPath(process.stderr, stderrLogPath);
     }
   }
 
@@ -356,6 +361,9 @@ async function startManagedMode({
     startupGraceMs: 30_000,
     exitOnShutdown: true,
   });
+  // The healthy Endpoint is published: the Bridge attempt is over (it removes its token-owned logs), so stop writing
+  // into them and close the descriptors instead of feeding a deleted file for the runtime's lifetime.
+  bridgeStartupLogs?.detach();
 
   console.error(
     `\ud83d\ude80 Nexus managed HTTP server running on ${managed.url.toString()} (root: ${root})`
@@ -370,39 +378,34 @@ async function startManagedMode({
 }
 /**
  * Nexus #297: Bridge attempt logs live in the coordination root (`startup-logs/`), never under Storage, so a managed
- * child may redirect into them before writer admission and pre-admission refusals reach the Bridge. Redirects only
- * when BOTH supplied paths are Bridge attempt logs; otherwise redirection waits until after admission.
+ * child may redirect into them before writer admission and pre-admission refusals reach the Bridge. Applies only when
+ * BOTH supplied paths are Bridge attempt logs. Each log is opened ONCE without O_CREAT and with O_NOFOLLOW (the Bridge
+ * created it 0600) and written through that descriptor, so a log the Bridge already removed is never re-created.
+ * Returns undefined for non-Bridge paths (those are opened only after admission). If a Bridge log cannot be opened
+ * safely, nothing is redirected at all (no fallback to path-based appends).
  */
-async function redirectBridgeStartupLogs(stdoutLogPath: string | undefined, stderrLogPath: string | undefined): Promise<boolean> {
+async function redirectBridgeStartupLogs(
+  stdoutLogPath: string | undefined,
+  stderrLogPath: string | undefined,
+): Promise<StreamRedirection | undefined> {
   if (stdoutLogPath === undefined || stderrLogPath === undefined) {
-    return false;
+    return undefined;
   }
   if (!(await isBridgeStartupLogPath(stdoutLogPath)) || !(await isBridgeStartupLogPath(stderrLogPath))) {
-    return false;
+    return undefined;
   }
-  redirectStream(process.stdout, stdoutLogPath);
-  redirectStream(process.stderr, stderrLogPath);
-  return true;
-}
-
-function redirectStream(source: NodeJS.WriteStream, logPath: string): void {
-  const originalWrite = source.write.bind(source);
-  source.write = (
-    chunk: unknown,
-    encodingOrCallback?: BufferEncoding | ((error: Error | null | undefined) => void),
-    callback?: (error: Error | null | undefined) => void,
-  ): boolean => {
-    const resolvedEncoding = typeof encodingOrCallback === "string" ? encodingOrCallback : "utf8";
-    const resolvedCallback = typeof encodingOrCallback === "function" ? encodingOrCallback : callback;
-    // Write synchronously so diagnostics survive an immediate process.exit()
-    // call (e.g. after a fatal console.error). An async WriteStream's queued
-    // write would otherwise be dropped when the process exits before it flushes.
-    try {
-      appendFileSync(logPath, chunk as string | Uint8Array, typeof chunk === "string" ? resolvedEncoding : undefined);
-    } catch {
-      // Best-effort diagnostics only; never let a logging failure crash startup.
-    }
-    return originalWrite(chunk as string | Buffer, resolvedEncoding, resolvedCallback);
+  const redirections: StreamRedirection[] = [];
+  try {
+    redirections.push(redirectStreamToFd(process.stdout, openBridgeStartupLog(stdoutLogPath)));
+    redirections.push(redirectStreamToFd(process.stderr, openBridgeStartupLog(stderrLogPath)));
+  } catch {
+    for (const redirection of redirections) redirection.detach();
+    return { detach: () => {} };
+  }
+  return {
+    detach: () => {
+      for (const redirection of redirections.reverse()) redirection.detach();
+    },
   };
 }
 
