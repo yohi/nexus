@@ -28,6 +28,7 @@ import {
   type WriterAdmission,
 } from "../server/storage-ownership/index.js";
 import type { ManagedHttpServer } from "../server/managed-http-server.js";
+import { setWriterLeaseLostHandler } from "../server/runtime/writer-lease-loss.js";
 import type { Config } from "../types/index.js";
 import { readIndexProgress } from "./index-progress.js";
 
@@ -184,6 +185,12 @@ async function main(args: string[]): Promise<void> {
 
   // Transfer the issued admission to the guarded Factory. After a successful transfer only the runtime may release
   // the lease (runtime.close() releases it last); before transfer a failure releases only this unconsumed handle.
+  // A lost writer lease terminates this process fail-fast (non-zero): no graceful close that could keep writing, no
+  // zombie owner left serving. The owned-PID exit handler still runs; the kernel drops the remaining leases.
+  setWriterLeaseLostHandler((error) => {
+    console.error(`\u274c Nexus storage writer lease lost; exiting: ${error.message}`);
+    process.exit(75);
+  });
   let runtime: NexusRuntime;
   try {
     runtime = await NexusServerFactory.createRuntime(config, admission);
@@ -475,7 +482,7 @@ function setupSignalHandlers(
       }
       // Work has stopped: remove the owned PID under the still-live writer lease, then close stores.
       // runtime.close() releases the writer lease as its final step.
-      await releaseOwnedProcessLock(storageDir);
+      await releaseOwnedProcessLock(storageDir).catch(() => {});
       process.removeListener("exit", exitCleanup);
       await runtime.close();
     };

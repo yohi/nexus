@@ -14,6 +14,7 @@ import type { Config } from '../../../src/types/index.js';
 import type { PluginRegistry } from '../../../src/plugins/registry.js';
 import type { NexusRuntime } from '../../../src/server/index.js';
 import { createRuntimeAssembly } from '../../../src/server/runtime-assembly.js';
+import { setWriterLeaseLostHandler } from '../../../src/server/runtime/writer-lease-loss.js';
 import { createStorageOwnershipAdmissionService, storageOwnershipAdmissionService, type WriterAdmission }
   from '../../../src/server/storage-ownership/admission.js';
 import { testCoordinationRoot } from '../../shared/storage-ownership-coordination-setup.js';
@@ -347,21 +348,48 @@ describe('NexusServerFactory writer admission gate (Nexus #297)', () => {
     await next.release();
   });
 
-  it('lost_writer_lease_closes_runtime_fail_closed', async () => {
-    const { config } = await fixture();
-    const assembly = await createRuntimeAssembly(config, { writerLeaseCheckIntervalMs: 20 });
-    cleanups.push(() => assembly.runtime.close());
-    const close = vi.spyOn(assembly.runtime, 'close');
-    const error = vi.spyOn(console, 'error').mockImplementation(() => undefined);
-    await new Promise((resolve) => setTimeout(resolve, 60));
-    expect(close).not.toHaveBeenCalled(); // healthy lease: keeps serving
+  const replaceWriterLockInodes = async (): Promise<void> => {
     const writerDir = path.join(testCoordinationRoot(), 'writer');
     for (const name of (await readdir(writerDir)).filter((n) => n.endsWith('.lock'))) {
       await writeFile(path.join(writerDir, `${name}.replacement`), '');
       await rename(path.join(writerDir, `${name}.replacement`), path.join(writerDir, name)); // inode substitution
     }
-    await vi.waitFor(() => expect(close).toHaveBeenCalled(), { timeout: 2_000 });
-    expect(error.mock.calls.flat().join('\n')).toMatch(/writer lease was lost/);
+  };
+
+  it('lost_writer_lease_closes_runtime_fail_closed', async () => {
+    const { config } = await fixture();
+    const onWriterLeaseLost = vi.fn();
+    const assembly = await createRuntimeAssembly(config, { writerLeaseCheckIntervalMs: 20, onWriterLeaseLost });
+    cleanups.push(() => assembly.runtime.close());
+    const close = vi.spyOn(assembly.runtime, 'close');
+    const stop = vi.spyOn(assembly.options.pipeline, 'stop');
+    vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    await new Promise((resolve) => setTimeout(resolve, 60));
+    expect(onWriterLeaseLost).not.toHaveBeenCalled(); // healthy lease: keeps serving
+    await replaceWriterLockInodes();
+    await vi.waitFor(() => expect(onWriterLeaseLost).toHaveBeenCalledOnce(), { timeout: 2_000 });
+    expect(onWriterLeaseLost.mock.calls[0]?.[0]).toMatchObject({ code: 'invalid_writer_admission' });
+    // The pipeline is aborted synchronously BEFORE the fail-fast hook; no graceful close (no awaited startup writes,
+    // no metrics-port removal) runs on the lease-lost path.
+    expect(stop).toHaveBeenCalledOnce();
+    expect(stop.mock.invocationCallOrder[0]).toBeLessThan(onWriterLeaseLost.mock.invocationCallOrder[0] ?? 0);
+    expect(close).not.toHaveBeenCalled();
+    await new Promise((resolve) => setTimeout(resolve, 60));
+    expect(onWriterLeaseLost).toHaveBeenCalledOnce(); // monitor stopped after the first detection
+  });
+
+  it('lost writer lease invokes the process-level fail-fast handler registered by entry points', async () => {
+    const { config } = await fixture();
+    const processHandler = vi.fn();
+    const previous = setWriterLeaseLostHandler(processHandler);
+    cleanups.push(() => { setWriterLeaseLostHandler(previous); return Promise.resolve(); });
+    const assembly = await createRuntimeAssembly(config, { writerLeaseCheckIntervalMs: 20 });
+    cleanups.push(() => assembly.runtime.close());
+    const close = vi.spyOn(assembly.runtime, 'close');
+    vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    await replaceWriterLockInodes();
+    await vi.waitFor(() => expect(processHandler).toHaveBeenCalledOnce(), { timeout: 2_000 });
+    expect(close).not.toHaveBeenCalled();
   });
 
   it('serve_uses_guarded_factory', async () => {

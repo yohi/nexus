@@ -12,7 +12,7 @@ import { ensureProjectEndpoint } from '../../src/server/project-connector.js';
 import type { SpawnFn } from '../../src/server/project-connector.js';
 import { createRuntimeAssembly } from '../../src/server/runtime-assembly.js';
 import type { RuntimeAssembly } from '../../src/server/runtime/assembly-types.js';
-import { claimPathFor, DIRECTORY_CLAIM_FILENAME, readOwnerClaim } from '../../src/server/storage-ownership/index.js';
+import { claimPathFor, DIRECTORY_CLAIM_FILENAME, readOwnerClaim, type WriterAdmission } from '../../src/server/storage-ownership/index.js';
 import type { Config } from '../../src/types/index.js';
 import { createSyntheticProvider, syntheticEmbeddingConfig } from '../benchmarks/performance/synthetic-provider.js';
 
@@ -167,7 +167,9 @@ describe('storage ownership collisions (red evidence against unchanged implement
     const pidPath = join(storageDir, LOCK_FILENAME);
     await writeFile(pidPath, `${DEAD_PID}\n`);
     const before = await digest(pidPath);
-    const lock = await acquireProcessLock(storageDir); // second owner has no ownership information to compare
+    // Second owner holds no writer admission for this root (Task 4 made the admission parameter mandatory).
+    const unadmitted = { handle: {} as WriterAdmission, config: { storage: { rootDir: join(base, 'elsewhere') } } as Config };
+    const lock = await acquireProcessLock(storageDir, unadmitted);
     expect(lock.acquired).toBe(false);
     expect(await digest(pidPath)).toEqual(before); // foreign PID bytes must survive a refused startup
   });

@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { lstat, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { randomUUID } from 'node:crypto';
@@ -248,6 +248,56 @@ describe('managed-http-server', () => {
     await fetch(server.url.toString(), {
       method: 'DELETE',
       headers: { 'mcp-session-id': sessionId },
+    });
+  });
+
+  // Nexus #297: owned Endpoint and PID are removed under the live writer lease, i.e. BEFORE runtime.close() (which
+  // closes stores and releases the lease last). Foreign descriptors/PIDs are never removed.
+  describe('owner-safe shutdown order (Nexus #297)', () => {
+    const exists = async (p: string): Promise<boolean> => await lstat(p).then(() => true, () => false);
+    const endpointPath = () => join(storageDir, 'endpoint.json');
+    const pidPath = () => join(storageDir, 'nexus.pid');
+
+    it('removes the owned Endpoint and PID before closing the runtime', async () => {
+      const observed: Array<{ endpoint: boolean; pid: boolean }> = [];
+      const runtime = { ...createMockRuntime(), close: vi.fn(async () => {
+        observed.push({ endpoint: await exists(endpointPath()), pid: await exists(pidPath()) });
+      }) };
+      const server = await trackServer({ ...options, runtime });
+      await writeFile(pidPath(), `${process.pid}\n`);
+      expect(await exists(endpointPath())).toBe(true);
+      await server.close();
+      expect(runtime.close).toHaveBeenCalledOnce();
+      expect(observed).toEqual([{ endpoint: false, pid: false }]);
+    });
+
+    it('swallows Endpoint/PID cleanup and runtime close errors and still closes the runtime', async () => {
+      const runtime = { ...createMockRuntime(), close: vi.fn(() => Promise.reject(new Error('close failed'))) };
+      const consoleError = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+      const server = await trackServer({ ...options, runtime });
+      await rm(endpointPath());
+      await mkdir(endpointPath()); // reading the descriptor now fails (EISDIR)
+      await mkdir(pidPath()); // reading the PID file now fails (EISDIR)
+      await expect(server.close()).resolves.toBeUndefined();
+      await expect(server.closed).resolves.toBeUndefined();
+      expect(runtime.close).toHaveBeenCalledOnce();
+      expect(await exists(endpointPath())).toBe(true);
+      expect(await exists(pidPath())).toBe(true);
+      consoleError.mockRestore();
+    });
+
+    it('keeps a foreign Endpoint and a foreign PID on managed close', async () => {
+      const runtime = { ...createMockRuntime(), close: vi.fn(async () => {}) };
+      const server = await trackServer({ ...options, runtime });
+      await writeProjectEndpoint(storageDir, {
+        instanceId: 'foreign-instance', pid: 2_147_483_000, projectRoot, url: 'http://127.0.0.1:9/',
+      });
+      await writeFile(pidPath(), '2147483000\n');
+      const foreignEndpoint = await readFile(endpointPath(), 'utf8');
+      await server.close();
+      expect(runtime.close).toHaveBeenCalledOnce();
+      expect(await readFile(endpointPath(), 'utf8')).toBe(foreignEndpoint);
+      expect(await readFile(pidPath(), 'utf8')).toBe('2147483000\n');
     });
   });
 });

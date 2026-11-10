@@ -8,6 +8,7 @@ import { startHttpV2Server } from '../../server/http-v2/entry.js';
 import { createV2McpHandler } from '../../server/http-v2/server-factory.js';
 import { createV1RuntimeToolBridge, type V1RuntimeToolBridge } from '../../server/http-v2/v1-runtime-bridge.js';
 import { NexusServerFactory } from '../../server/factory.js';
+import { setWriterLeaseLostHandler } from '../../server/runtime/writer-lease-loss.js';
 import type { NexusRuntime } from '../../server/index.js';
 import type { Config } from '../../types/index.js';
 
@@ -128,6 +129,11 @@ export const runServeCli = async (
       throw new Error('Local HTTP v2 requires HTTP configuration.');
     }
 
+    // Nexus #297: a lost storage writer lease terminates fail-fast; never keep serving or writing without it.
+    setWriterLeaseLostHandler((error) => {
+      dependencies.errorOutput.write(`Error: storage writer lease lost: ${error.message}\n`);
+      dependencies.exit(75);
+    });
     const initializedRuntime = await createRuntime(config);
     runtime = initializedRuntime;
     let ready = false;

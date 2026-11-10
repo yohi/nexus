@@ -14,6 +14,8 @@ export interface RuntimeAssemblyDependencies {
   readonly diagnosticTraceContext?: RuntimeDiagnosticContext;
   /** Issued writer admission transferred by the CLI/Factory; consumed once. Absent => the Assembly admits itself. */
   readonly writerAdmission?: WriterAdmission;
+  /** Internal: fail-fast reaction to a lost writer lease; overrides the process-level handler. */
+  readonly onWriterLeaseLost?: (error: Error) => void;
   /** Internal: lost-lease detection interval (tests only). */
   readonly writerLeaseCheckIntervalMs?: number;
 }

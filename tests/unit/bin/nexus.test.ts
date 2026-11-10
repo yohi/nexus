@@ -395,4 +395,26 @@ describe("nexus CLI shutdown", () => {
     expect(mocks.createRuntime).toHaveBeenCalledOnce();
     expect(mocks.createRuntime).toHaveBeenCalledWith(config, admission);
   });
+
+  it("registers a fail-fast non-zero exit for a lost writer lease before transferring the admission", async () => {
+    const leaseLoss = await import("../../../src/server/runtime/writer-lease-loss.js");
+    const error = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    let registeredBeforeRuntime = false;
+    const runtime = { close: vi.fn(async () => {}), createServer: vi.fn(() => ({ connect: vi.fn(async () => {}) })),
+      initialize: vi.fn(async () => {}), orchestrator: {}, reindex: vi.fn(async () => {}), sanitizer: {} };
+    mocks.createRuntime.mockImplementation(async () => {
+      registeredBeforeRuntime = leaseLoss.getWriterLeaseLostHandler() !== undefined;
+      return runtime;
+    });
+    mocks.createStreamableHttpHandler.mockReturnValue(Object.assign(vi.fn(async () => {}), { dispose: vi.fn(async () => {}) }));
+    mocks.createHttpServer.mockReturnValue({ close: vi.fn((cb: () => void) => cb()),
+      listen: vi.fn((_p: number, _h: string, cb: () => void) => cb()) });
+    await importCliAndGetShutdownHandler(["--port", "3001"]);
+    expect(registeredBeforeRuntime).toBe(true);
+    leaseLoss.getWriterLeaseLostHandler()?.(new Error("lease gone"));
+    expect(process.exit).toHaveBeenCalledWith(75);
+    expect(error.mock.calls.flat().join("\n")).toContain("lease lost");
+    expect(runtime.close).not.toHaveBeenCalled();
+    leaseLoss.setWriterLeaseLostHandler(undefined);
+  });
 });

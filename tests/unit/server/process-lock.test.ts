@@ -39,7 +39,7 @@ describe('ProcessLock', () => {
   });
 
   it('acquires a lock and writes the PID file', async () => {
-    const result = await acquireProcessLock(testDir);
+    const result = await acquireProcessLock(testDir, await admitted(testDir));
 
     expect(result.acquired).toBe(true);
     const pidContent = await readFile(path.join(testDir, 'nexus.pid'), 'utf8');
@@ -47,10 +47,11 @@ describe('ProcessLock', () => {
   });
 
   it('detects a live process and refuses to acquire', async () => {
-    const first = await acquireProcessLock(testDir);
+    const admission = await admitted(testDir);
+    const first = await acquireProcessLock(testDir, admission);
     expect(first.acquired).toBe(true);
 
-    const second = await acquireProcessLock(testDir);
+    const second = await acquireProcessLock(testDir, admission);
     expect(second.acquired).toBe(false);
     expect(second.existingPid).toBe(process.pid);
   });
@@ -78,7 +79,7 @@ describe('ProcessLock', () => {
   });
 
   it('releaseProcessLock removes the PID file', async () => {
-    await acquireProcessLock(testDir);
+    await acquireProcessLock(testDir, await admitted(testDir));
 
     await releaseProcessLock(testDir);
 
@@ -92,7 +93,7 @@ describe('ProcessLock', () => {
   it('creates the storage directory if it does not exist', async () => {
     const nestedDir = path.join(testDir, 'subdir-' + randomUUID());
 
-    const result = await acquireProcessLock(nestedDir);
+    const result = await acquireProcessLock(nestedDir, await admitted(nestedDir));
 
     expect(result.acquired).toBe(true);
     const pidContent = await readFile(path.join(nestedDir, 'nexus.pid'), 'utf8');
@@ -105,7 +106,7 @@ describe('ProcessLock', () => {
 
   // Nexus #297: shutdown/exit cleanup only ever removes a PID file this process wrote.
   it('owned release removes only this process PID file', async () => {
-    await acquireProcessLock(testDir);
+    await acquireProcessLock(testDir, await admitted(testDir));
     await releaseOwnedProcessLock(testDir);
     await expect(stat(path.join(testDir, 'nexus.pid'))).rejects.toThrow();
     await expect(releaseOwnedProcessLock(testDir)).resolves.toBeUndefined();
@@ -127,7 +128,6 @@ describe('ProcessLock', () => {
     const other = await admitted(path.join(testDir, 'other-root'));
     for (const foreign of ['2147483000\n', 'not-a-pid\n']) {
       await writeFile(pidPath, foreign);
-      expect((await acquireProcessLock(testDir)).acquired).toBe(false);
       expect((await acquireProcessLock(testDir, other)).acquired).toBe(false); // admission for a different root
       expect(await readFile(pidPath, 'utf8')).toBe(foreign);
     }

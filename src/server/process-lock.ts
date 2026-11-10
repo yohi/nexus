@@ -21,16 +21,16 @@ export const LOCK_FILENAME = 'nexus.pid';
  *   the stale lock is removed and acquisition is retried.
  * - If the recorded PID is alive, returns `{ acquired: false, existingPid }`.
  * - Nexus #297: removing a stale/corrupt PID file requires the caller's live, ISSUED writer admission for exactly this
- *   storage root (authenticated by the admission service). Without it an existing PID file is never removed and the
- *   lock is reported as not acquired, so a refused or unadmitted startup cannot delete another owner's PID.
+ *   storage root (authenticated by the admission service). An admission for a different root never removes an
+ *   existing PID file (reported as not acquired); a forged/released/consumed handle is rejected before any unlink.
  *
  * The caller MUST invoke `releaseOwnedProcessLock` (or `releaseProcessLock`) on shutdown to free the lock.
  */
 export async function acquireProcessLock(storageDir: string,
-  admission?: { readonly handle: WriterAdmission; readonly config: Config }): Promise<LockResult> {
+  admission: { readonly handle: WriterAdmission; readonly config: Config }): Promise<LockResult> {
   const lockPath = path.join(storageDir, LOCK_FILENAME);
   const mayReclaim = async (): Promise<boolean> => {
-    if (admission === undefined || path.resolve(admission.config.storage.rootDir) !== path.resolve(storageDir)) return false;
+    if (path.resolve(admission.config.storage.rootDir) !== path.resolve(storageDir)) return false;
     await assertLiveWriterAdmission(admission.handle, admission.config);
     return true;
   };

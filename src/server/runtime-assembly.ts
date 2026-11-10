@@ -30,7 +30,10 @@ import { createRuntimeLogging } from './runtime/logging.js';
 import { EventProcessingManager } from './runtime/events.js';
 import { runtimeStateRevision } from '../observability/runtime-observer.js';
 import { runRuntimeDiagnosticStage, withRuntimeDiagnosticContext, withoutRuntimeDiagnosticContext } from '../observability/diagnostic-stage-trace.js';
-import { storageOwnershipAdmissionService, type ConsumedWriterLease, type WriterAdmission } from './storage-ownership/admission.js';
+import {
+  StorageOwnershipError, storageOwnershipAdmissionService, type ConsumedWriterLease, type WriterAdmission,
+} from './storage-ownership/admission.js';
+import { getWriterLeaseLostHandler } from './runtime/writer-lease-loss.js';
 
 /** Bounded detection window for a lost kernel writer lease while the runtime serves. */
 const DEFAULT_WRITER_LEASE_CHECK_INTERVAL_MS = 5_000;
@@ -172,12 +175,22 @@ async function createRuntimeAssemblyCore(config: Config,
       runReindex,
     };
     const runtime = buildNexusRuntime(options);
-    // Fail closed on a lost lease: stop the runtime (watcher, pipeline, stores) before any further storage mutation.
-    leaseMonitor = setInterval(() => {
-      if (writerLease.isHeld()) return;
+    // Fail closed on a lost lease (Nexus #297). No graceful runtime.close(): that would await in-flight startup
+    // reconcile/reindex writes and remove the metrics-port file, i.e. keep mutating storage after the loss.
+    // 1. synchronously abort the pipeline (IndexPipeline.stop() aborts before its first await);
+    // 2. hand over to the process-level fail-fast handler (CLI/serve exit non-zero; the kernel drops the leases);
+    // 3. without a handler (library callers), quiesce the watcher/event processing and leave stores untouched.
+    const onWriterLeaseLost = (): void => {
       clearInterval(leaseMonitor);
-      console.error('[Nexus] Storage writer lease was lost; closing the runtime to stop storage mutation.');
-      runtime.close().catch((error: unknown) => { console.error('[Nexus] Runtime close after lease loss failed:', error); });
+      pipeline.stop().catch(() => undefined);
+      const lost = new StorageOwnershipError('invalid_writer_admission', 'storage writer lease was lost while serving');
+      console.error('[Nexus] Storage writer lease was lost; stopping all storage mutation (fail-closed).');
+      const handler = dependencies.onWriterLeaseLost ?? getWriterLeaseLostHandler();
+      if (handler !== undefined) { handler(lost); return; }
+      onClose().catch(() => undefined);
+    };
+    leaseMonitor = setInterval(() => {
+      if (!writerLease.isHeld()) onWriterLeaseLost();
     }, dependencies.writerLeaseCheckIntervalMs ?? DEFAULT_WRITER_LEASE_CHECK_INTERVAL_MS);
     leaseMonitor.unref();
     const initializationContext = dependencies.diagnosticTraceContext;
