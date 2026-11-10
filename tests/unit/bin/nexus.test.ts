@@ -325,6 +325,24 @@ describe("nexus CLI shutdown", () => {
     expect(mocks.createRuntime).not.toHaveBeenCalled();
   });
 
+  it.each([
+    [["--port", "abc"], "Invalid port"],
+    [["--port", "70000"], "Invalid port"],
+    [["--port", "0"], "Invalid port"],
+    [["--managed", "--port", "0", "--idle-shutdown-ms", "-5"], "Invalid idle-shutdown-ms"],
+    [["--managed", "--port", "0", "--idle-shutdown-ms", "soon"], "Invalid idle-shutdown-ms"],
+  ])("invalid server arguments %j refuse before writer admission", async (args, message) => {
+    const error = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    await runCli(args);
+    await vi.waitFor(() => expect(process.exit).toHaveBeenCalledWith(1));
+    expect(error.mock.calls.flat().join("\n")).toContain(message);
+    // Nexus #297: no target resolution, admission (claims/dirs), PID or runtime for a typo.
+    expect(mocks.resolveStorageOwnershipTargets).not.toHaveBeenCalled();
+    expect(mocks.admitStorageWriter).not.toHaveBeenCalled();
+    expect(mocks.acquireProcessLock).not.toHaveBeenCalled();
+    expect(mocks.createRuntime).not.toHaveBeenCalled();
+  });
+
   it("reindex_does_not_open_foreign_metadata", async () => {
     vi.spyOn(console, "error").mockImplementation(() => undefined);
     mocks.admitStorageWriter.mockRejectedValue(ownershipRefusal());

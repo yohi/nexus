@@ -142,6 +142,26 @@ async function main(args: string[]): Promise<void> {
     process.exit(1);
   }
 
+  // Nexus #297: reject malformed server arguments before writer admission, so a typo never creates claims, Storage
+  // directories, PID or locks. (--reindex ignores --port, exactly as before.)
+  const isManagedArg = values["managed"] === true;
+  let serverPort: number | undefined;
+  if (values["port"] && !values["reindex"]) {
+    serverPort = Number(values["port"]);
+    if (Number.isNaN(serverPort) || serverPort < 0 || serverPort > 65535 || (serverPort === 0 && !isManagedArg)) {
+      console.error(`\u274c Invalid port: ${String(values["port"])}`);
+      process.exit(1);
+      return;
+    }
+  }
+  const idleShutdownMsRaw = values["idle-shutdown-ms"] ?? process.env.NEXUS_IDLE_SHUTDOWN_MS ?? "0";
+  const idleShutdownMs = Number(idleShutdownMsRaw);
+  if (isManagedArg && serverPort !== undefined && (!Number.isFinite(idleShutdownMs) || idleShutdownMs < 0)) {
+    console.error(`\u274c Invalid idle-shutdown-ms: ${String(idleShutdownMsRaw)}`);
+    process.exit(1);
+    return;
+  }
+
   const rawProjectRoot = (
     (values["project-root"] as string) ??
     process.env.NEXUS_PROJECT_ROOT ??
@@ -235,20 +255,13 @@ async function main(args: string[]): Promise<void> {
     return;
   }
 
-  if (values["port"]) {
-    const port = Number(values["port"]);
-    const isManaged = isManagedMode;
-    if (Number.isNaN(port) || port < 0 || port > 65535 || (port === 0 && !isManaged)) {
-      console.error(`\u274c Invalid port: ${values["port"]}`);
-      process.exit(1);
-    }
-
-    if (isManaged) {
+  if (serverPort !== undefined) {
+    const port = serverPort;
+    if (isManagedMode) {
       await startManagedMode({
         config,
         exitCleanup,
-        idleShutdownMsRaw:
-          values["idle-shutdown-ms"] ?? process.env.NEXUS_IDLE_SHUTDOWN_MS ?? "0",
+        idleShutdownMs,
         port,
         root,
         runtime,
@@ -283,7 +296,8 @@ interface RuntimeModeOptions {
 }
 
 interface ManagedModeOptions extends RuntimeModeOptions {
-  readonly idleShutdownMsRaw: string | boolean;
+  /** Validated before writer admission in main(). */
+  readonly idleShutdownMs: number;
   readonly port: number;
   readonly startupStdoutLog: string | undefined;
   readonly startupStderrLog: string | undefined;
@@ -321,7 +335,7 @@ async function startReindexMode({
 async function startManagedMode({
   config,
   exitCleanup,
-  idleShutdownMsRaw,
+  idleShutdownMs,
   port,
   root,
   runtime,
@@ -340,13 +354,6 @@ async function startManagedMode({
     if (stderrLogPath !== undefined) {
       redirectStreamToPath(process.stderr, stderrLogPath);
     }
-  }
-
-  const idleShutdownMs = Number(idleShutdownMsRaw);
-
-  if (!Number.isFinite(idleShutdownMs) || idleShutdownMs < 0) {
-    console.error(`\u274c Invalid idle-shutdown-ms: ${idleShutdownMsRaw}`);
-    process.exit(1);
   }
 
   const { startManagedHttpServer } = await import("../server/managed-http-server.js");
