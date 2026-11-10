@@ -431,13 +431,18 @@ describe("nexus CLI shutdown", () => {
     mocks.createStreamableHttpHandler.mockReturnValue(Object.assign(vi.fn(async () => {}), { dispose: vi.fn(async () => {}) }));
     mocks.createHttpServer.mockReturnValue({ close: vi.fn((cb: () => void) => cb()),
       listen: vi.fn((_p: number, _h: string, cb: () => void) => cb()) });
-    await importCliAndGetShutdownHandler(["--port", "3001"]);
+    const shutdown = await importCliAndGetShutdownHandler(["--port", "3001"]);
     expect(registeredBeforeRuntime).toBe(true);
     leaseLoss.getWriterLeaseLostHandler()?.(new Error("lease gone"));
     expect(process.exit).toHaveBeenCalledWith(75);
     expect(error.mock.calls.flat().join("\n")).toContain("lease lost");
     expect(runtime.close).not.toHaveBeenCalled();
     leaseLoss.setWriterLeaseLostHandler(undefined);
+    // The mocked process.exit(75) does not terminate the test process, so finish the HTTP shutdown here while
+    // the mocks are still installed. The outer afterEach would otherwise fire SIGTERM without awaiting it and
+    // restore the mocks mid-cleanup (releaseOwnedProcessLock -> undefined, real process.exit).
+    Reflect.apply(shutdown, process, ["SIGTERM"]);
+    await vi.waitFor(() => expect(process.exit).toHaveBeenCalledWith(0));
   });
 
   // Nexus #297 (Design §4.4 F-001): Bridge attempt logs (coordination root) may be opened before writer admission,
