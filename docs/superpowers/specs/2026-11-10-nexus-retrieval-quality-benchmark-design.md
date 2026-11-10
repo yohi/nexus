@@ -184,9 +184,11 @@ Fixtureの固定ソース、明示的な期待位置、変更操作、Snapshot�
 - `expectedRefusalConditions`
 - `evaluationEligibility`
 
-`taskDescription`と`initialClues`は探索Policyに公開する。
+`taskDescription`と`initialClues`のみを`PublicQualityTask`として探索Policyに公開する。`worktreeIdentity`はPrivate Manifestの`rootKey`（`single` / `primary` / `linked`）と役割を保持し、Fixture内の所有済みRoot対応表からCanonical `projectRoot`へ一意に解決する。`rootKey`はFixture内参照であり、新しい永続Worktree Identityではない。Runtime Identityは既存のCanonical `projectRoot`である。
 
-期待ファイル・シンボル・Source HashなどのGolden情報は、評価器だけが参照する。
+Fixture、独立Oracleの`SourceSnapshot`、各Adoption公開時点のSnapshot、Paired Runnerは同じPrivate `rootKey`とCanonical Rootの対応を検証する。Primary/LinkedのSource Hashが偶然一致しても、Root対応を省略して正しいWorktreeとみなさない。対応が不明・不一致なら採点は`INCONCLUSIVE`、必須Coverageは`INCOMPLETE`とする。
+
+期待ファイル・シンボル・Source Hash・位置情報・物理Root・Privateな`worktreeIdentity`などのGolden情報は評価器とFixture管理だけが参照する。Policyには渡さない.
 
 ### Source Correctness
 
@@ -196,7 +198,7 @@ Fixtureの固定ソース、明示的な期待位置、変更操作、Snapshot�
 
 LSPの位置情報は、対象ファイルと位置を検証する。位置検証のみをもって、Project-wide Semantic Freshnessが証明されたとは扱わない。
 
-Mutation Scenarioでは、要求開始時点と結果公開時点のSnapshotを区別する。
+Mutation Scenarioでは、要求開始時点と結果公開時点のSnapshotを区別する。独立OracleはAdoption Sequenceごとにその公開時点で取得されたRoot対応付きSnapshotで採点する。別Rootから取得されたソース、または取得元Rootの証明がないソースを、Hash一致だけでCurrentとして採点しない。
 
 ### Outcome Integrity
 
@@ -223,10 +225,26 @@ LLMの代わりに、固定された状態遷移と探索ルールによってTo
 7. `COMPLETE` — 正解候補を採用して終了
 8. `EXHAUSTED` — 予算内に探索できず終了
 
-Policyの`VERIFY`はOracleにアクセスしない。
+Policyの`VERIFY`はOracleにアクセスしない。各遷移は公開Clue・Tool応答・公開Sourceだけで判定し、Golden期待値は使わない。
 
-Policyが採用した結果を、実行後に独立したOracleが採点する。Oracleの正誤判定をPolicyへフィードバックして探索を続けることは禁止する。
+Policyが採用した結果を、実行後に独立したOracleが採点する。Oracleの正誤判定をPolicyへフィードバックして探索を続けることは禁止する。必須Tool経路の契約ProbeはAgent-loopとは別記録とし、その呼出しをAgent-loopの探索コストに混入させない。
 
+### Fixed Clue Grammar / Tool Selection（quality-policy-v1）
+
+`initialClues`は次の明示的な公開形式だけを許可する。形式外、競合する指示、Root外パス、不正な行・文字位置はSetup/Task入力不成立として記録し、Oracleの正解情報で補完しない。
+
+| Clue | 公開情報 | 最初の探索経路 |
+|---|---|---|
+| `id:<identifier>` | 文字列識別子 | R: `rg -F` / N: `grep_search` |
+| `file:<relative-path>` | Root-relative File | R: 範囲限定 `read_file` / N: `get_file_outline`→必要時`get_context` |
+| `symbol:<symbol-id>` | 既に公開されたSymbol ID | N: `get_symbol_source`; Rは同じタスクに併記された`id:`/`file:`を使用 |
+| `concept:<query>` | 概念Query | N: `hybrid_search`; R: Query全体の`rg -F`、空結果なら3文字以上の空白区切り語を長さ降順・辞書順で最大3語ずつ`rg -F` |
+| `position:<path>@<line>:<character>` | Root-relative File、1-based Line、0-based UTF-16 Character | N: 指定のLSP Navigation、R: 同一位置を起点とする限定File Read |
+| `nav:<kind>` | `definition` / `references` / `implementations` | N: `get_definition` / `get_references` / `get_implementations` |
+
+`nav:`は`position:`または`symbol:`と組み合わせる。公開Clueの選択順位は、妥当な`nav+position/nav+symbol`、`symbol`、`file`、`id`、`concept`の順とする。`symbol:`を用いるPaired TaskにはBaselineが使えるテキスト`id:`または`file:`も必ず公開する。非対応ToolをBaseline側で模倣しない。候補は公開Score降順、Root-relative Path昇順、Line/Character昇順、元Rank昇順で安定ソートする。
+
+**固定遷移:** `INITIAL→DISCOVER`（Clue検証・経路選択）、`DISCOVER→RANK`（候補あり）、`DISCOVER→FALLBACK`（空・不足・拒否・Retry終了）、`RANK→READ`（上記順位）、`READ→VERIFY`（公開Sourceを取得）、`VERIFY→COMPLETE`（公開証拠のみで採用条件を満たす）、`VERIFY→FALLBACK`（不十分・不整合）、`FALLBACK→DISCOVER/READ`（固定代替経路かつ予算内）、任意の非終端状態から`EXHAUSTED`（予算超過・経路枯渇）。`COMPLETE` / `EXHAUSTED`は終端である。既存のFallbackマッピングと12操作・20候補・64KiB・2回Retry上限を両方式に適用し、実行後のPolicy変更は禁止する。
 ### Policy Rules
 
 - 同じタスク分類には同じ探索判断ルールを使う。
@@ -258,7 +276,7 @@ Policyが採用した結果を、実行後に独立したOracleが採点する�
 
 NexusにはNexus固有のToolを使用させる。一方、Baselineには利用できないStructured/LSP Toolを模倣させない。
 
-両者に共通して与えるものは、タスク目標、公開ヒント、探索予算、Oracleおよび正解条件である。
+両方式のPolicyに共通して与えるものは、タスク目標、公開ヒント、探索予算、公開可能な実行条件のみである。Oracle、Golden Source Hash、Expected Locations、Expected Refusal Conditions、物理Rootなどの正解・Private情報は独立GraderとFixture管理にのみ渡す。BaselineとNexusは同一Oracleで**終了後**に採点され、PolicyはOracleの内容・採点結果を参照しない。
 
 Toolの機能差は比較の対象とするが、Policyから一方にだけ正解情報を与えない。
 
@@ -343,6 +361,31 @@ Q13はDefinition、References、Implementationsを個別の評価タスクとし
 
 各Scenarioは独立して再現可能とし、Mutation前後のSnapshotをManifestに保持する。
 
+### Frozen Required Route / Coverage Matrix（quality-policy-v1）
+
+下表の「必須Nexus経路」はGate 1の独立契約Probeであり、決定論的Agent-loopに不自然なTool呼出しを強制しない。ProbeのTool CallはAgent-loop Costに加算せず、`state='CONTRACT_PROBE'`の別Trace・Coverage Evidenceとして保持する。Baseline側は同じ公開Clueを用いた`rg + file read`、Q13/Q14のNexus専用CapabilityについてはBaselineに仮想LSPを要求しない。
+
+| Scenario | Setup証拠 | 必須Nexus Tool経路 | 独立Oracleによる判定 |
+|---|---|---|---|
+| Q01 | Clean Index固定 | `get_symbol_source` | Current Source一致 |
+| Q02 | Dirty Source固定 | `get_symbol_source` | Dirty変更後のCurrent Source |
+| Q03 | Rename前後のIdentity固定 | `get_symbol_source` | 旧Identity拒否と新Source |
+| Q04 | Move前後のIdentity固定 | `get_symbol_source` | 移動後の位置・Source |
+| Q05 | Deleted/Retired Identity固定 | `get_symbol_source` | 削除済みIdentityの拒否 |
+| Q06 | 削除・同名再作成のSnapshot固定 | `get_symbol_source` | 旧Sourceの非採用 |
+| Q07 | Stale Vector状態のSetup Gate成立 | `hybrid_search` | Discovery候補とCurrent Source採用の分離 |
+| Q08 | Generation競合のSetup Gate成立 | `get_symbol_source` | 要求時・公開時Snapshot比較 |
+| Q09 | Unsupported/Partial Parser固定 | `get_file_outline` | Capability/拒否の正しい分類 |
+| Q10 | 同名Symbolを複数Scopeに配置 | `get_file_outline`, `get_symbol_source` | Logical Symbol区別 |
+| Q11 | Large Declaration / Multi-chunk固定 | `get_symbol_source` | 正しい宣言範囲のSource |
+| Q12 | Primary/Linked・異なる内容と独立Runtimeの証拠 | 各Rootの`get_symbol_source` | Root対応を含むSource一致・混入拒否 |
+| Q13 | Stub/Real LSPのEvidence Class固定 | `get_definition`, `get_references`, `get_implementations`を個別実行 | 全Locationの行・UTF-16文字位置、部分結果の区別 |
+| Q14 | LSP未構成のSetup固定 | `get_definition` | `unavailable/LSP_NOT_CONFIGURED`の明示 |
+
+**Coverage成立条件（4条件のAND）：** ①Setupが証拠で成立、②上記の必須Tool経路を実際に呼出し、③Tool名・Root-relative引数・Status・Reason・Result Digestを保持したTraceで実行を証明、④独立OracleによるそのRootの公開時点Source / Location採点が完了。必須項目が1つでも欠ければCoverageは`INCOMPLETE`。観測済み`FALSE_FRESH`・安全なものとして採用した誤Sourceは他のCoverage不足があっても`SAFETY_FAIL`を優先する。未実行・Setup未成立・実際の失敗を混同しない。
+
+Core Q01–Q11・Q14、Worktree拡張Q12、LSP拡張Q13（Stub=`CONTRACT_ONLY`、実Server=別途Owner承認）を別Profileで集計し、必須Scenario集合を実行後に縮小しない。Q12のPrimaryとLinkedはRoot別Taskとして独立採点する。#297実証証拠不足ならQ12を`blocked_dependency`とし、Coreの無関係な評価まで自動停止しない。
+
 ### Race / Stale Scenario
 
 Q07・Q08では、試験開始時点に必要な古いIndex状態やGeneration競合状態が実際に成立していることをSetup Gateで確認する。
@@ -392,10 +435,10 @@ LSPの有効化・Host設定・実際のプロセス起動は本Designの承認�
 - Benchmark / Fixture / Policy Version
 - Nexus Commit、設定、Tool Adapter
 - Baseline `rg` Version
-- Worktree Identity、Snapshot Digest
+- Worktree Identity（PrivateなCanonical Rootは公開Traceに含めない）、Snapshot Digest
 - Task / Scenario ID
-- Tool Name、Normalized Arguments
-- Tool Result Status、Result Digest
+- Tool Name、Root-relativeの`normalizedPublicArgs`（実際の公開引数、JSON-compatible）と`argsDigest`
+- `resultStatus`、`reasonCode: string | null`、`resultCount`、`resultDigest`（呼出し単位）
 - Logical Operation Count
 - Tool Invocation Count
 - Context Bytes
@@ -406,7 +449,7 @@ LSPの有効化・Host設定・実際のプロセス起動は本Designの承認�
 - Refusal / Error Reason
 - Completion Status
 
-Tool CallはAPI呼出し単位、Logical Operationはファイル探索・読取り等の実質的な探索操作単位で記録する。
+Tool CallはAPI呼出し単位、Logical Operationはファイル探索・読取り等の実質的な探索操作単位で記録する。`stale_identity`、`unavailable`、`not_found`、`ok`で結果0件の各状態は別のTrace Eventとして保持し、Fallback・Retryで前イベントを上書きしない。Root外パス・正規化不能な公開引数は安全なRoot-relative引数に偽装せず拒否し、実行・Coverage証拠を不成立とする。物理Root、Golden Hash、秘密情報は公開Traceに含めない。
 
 複数の操作を単一のシェル呼出しへまとめるだけでBaselineが有利にならないよう、両方を報告する。
 
