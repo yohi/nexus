@@ -1,0 +1,396 @@
+import { createHash } from 'node:crypto';
+import { chmod, lstat, mkdir, mkdtemp, readdir, readFile, realpath, rm, symlink, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { afterEach, describe, expect, it } from 'vitest';
+import {
+  createStorageOwnershipAdmissionService, StorageOwnershipError, type AdmissionInternalOptions, type WriterAdmission,
+} from '../../../src/server/storage-ownership/admission.js';
+import {
+  resourceKey, sqliteFcntlLockBackend, type KernelLockBackend,
+} from '../../../src/server/storage-ownership/claims.js';
+import {
+  claimPathFor, DIRECTORY_CLAIM_FILENAME, readOwnerClaim, resolveStorageOwnershipTargets,
+} from '../../../src/server/storage-ownership/index.js';
+import type { Config } from '../../../src/types/index.js';
+
+// Single-process admission contract tests. Cross-process contention/crash cases live in
+// tests/integration/storage-ownership-process.test.ts and use real child processes.
+
+const dirs: string[] = [];
+const handles: WriterAdmission[] = [];
+afterEach(async () => {
+  for (const h of handles.splice(0)) await h.release().catch(() => undefined);
+  for (const d of dirs.splice(0)) {
+    await chmod(d, 0o700).catch(() => undefined);
+    await rm(d, { recursive: true, force: true });
+  }
+});
+
+async function sandbox(): Promise<string> {
+  const d = await realpath(await mkdtemp(join(tmpdir(), 'nexus-admission-')));
+  dirs.push(d);
+  return d;
+}
+
+interface Paths { root: string; metadata: string; vector: string }
+const pathsFor = (root: string, vector = join(root, 'vectors')): Paths => ({ root, metadata: join(root, 'metadata.db'), vector });
+const cfg = (projectRoot: string, p: Paths): Config =>
+  ({ projectRoot, storage: { rootDir: p.root, metadataDbPath: p.metadata, vectorDbPath: p.vector } }) as unknown as Config;
+
+async function project(base: string, name: string): Promise<string> {
+  const root = join(base, name);
+  await mkdir(root, { recursive: true });
+  return root;
+}
+
+function service(base: string, extra: AdmissionInternalOptions = {}) {
+  return createStorageOwnershipAdmissionService({ coordinationRoot: join(base, 'coord'), lockWaitMs: 200, ...extra });
+}
+
+async function admit(svc: ReturnType<typeof service>, config: Config): Promise<WriterAdmission> {
+  const handle = await svc.admitStorageWriter(await svc.resolveStorageOwnershipTargets(config));
+  handles.push(handle);
+  return handle;
+}
+
+async function refusal(promise: Promise<unknown>): Promise<StorageOwnershipError> {
+  const error = await promise.then(() => undefined, (e: unknown) => e);
+  expect(error).toBeInstanceOf(StorageOwnershipError);
+  return error as StorageOwnershipError;
+}
+
+/** Recursive byte digest: every entry below the given paths (absent paths recorded as such). */
+async function digest(...paths: string[]): Promise<Record<string, string>> {
+  const out: Record<string, string> = {};
+  const walk = async (path: string): Promise<void> => {
+    let info;
+    try { info = await lstat(path); } catch { out[path] = 'absent'; return; }
+    if (info.isDirectory()) {
+      out[`${path}/`] = 'dir';
+      for (const entry of (await readdir(path)).sort()) await walk(join(path, entry));
+    } else if (info.isSymbolicLink()) out[path] = 'symlink';
+    else out[path] = createHash('sha256').update(await readFile(path)).digest('hex');
+  };
+  for (const path of paths) await walk(path);
+  return out;
+}
+
+async function expectClaim(resource: string, kind: 'file' | 'directory', owner: string): Promise<void> {
+  const result = await readOwnerClaim(claimPathFor(resource, kind));
+  expect(result).toEqual({ state: 'present', claim: { version: 1, ownerProjectRoot: owner, resourcePath: resource, kind } });
+}
+
+describe('stable physical resource keys and coordination', () => {
+  it('S07_lock_identity_survives_target_creation', async () => {
+    const base = await sandbox();
+    const target = join(base, 'later', 'vectors');
+    const before = (await resolveStorageOwnershipTargets(cfg(base, pathsFor(join(base, 'later'), target)))).vectorDbPath;
+    await mkdir(target, { recursive: true });
+    const after = (await resolveStorageOwnershipTargets(cfg(base, pathsFor(join(base, 'later'), target)))).vectorDbPath;
+    expect(before.kind === 'persistent' && after.kind === 'persistent').toBe(true);
+    if (before.kind !== 'persistent' || after.kind !== 'persistent') return;
+    expect(resourceKey(before.path)).toBe(resourceKey(after.path));
+    expect(resourceKey(after.path)).toBe(createHash('sha256').update(`nexus-storage-path-v1\0${target}`).digest('hex'));
+  });
+
+  it('S07_symlink_alias_and_different_tmpdir_contend', async () => {
+    const base = await sandbox();
+    const owner = await project(base, 'owner');
+    const real = pathsFor(join(base, 'storage'));
+    await mkdir(real.root);
+    await symlink(real.root, join(base, 'alias'), 'dir');
+    const svc = service(base);
+    await admit(svc, cfg(owner, real));
+    const previous = process.env.TMPDIR;
+    process.env.TMPDIR = join(base, 'other-tmp');
+    try {
+      const aliased = pathsFor(join(base, 'alias'));
+      const error = await refusal(admit(svc, cfg(owner, aliased)));
+      expect(error.code).toBe('writer_busy');
+    } finally {
+      if (previous === undefined) delete process.env.TMPDIR; else process.env.TMPDIR = previous;
+    }
+  });
+
+  it('S07_unavailable_kernel_lock_refuses_before_claim', async () => {
+    const base = await sandbox();
+    const owner = await project(base, 'owner');
+    const p = pathsFor(join(base, 'storage'));
+    const failing: KernelLockBackend = { name: 'failing', tryAcquire: () => { throw new Error('no kernel lock'); } };
+    const error = await refusal(admit(service(base, { lockBackend: failing }), cfg(owner, p)));
+    expect(error.code).toBe('lock_unavailable');
+    expect(await digest(p.root)).toEqual({ [p.root]: 'absent' }); // no mkdir, no claim
+  });
+
+  it('S10_unsupported_lock_backend_is_stop_not_pass', async () => {
+    const base = await sandbox();
+    const owner = await project(base, 'owner');
+    const p = pathsFor(join(base, 'storage'));
+    const error = await refusal(admit(service(base, { platform: 'darwin' }), cfg(owner, p)));
+    expect(error.code).toBe('unsupported_kernel_lease');
+    const unverified: KernelLockBackend = { name: 'unverified', tryAcquire: () => ({ isHeld: () => false, release: () => undefined }) };
+    expect((await refusal(admit(service(base, { lockBackend: unverified }), cfg(owner, p)))).code).toBe('unsupported_kernel_lease');
+    expect(await digest(p.root)).toEqual({ [p.root]: 'absent' });
+  });
+
+  it('rejects a coordination root that overlaps a storage target or is not account-private', async () => {
+    const base = await sandbox();
+    const owner = await project(base, 'owner');
+    const p = pathsFor(join(base, 'storage'));
+    const inside = createStorageOwnershipAdmissionService({ coordinationRoot: join(p.root, 'coord') });
+    expect((await refusal(admit(inside, cfg(owner, p)))).code).toBe('lock_unavailable');
+    await mkdir(join(base, 'open-coord'), { mode: 0o777 });
+    await chmod(join(base, 'open-coord'), 0o777);
+    const open = createStorageOwnershipAdmissionService({ coordinationRoot: join(base, 'open-coord') });
+    expect((await refusal(admit(open, cfg(owner, p)))).code).toBe('lock_unavailable');
+    expect(await digest(p.root)).toEqual({ [p.root]: 'absent' });
+  });
+});
+
+describe('admitStorageWriter collisions', () => {
+  it('S02_metadata_collision_refuses_without_writes', async () => {
+    const base = await sandbox();
+    const [a, b] = [await project(base, 'ownerA'), await project(base, 'ownerB')];
+    const shared = join(base, 'shared-meta', 'metadata.db');
+    const svc = service(base);
+    const first = await admit(svc, cfg(a, { ...pathsFor(join(base, 'sa')), metadata: shared }));
+    await first.release();
+    await writeFile(shared, 'owner-a-bytes');
+    const before = await digest(join(base, 'shared-meta'), join(base, 'sb'));
+    const error = await refusal(admit(svc, cfg(b, { ...pathsFor(join(base, 'sb')), metadata: shared })));
+    expect(error.code).toBe('owner_conflict');
+    expect(await digest(join(base, 'shared-meta'), join(base, 'sb'))).toEqual(before);
+  });
+
+  it('S03_vector_collision_refuses_without_writes', async () => {
+    const base = await sandbox();
+    const [a, b] = [await project(base, 'ownerA'), await project(base, 'ownerB')];
+    const shared = join(base, 'shared-vectors');
+    const svc = service(base);
+    await (await admit(svc, cfg(a, pathsFor(join(base, 'sa'), shared)))).release();
+    await writeFile(join(shared, 'data.lance'), 'owner-a-bytes');
+    const before = await digest(shared, join(base, 'sb'));
+    expect((await refusal(admit(svc, cfg(b, pathsFor(join(base, 'sb'), shared))))).code).toBe('owner_conflict');
+    expect(await digest(shared, join(base, 'sb'))).toEqual(before);
+  });
+
+  it.each(['root', 'metadata', 'vector'] as const)('S04_symlink_alias_contends_for_same_lock_%s', async (role) => {
+    const base = await sandbox();
+    const [a, b] = [await project(base, 'ownerA'), await project(base, 'ownerB')];
+    const pa = pathsFor(join(base, 'sa'));
+    const svc = service(base);
+    await admit(svc, cfg(a, pa));
+    const alias = join(base, 'alias');
+    const pb = pathsFor(join(base, 'sb'));
+    if (role === 'vector') await symlink(pa.vector, alias, 'dir'); else await symlink(pa.root, alias, 'dir');
+    const colliding = role === 'root' ? { ...pb, root: alias }
+      : role === 'metadata' ? { ...pb, metadata: join(alias, 'metadata.db') } : { ...pb, vector: alias };
+    const before = await digest(pa.root, pb.root);
+    const error = await refusal(admit(svc, cfg(b, colliding)));
+    expect(['writer_busy', 'owner_conflict']).toContain(error.code);
+    expect(await digest(pa.root, pb.root)).toEqual(before);
+  });
+
+  it('S09_same_owner_second_independent_writer_is_rejected (same process)', async () => {
+    const base = await sandbox();
+    const owner = await project(base, 'owner');
+    const p = pathsFor(join(base, 'storage'));
+    const svc = service(base);
+    await admit(svc, cfg(owner, p));
+    expect((await refusal(admit(svc, cfg(owner, p)))).code).toBe('writer_busy');
+    const otherRoot = { ...pathsFor(join(base, 'other')), metadata: p.metadata }; // same owner, different rootDir
+    expect((await refusal(admit(svc, cfg(owner, otherRoot)))).code).toBe('writer_busy');
+  });
+});
+
+describe('F-004 bootstrap and partial claims', () => {
+  it('S07_bootstrap_new_storage_root_claim', async () => {
+    const base = await sandbox();
+    const owner = await project(base, 'owner');
+    const p = pathsFor(join(base, 'a', 'b', 'storage'));
+    await admit(service(base), cfg(owner, p));
+    await expectClaim(p.root, 'directory', owner);
+    await expectClaim(p.metadata, 'file', owner);
+    await expectClaim(p.vector, 'directory', owner);
+    expect((await readdir(p.root)).sort()).toEqual([DIRECTORY_CLAIM_FILENAME, 'metadata.db.nexus-owner-claim', 'vectors']);
+    expect(await readdir(p.vector)).toEqual([DIRECTORY_CLAIM_FILENAME]);
+  });
+
+  it('S07_bootstrap_new_metadata_parent_claim_without_opening_db', async () => {
+    const base = await sandbox();
+    const owner = await project(base, 'owner');
+    const p = { ...pathsFor(join(base, 'storage')), metadata: join(base, 'meta', 'deep', 'metadata.db') };
+    await admit(service(base), cfg(owner, p));
+    await expectClaim(p.metadata, 'file', owner);
+    expect(await readdir(join(base, 'meta', 'deep'))).toEqual(['metadata.db.nexus-owner-claim']);
+    for (const s of ['', '-wal', '-shm', '-journal']) await expect(lstat(p.metadata + s)).rejects.toThrow();
+  });
+
+  it('S07_bootstrap_new_persistent_vector_directory_claim', async () => {
+    const base = await sandbox();
+    const owner = await project(base, 'owner');
+    const p = pathsFor(join(base, 'storage'), join(base, 'vec', 'lance'));
+    await admit(service(base), cfg(owner, p));
+    await expectClaim(p.vector, 'directory', owner);
+    expect(await readdir(p.vector)).toEqual([DIRECTORY_CLAIM_FILENAME]);
+  });
+
+  it('memory:// vector needs no vector bootstrap or claim; root and metadata remain protected', async () => {
+    const base = await sandbox();
+    const [a, b] = [await project(base, 'ownerA'), await project(base, 'ownerB')];
+    const p = pathsFor(join(base, 'storage'), 'memory://');
+    const svc = service(base);
+    await (await admit(svc, cfg(a, p))).release();
+    expect((await readdir(p.root)).sort()).toEqual([DIRECTORY_CLAIM_FILENAME, 'metadata.db.nexus-owner-claim']);
+    const shared = { ...pathsFor(join(base, 'other'), 'memory://'), metadata: p.metadata };
+    expect((await refusal(admit(svc, cfg(b, shared)))).code).toBe('owner_conflict');
+  });
+
+  it('S07_claim_midwrite_failure_same_owner_retry', async () => {
+    const base = await sandbox();
+    const owner = await project(base, 'owner');
+    const p = pathsFor(join(base, 'storage'));
+    let published = 0;
+    const failing = service(base, { beforeClaimPublish: () => { if (++published === 2) throw new Error('disk full'); } });
+    expect((await refusal(admit(failing, cfg(owner, p)))).code).toBe('claim_io_failed');
+    const leftovers = (await readdir(p.root)).filter((n) => n.includes('.tmp'));
+    expect(leftovers).toEqual([]);
+    // The partial same-owner claim and empty bootstrap directories remain; a fresh attempt revalidates and completes.
+    const handle = await admit(service(base), cfg(owner, p));
+    expect(handle.targets.rootDir.path).toBe(p.root);
+    await expectClaim(p.root, 'directory', owner);
+    await expectClaim(p.metadata, 'file', owner);
+    await expectClaim(p.vector, 'directory', owner);
+  });
+
+  it('S07_claim_midwrite_failure_does_not_modify_existing_data', async () => {
+    const base = await sandbox();
+    const owner = await project(base, 'owner');
+    const p = pathsFor(join(base, 'storage'));
+    await (await admit(service(base), cfg(owner, p))).release();
+    await writeFile(p.metadata, 'existing-sqlite-bytes');
+    await writeFile(join(p.vector, 'table.lance'), 'existing-vector-bytes');
+    await writeFile(join(p.root, 'nexus.pid'), '4242\n');
+    await writeFile(join(p.root, 'endpoint.json'), '{"pid":4242}\n');
+    await rm(claimPathFor(p.vector, 'directory')); // vector claim must be re-published -> becomes unclaimed nonempty
+    const before = await digest(p.root);
+    const failing = service(base, { beforeClaimPublish: () => { throw new Error('io'); } });
+    const error = await refusal(admit(failing, cfg(owner, p)));
+    expect(['owner_unknown', 'claim_io_failed']).toContain(error.code);
+    expect(await digest(p.root)).toEqual(before);
+  });
+
+  it('S07_foreign_owner_refused_before_any_directory_creation', async () => {
+    const base = await sandbox();
+    const [a, b] = [await project(base, 'ownerA'), await project(base, 'ownerB')];
+    const shared = join(base, 'shared-vectors');
+    const svc = service(base);
+    await (await admit(svc, cfg(a, pathsFor(join(base, 'sa'), shared)))).release();
+    const pb = pathsFor(join(base, 'fresh', 'sb'), shared);
+    expect((await refusal(admit(svc, cfg(b, pb)))).code).toBe('owner_conflict');
+    await expect(lstat(join(base, 'fresh'))).rejects.toThrow(); // no mkdir for the refused attempt
+  });
+
+  it('S07_partial_claim_retry_contract', async () => {
+    const base = await sandbox();
+    const [a, b] = [await project(base, 'ownerA'), await project(base, 'ownerB')];
+    const p = pathsFor(join(base, 'storage'));
+    let n = 0;
+    const crashAfterOne = service(base, { beforeClaimPublish: () => { if (++n > 1) throw new Error('crash'); } });
+    await refusal(admit(crashAfterOne, cfg(a, p)));
+    const svc = service(base);
+    // A different owner never inherits the partial claim set, even with empty bootstrap dirs present.
+    expect((await refusal(admit(svc, cfg(b, p)))).code).toBe('owner_conflict');
+    // A different owner whose targets are disjoint from the partial claims may proceed.
+    await (await admit(svc, cfg(b, pathsFor(join(base, 'disjoint'))))).release();
+    // The same owner resumes only after full revalidation; unexpected content keeps it fail-closed.
+    await writeFile(join(p.vector, 'unexpected'), 'x');
+    expect((await refusal(admit(svc, cfg(a, p)))).code).toBe('owner_unknown');
+    await rm(join(p.vector, 'unexpected'));
+    await admit(svc, cfg(a, p));
+    await expectClaim(p.vector, 'directory', a);
+  });
+
+  it('S07_claim_lock_failure_creates_zero_new_claims', async () => {
+    const base = await sandbox();
+    const owner = await project(base, 'owner');
+    const p = pathsFor(join(base, 'storage'));
+    let calls = 0;
+    const flaky: KernelLockBackend = {
+      name: 'flaky',
+      tryAcquire: (path) => (++calls >= 3 ? null : sqliteFcntlLockBackend.tryAcquire(path)),
+    };
+    const error = await refusal(admit(service(base, { lockBackend: flaky }), cfg(owner, p)));
+    expect(['lock_unavailable', 'writer_busy']).toContain(error.code);
+    expect(await digest(p.root)).toEqual({ [p.root]: 'absent' });
+    await admit(service(base), cfg(owner, p)); // all attempt-owned locks were released
+  });
+
+  it('S08_malformed_or_unwritable_claim_refuses', async () => {
+    const base = await sandbox();
+    const owner = await project(base, 'owner');
+    const p = pathsFor(join(base, 'storage'));
+    await mkdir(p.root);
+    await writeFile(join(p.root, DIRECTORY_CLAIM_FILENAME), '{not json');
+    const before = await digest(p.root);
+    expect((await refusal(admit(service(base), cfg(owner, p)))).code).toBe('owner_unknown');
+    expect(await digest(p.root)).toEqual(before);
+
+    const q = pathsFor(join(base, 'readonly'));
+    await mkdir(q.root);
+    await chmod(q.root, 0o500);
+    expect((await refusal(admit(service(base), cfg(owner, q)))).code).toBe('claim_io_failed');
+    await chmod(q.root, 0o700);
+    expect(await readdir(q.root)).toEqual([]);
+  });
+
+  it('refuses unclaimed legacy data without adoption', async () => {
+    const base = await sandbox();
+    const owner = await project(base, 'owner');
+    const p = pathsFor(join(base, 'legacy'));
+    await mkdir(join(p.root, 'sub'), { recursive: true });
+    await writeFile(p.metadata, 'legacy');
+    const before = await digest(p.root);
+    expect((await refusal(admit(service(base), cfg(owner, p)))).code).toBe('owner_unknown');
+    expect(await digest(p.root)).toEqual(before);
+  });
+});
+
+describe('WriterAdmission registry (F-003 primitives)', () => {
+  it('rejects forged, cloned or mismatched handles and consumes exactly once', async () => {
+    const base = await sandbox();
+    const owner = await project(base, 'owner');
+    const p = pathsFor(join(base, 'storage'));
+    const svc = service(base);
+    const handle = await admit(svc, cfg(owner, p));
+    await svc.assertLiveWriterAdmission(handle, cfg(owner, p));
+    const forged = { targets: handle.targets, release: () => Promise.resolve() };
+    expect((await refusal(svc.assertLiveWriterAdmission(forged, cfg(owner, p)))).code).toBe('invalid_writer_admission');
+    expect((await refusal(svc.assertLiveWriterAdmission({ ...handle }, cfg(owner, p)))).code).toBe('invalid_writer_admission');
+    expect((await refusal(service(base).assertLiveWriterAdmission(handle, cfg(owner, p)))).code).toBe('invalid_writer_admission');
+    const memoryConfig = cfg(owner, { ...p, vector: 'memory://' });
+    expect((await refusal(svc.assertLiveWriterAdmission(handle, memoryConfig))).code).toBe('target_mismatch');
+
+    const lease = await svc.consumeWriterAdmission(handle, cfg(owner, p));
+    expect((await refusal(svc.consumeWriterAdmission(handle, cfg(owner, p)))).code).toBe('invalid_writer_admission');
+    await handle.release(); // retained pre-transfer reference must not drop the live runtime lease
+    expect((await refusal(admit(svc, cfg(owner, p)))).code).toBe('writer_busy');
+    await lease.release();
+    await lease.release(); // idempotent
+    expect((await refusal(svc.assertLiveWriterAdmission(handle, cfg(owner, p)))).code).toBe('invalid_writer_admission');
+    await admit(svc, cfg(owner, p)); // lease actually released
+  });
+
+  it('release is idempotent before consumption and a released handle cannot be consumed', async () => {
+    const base = await sandbox();
+    const owner = await project(base, 'owner');
+    const p = pathsFor(join(base, 'storage'));
+    const svc = service(base);
+    const handle = await admit(svc, cfg(owner, p));
+    await handle.release();
+    await handle.release();
+    expect((await refusal(svc.consumeWriterAdmission(handle, cfg(owner, p)))).code).toBe('invalid_writer_admission');
+    await admit(svc, cfg(owner, p));
+  });
+});

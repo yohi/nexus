@@ -1,6 +1,7 @@
+import { spawn, type ChildProcess } from 'node:child_process';
 import { EventEmitter } from 'node:events';
 import { createHash } from 'node:crypto';
-import { lstat, mkdir, mkdtemp, readdir, readFile, realpath, rm, symlink, writeFile } from 'node:fs/promises';
+import { lstat, mkdir, mkdtemp, readdir, readFile, realpath, rm, symlink, utimes, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -11,6 +12,7 @@ import { ensureProjectEndpoint } from '../../src/server/project-connector.js';
 import type { SpawnFn } from '../../src/server/project-connector.js';
 import { createRuntimeAssembly } from '../../src/server/runtime-assembly.js';
 import type { RuntimeAssembly } from '../../src/server/runtime/assembly-types.js';
+import { claimPathFor, DIRECTORY_CLAIM_FILENAME, readOwnerClaim } from '../../src/server/storage-ownership/index.js';
 import type { Config } from '../../src/types/index.js';
 import { createSyntheticProvider, syntheticEmbeddingConfig } from '../benchmarks/performance/synthetic-provider.js';
 
@@ -239,5 +241,160 @@ describe('storage ownership collisions (red evidence against unchanged implement
     const shared = { ...targetsFor(join(base, 'shared-storage')), vectorDbPath: 'memory://' };
     expect((await attempt(configFor(rootA, shared))).admitted).toBe(true);
     expect((await attempt(configFor(rootB, shared))).admitted).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------------------------------------------
+// Task 3: writer admission across REAL separate processes (kernel-backed leases, crash release, pause, ordering).
+// ---------------------------------------------------------------------------------------------------------------
+
+const FIXTURE_DIR = join(import.meta.dirname, '..', 'fixtures', 'storage-ownership');
+
+interface ChildSpec {
+  readonly projectRoot: string; readonly rootDir: string; readonly metadataDbPath: string; readonly vectorDbPath: string;
+  readonly coordinationRoot: string; readonly hold?: boolean;
+}
+interface ChildEvent { readonly pid: number; readonly event: 'admitted' | 'refused' | 'released'; readonly code?: string }
+
+class AdmissionChild {
+  readonly events: ChildEvent[] = [];
+  private readonly waiters: Array<() => void> = [];
+  readonly exited: Promise<number | null>;
+  constructor(readonly proc: ChildProcess) {
+    let buffer = '';
+    proc.stdout?.setEncoding('utf8').on('data', (chunk: string) => {
+      buffer += chunk;
+      for (let i = buffer.indexOf('\n'); i >= 0; i = buffer.indexOf('\n')) {
+        const line = buffer.slice(0, i); buffer = buffer.slice(i + 1);
+        if (line.trim()) this.events.push(JSON.parse(line) as ChildEvent);
+        for (const w of this.waiters.splice(0)) w();
+      }
+    });
+    this.exited = new Promise((resolve) => proc.on('exit', (code) => { resolve(code); for (const w of this.waiters.splice(0)) w(); }));
+  }
+  async outcome(timeoutMs = 20_000): Promise<ChildEvent> {
+    const deadline = Date.now() + timeoutMs;
+    for (;;) {
+      const found = this.events.find((e) => e.event === 'admitted' || e.event === 'refused');
+      if (found) return found;
+      if (this.proc.exitCode !== null || Date.now() > deadline) throw new Error(`child_no_outcome (exit ${this.proc.exitCode})`);
+      await new Promise<void>((resolve) => { this.waiters.push(resolve); setTimeout(resolve, 100); });
+    }
+  }
+  async release(): Promise<void> { this.proc.stdin?.write('release\n'); await this.exited; }
+}
+
+function spawnAdmission(spec: ChildSpec, env: NodeJS.ProcessEnv = process.env): AdmissionChild {
+  const proc = spawn(process.execPath, ['--no-warnings', '--import', join(FIXTURE_DIR, 'ts-resolve-hooks.mjs'),
+    join(FIXTURE_DIR, 'admission-child.mjs'), JSON.stringify(spec)], { env, stdio: ['pipe', 'pipe', 'inherit'] });
+  const child = new AdmissionChild(proc);
+  cleanups.push(async () => { if (proc.exitCode === null && proc.signalCode === null) { proc.kill('SIGCONT'); proc.kill('SIGKILL'); await child.exited; } });
+  return child;
+}
+
+const specFor = (projectRoot: string, storage: string, coordinationRoot: string, extra: Partial<ChildSpec> = {}): ChildSpec => ({
+  projectRoot, rootDir: storage, metadataDbPath: join(storage, 'metadata.db'), vectorDbPath: join(storage, 'vectors'),
+  coordinationRoot, ...extra,
+});
+const claimFiles = (storage: string): string[] =>
+  [join(storage, DIRECTORY_CLAIM_FILENAME), claimPathFor(join(storage, 'metadata.db'), 'file'), join(storage, 'vectors', DIRECTORY_CLAIM_FILENAME)];
+
+describe('storage writer admission across processes (Task 3)', () => {
+  it('S09_same_owner_second_independent_writer_is_rejected', { timeout: 60_000 }, async () => {
+    const base = await sandbox();
+    const owner = await project(base, 'owner');
+    const spec = specFor(owner, join(base, 'storage'), join(base, 'coord'), { hold: true });
+    const first = spawnAdmission(spec);
+    expect((await first.outcome()).event).toBe('admitted');
+    const second = spawnAdmission(spec);
+    expect(await second.outcome()).toMatchObject({ event: 'refused', code: 'writer_busy' });
+    await first.release();
+    const third = spawnAdmission(spec);
+    expect((await third.outcome()).event).toBe('admitted');
+    await third.release();
+  });
+
+  it('S07_reversed_target_order_cannot_deadlock_or_split_owner', { timeout: 120_000 }, async () => {
+    const base = await sandbox();
+    const [a, b] = [await project(base, 'ownerA'), await project(base, 'ownerB')];
+    const coord = join(base, 'coord');
+    for (let round = 0; round < 6; round += 1) {
+      const d1 = join(base, `r${round}`, 'd1');
+      const d2 = join(base, `r${round}`, 'd2');
+      const childA = spawnAdmission({ projectRoot: a, rootDir: d1, vectorDbPath: d2, metadataDbPath: join(base, `r${round}`, 'ma', 'metadata.db'), coordinationRoot: coord, hold: true });
+      const childB = spawnAdmission({ projectRoot: b, rootDir: d2, vectorDbPath: d1, metadataDbPath: join(base, `r${round}`, 'mb', 'metadata.db'), coordinationRoot: coord, hold: true });
+      const outcomes = await Promise.all([childA.outcome(), childB.outcome()]);
+      const winners = outcomes.filter((o) => o.event === 'admitted');
+      expect(winners).toHaveLength(1);
+      const winnerOwner = outcomes[0]?.event === 'admitted' ? a : b;
+      for (const dir of [d1, d2]) {
+        const claim = await readOwnerClaim(join(dir, DIRECTORY_CLAIM_FILENAME));
+        expect(claim.state === 'present' && claim.claim.ownerProjectRoot).toBe(winnerOwner); // no split ownership
+      }
+      await Promise.all([childA.release(), childB.release()]);
+    }
+  });
+
+  it('S07_symlink_alias_and_different_tmpdir_contend', { timeout: 60_000 }, async () => {
+    const base = await sandbox();
+    const owner = await project(base, 'owner');
+    const storage = join(base, 'storage');
+    await mkdir(storage);
+    await symlink(storage, join(base, 'alias'), 'dir');
+    const coord = join(base, 'coord');
+    const holder = spawnAdmission(specFor(owner, storage, coord, { hold: true }), { ...process.env, TMPDIR: join(base, 'tmp-a') });
+    expect((await holder.outcome()).event).toBe('admitted');
+    const contender = spawnAdmission(specFor(owner, join(base, 'alias'), coord), { ...process.env, TMPDIR: join(base, 'tmp-b') });
+    expect(await contender.outcome()).toMatchObject({ event: 'refused', code: 'writer_busy' });
+    await holder.release();
+  });
+
+  it('S10_paused_live_writer_lease_cannot_be_stolen', { timeout: 60_000 }, async () => {
+    const base = await sandbox();
+    const owner = await project(base, 'owner');
+    const coord = join(base, 'coord');
+    const spec = specFor(owner, join(base, 'storage'), coord, { hold: true });
+    const holder = spawnAdmission(spec);
+    expect((await holder.outcome()).event).toBe('admitted');
+    holder.proc.kill('SIGSTOP');
+    const ancient = new Date('2000-01-01T00:00:00Z');
+    for (const sub of ['writer', 'resource']) {
+      for (const name of await readdir(join(coord, sub))) await utimes(join(coord, sub, name), ancient, ancient);
+    }
+    for (const file of claimFiles(join(base, 'storage'))) await utimes(file, ancient, ancient);
+    const contender = spawnAdmission({ ...spec, hold: false });
+    expect(await contender.outcome()).toMatchObject({ event: 'refused', code: 'writer_busy' }); // no mtime/TTL stealing
+    holder.proc.kill('SIGCONT');
+    await holder.release();
+  });
+
+  it('S10_crash_releases_kernel_lease_but_preserves_claim', { timeout: 60_000 }, async () => {
+    const base = await sandbox();
+    const owner = await project(base, 'owner');
+    const spec = specFor(owner, join(base, 'storage'), join(base, 'coord'), { hold: true });
+    const holder = spawnAdmission(spec);
+    expect((await holder.outcome()).event).toBe('admitted');
+    const before = await digest(...claimFiles(join(base, 'storage')));
+    holder.proc.kill('SIGKILL');
+    await holder.exited;
+    expect(await digest(...claimFiles(join(base, 'storage')))).toEqual(before); // durable claims survive the crash
+    const next = spawnAdmission({ ...spec, hold: false });
+    expect((await next.outcome()).event).toBe('admitted'); // kernel released the crashed holder's lease
+    await next.exited;
+  });
+
+  it('S10_crashed_claim_is_not_transferred', { timeout: 60_000 }, async () => {
+    const base = await sandbox();
+    const [a, b] = [await project(base, 'ownerA'), await project(base, 'ownerB')];
+    const storage = join(base, 'storage');
+    const coord = join(base, 'coord');
+    const holder = spawnAdmission(specFor(a, storage, coord, { hold: true }));
+    expect((await holder.outcome()).event).toBe('admitted');
+    holder.proc.kill('SIGKILL');
+    await holder.exited;
+    const before = await digest(storage);
+    const other = spawnAdmission(specFor(b, storage, coord));
+    expect(await other.outcome()).toMatchObject({ event: 'refused', code: 'owner_conflict' });
+    expect(await digest(storage)).toEqual(before);
   });
 });

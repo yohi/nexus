@@ -10,7 +10,7 @@ const MEMORY = 'memory://';
  * Canonicalize without creating anything: realpath for present entries, verified canonical existing ancestor plus
  * unresolved suffix for missing ones. Dangling symlinks and non-directory ancestors are rejected.
  */
-async function canonicalize(input: string, label: string): Promise<CanonicalPath> {
+export async function canonicalize(input: string, label: string): Promise<CanonicalPath> {
   if (input.includes('\0')) throw new Error(`Invalid ${label}: contains null byte`);
   const absolute = resolve(input); // same semantics as StorageManager: relative to process cwd, not projectRoot
   const suffix: string[] = [];
@@ -36,7 +36,7 @@ async function canonicalize(input: string, label: string): Promise<CanonicalPath
   }
 }
 
-async function assertNotHardlinked(path: CanonicalPath, label: string): Promise<void> {
+export async function assertNotHardlinked(path: CanonicalPath, label: string): Promise<void> {
   let stat;
   try { stat = await lstat(path); } catch { return; }
   if (stat.isDirectory()) throw new Error(`Unsafe ${label}: SQLite target is a directory`);
