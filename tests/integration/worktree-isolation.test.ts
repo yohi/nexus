@@ -199,11 +199,15 @@ describe('worktree isolation (disposable git worktrees)', () => {
     await expectOnlyNewIncarnation(fresh);
   });
 
-  // EVIDENCE for the W06 Owner checkpoint, NOT an acceptance pass. With storage outside the worktree, the canonical
-  // project root of a same-path recreation equals the old incarnation's, so the durable claims read as "same owner".
+  // Safe behavior required by Design §4.6; blocked on the W06 Owner decision (incarnation witness or accepted limit).
+  it.todo('W06_same_path_recreation_external_storage_must_not_reuse_old_incarnation_store (blocked: Owner decision)');
+
+  // EVIDENCE OF GAP for the W06 Owner checkpoint, NOT an acceptance pass: it asserts the observed UNSAFE behavior.
+  // With storage outside the worktree, the canonical project root of a same-path recreation equals the old
+  // incarnation's, so the durable claims read as "same owner".
   // While the old writer is live the recreated incarnation is refused (no second writer); once it is gone the new
   // incarnation is admitted onto the old incarnation's store. This test records that observed behavior.
-  it('W06_evidence_same_path_recreation_external_storage_is_indistinguishable', { timeout: 180_000 }, async (ctx) => {
+  it('EVIDENCE_GAP_W06_same_path_recreation_external_storage_is_indistinguishable', { timeout: 180_000 }, async (ctx) => {
     const set = await openWorktrees(ctx);
     const storage = join(dirname(set.primary), 'external-storage');
     const env = externalStorageEnv(storage);

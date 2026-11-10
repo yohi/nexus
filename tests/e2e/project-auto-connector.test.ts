@@ -1,6 +1,6 @@
 import { execFile, spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { once } from 'node:events';
-import { access, lstat, mkdtemp, readdir, readFile, realpath, rm, stat, writeFile } from 'node:fs/promises';
+import { access, lstat, mkdtemp, readdir, readFile, realpath, rename, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir, userInfo } from 'node:os';
 import { dirname, join } from 'node:path';
 import { promisify } from 'node:util';
@@ -23,10 +23,22 @@ const nexusArgs = (args: readonly string[]): string[] => ['--import', coordinati
 const nexusEnv = (extra: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv =>
   ({ ...process.env, NEXUS_TEST_COORDINATION_ROOT: coordinationRoot, ...extra });
 const realHomeCoordinationRoot = join(userInfo().homedir, '.local', 'state', 'nexus-ownership-v1');
-let realHomeCoordinationExisted = false;
+/** Recursive snapshot (type, size, mtime) of a tree, or `absent`; used to prove the real home root is untouched. */
+const snapshotTree = async (root: string): Promise<Record<string, string>> => {
+  const out: Record<string, string> = {};
+  const walk = async (path: string): Promise<void> => {
+    let info;
+    try { info = await lstat(path); } catch { out[path] = 'absent'; return; }
+    out[path] = `${info.isDirectory() ? 'dir' : info.isSymbolicLink() ? 'link' : 'file'}:${info.size}:${info.mtimeMs}`;
+    if (info.isDirectory()) for (const entry of (await readdir(path)).sort()) await walk(join(path, entry));
+  };
+  await walk(root);
+  return out;
+};
+let realHomeCoordinationBefore: Record<string, string> = {};
 
 beforeAll(async () => {
-  realHomeCoordinationExisted = await lstat(realHomeCoordinationRoot).then(() => true, () => false);
+  realHomeCoordinationBefore = await snapshotTree(realHomeCoordinationRoot);
 });
 
 beforeEach(async () => {
@@ -44,10 +56,9 @@ afterEach(async () => {
 }, 30_000);
 
 afterAll(async () => {
-  // Guard: the e2e run must never create the real account-home coordination root.
-  if (!realHomeCoordinationExisted) {
-    await expect(lstat(realHomeCoordinationRoot)).rejects.toThrow();
-  }
+  // Guard: the e2e run must never create or modify the real account-home coordination root (whether or not it
+  // existed before the run).
+  expect(await snapshotTree(realHomeCoordinationRoot)).toEqual(realHomeCoordinationBefore);
 });
 const initializeRequest = JSON.stringify({
   jsonrpc: '2.0',
@@ -150,13 +161,15 @@ const isAlive = (pid: number): boolean => {
   try { process.kill(pid, 0); return true; } catch { return false; }
 };
 
-// Graceful managed shutdown awaits in-flight startup indexing before the process exits, so allow a generous bound.
+// Graceful managed shutdown awaits an in-flight startup full index before the process exits (runtime.close() awaits
+// it). Measured for the git fixture with the local Ollama provider: ~11 s when SIGTERM arrives during that index,
+// ~40 ms once it has finished. Hence a generous bound.
 const waitForExit = async (pid: number): Promise<void> => {
   await waitFor(() => Promise.resolve(isAlive(pid) ? undefined : true as const), 30_000);
 };
 
 const stopBridge = async (bridge: ChildProcessWithoutNullStreams): Promise<void> => {
-  if (bridge.exitCode !== null) return;
+  if (bridge.exitCode !== null || bridge.signalCode !== null) return;
   bridge.kill('SIGTERM');
   await once(bridge, 'exit');
 };
@@ -214,7 +227,7 @@ const endpointOf = async (storageDir: string) => waitFor(async () => readProject
 describe('project auto-connector CLI', () => {
   afterEach(async () => {
     for (const bridge of bridges.splice(0)) {
-      if (bridge.exitCode === null) {
+      if (bridge.exitCode === null && bridge.signalCode === null) {
         bridge.kill();
         await once(bridge, 'exit');
       }
@@ -224,7 +237,7 @@ describe('project auto-connector CLI', () => {
 
   afterEach(async () => {
     for (const managed of managedProcesses.splice(0)) {
-      if (managed.exitCode === null) {
+      if (managed.exitCode === null && managed.signalCode === null) {
         managed.kill();
         await once(managed, 'exit');
       }
@@ -235,7 +248,10 @@ describe('project auto-connector CLI', () => {
     // Detached managed children spawned indirectly through the bridge (via
     // ensureProjectEndpoint) have no local ChildProcess handle, so they must
     // be reaped by pid instead of through the `managedProcesses` array above.
-    // Signal all first, then wait in parallel (several children per test for the #297 worktree cases).
+    // Signal all first, then wait in parallel (several children per test for the #297 worktree cases). Graceful
+    // managed shutdown awaits an in-flight startup full index (runtime.close() awaits it; measured ~11 s for the git
+    // fixture with the local Ollama provider), hence the 30 s bound. A child that is still alive after that is
+    // SIGKILLed and the hook FAILS, so a leaked child (and its writer leases) can never silently affect later tests.
     const pids = detachedManagedPids.splice(0).filter((pid) => {
       try {
         process.kill(pid, 'SIGTERM');
@@ -244,15 +260,18 @@ describe('project auto-connector CLI', () => {
         return false;
       }
     });
-    await Promise.all(pids.map(async (pid) => waitFor(async () => {
-      try {
-        process.kill(pid, 0);
-        return undefined;
-      } catch {
-        return true as const;
-      }
-    }, 10_000).catch(() => {})));
-  }, 30_000);
+    const leaked: number[] = [];
+    await Promise.all(pids.map(async (pid) => {
+      const exited = await waitFor(() => Promise.resolve(isAlive(pid) ? undefined : true as const), 30_000)
+        .then(() => true, () => false);
+      if (exited) return;
+      leaked.push(pid);
+      try { process.kill(pid, 'SIGKILL'); } catch { /* already gone */ }
+      await waitFor(() => Promise.resolve(isAlive(pid) ? undefined : true as const), 5_000).catch(() => undefined);
+    }));
+    expect(leaked, `managed children did not exit within 30 s of SIGTERM (SIGKILLed): ${leaked.join(', ')}`).toEqual([]);
+    for (const pid of pids) expect(isAlive(pid)).toBe(false);
+  }, 45_000);
 
   it('shares one managed endpoint and removes it after both bridge clients disconnect', async () => {
     const projectRoot = await mkdtemp(join(tmpdir(), 'nexus-auto-connector-e2e-'));
@@ -480,9 +499,13 @@ await expect(readProjectEndpoint(storageDir)).resolves.toBeUndefined();
     expect(await callTool(bridge, 11, 'grep_search', { pattern: OLD_SYMBOL })).not.toContain(OLD_FILE);
   });
 
-  // EVIDENCE for the W06 Owner checkpoint, NOT an acceptance pass: with external custom storage the descriptor and the
-  // claims survive the deletion, and a same-path recreation has the same canonical owner. Records observed behavior.
-  it('W06_evidence_same_path_recreation_external_storage_reattaches_and_reuses', { timeout: 120_000 }, async (ctx) => {
+  // Safe behavior required by Design §4.6; blocked on the W06 Owner decision (incarnation witness or accepted limit).
+  it.todo('W06_same_path_recreation_external_storage_must_not_reattach_or_reuse_old_incarnation (blocked: Owner decision)');
+
+  // EVIDENCE OF GAP for the W06 Owner checkpoint, NOT an acceptance pass: it asserts the observed UNSAFE behavior.
+  // With external custom storage the descriptor and the claims survive the deletion, and a same-path recreation has
+  // the same canonical owner.
+  it('EVIDENCE_GAP_W06_same_path_recreation_external_storage_reattaches_and_reuses', { timeout: 120_000 }, async (ctx) => {
     const set = await worktreeSet((note) => ctx.skip(note));
     const storage = join(dirname(set.primary), 'external-storage');
     const env = { NEXUS_STORAGE_ROOT_DIR: storage, NEXUS_STORAGE_METADATA_DB_PATH: join(storage, 'metadata.db'),
@@ -514,5 +537,56 @@ await expect(readProjectEndpoint(storageDir)).resolves.toBeUndefined();
     }, 15_000);
     detachedManagedPids.push(fresh.pid);
     expect(await readFile(join(storage, DIRECTORY_CLAIM_FILENAME))).toEqual(claimBefore);
+  });
+
+  // Nexus #297: a real managed process whose writer lease is lost (lock-file inode replaced in the coordination
+  // root, so /proc/locks no longer attests it) fails fast with exit status 75 within the lease polling window.
+  it('lease_loss_real_managed_process_exits_75', { timeout: 60_000 }, async () => {
+    const projectRoot = await mkdtemp(join(tmpdir(), 'nexus-auto-connector-e2e-'));
+    projectRoots.push(projectRoot);
+    const managed = spawn(process.execPath, nexusArgs(['--project-root', projectRoot, '--port', '0', '--managed']),
+      { stdio: ['pipe', 'pipe', 'pipe'], env: nexusEnv() });
+    managedProcesses.push(managed);
+    let stderr = '';
+    managed.stderr.on('data', (chunk: Buffer) => { stderr += chunk.toString('utf8'); });
+    const exited = once(managed, 'exit');
+    await endpointOf(join(projectRoot, '.nexus'));
+    const writerDir = join(coordinationRoot, 'writer');
+    const locks = (await readdir(writerDir)).filter((entry) => entry.endsWith('.lock'));
+    expect(locks).toHaveLength(3);
+    const replacedAt = Date.now();
+    for (const name of locks) {
+      const replacement = join(writerDir, `${name}.replacement`);
+      await writeFile(replacement, '', { mode: 0o600 });
+      await rename(replacement, join(writerDir, name));
+    }
+    const [code] = (await exited) as [number | null];
+    const elapsedMs = Date.now() - replacedAt;
+    console.info(`[lease_loss] exit ${String(code)} after ${elapsedMs} ms`);
+    expect(code).toBe(75);
+    expect(elapsedMs).toBeLessThan(15_000); // default 5 s lease polling plus process exit
+    expect(stderr).toMatch(/lease/i);
+  });
+
+  // Nexus #297: after a crash the kernel writer lease is released (admission succeeds), but the pre-existing
+  // mtime-based project lock on storage.rootDir still refuses an immediate successor until its stale window passes.
+  it('crash_leaves_project_lock_refusing_an_immediate_successor', { timeout: 60_000 }, async () => {
+    const projectRoot = await mkdtemp(join(tmpdir(), 'nexus-auto-connector-e2e-'));
+    projectRoots.push(projectRoot);
+    const args = nexusArgs(['--project-root', projectRoot, '--port', '0', '--managed']);
+    const first = spawn(process.execPath, args, { stdio: ['pipe', 'pipe', 'pipe'], env: nexusEnv() });
+    managedProcesses.push(first);
+    await endpointOf(join(projectRoot, '.nexus'));
+    first.kill('SIGKILL');
+    await once(first, 'exit');
+    const successor = spawn(process.execPath, args, { stdio: ['pipe', 'pipe', 'pipe'], env: nexusEnv() });
+    managedProcesses.push(successor);
+    let stderr = '';
+    successor.stderr.on('data', (chunk: Buffer) => { stderr += chunk.toString('utf8'); });
+    const [code] = (await once(successor, 'exit')) as [number | null];
+    expect(code).toBe(1);
+    expect(stderr).toContain('Another Nexus process is already running');
+    expect(stderr).not.toContain('writer_busy');
+    expect(stderr).not.toContain('owner_');
   });
 });

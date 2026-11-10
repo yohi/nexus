@@ -308,10 +308,10 @@ describe('F-004 bootstrap and partial claims', () => {
     // Claims are published in resourceKey (hash) order. Pick a storage name whose vector key sorts last so the
     // single claim published before the injected crash is always root or metadata, never the vector directory
     // (a claimed directory is not content-scanned, which would make the "unexpected content" step order-dependent).
+    const vectorSortsLast = (q: Paths) => resourceKey(q.vector) > resourceKey(q.root) && resourceKey(q.vector) > resourceKey(q.metadata);
     let p = pathsFor(join(base, 'storage'));
-    for (let i = 0; resourceKey(p.vector) < resourceKey(p.root) || resourceKey(p.vector) < resourceKey(p.metadata); i++) {
-      p = pathsFor(join(base, `storage-${i}`));
-    }
+    for (let i = 0; i < 1000 && !vectorSortsLast(p); i++) p = pathsFor(join(base, `storage-${i}`));
+    expect(vectorSortsLast(p)).toBe(true); // ~1/3 of names qualify; 1000 attempts make exhaustion negligible
     let n = 0;
     const crashAfterOne = service(base, { beforeClaimPublish: () => { if (++n > 1) throw new Error('crash'); } });
     await refusal(admit(crashAfterOne, cfg(a, p)));

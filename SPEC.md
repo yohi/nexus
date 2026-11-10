@@ -350,11 +350,11 @@ An existing nonempty target without a trustworthy claim is refused with `owner_u
 
 The writer lease is a kernel-backed POSIX advisory lock (`fcntl`) held for the whole writer lifetime. It is never taken over based on mtime, a TTL or a PID. A paused live writer keeps its lease. A crash releases the lease through the kernel and leaves the claims in place.
 
-A same-owner sequential restart, whether after a clean shutdown or a crash, is admitted onto the existing claimed store without rewriting the claims. After a crash, the separate mtime-based project lock on `storage.rootDir` can delay a successor by up to its 30-second stale window.
+A same-owner sequential restart, whether after a clean shutdown or a crash, passes writer admission onto the existing claimed store without rewriting the claims. After a crash, the separate mtime-based project lock on `storage.rootDir` still refuses an immediate successor runtime. That lock only becomes reclaimable after its stale window (see the untested items below).
 
-A running writer checks its leases periodically (every 5 s by default). If a lease is lost, the CLI stops the pipeline and exits with status 75 instead of continuing to serve.
+A running writer checks its leases periodically (every 5 s by default). If a lease is lost, the CLI stops the pipeline and exits with status 75 instead of continuing to serve. A real managed process whose lease files were replaced exited with status 75 about 5 s later.
 
-**Coordination root.** Locks, leases, Bridge startup gates and Bridge attempt logs live under `<account home>/.local/state/nexus-ownership-v1`. The account home comes from the OS account database, not from `HOME` or `TMPDIR`. The directory must be account-private (mode `0700`, owned by the account, no symlink substitution) and on a local filesystem. It must not overlap a storage target. Different `TMPDIR` values reach the same locks.
+**Coordination root.** Locks, leases, Bridge startup gates and Bridge attempt logs live under `<account home>/.local/state/nexus-ownership-v1`. The account home comes from the OS account database, not from `HOME` or `TMPDIR`. The directory must be account-private (mode `0700`, owned by the account, no symlink substitution) and must not overlap a storage target. Network and userspace filesystems are refused, as listed below. Different `TMPDIR` values reach the same locks.
 
 **HTTP Bridge.** The Bridge is a read-only discovery client and never holds a writer lease. It resolves all three effective targets and runs the read-only preflight. It reuses an Endpoint only when all of the following hold:
 
@@ -381,8 +381,16 @@ The Bridge does not create storage or write logs under it, and never deletes any
 **Limitations.**
 
 - Writer admission and the Bridge startup gate are Linux-only. They verify kernel lock ownership through `/proc/locks`, and other platforms are refused with `unsupported_kernel_lease`. They also fail closed when `/proc/locks` cannot attest the lock. That happens when the PID namespace does not match the procfs mount. It may also happen on filesystems whose reported device numbers differ from `/proc/locks` entries, such as btrfs subvolumes or overlayfs.
-- Remote and userspace filesystems (NFS, SMB/CIFS, FUSE, Ceph and similar) are refused for the coordination root.
+- The coordination root is refused on network and userspace filesystems (NFS, SMB/CIFS, FUSE, Ceph and similar), decided by the `statfs` filesystem type.
 - Populated stores created before ownership claims existed are refused rather than adopted. Nexus provides no migration procedure.
+
+**Implemented but not exercised by tests.** The implementation does the following, but no executed test has shown it end to end:
+
+- Refusing a coordination root on a physical network or userspace mount. Only the `statfs`-type refusal branch is unit-tested, with a simulated filesystem type.
+- Reclaiming the project lock after its 30-second `proper-lockfile` stale window. Only the immediate refusal after a crash is tested.
+- Fail-closed `/proc/locks` attestation when the PID namespace does not match the procfs mount, and on btrfs subvolumes or overlayfs.
+- Writer admission on non-Linux platforms. The `unsupported_kernel_lease` refusal is unit-tested by overriding the platform value.
+- Exclusion of a reused PID. Liveness is decided only by the kernel lease, never by a PID, but PID reuse is not exercised.
 
 **Exclusions.** This contract provides no shared mutable storage across canonical roots. It also provides no cross-worktree cache reuse, Global Manager, multi-worktree runtime manager or remote routing. Those remain separate roadmap items.
 
