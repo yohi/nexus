@@ -30,6 +30,22 @@ import { createRuntimeLogging } from './runtime/logging.js';
 import { EventProcessingManager } from './runtime/events.js';
 import { runtimeStateRevision } from '../observability/runtime-observer.js';
 import { runRuntimeDiagnosticStage, withRuntimeDiagnosticContext, withoutRuntimeDiagnosticContext } from '../observability/diagnostic-stage-trace.js';
+import { storageOwnershipAdmissionService, type ConsumedWriterLease, type WriterAdmission } from './storage-ownership/admission.js';
+
+/** Bounded detection window for a lost kernel writer lease while the runtime serves. */
+const DEFAULT_WRITER_LEASE_CHECK_INTERVAL_MS = 5_000;
+
+/**
+ * Nexus #297 (F-003): obtain the runtime's single writer lease before ANY ordinary Storage mutation. A transferred
+ * handle is authenticated and consumed exactly once; without a handle the Assembly performs its own admission.
+ */
+async function acquireRuntimeWriterLease(config: Config, handle: WriterAdmission | undefined): Promise<ConsumedWriterLease> {
+  const service = storageOwnershipAdmissionService;
+  if (handle !== undefined) return await service.consumeWriterAdmission(handle, config);
+  const own = await service.admitStorageWriter(await service.resolveStorageOwnershipTargets(config));
+  try { return await service.consumeWriterAdmission(own, config); }
+  catch (error) { await own.release(); throw error; }
+}
 
 async function closeResources(steps: readonly (() => Promise<void>)[]): Promise<void> {
   const errors: unknown[] = [];
@@ -51,13 +67,21 @@ export async function createRuntimeAssembly(config: Config,
 async function createRuntimeAssemblyCore(config: Config,
   dependencies: RuntimeAssemblyDependencies = {}): Promise<RuntimeAssembly> {
   const { projectRoot } = config;
-  await StorageManager.ensureDirectories(config);
+  const writerLease = await acquireRuntimeWriterLease(config, dependencies.writerAdmission);
   let projectLock;
-  try { projectLock = await acquireProjectLock(config.storage.rootDir); }
-  catch (lockError) {
-    console.error('[Nexus] Failed to acquire project lock:', lockError);
-    throw lockError;
+  try {
+    await StorageManager.ensureDirectories(config);
+    try { projectLock = await acquireProjectLock(config.storage.rootDir); }
+    catch (lockError) {
+      console.error('[Nexus] Failed to acquire project lock:', lockError);
+      throw lockError;
+    }
+  } catch (error) {
+    await writerLease.release();
+    throw error;
   }
+  let leaseMonitor: NodeJS.Timeout | undefined;
+  const stopLeaseMonitor = (): Promise<void> => { clearInterval(leaseMonitor); return Promise.resolve(); };
   let stores: Awaited<ReturnType<typeof StorageManager.initializeStores>> | undefined;
   let logging: ReturnType<typeof createRuntimeLogging> | undefined;
   let stopEvents: (() => Promise<void>) | undefined;
@@ -140,13 +164,22 @@ async function createRuntimeAssemblyCore(config: Config,
       contentStore, symbolRetrievalService, lspNavigationService, metricsCollectorRegistry: metricsCollector.registry,
       metricsPort: config.metricsPort, storageDir: config.storage.rootDir, projectName: config.projectName,
       metricsHooks: metricsCollector, aggregatorPort: config.aggregatorPort, packageMode: config.packageMode,
+      // The writer lease is released last, after every store and the project lock are closed.
       onClose: () => closePromise ??= closeResources([
-        () => manager.close(), onClose, () => vectorStore.close(), () => metadataStore.close(),
-        () => runtimeLogging.close(), () => projectLock.release(),
+        stopLeaseMonitor, () => manager.close(), onClose, () => vectorStore.close(), () => metadataStore.close(),
+        () => runtimeLogging.close(), () => projectLock.release(), () => writerLease.release(),
       ]),
       runReindex,
     };
     const runtime = buildNexusRuntime(options);
+    // Fail closed on a lost lease: stop the runtime (watcher, pipeline, stores) before any further storage mutation.
+    leaseMonitor = setInterval(() => {
+      if (writerLease.isHeld()) return;
+      clearInterval(leaseMonitor);
+      console.error('[Nexus] Storage writer lease was lost; closing the runtime to stop storage mutation.');
+      runtime.close().catch((error: unknown) => { console.error('[Nexus] Runtime close after lease loss failed:', error); });
+    }, dependencies.writerLeaseCheckIntervalMs ?? DEFAULT_WRITER_LEASE_CHECK_INTERVAL_MS);
+    leaseMonitor.unref();
     const initializationContext = dependencies.diagnosticTraceContext;
     if (initializationContext !== undefined) {
       const initialize = runtime.initialize.bind(runtime);
@@ -172,6 +205,8 @@ async function createRuntimeAssemblyCore(config: Config,
         () => stores?.vectorStore.close() ?? Promise.resolve(),
         () => logging?.close() ?? Promise.resolve(),
         () => projectLock.release(),
+        stopLeaseMonitor,
+        () => writerLease.release(),
       ]);
     } catch (cleanupError) { throw new AggregateError([error, cleanupError], 'Runtime construction and cleanup failed'); }
     throw error;

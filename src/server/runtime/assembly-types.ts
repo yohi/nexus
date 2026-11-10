@@ -6,11 +6,16 @@ import type { EventQueue } from '../../indexer/event-queue.js';
 import type { EmbeddingProviderFactory } from './plugins.js';
 import type { PathSanitizer } from '../path-sanitizer.js';
 import type { RuntimeDiagnosticContext } from '../../observability/diagnostic-stage-trace.js';
+import type { WriterAdmission } from '../storage-ownership/admission.js';
 
 export interface RuntimeAssemblyDependencies {
   readonly createEmbeddingProvider?: EmbeddingProviderFactory;
   readonly observer?: RuntimeObserver;
   readonly diagnosticTraceContext?: RuntimeDiagnosticContext;
+  /** Issued writer admission transferred by the CLI/Factory; consumed once. Absent => the Assembly admits itself. */
+  readonly writerAdmission?: WriterAdmission;
+  /** Internal: lost-lease detection interval (tests only). */
+  readonly writerLeaseCheckIntervalMs?: number;
 }
 export interface RuntimeDiagnostics {
   readonly metadataDbPath: string;

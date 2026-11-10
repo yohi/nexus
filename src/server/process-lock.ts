@@ -1,5 +1,8 @@
+import { readFileSync, unlinkSync } from 'node:fs';
 import { mkdir, open, readFile, unlink } from 'node:fs/promises';
 import path from 'node:path';
+import type { Config } from '../types/index.js';
+import { assertLiveWriterAdmission, type WriterAdmission } from './storage-ownership/admission.js';
 
 export interface LockResult {
   acquired: boolean;
@@ -17,11 +20,20 @@ export const LOCK_FILENAME = 'nexus.pid';
  *   via `process.kill(pid, 0)`. If the process is dead (or the file is corrupt),
  *   the stale lock is removed and acquisition is retried.
  * - If the recorded PID is alive, returns `{ acquired: false, existingPid }`.
+ * - Nexus #297: removing a stale/corrupt PID file requires the caller's live, ISSUED writer admission for exactly this
+ *   storage root (authenticated by the admission service). Without it an existing PID file is never removed and the
+ *   lock is reported as not acquired, so a refused or unadmitted startup cannot delete another owner's PID.
  *
- * The caller MUST invoke `releaseProcessLock` on shutdown to free the lock.
+ * The caller MUST invoke `releaseOwnedProcessLock` (or `releaseProcessLock`) on shutdown to free the lock.
  */
-export async function acquireProcessLock(storageDir: string): Promise<LockResult> {
+export async function acquireProcessLock(storageDir: string,
+  admission?: { readonly handle: WriterAdmission; readonly config: Config }): Promise<LockResult> {
   const lockPath = path.join(storageDir, LOCK_FILENAME);
+  const mayReclaim = async (): Promise<boolean> => {
+    if (admission === undefined || path.resolve(admission.config.storage.rootDir) !== path.resolve(storageDir)) return false;
+    await assertLiveWriterAdmission(admission.handle, admission.config);
+    return true;
+  };
 
   // Ensure the storage directory exists before trying to read or write the lock file.
   await mkdir(path.resolve(storageDir), { recursive: true });
@@ -31,15 +43,15 @@ export async function acquireProcessLock(storageDir: string): Promise<LockResult
     const content = await readFile(lockPath, 'utf8');
     const existingPid = Number.parseInt(content.trim(), 10);
 
-    if (Number.isNaN(existingPid) || existingPid <= 0) {
-      // Corrupt lock file - remove and proceed.
-      await safeUnlink(lockPath);
-    } else if (isProcessAlive(existingPid)) {
+    const corrupt = Number.isNaN(existingPid) || existingPid <= 0;
+    if (!corrupt && isProcessAlive(existingPid)) {
       return { acquired: false, existingPid };
-    } else {
-      // Stale lock (process no longer exists) - remove and proceed.
-      await safeUnlink(lockPath);
     }
+    if (!(await mayReclaim())) {
+      return corrupt ? { acquired: false } : { acquired: false, existingPid };
+    }
+    // Corrupt or stale lock (process no longer exists) under a live writer admission - remove and proceed.
+    await safeUnlink(lockPath);
   } catch (error) {
     const err = error as NodeJS.ErrnoException;
     if (err.code !== 'ENOENT') {
@@ -82,6 +94,33 @@ export async function acquireProcessLock(storageDir: string): Promise<LockResult
  */
 export async function releaseProcessLock(storageDir: string): Promise<void> {
   await safeUnlink(path.join(storageDir, LOCK_FILENAME));
+}
+
+const ownsPidContent = (content: string): boolean => content.trim() === String(process.pid);
+
+/**
+ * Owner-safe release (Nexus #297): removes the PID file only when it records this process. A foreign, stale or
+ * corrupt PID file is never removed by shutdown or exit cleanup. Idempotent.
+ */
+export async function releaseOwnedProcessLock(storageDir: string): Promise<void> {
+  const lockPath = path.join(storageDir, LOCK_FILENAME);
+  let content: string;
+  try { content = await readFile(lockPath, 'utf8'); }
+  catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return;
+    throw error;
+  }
+  if (ownsPidContent(content)) await safeUnlink(lockPath);
+}
+
+/** Synchronous best-effort variant of `releaseOwnedProcessLock` for the process `exit` event. Never throws. */
+export function releaseOwnedProcessLockSync(storageDir: string): void {
+  const lockPath = path.join(storageDir, LOCK_FILENAME);
+  try {
+    if (ownsPidContent(readFileSync(lockPath, 'utf8'))) unlinkSync(lockPath);
+  } catch {
+    // Missing or unreadable: a stale lock is detected by the next startup.
+  }
 }
 
 export function isProcessAlive(pid: number): boolean {

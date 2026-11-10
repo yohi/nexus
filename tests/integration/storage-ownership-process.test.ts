@@ -116,10 +116,10 @@ const foreignEndpoint = (projectRoot: string, pid: number) =>
 const DEAD_PID = 2_147_483_000;
 
 describe('storage ownership collisions (red evidence against unchanged implementation)', () => {
-  // CONTROL, not a red gap: the pre-existing proper-lockfile project lock on rootDir already refuses a second owner of
-  // the same root. The foreign endpoint.json/nexus.pid below are test-seeded bytes (assembly itself never writes them),
-  // so this passes because of the lock, not because of ownership logic. The red S01 cases are the two stale-foreign
-  // descriptor/PID tests that follow.
+  // CONTROL, not a red gap: originally the pre-existing proper-lockfile project lock on rootDir refused a second owner
+  // of the same root. Since Task 4, writer admission runs first and refuses with owner_conflict before the lock. The
+  // foreign endpoint.json/nexus.pid below are test-seeded bytes (assembly itself never writes them). The red S01 cases
+  // are the two stale-foreign descriptor/PID tests that follow.
   it('S01_red_shared_root', { timeout: 60_000 }, async () => {
     const base = await sandbox();
     const [rootA, rootB] = [await project(base, 'ownerA'), await project(base, 'ownerB')];
@@ -135,7 +135,8 @@ describe('storage ownership collisions (red evidence against unchanged implement
       shared.metadataDbPath, `${shared.metadataDbPath}-wal`, `${shared.metadataDbPath}-shm`, shared.vectorDbPath);
     expect(after).toEqual(before);
     expect(b.admitted).toBe(false);
-    expect(String((b.error as Error | undefined)?.message)).toMatch(/Another Nexus process is already running/); // lock, not ownership
+    // Task 4: writer admission now precedes the project lock, so the refusal is the ownership conflict itself.
+    expect(b.error).toMatchObject({ code: 'owner_conflict' });
   });
 
   it('S01_red_shared_root_stale_foreign_descriptor_via_bridge', { timeout: 60_000 }, async () => {

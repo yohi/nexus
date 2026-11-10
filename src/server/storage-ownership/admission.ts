@@ -34,8 +34,14 @@ export interface WriterAdmission {
   /** Releases the live writer leases only while ISSUED (idempotent); a no-op after transfer to a runtime. */
   readonly release: () => Promise<void>;
 }
-/** Runtime-only release capability returned by `consumeWriterAdmission`; performs the one real lease release. */
-export interface ConsumedWriterLease { readonly release: () => Promise<void> }
+/**
+ * Runtime-only capability returned by `consumeWriterAdmission`; performs the one real lease release. `isHeld` reports
+ * whether every kernel writer lease is still held (false after release or on a detected loss).
+ */
+export interface ConsumedWriterLease {
+  readonly release: () => Promise<void>;
+  readonly isHeld: () => boolean;
+}
 
 export interface StorageOwnershipAdmissionService {
   resolveStorageOwnershipTargets(config: Config): Promise<ResolvedStorageOwnershipTargets>;
@@ -366,6 +372,7 @@ export function createStorageOwnershipAdmissionService(options: AdmissionInterna
         }
         return Promise.resolve();
       },
+      isHeld: (): boolean => entry.state === 'CONSUMED_BY_RUNTIME' && entry.leases.every((l) => l.isHeld()),
     });
   }
 
@@ -386,8 +393,21 @@ function deepFreeze<T>(value: T): T {
   return value;
 }
 
+/**
+ * In-process, test-only override of the process-wide coordination root (set by the Vitest setup so tests never touch
+ * the real account home). It is deliberately neither a Config field nor an environment variable.
+ */
+export const TEST_COORDINATION_ROOT_KEY: unique symbol = Symbol.for('nexus.storageOwnership.testCoordinationRoot') as never;
+const processServiceOptions: AdmissionInternalOptions = {
+  get coordinationRoot(): string | undefined {
+    const value = (globalThis as Record<symbol, unknown>)[TEST_COORDINATION_ROOT_KEY];
+    return typeof value === 'string' ? value : undefined;
+  },
+};
+
 /** Process-wide service using the verified OS-account coordination root. */
-export const storageOwnershipAdmissionService: StorageOwnershipAdmissionService = createStorageOwnershipAdmissionService();
+export const storageOwnershipAdmissionService: StorageOwnershipAdmissionService =
+  createStorageOwnershipAdmissionService(processServiceOptions);
 export const admitStorageWriter = (targets: ResolvedStorageOwnershipTargets): Promise<WriterAdmission> =>
   storageOwnershipAdmissionService.admitStorageWriter(targets);
 export const assertLiveWriterAdmission = (handle: unknown, config: Config): Promise<void> =>

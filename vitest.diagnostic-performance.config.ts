@@ -2,7 +2,7 @@ import { defineConfig } from 'vitest/config';
 
 export default defineConfig({
   test: {
-    environment: 'node',
+    environment: 'node', setupFiles: ['tests/shared/storage-ownership-coordination-setup.ts'],
     include: ['tests/benchmarks/performance/runtime.diagnostic.perf.ts'],
     exclude: [],
     pool: 'forks',

@@ -5,7 +5,7 @@ import path from "node:path";
 import { parseArgs } from "node:util";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { unlinkSync, appendFileSync } from "node:fs";
+import { appendFileSync } from "node:fs";
 
 import { loadConfig } from "../config/index.js";
 import { handleFatalError } from "./fatal-error.js";
@@ -16,7 +16,17 @@ import {
   type StreamableHttpHandler,
 } from "../server/transport.js";
 import { createRestApiHandler } from "../server/rest-api.js";
-import { acquireProcessLock, releaseProcessLock, LOCK_FILENAME } from "../server/process-lock.js";
+import {
+  acquireProcessLock,
+  releaseOwnedProcessLock,
+  releaseOwnedProcessLockSync,
+  LOCK_FILENAME,
+} from "../server/process-lock.js";
+import {
+  admitStorageWriter,
+  resolveStorageOwnershipTargets,
+  type WriterAdmission,
+} from "../server/storage-ownership/index.js";
 import type { ManagedHttpServer } from "../server/managed-http-server.js";
 import type { Config } from "../types/index.js";
 import { readIndexProgress } from "./index-progress.js";
@@ -131,11 +141,24 @@ async function main(args: string[]): Promise<void> {
 
   const config = await loadConfig({ projectRoot: root });
 
-  // Acquire single-instance lock keyed on storage directory.
-  // Prevents two nexus processes from corrupting the shared
-  // SQLite/LanceDB stores or doubling the embedding load.
-  const lockResult = await acquireProcessLock(config.storage.rootDir);
+  // Nexus #297: storage writer admission precedes every PID/Endpoint mutation, project lock, storage directory
+  // initialization, store open and runtime logging. A refusal leaves all storage and PID bytes untouched.
+  let admission: WriterAdmission;
+  try {
+    admission = await admitStorageWriter(await resolveStorageOwnershipTargets(config));
+  } catch (error) {
+    console.error(
+      `\u274c Nexus refused to start: ${error instanceof Error ? error.message : String(error)}\n` +
+        `   Storage: ${config.storage.rootDir}`,
+    );
+    process.exit(1);
+    return;
+  }
+
+  // Acquire single-instance lock keyed on storage directory (under the live writer lease).
+  const lockResult = await acquireProcessLock(config.storage.rootDir, { handle: admission, config });
   if (!lockResult.acquired) {
+    await admission.release();
     const pidStr = lockResult.existingPid ?? "unknown";
     const progress = await readIndexProgress(config.storage.rootDir);
     const progressStatus = progress?.active ? "running" : "idle";
@@ -149,27 +172,32 @@ async function main(args: string[]): Promise<void> {
         progressLine,
     );
     process.exit(1);
-  }
-
-  // Register best-effort exit cleanup immediately after acquiring the lock so
-  // it runs even if createRuntime/connect throws before setupSignalHandlers.
-  // setupSignalHandlers will replace this with a named handler that removes
-  // itself after a clean shutdown to prevent double-unlink.
-  const exitCleanup = () => {
-    try {
-      unlinkSync(path.join(config.storage.rootDir, LOCK_FILENAME));
-    } catch {
-      // Ignore - stale lock will be detected by next startup.
-    }
-  };
-  process.on("exit", exitCleanup);
-
-  if (values["reindex"]) {
-    await startReindexMode({ config, exitCleanup, full: !!values["full"] });
     return;
   }
 
-  const runtime = await NexusServerFactory.createRuntime(config);
+  // Best-effort exit cleanup that only ever removes the PID file this process wrote. Clean shutdown paths
+  // deregister it after removing the owned PID themselves, before the runtime releases the writer lease.
+  const exitCleanup = () => {
+    releaseOwnedProcessLockSync(config.storage.rootDir);
+  };
+  process.on("exit", exitCleanup);
+
+  // Transfer the issued admission to the guarded Factory. After a successful transfer only the runtime may release
+  // the lease (runtime.close() releases it last); before transfer a failure releases only this unconsumed handle.
+  let runtime: NexusRuntime;
+  try {
+    runtime = await NexusServerFactory.createRuntime(config, admission);
+  } catch (error) {
+    await releaseOwnedProcessLock(config.storage.rootDir).catch(() => {});
+    process.removeListener("exit", exitCleanup);
+    await admission.release();
+    throw error;
+  }
+
+  if (values["reindex"]) {
+    await startReindexMode({ config, exitCleanup, full: !!values["full"], runtime });
+    return;
+  }
 
   if (values["port"]) {
     const port = Number(values["port"]);
@@ -206,6 +234,7 @@ interface ReindexModeOptions {
   readonly config: Config;
   readonly exitCleanup: () => void;
   readonly full: boolean;
+  readonly runtime: NexusRuntime;
 }
 
 interface RuntimeModeOptions {
@@ -230,8 +259,8 @@ async function startReindexMode({
   config,
   exitCleanup,
   full,
+  runtime,
 }: ReindexModeOptions): Promise<void> {
-  const runtime = await NexusServerFactory.createRuntime(config);
   let exitCode = 0;
   try {
     console.log(`Starting indexing...`);
@@ -241,9 +270,10 @@ async function startReindexMode({
     console.error(`Indexing failed:`, error);
     exitCode = 1;
   } finally {
-    await runtime.close();
-    await releaseProcessLock(config.storage.rootDir);
+    // Owned PID first (under the live lease), then stores; runtime.close() releases the writer lease last.
+    await releaseOwnedProcessLock(config.storage.rootDir).catch(() => {});
     process.removeListener("exit", exitCleanup);
+    await runtime.close();
   }
   process.exit(exitCode);
 }
@@ -429,11 +459,10 @@ function setupSignalHandlers(
         await mcpServer.close();
       }
       if (managedServer) {
-        // managedServer.close() releases the process lock (nexus.pid) via
-        // releaseProcessLock() and then calls process.exit(0) synchronously
-        // when exitOnShutdown is set, firing Node's synchronous "exit" event.
-        // Remove exitCleanup first so the still-registered listener does not
-        // attempt a redundant (no-op) unlink of the already-released PID lock file.
+        // managedServer.close() removes the owned Endpoint and nexus.pid under
+        // the live writer lease, then closes the runtime (releasing the lease
+        // last) and calls process.exit(0) when exitOnShutdown is set. Remove
+        // exitCleanup first so it never runs after the lease is released.
         process.removeListener("exit", exitCleanup);
         await managedServer.close();
         return;
@@ -444,14 +473,15 @@ function setupSignalHandlers(
         });
         await mcpHandler?.dispose();
       }
+      // Work has stopped: remove the owned PID under the still-live writer lease, then close stores.
+      // runtime.close() releases the writer lease as its final step.
+      await releaseOwnedProcessLock(storageDir);
+      process.removeListener("exit", exitCleanup);
       await runtime.close();
-      await releaseProcessLock(storageDir);
     };
     cleanup()
       .then(() => {
-        // Deregister the exit handler before process.exit(0) so the PID file
-        // already removed by releaseProcessLock is not touched again (and a
-        // concurrently started process's file is not mistakenly deleted).
+        // Already deregistered before runtime.close(); kept for the managed path.
         process.removeListener("exit", exitCleanup);
         process.exit(0);
       })

@@ -10,6 +10,7 @@ export default defineConfig({
       : ['tests/**/*.test.ts', 'packages/**/tests/**/*.test.ts'],
     exclude: isE2eRun ? [] : ['tests/e2e/**/*.test.ts'],
     testTimeout: 30000,
+    setupFiles: ['tests/shared/storage-ownership-coordination-setup.ts'],
     coverage: {
       enabled: true,
       reporter: ['text', 'html'],

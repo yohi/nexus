@@ -1,8 +1,9 @@
 import { mkdtemp, mkdir, realpath, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { storageOwnershipAdmissionService } from '../../../src/server/storage-ownership/admission.js';
 import { SqliteMetadataStore } from '../../../src/storage/metadata-store.js';
-import type { EmbeddingConfig } from '../../../src/types/index.js';
+import type { Config, EmbeddingConfig } from '../../../src/types/index.js';
 import { syntheticEmbeddingConfig } from './synthetic-provider.js';
 
 export interface CacheSeedEndpoint {
@@ -40,8 +41,13 @@ export async function createCacheSeedTarget(
     const projectRoot = join(root, 'source');
     const storageRoot = join(root, 'source.nexus-perf-state');
     await mkdir(projectRoot);
-    await mkdir(storageRoot);
     const databasePath = join(storageRoot, 'metadata.db');
+    // Nexus #297: claim the storage for the seeded project before writing the SQLite file, exactly as a runtime would,
+    // so the later benchmark runtime (same owner, same targets) is admitted instead of refusing unclaimed data.
+    const ownership = { projectRoot, storage: { rootDir: storageRoot, metadataDbPath: databasePath,
+      vectorDbPath: join(storageRoot, 'vectors') } } as Config;
+    const service = storageOwnershipAdmissionService;
+    await (await service.admitStorageWriter(await service.resolveStorageOwnershipTargets(ownership))).release();
     const store = new SqliteMetadataStore({ databasePath });
     metadataStore = store;
     await store.initialize();

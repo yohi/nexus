@@ -1,5 +1,5 @@
 import { createServer } from 'node:http';
-import { releaseProcessLock } from './process-lock.js';
+import { releaseOwnedProcessLock } from './process-lock.js';
 import { createStreamableHttpHandler } from './transport.js';
 import {
   writeProjectEndpoint,
@@ -121,19 +121,18 @@ export async function startManagedHttpServer(
     });
     await mcpHandler.dispose();
 
+    // Nexus #297 shutdown order: work has stopped above; remove only the OWNED Endpoint and nexus.pid while the
+    // writer lease is still live, then close the runtime, which closes stores and releases the lease last. All of
+    // this runs before any process.exit() below, which would otherwise skip the cleanup.
+    if (endpoint) {
+      await removeProjectEndpointIfMatching(options.storageDir, endpoint).catch((error: unknown) => {
+        console.error('[Endpoint Cleanup Error]', error);
+      });
+    }
+    await releaseOwnedProcessLock(options.storageDir).catch(() => {});
     await options.runtime.close().catch((error: unknown) => {
       console.error('[Runtime Close Error]', error);
     });
-    if (endpoint) {
-      await removeProjectEndpointIfMatching(options.storageDir, endpoint);
-    }
-
-    // Release the process-level single-instance lock (nexus.pid) before any
-    // process.exit() call below. process.exit() terminates synchronously and
-    // would otherwise skip this cleanup entirely, leaving a stale lock file
-    // behind (design requirement: descriptor AND process lock must both be
-    // removed on shutdown).
-    await releaseProcessLock(options.storageDir).catch(() => {});
     resolveClosed();
 
     if (options.exitOnShutdown) {
