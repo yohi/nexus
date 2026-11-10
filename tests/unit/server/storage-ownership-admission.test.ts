@@ -305,10 +305,17 @@ describe('F-004 bootstrap and partial claims', () => {
   it('S07_partial_claim_retry_contract', async () => {
     const base = await sandbox();
     const [a, b] = [await project(base, 'ownerA'), await project(base, 'ownerB')];
-    const p = pathsFor(join(base, 'storage'));
+    // Claims are published in resourceKey (hash) order. Pick a storage name whose vector key sorts last so the
+    // single claim published before the injected crash is always root or metadata, never the vector directory
+    // (a claimed directory is not content-scanned, which would make the "unexpected content" step order-dependent).
+    let p = pathsFor(join(base, 'storage'));
+    for (let i = 0; resourceKey(p.vector) < resourceKey(p.root) || resourceKey(p.vector) < resourceKey(p.metadata); i++) {
+      p = pathsFor(join(base, `storage-${i}`));
+    }
     let n = 0;
     const crashAfterOne = service(base, { beforeClaimPublish: () => { if (++n > 1) throw new Error('crash'); } });
     await refusal(admit(crashAfterOne, cfg(a, p)));
+    expect((await readOwnerClaim(claimPathFor(p.vector, 'directory'))).state).not.toBe('present');
     const svc = service(base);
     // A different owner never inherits the partial claim set, even with empty bootstrap dirs present.
     expect((await refusal(admit(svc, cfg(b, p)))).code).toBe('owner_conflict');
