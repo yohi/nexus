@@ -119,26 +119,32 @@ function procDeviceId(dev: bigint): string {
   return `${major.toString(16).padStart(2, '0')}:${minor.toString(16).padStart(2, '0')}`;
 }
 
+const PROC_LOCKS_READ_ATTEMPTS = 3;
+
 /**
  * Linux kernel evidence: /proc/locks lists a POSIX advisory WRITE lock owned by this PID on the lock file's inode.
  * Returns false when the evidence is absent or unavailable (fail closed).
+ *
+ * /proc/locks is a seq_file: a multi-chunk read can skip entries while other processes concurrently add/remove locks
+ * (busy hosts, many SQLite connections). A present lock is therefore re-read a bounded number of times before it is
+ * reported absent; a genuinely lost lock stays absent on every read, so this never turns absence into presence.
  */
 export function kernelHoldsWriteLock(path: string): boolean {
   let stat;
-  let table: string;
-  try {
-    stat = lstatSync(path, { bigint: true });
-    table = readFileSync('/proc/locks', 'utf8');
-  } catch { return false; }
+  try { stat = lstatSync(path, { bigint: true }); } catch { return false; }
   const device = procDeviceId(stat.dev);
   const inode = stat.ino.toString();
   const pid = String(process.pid);
-  for (const line of table.split('\n')) {
-    const fields = line.trim().split(/\s+/);
-    if (fields[1] === '->') continue; // blocked waiter, not a holder
-    if (fields[1] !== 'POSIX' || fields[3] !== 'WRITE' || fields[4] !== pid) continue;
-    const id = fields[5]?.split(':');
-    if (id?.length === 3 && `${id[0]}:${id[1]}` === device && id[2] === inode) return true;
+  for (let attempt = 0; attempt < PROC_LOCKS_READ_ATTEMPTS; attempt += 1) {
+    let table: string;
+    try { table = readFileSync('/proc/locks', 'utf8'); } catch { return false; }
+    for (const line of table.split('\n')) {
+      const fields = line.trim().split(/\s+/);
+      if (fields[1] === '->') continue; // blocked waiter, not a holder
+      if (fields[1] !== 'POSIX' || fields[3] !== 'WRITE' || fields[4] !== pid) continue;
+      const id = fields[5]?.split(':');
+      if (id?.length === 3 && `${id[0]}:${id[1]}` === device && id[2] === inode) return true;
+    }
   }
   return false;
 }
