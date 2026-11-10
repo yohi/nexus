@@ -107,3 +107,25 @@ export async function createSiblingGitFixture(profile: Profile, signal: AbortSig
     throw error;
   }
 }
+
+export interface DisposableWorktreeSet {
+  readonly status: 'ready';
+  readonly primary: string;
+  readonly linkedA: string;
+  readonly linkedB: string;
+  readonly dispose: () => Promise<void>;
+}
+
+/**
+ * Disposable primary + two linked worktrees (all under a fresh temp directory). The primary keeps a real `.git`
+ * directory; both linked worktrees carry a `.git` file. Never touches a user repository.
+ */
+export async function createDisposableWorktreeSet(profile: Profile, signal: AbortSignal):
+  Promise<DisposableWorktreeSet | Readonly<{ status: 'skipped'; reason: 'git_unavailable' }>> {
+  const workspace = await createOwnedGitWorkspace();
+  const fixture = await createSiblingGitFixture(profile, signal, { workspace });
+  if (fixture.status === 'skipped') return fixture;
+  const [first, second] = fixture.worktrees;
+  if (first === undefined || second === undefined) { await fixture.dispose(); throw new GitFixtureError('git_command_failed'); }
+  return { status: 'ready', primary: workspace.repositoryRoot, linkedA: first.root, linkedB: second.root, dispose: fixture.dispose };
+}
