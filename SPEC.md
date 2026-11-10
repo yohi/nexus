@@ -352,7 +352,7 @@ The writer lease is a kernel-backed POSIX advisory lock (`fcntl`) held for the w
 
 A same-owner sequential restart, whether after a clean shutdown or a crash, passes writer admission onto the existing claimed store without rewriting the claims. After a crash, the separate mtime-based project lock on `storage.rootDir` still refuses an immediate successor runtime. That lock only becomes reclaimable after its stale window (see the untested items below).
 
-A running writer checks its leases periodically (every 5 s by default). If a lease is lost, the CLI stops the pipeline and exits with status 75 instead of continuing to serve. A real managed process whose lease files were replaced exited with status 75 about 5 s later.
+A running writer checks its leases periodically (every 5 s by default). If a lease is lost, the CLI stops the pipeline and exits with status 75 instead of continuing to serve. In a test, a real managed process whose lease files were replaced exited with status 75. The observed delay was about 5 s, but the test asserts only that it is under 15 s.
 
 **Coordination root.** Locks, leases, Bridge startup gates and Bridge attempt logs live under `<account home>/.local/state/nexus-ownership-v1`. The account home comes from the OS account database, not from `HOME` or `TMPDIR`. The directory must be account-private (mode `0700`, owned by the account, no symlink substitution) and must not overlap a storage target. Network and userspace filesystems are refused, as listed below. Different `TMPDIR` values reach the same locks.
 
@@ -391,6 +391,8 @@ The Bridge does not create storage or write logs under it, and never deletes any
 - Fail-closed `/proc/locks` attestation when the PID namespace does not match the procfs mount, and on btrfs subvolumes or overlayfs.
 - Writer admission on non-Linux platforms. The `unsupported_kernel_lease` refusal is unit-tested by overriding the platform value.
 - Exclusion of a reused PID. Liveness is decided only by the kernel lease, never by a PID, but PID reuse is not exercised.
+- Deriving the coordination root from the OS account database home directory. Every test overrides the coordination root with a disposable directory, so the real `<account home>/.local/state/nexus-ownership-v1` is never used by tests.
+- Rejecting symlink substitution of the coordination root or its lock subdirectories. The tested coordination-root refusals are overlap with a storage target, group/other-accessible permissions and filesystem type.
 
 **Exclusions.** This contract provides no shared mutable storage across canonical roots. It also provides no cross-worktree cache reuse, Global Manager, multi-worktree runtime manager or remote routing. Those remain separate roadmap items.
 
