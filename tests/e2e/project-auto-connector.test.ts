@@ -150,8 +150,9 @@ const isAlive = (pid: number): boolean => {
   try { process.kill(pid, 0); return true; } catch { return false; }
 };
 
+// Graceful managed shutdown awaits in-flight startup indexing before the process exits, so allow a generous bound.
 const waitForExit = async (pid: number): Promise<void> => {
-  await waitFor(() => Promise.resolve(isAlive(pid) ? undefined : true as const), 10_000);
+  await waitFor(() => Promise.resolve(isAlive(pid) ? undefined : true as const), 30_000);
 };
 
 const stopBridge = async (bridge: ChildProcessWithoutNullStreams): Promise<void> => {
@@ -450,7 +451,7 @@ await expect(readProjectEndpoint(storageDir)).resolves.toBeUndefined();
     expect(await callTool(bridge, 11, 'grep_search', { pattern: OLD_SYMBOL })).not.toContain(OLD_FILE);
   });
 
-  it('W06_same_path_recreation_default_storage_never_attaches_to_surviving_old_child', { timeout: 90_000 }, async (ctx) => {
+  it('W06_same_path_recreation_default_storage_never_attaches_to_surviving_old_child', { timeout: 120_000 }, async (ctx) => {
     const set = await worktreeSet((note) => ctx.skip(note));
     await writeOld(set.linkedA);
     const oldBridge = startBridge(set.linkedA);
@@ -481,7 +482,7 @@ await expect(readProjectEndpoint(storageDir)).resolves.toBeUndefined();
 
   // EVIDENCE for the W06 Owner checkpoint, NOT an acceptance pass: with external custom storage the descriptor and the
   // claims survive the deletion, and a same-path recreation has the same canonical owner. Records observed behavior.
-  it('W06_evidence_same_path_recreation_external_storage_reattaches_and_reuses', { timeout: 90_000 }, async (ctx) => {
+  it('W06_evidence_same_path_recreation_external_storage_reattaches_and_reuses', { timeout: 120_000 }, async (ctx) => {
     const set = await worktreeSet((note) => ctx.skip(note));
     const storage = join(dirname(set.primary), 'external-storage');
     const env = { NEXUS_STORAGE_ROOT_DIR: storage, NEXUS_STORAGE_METADATA_DB_PATH: join(storage, 'metadata.db'),
