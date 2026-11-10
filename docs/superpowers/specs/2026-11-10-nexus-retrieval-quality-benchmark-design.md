@@ -386,6 +386,8 @@ Q13はDefinition、References、Implementationsを個別の評価タスクとし
 
 Core Q01–Q11・Q14、Worktree拡張Q12、LSP拡張Q13（Stub=`CONTRACT_ONLY`、実Server=別途Owner承認）を別Profileで集計し、必須Scenario集合を実行後に縮小しない。Q12のPrimaryとLinkedはRoot別Taskとして独立採点する。#297実証証拠不足ならQ12を`blocked_dependency`とし、Coreの無関係な評価まで自動停止しない。
 
+**Coverage EvidenceのProducer / Consumer:** Task 5のRunnerに付随する独立Contract Probeが、固定Matrixに沿ってSetup、必須Tool呼出し、`CONTRACT_PROBE` Trace、独立Oracle採点を収集し、`QualityRouteCoverage[]`を生成する。Task 6のQ12/Q13拡張も同じ生成契約を利用する。Task 7のReport Builderは生成済みEvidenceを**明示引数**として受け取るだけで、Policy TraceやPaired成功結果から欠落したCoverageを推測・補完しない。ProbeはAgent-loopと分離し、探索コストに混入させない。
+
 ### Race / Stale Scenario
 
 Q07・Q08では、試験開始時点に必要な古いIndex状態やGeneration競合状態が実際に成立していることをSetup Gateで確認する。
@@ -456,6 +458,8 @@ Tool CallはAPI呼出し単位、Logical Operationはファイル探索・読取
 コンテキスト消費は、探索Policyに渡されたTool応答・Source本文を対象とする。内部Index全体のサイズは含めない。
 
 LLMを使用しないため、Token Countは推定コンテキスト負担であり、実際のLLM課金額や推論Token消費とは区別する。
+
+Coverageのデータ経路は`Contract Probe / Runner → readonly QualityRouteCoverage[] → buildQualityReport(expected, pairs, routeCoverage, metadata) → QualityReport.routeCoverage`に固定する。EvidenceにはRoot Key、Setup Proof Digest、実行したToolと独立`CONTRACT_PROBE` Trace、Oracle Verdictを保持する。Report Builderは必須Task/Tool MatrixとEvidenceを照合し、空・欠落・未実行・不整合のCoverageから`SAFETY_PASS`を生成してはならない。既に観測された`FALSE_FRESH`または安全なものとして採用された誤Sourceによる`SAFETY_FAIL`はCoverage不足による`INCOMPLETE`より優先する。Report Builder内でTool実行やOracleの再採点は行わない。
 
 ## 11. Reporting and Decision Rules
 
