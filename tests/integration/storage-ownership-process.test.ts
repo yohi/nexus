@@ -64,17 +64,24 @@ async function startAndIndex(assembly: RuntimeAssembly): Promise<void> {
   await assembly.runtime.reindex(true);
   await assembly.options.pipeline.waitForActiveReindex();
   const deadline = Date.now() + 30_000;
-  while (assembly.options.pipeline.getProgress().status !== 'idle' && Date.now() < deadline) {
+  while (assembly.options.pipeline.getProgress().status !== 'idle') {
+    if (Date.now() >= deadline) throw new Error('index_did_not_reach_idle');
     await new Promise((resolve) => setTimeout(resolve, 25));
   }
 }
 
-async function attempt(config: Config, index = false): Promise<{ admitted: boolean; error?: unknown }> {
-  try {
-    const assembly = await open(config);
-    if (index) await startAndIndex(assembly);
-    return { admitted: true };
-  } catch (error) { return { admitted: false, error }; }
+/**
+ * Admission (open) is the only thing that may yield admitted:false. Indexing runs after admission and its outcome is
+ * reported separately, so an indexing failure can never be mistaken for a refused admission.
+ */
+async function attempt(config: Config, index = false):
+  Promise<{ admitted: boolean; indexed: boolean; error?: unknown; indexError?: unknown }> {
+  let assembly: RuntimeAssembly;
+  try { assembly = await open(config); }
+  catch (error) { return { admitted: false, indexed: false, error }; }
+  if (!index) return { admitted: true, indexed: false };
+  try { await startAndIndex(assembly); return { admitted: true, indexed: true }; }
+  catch (indexError) { return { admitted: true, indexed: false, indexError }; }
 }
 
 /** Opens owner A and drives a real index so its stores hold data; A stays live (holding its locks). */
@@ -173,7 +180,7 @@ describe('storage ownership collisions (red evidence against unchanged implement
     const before = await digest(...files);
     const second = await attempt(configFor(rootB, { ...b, metadataDbPath: sharedMetadata }), true);
     expect(await digest(...files)).toEqual(before);
-    expect(second.admitted).toBe(false);
+    expect(second.admitted).toBe(false); // refusal at admission, never an indexing failure
   });
 
   it('S03_red_shared_vector', { timeout: 60_000 }, async () => {
@@ -187,10 +194,12 @@ describe('storage ownership collisions (red evidence against unchanged implement
     const second = await attempt(configFor(rootB, { ...b, vectorDbPath: sharedVectors }), true);
     expect(await digest(sharedVectors, a.metadataDbPath)).toEqual(
       Object.fromEntries(Object.entries(before).filter(([key]) => !key.startsWith(b.metadataDbPath))));
-    expect(second.admitted).toBe(false);
+    expect(second.admitted).toBe(false); // refusal at admission, never an indexing failure
   });
 
   describe('S04_red_symlink_alias', () => {
+    // NOTE: the 'root' case is a control that passes through the pre-existing realpath-based project lock; metadata and
+    // vector are the red cases.
     it.each(['root', 'metadata', 'vector'] as const)('S04_red_symlink_alias_%s', { timeout: 60_000 }, async (target) => {
       const base = await sandbox();
       const [rootA, rootB] = [await project(base, 'ownerA'), await project(base, 'ownerB')];
@@ -206,7 +215,7 @@ describe('storage ownership collisions (red evidence against unchanged implement
       const second = await attempt(configFor(rootB, colliding), true);
       const after = await digest(a.root);
       expect(after).toEqual(before);
-      expect(second.admitted).toBe(false); // collision must follow real paths, not lexical spelling
+      expect(second.admitted).toBe(false); // refusal at admission, never an indexing failure // collision must follow real paths, not lexical spelling
     });
   });
 
@@ -221,7 +230,7 @@ describe('storage ownership collisions (red evidence against unchanged implement
     const before = await digest(...files);
     const second = await attempt(configFor(rootB, b), true);
     expect(await digest(...files)).toEqual(before);
-    expect(second.admitted).toBe(false); // ephemeral vectors must not mask a shared persistent metadata store
+    expect(second.admitted).toBe(false); // refusal at admission, never an indexing failure // ephemeral vectors must not mask a shared persistent metadata store
   });
 
   it('S12_control_memory_vector_shared_root', { timeout: 60_000 }, async () => {
