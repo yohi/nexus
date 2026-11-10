@@ -3,7 +3,7 @@
 import { lstat, readdir } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import type { Config } from '../../types/index.js';
-import { claimPathFor, DIRECTORY_CLAIM_FILENAME, readOwnerClaim, type ClaimKind } from './claim-format.js';
+import { claimPathFor, DIRECTORY_CLAIM_FILENAME, isClaimTempPathFor, readOwnerClaim, type ClaimKind } from './claim-format.js';
 import {
   ADMISSION_LOCK_FILENAME, defaultCoordinationRoot, isWithin, listWriterEntries, mkdirVerified, prepareCoordinationRoot, publishClaim,
   RESOURCE_LOCK_DIR, resourceKey, sqliteFcntlLockBackend, WRITER_LOCK_DIR, writeWriterPathRecord, type KernelLock, type KernelLockBackend,
@@ -155,6 +155,12 @@ async function assertOnlyExplainedEntries(dir: string, self: Resource, all: read
   for (const name of await readdir(dir)) {
     const entry = join(dir, name);
     if (others.some((o) => o.path === entry || claimPathFor(o.path, o.kind) === entry)) continue;
+    // Claim-publication temp file of any requested resource (in flight or left by a killed attempt): explained,
+    // retained (no PID-based deletion), never adopted as a claim. Must be a regular file.
+    if (all.some((r) => isClaimTempPathFor(entry, r.path, r.kind))) {
+      if ((await lstat(entry)).isFile()) continue;
+      throw new StorageOwnershipError('ambiguous_target', `${entry} has a claim temp name but is not a regular file`);
+    }
     if (others.some((o) => isWithin(o.path, entry))) {
       const stat = await lstat(entry);
       if (stat.isSymbolicLink() || !stat.isDirectory()) throw new StorageOwnershipError('ambiguous_target', `${entry} is not a real directory`);

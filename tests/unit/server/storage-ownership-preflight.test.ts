@@ -70,6 +70,37 @@ describe('inspectStorageOwnership', () => {
     expect((await inspect(cfg(base, join(base, 's')))).disposition).toBe('refuse');
   });
 
+  it('in_flight_claim_temp_files_do_not_refuse_and_are_left_untouched', async () => {
+    const base = await sandbox();
+    const root = join(base, 's');
+    const vectors = join(root, 'vectors');
+    await mkdir(vectors, { recursive: true });
+    // publishClaim() temp files between fsync and link: root dir claim, adjacent metadata claim, vector dir claim.
+    const temps = [
+      `${join(root, DIRECTORY_CLAIM_FILENAME)}.tmp-4242-0123456789ab`,
+      `${claimPathFor(join(root, 'metadata.db'), 'file')}.tmp-4242-abcdef012345`,
+      `${join(vectors, DIRECTORY_CLAIM_FILENAME)}.tmp-17-00ff00ff00ff`,
+    ];
+    for (const temp of temps) await writeFile(temp, '{"partial":');
+    expect((await inspect(cfg(base, root))).disposition).toBe('unclaimed-clean');
+    for (const temp of temps) expect((await stat(temp)).isFile()).toBe(true); // never deleted
+  });
+
+  it('look_alike_claim_temp_names_still_refuse', async () => {
+    const base = await sandbox();
+    const root = join(base, 's');
+    for (const name of [`${DIRECTORY_CLAIM_FILENAME}.tmp-4242-XYZ`, `${DIRECTORY_CLAIM_FILENAME}.tmp-abc-0123456789ab`,
+      `${DIRECTORY_CLAIM_FILENAME}.tmp-4242-0123456789ab.extra`, `other.json.tmp-4242-0123456789ab`]) {
+      await mkdir(root, { recursive: true });
+      await writeFile(join(root, name), 'x');
+      expect((await inspect(cfg(base, root))).disposition).toBe('refuse');
+      await rm(root, { recursive: true });
+    }
+    // A directory carrying a valid temp name is not a publication artifact.
+    await mkdir(join(root, `${DIRECTORY_CLAIM_FILENAME}.tmp-4242-0123456789ab`), { recursive: true });
+    expect((await inspect(cfg(base, root))).disposition).toBe('refuse');
+  });
+
   it('S04_nested_foreign_owner_refuses', async () => {
     const base = await sandbox();
     await claimAll(join(base, 'other'), join(base, 'outer'), false);

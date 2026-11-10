@@ -1,6 +1,6 @@
 import { lstat, readdir } from 'node:fs/promises';
 import { dirname, join, sep } from 'node:path';
-import { claimPathFor, DIRECTORY_CLAIM_FILENAME, readOwnerClaim, type ClaimKind } from './claim-format.js';
+import { claimPathFor, DIRECTORY_CLAIM_FILENAME, isClaimTempPathFor, readOwnerClaim, type ClaimKind } from './claim-format.js';
 import type { OwnershipPreflight, ResolvedStorageOwnershipTargets } from './types.js';
 
 interface Resource { readonly path: string; readonly kind: ClaimKind }
@@ -54,8 +54,13 @@ async function evaluate(resource: Resource, all: readonly Resource[], owner: str
     const claimPath = claimPathFor(o.path, o.kind);
     return entry === o.path || entry === claimPath || isWithin(o.path, entry);
   });
+  // An in-flight (or killed) claim publication of this resource or another requested resource leaves a regular
+  // `<claimPath>.tmp-<pid>-<hex>` file; it is explained, never data, and inspection leaves it untouched.
+  const claimTemp = async (entry: string): Promise<boolean> =>
+    all.some((r) => isClaimTempPathFor(entry, r.path, r.kind)) && (await lstat(entry)).isFile();
   for (const name of await readdir(resource.path)) {
-    if (!allowed(join(resource.path, name))) return { refuse: `unclaimed non-empty directory ${resource.path}` };
+    const entry = join(resource.path, name);
+    if (!allowed(entry) && !(await claimTemp(entry))) return { refuse: `unclaimed non-empty directory ${resource.path}` };
   }
   return 'clean';
 }

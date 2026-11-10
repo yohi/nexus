@@ -329,6 +329,38 @@ describe('F-004 bootstrap and partial claims', () => {
     await expectClaim(p.vector, 'directory', a);
   });
 
+  it('S07_same_owner_retry_succeeds_with_leftover_claim_temp_files', async () => {
+    const base = await sandbox();
+    const owner = await project(base, 'owner');
+    const p = pathsFor(join(base, 'storage'));
+    await mkdir(p.vector, { recursive: true });
+    // As left by an attempt killed between fsync and link(): temp names of the root, metadata and vector claims.
+    const temps = [
+      `${claimPathFor(p.root, 'directory')}.tmp-99999-0123456789ab`,
+      `${claimPathFor(p.metadata, 'file')}.tmp-99999-abcdef012345`,
+      `${claimPathFor(p.vector, 'directory')}.tmp-99999-00ff00ff00ff`,
+    ];
+    for (const temp of temps) await writeFile(temp, '{"partial":');
+    await admit(service(base), cfg(owner, p));
+    await expectClaim(p.root, 'directory', owner);
+    await expectClaim(p.metadata, 'file', owner);
+    await expectClaim(p.vector, 'directory', owner);
+    for (const temp of temps) expect((await lstat(temp)).isFile()).toBe(true); // retained, never PID-deleted
+  });
+
+  it('admission refuses look-alike claim temp entries', async () => {
+    const base = await sandbox();
+    const owner = await project(base, 'owner');
+    const p = pathsFor(join(base, 'storage'));
+    await mkdir(p.root, { recursive: true });
+    await writeFile(join(p.root, 'metadata.db.tmp-99999-0123456789ab'), 'x'); // not a claim temp name
+    expect((await refusal(admit(service(base), cfg(owner, p)))).code).toBe('owner_unknown');
+    await rm(join(p.root, 'metadata.db.tmp-99999-0123456789ab'));
+    await mkdir(`${claimPathFor(p.root, 'directory')}.tmp-99999-0123456789ab`); // right name, but a directory
+    // The read-only preflight (first admission step) already refuses it, before any lock or validation.
+    expect((await refusal(admit(service(base), cfg(owner, p)))).code).toBe('owner_unknown');
+  });
+
   it('S07_claim_lock_failure_creates_zero_new_claims', async () => {
     const base = await sandbox();
     const owner = await project(base, 'owner');

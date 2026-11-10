@@ -20,6 +20,19 @@ export interface OwnerClaim {
 export const claimPathFor = (resourcePath: string, kind: ClaimKind): string =>
   kind === 'directory' ? `${resourcePath}/${DIRECTORY_CLAIM_FILENAME}` : `${resourcePath}${FILE_CLAIM_SUFFIX}`;
 
+const CLAIM_TEMP_SUFFIX = /^\.tmp-\d+-[0-9a-f]{12}$/;
+
+/**
+ * Whether `entryPath` has the exact name of an attempt-owned temporary file that `publishClaim()` creates next to the
+ * claim of (`resourcePath`, `kind`) between its fsync and link: `<claimPath>.tmp-<pid>-<12 hex>`. Such a file is a
+ * claim-publication artifact (in flight, or left by a killed attempt), not storage data. Name check only; callers must
+ * still verify it is a regular file. It is never adopted as a claim and never deleted by inspection or admission.
+ */
+export function isClaimTempPathFor(entryPath: string, resourcePath: string, kind: ClaimKind): boolean {
+  const claimPath = claimPathFor(resourcePath, kind);
+  return entryPath.startsWith(claimPath) && CLAIM_TEMP_SUFFIX.test(entryPath.slice(claimPath.length));
+}
+
 export type ClaimReadResult =
   | { readonly state: 'absent' }
   | { readonly state: 'present'; readonly claim: OwnerClaim }
