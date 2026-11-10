@@ -1,6 +1,6 @@
 # Nexus #320 — Retrieval Correctness and Agent-loop Quality Benchmark Design
 
-**Revision:** R0.1 — Proposed  
+**Revision:** R0.1 — Human Owner accepted (DOCUMENT_ONLY)  
 **Date:** 2026-11-10  
 **Repository:** `yohi/nexus`  
 **Issue:** [#320](https://github.com/yohi/nexus/issues/320)  
@@ -104,6 +104,10 @@ False-freshは独立した安全性違反として記録する。
 ChunkとLogical Symbolは同一視しない。1つのシンボルが複数Chunkに分かれた場合も、その事実を保持し、正解の重複として水増ししない。
 
 Golden Relevance Setが定義できないQueryには、Recall@KやMRRを無理に適用しない。
+
+Expected File Discovery Rateは、正解ファイルが定義された評価可能Taskのうち、少なくとも1つの正解ファイルを発見したTaskの割合とする。Expected Symbol Discovery Rateも、正解論理シンボルが定義された評価可能Taskについて同様に算出する。Irrelevant Candidate Rateは、関連性を判定できる重複排除済み候補のうち無関係候補の割合とする。
+
+3指標はJSONに必須フィールドとして記録し、評価可能な場合は0〜1の数値、Golden/候補母数などの不足で評価不能な場合は`null`と理由を記録する。評価不能を0とみなさず、分母と適格Task数を併記する。
 
 Gate 1に問題があっても診断用のDiscovery測定は可能とするが、安全性を満たさない構成の優位性は認定しない。
 
@@ -229,7 +233,9 @@ Policyが採用した結果を、実行後に独立したOracleが採点する�
 - 候補の並べ替え規則を固定する。
 - Hidden Golden情報を検索クエリに注入しない。
 - 同一操作の無制限再試行を禁止する。
-- Stale等の明示的な拒否を受けた場合のみ、定義済みFallbackを使う。
+- `stale` / `stale_identity` / 明示的な拒否では、定義済みの新鮮な`grep`またはファイル読取りへFallbackする。
+- `ok`でも候補が空・不足の場合は、事前に定義された次のDiscovery操作へ進める。`unsupported` / `unavailable` / `excluded` / `not_indexed` / `index_incomplete` / `degraded`では、利用可能な代替経路へ進める。
+- `error` / `timeout` / 不正な応答では、同一操作の再試行を最大2回に制限したうえでFallbackする。各操作・再試行・Fallbackを共通探索予算に計上し、`not_found`と`unavailable`を混同しない。予算を超えたら`EXHAUSTED`とする。
 - 予算超過は失敗結果として記録する。
 - 評価結果を見た後でPolicyを有利に調整しない。
 
@@ -507,6 +513,6 @@ Findingの存在だけを理由に、設計・レビュー工程を反復しな�
 
 ---
 
-**Design Status: PROPOSED — AWAITING HUMAN OWNER APPROVAL**
+**Design Status: APPROVED — Human Owner accepted Design R0.1 (DOCUMENT_ONLY; implementation NOT AUTHORIZED)**
 
 **Implementation Authorization: NONE**

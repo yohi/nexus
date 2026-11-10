@@ -12,7 +12,7 @@
 
 **Tech Stack:** Node.js >=24, TypeScript 5.9.x, Vitest 3.2.x, Zod 4.6.x, Node built-ins (`fs`, `crypto`, `child_process`), `js-tiktoken` 1.0.21, existing `buildToolHandlers` and #299 fixtures. No new runtime dependency or paid model/API requirement.
 
-**Spec:** Nexus #320 *Retrieval Correctness and Agent-loop Quality Benchmark Design R0.1* (2026-11-10, Human Owner approved in this conversation). **The Design is an in-chat input and is not represented as a committed repository file**. If later committed, set the exact corresponding `docs/superpowers/specs/...` path in this field by a limited document edit; do not invent a repository reference.
+**Spec:** `docs/superpowers/specs/2026-11-10-nexus-retrieval-quality-benchmark-design.md` — Nexus #320 Retrieval Quality Benchmark Design R0.1, Human Owner accepted (DOCUMENT_ONLY). Both Design and this Plan are included in PR #357; Design acceptance and authorization to write the Plan do **not** authorize implementation or benchmark execution.
 
 **Authority:** Design adopted; creation of this Plan R0.1 authorized. **Implementation, fixture generation, benchmark/test execution, LSP executable approval, GitHub edits, commit/push and PR are NOT AUTHORIZED by this document**.
 
@@ -142,8 +142,12 @@ Use #299's `createOwnedGitWorkspace()`, `createRecipe()`, `sha256()` and `genera
 **Interfaces:**
 
 ```ts
+export interface PublicSourceLocation { readonly filePath: string;
+  readonly startLine: number; readonly startCharacter: number;
+  readonly endLine: number; readonly endCharacter: number; }
 export interface PublicCandidate { readonly filePath: string; readonly symbolId?: string;
-  readonly rank: number; readonly line?: number; readonly preview?: string; }
+  readonly rank: number; readonly line?: number; readonly character?: number;
+  readonly endLine?: number; readonly endCharacter?: number; readonly preview?: string; }
 export type QualityTool = 'rg_search' | 'read_file' |
   'grep_search' | 'semantic_search' | 'hybrid_search' | 'get_context' |
   'get_file_outline' | 'get_symbol_source' | 'get_symbol_context' |
@@ -153,6 +157,9 @@ export interface QualityObservation { readonly status: 'ok' | 'not_found' | 'sta
   'excluded' | 'unsupported' | 'unavailable' | 'timeout' | 'cancelled' | 'error';
   readonly results: readonly PublicCandidate[]; readonly exposedBytes: number;
   readonly sourceAdoptions: readonly SourceAdoption[]; readonly rawDigest: string;
+  readonly navigation?: Readonly<{ locations: readonly PublicSourceLocation[];
+    truncated: boolean; sourceValidation: 'verified' | 'partial' | 'unknown';
+    capability: 'supported' | 'unsupported' | 'unavailable' | 'not_checked' }>;
   readonly reasonCode?: string; }
 export interface QualityAdapter { readonly arm: QualityArm;
   invoke(tool: QualityTool, args: Readonly<Record<string, unknown>>,
@@ -161,9 +168,9 @@ export function createRipgrepAdapter(root: string, rgExecutable: string): Qualit
 export function createNexusAdapter(handlers: ReturnType<typeof buildToolHandlers>): QualityAdapter;
 ```
 
-`PublicCandidate` contains only normalized file/symbol identity, rank, preview and offsets that are actually returned; no Oracle label. Baseline uses a pinned explicit `rg` invocation from its versioned run metadata, with current-source reads bounded by canonical root; do not write a fake baseline LSP/Structured implementation. Nexus calls real `buildToolHandlers(assembly.options, assembly.runtime.initialize.bind(assembly.runtime))` but **does not reuse #299's performance `runRetrievalCase()` loop**: that method warms/repeats samples and validates against performance expectations, which changes agent-loop costs. Use one call per Policy action and record the actual exposed JSON/text. Translate `isError` and structured statuses preserving `stale`, `not_found`, `unavailable`, and `ok`+empty results; reject malformed envelopes without scoring them fresh.
+`PublicCandidate` contains only normalized file/symbol identity, rank, preview and offsets that are actually returned; no Oracle label. Baseline uses a pinned explicit `rg` invocation from its versioned run metadata, with current-source reads bounded by canonical root; do not write a fake baseline LSP/Structured implementation. Nexus calls real `buildToolHandlers(assembly.options, assembly.runtime.initialize.bind(assembly.runtime))` but **does not reuse #299's performance `runRetrievalCase()` loop**: that method warms/repeats samples and validates against performance expectations, which changes agent-loop costs. Use one call per Policy action and record the actual exposed JSON/text. Translate `isError` and structured statuses preserving `stale`, `not_found`, `unavailable`, and `ok`+empty results; reject malformed envelopes without scoring them fresh. For each LSP navigation call, retain **all** returned `locations` in `QualityObservation.navigation` and expose one `PublicCandidate` per location without dropping `startCharacter`/`endCharacter` (Nexus: 1-based line, 0-based UTF-16 character); preserve distinct locations in the same file. Carry `truncated`, `sourceValidation` and `capability` unchanged. Do not treat `partial` validation or a truncated set as a complete, verified reference set.
 
-- [ ] **Step 1 — RED:** Tests for real `rg` version/flags/path boundaries, sorted deterministic tie-breaking, no symlink escape, `rg` zero matches ≠ unavailable, Nexus `unavailable/LSP_NOT_CONFIGURED` ≠ empty successful LSP, malformed envelope `isError`, error and timeout accounting; assert `index_status` is charged when used.
+- [ ] **Step 1 — RED:** Tests for real `rg` version/flags/path boundaries, sorted deterministic tie-breaking, no symlink escape, `rg` zero matches ≠ unavailable, Nexus `unavailable/LSP_NOT_CONFIGURED` ≠ empty successful LSP, malformed envelope `isError`, error and timeout accounting; assert `index_status` is charged when used; LSP tests retain two references at different UTF-16 characters on one line, `startCharacter=0`, end positions, `truncated` and `sourceValidation='partial'` without merging locations.
 - [ ] **Step 2 — Verify RED:** `npx vitest run tests/unit/benchmarks/quality/adapters.test.ts --coverage.enabled=false` → expected FAIL for missing adapter.
 - [ ] **Step 3 — Implement:** One-operation adapters, output normalization and digest; log each Tool invocation separately from logical-operation cost. Publish the exact `rg` flags/glob/exclusion contract in report metadata. **Do not enable `reindex` as a Policy tool** (benchmark setup controls indexing).
 - [ ] **Step 4 — Verify GREEN:** Same test command → expected PASS; `npx tsc -p tsconfig.json --noEmit` → PASS.
@@ -178,22 +185,37 @@ export function createNexusAdapter(handlers: ReturnType<typeof buildToolHandlers
 **Interfaces:**
 
 ```ts
+export interface QualityCumulativeCost { readonly logicalOperations: number;
+  readonly invocations: number; readonly contextBytes: number; readonly contextTokens: number; }
+export interface QualityAdoptionEvent { readonly sequence: number;
+  readonly source: SourceAdoption; readonly cumulativeCost: QualityCumulativeCost; }
+export interface QualityNavigationEvent { readonly sequence: number;
+  readonly tool: 'get_definition' | 'get_references' | 'get_implementations';
+  readonly status: QualityObservation['status'];
+  readonly locations: readonly PublicSourceLocation[]; readonly truncated: boolean;
+  readonly sourceValidation: 'verified' | 'partial' | 'unknown';
+  readonly capability: 'supported' | 'unsupported' | 'unavailable' | 'not_checked'; }
 export interface QualityTraceEvent { readonly sequence: number; readonly state: string;
   readonly tool: QualityTool; readonly argsDigest: string; readonly resultDigest: string;
   readonly exposedBytes: number; readonly logicalOperations: number;
-  readonly invocationCount: number; readonly retries: number; readonly fallback: boolean; }
+  readonly invocationCount: number; readonly retries: number; readonly fallback: boolean;
+  readonly adoptionSequence?: number; }
 export interface QualityPolicyResult { readonly status: 'COMPLETE' | 'EXHAUSTED';
-  readonly adoption?: SourceAdoption; readonly trace: readonly QualityTraceEvent[];
+  readonly adoption?: SourceAdoption; readonly adoptionEvents: readonly QualityAdoptionEvent[];
+  readonly navigationEvents: readonly QualityNavigationEvent[];
+  readonly trace: readonly QualityTraceEvent[];
   readonly logicalOperations: number; readonly invocations: number;
   readonly contextBytes: number; readonly contextTokens: number; }
+export interface QualityPolicyObserver { onAdoptionPublished(event: QualityAdoptionEvent): Promise<void>; }
 export async function runQualityPolicy(task: PublicQualityTask, adapter: QualityAdapter,
-  limits: QualityBudgets, signal: AbortSignal): Promise<QualityPolicyResult>;
+  limits: QualityBudgets, signal: AbortSignal,
+  observer?: QualityPolicyObserver): Promise<QualityPolicyResult>;
 export function qualityArmOrder(sortedTaskIndex: number): readonly [QualityArm, QualityArm];
 ```
 
-Use public clue grammar (exact identifier / file clue / conceptual clue) that is frozen in the manifest, not oracle-based decisions. E.g. exact identifier → grep; conceptual clue → semantic/hybrid on N and best-effort text clue on R; known file → bounded `get_context` or direct read. In `RANK`, use documented stable order (`public score desc`, logical normalized path ascending, position ascending) and deduplicate chunk-to-symbol candidates without altering raw retrieval evidence. `VERIFY` may inspect public source snippets, not expected hashes. Any full-loop success claim is made **only later by the Oracle**.
+Use public clue grammar (exact identifier / file clue / conceptual clue) that is frozen in the manifest, not oracle-based decisions. E.g. exact identifier → grep; conceptual clue → semantic/hybrid on N and best-effort text clue on R; known file → bounded `get_context` or direct read. In `RANK`, use documented stable order (`public score desc`, logical normalized path ascending, position ascending) and deduplicate chunk-to-symbol candidates without altering raw retrieval evidence. `VERIFY` may inspect public source snippets, not expected hashes. Any full-loop success claim is made **only later by the Oracle**. Preserve each tentative/final source adoption as an ordered `adoptionEvents` item linked by `adoptionSequence` to the existing trace and cumulative cost; `adoption` remains the terminal adopted source when present. Preserve every LSP response (including multiple locations, empty results and partial/truncated evidence) in `navigationEvents`, independent of selected candidates. Before terminal `COMPLETE`, public-only verification may invalidate a tentative choice and follow the frozen fallback mapping; the post-run Oracle may **never** cause Policy to continue. `onAdoptionPublished()` is a one-way Runner observer: it captures independent publication-time source evidence without returning Snapshot/Oracle data or a verdict to Policy. Observer capture failures make the affected scoring `INCOMPLETE`, not safety PASS.
 
-- [ ] **Step 1 — RED:** Test exactly 12 logical operations allowed / 13th rejected; 20 vs 21 inspected candidates; 65536 vs 65537 exposed context bytes; retries 0/1/2 vs 3; status-check/error/retry charged; `ok: []`, `stale`, `unsupported`, `unavailable`, error all select frozen fallback; Oracle fields inaccessible; batched `rg` cannot masquerade as one logical operation for many file reads; arm order even index R→N, odd N→R.
+- [ ] **Step 1 — RED:** Test exactly 12 logical operations allowed / 13th rejected; 20 vs 21 inspected candidates; 65536 vs 65537 exposed context bytes; retries 0/1/2 vs 3; status-check/error/retry charged; `ok: []`, `stale`, `unsupported`, `unavailable`, error all select frozen fallback; Oracle fields inaccessible; batched `rg` cannot masquerade as one logical operation for many file reads; arm order even index R→N, odd N→R; two adoptions (wrong then publicly invalidated/recovered) keep both event costs and trace links; two same-file LSP references preserve different characters in `navigationEvents`; observer cannot feed hidden Snapshot/Oracle data to Policy.
 - [ ] **Step 2 — Verify RED:** `npx vitest run tests/unit/benchmarks/quality/policy.test.ts --coverage.enabled=false` → expected FAIL for missing Policy.
 - [ ] **Step 3 — Implement:** Finite state machine; budget errors terminate with `EXHAUSTED`, no unbounded retries or mutable policy rules. Count actual tool-visible data using byte lengths of exposed observations; tokenize with `getEncoding('cl100k_base')` from the pinned tokenizer.
 - [ ] **Step 4 — Verify GREEN:** Same test command → expected PASS; `npx tsc -p tsconfig.json --noEmit` → PASS.
@@ -208,8 +230,15 @@ Use public clue grammar (exact identifier / file clue / conceptual clue) that is
 **Interfaces:**
 
 ```ts
+export interface QualityPublicationEvidence { readonly adoptionSequence: number;
+  readonly snapshot: SourceSnapshot; }
+export interface GradedQualityAdoption { readonly sequence: number;
+  readonly observation: ObservationKind; readonly publicationSnapshotDigest: string;
+  readonly cumulativeCost: QualityCumulativeCost; }
 export interface QualityArmResult { readonly executionStatus: 'executed' | 'not_run' | 'setup_incomplete' | 'blocked';
   readonly observation: ObservationKind | null; readonly policy: QualityPolicyResult | null;
+  readonly adoptionHistory: readonly GradedQualityAdoption[];
+  readonly firstCorrectSourceCost: QualityCumulativeCost | null;
   readonly correctSourceReached: boolean; readonly wrongSourceAdopted: boolean;
   readonly reasonCode?: string; }
 export interface PairedQualityResult { readonly taskId: string; readonly profile: QualityProfile;
@@ -218,14 +247,14 @@ export interface PairedQualityResult { readonly taskId: string; readonly profile
 export async function runQualityPair(task: QualityCaseManifest, fixture: OwnedQualityFixture,
   options: Readonly<{ signal: AbortSignal; rgExecutable: string }>): Promise<PairedQualityResult>;
 export function gradeQualityArm(task: QualityCaseManifest, snapshot: SourceSnapshot,
-  result: QualityPolicyResult): QualityArmResult;
+  result: QualityPolicyResult, publications: readonly QualityPublicationEvidence[]): QualityArmResult;
 ```
 
 Core Q01–Q11 + Q14, each separately reportable: Q01 indexed; Q02 dirty; Q03 rename; Q04 move; Q05 deleted/retired identity; Q06 file delete/recreate; Q07 stale vectors; Q08 generation race; Q09 parser coverage/unsupported; Q10 duplicate symbol names; Q11 large declaration/chunk; Q14 LSP not configured (no executable). Select **at least one independently graded exact/structured tool route** and one full-loop route per applicable scenario. Use synthetic embeddings only for route wiring and safe-stale handling, never as semantic relevance evidence. For Q07/Q08, assert the intended stale/index-generation/race setup is actually active **before** invoking any arm; an unproven setup produces `setup_incomplete` + Gate 1 INCOMPLETE, not an invented safety failure or success.
 
-- [ ] **Step 1 — RED:** Tests that `FALSE_FRESH` and verified-as-current `WRONG_SOURCE` set `SAFETY_FAIL`; wrong refusal increments `FALSE_REFUSAL`; `CORRECT_REFUSAL` does not count as source discovery; missing required Q01 marks Gate 1 INCOMPLETE; Q07/Q08 setup mismatch marks `setup_incomplete`; Q06 post-publication stale source fails even if request-start matched; real Nexus response and `rg` outcomes are both graded against one fixed Oracle.
+- [ ] **Step 1 — RED:** Tests that `FALSE_FRESH` and verified-as-current `WRONG_SOURCE` set `SAFETY_FAIL`; wrong refusal increments `FALSE_REFUSAL`; `CORRECT_REFUSAL` does not count as source discovery; missing required Q01 marks Gate 1 INCOMPLETE; Q07/Q08 setup mismatch marks `setup_incomplete`; Q06 post-publication stale source fails even if request-start matched; real Nexus response and `rg` outcomes are both graded against one fixed Oracle; wrong first adoption followed by public-only recovery remains recorded as wrong; first correct source cost uses the earliest independently graded adoption event; missing/mismatched publication Snapshot is `INCONCLUSIVE`/`INCOMPLETE`; Q13 compares all Definition/References/Implementations `navigationEvents` locations (file, 1-based line, 0-based UTF-16 character) against `expectedLocations` without treating partial/truncated evidence as complete.
 - [ ] **Step 2 — Verify RED:** `npx vitest run tests/unit/benchmarks/quality/scoring.test.ts tests/integration/quality/core.test.ts --coverage.enabled=false` → expected FAIL for missing runner/grader.
-- [ ] **Step 3 — Implement:** For each arm, create/reset owned files and fresh local runtime/index to the **same** recipe/snapshot; finish complete observation before switching arm. Reuse `createBenchmarkRuntimeFactory()` only for synthetic, LSP-off core; initialize/close via `RuntimeAssembly.runtime` and the existing handlers. Score after Policy termination; keep every failed/incomplete attempt. Stop unsafe pathways if source adoption violates Gate 1; do not re-run or auto-fix production code.
+- [ ] **Step 3 — Implement:** For each arm, create/reset owned files and fresh local runtime/index to the **same** recipe/snapshot; finish complete observation before switching arm. Reuse `createBenchmarkRuntimeFactory()` only for synthetic, LSP-off core; initialize/close via `RuntimeAssembly.runtime` and the existing handlers. Score after Policy termination; keep every failed/incomplete attempt. Register the one-way `QualityPolicyObserver` at Runner level and independently capture a `SourceSnapshot` at each adoption's publication boundary, keyed by event sequence; do not pass those Snapshots or verdicts back to Policy. Grade each adoption at its captured publication Snapshot and derive earliest correct-source cost and any wrong-source adoption from the **full history**. For Q13, score complete multi-location `navigationEvents` against expected line/character positions after the Policy terminates. Stop unsafe pathways if source adoption violates Gate 1; do not re-run or auto-fix production code.
 - [ ] **Step 4 — Verify GREEN:** Same tests → expected PASS. No User Worktree writes; no #299 runner re-execution.
 - [ ] **Step 5 — Authorized commit:** `git add tests/benchmarks/quality/runner.ts tests/benchmarks/quality/scoring.ts tests/integration/quality/core.test.ts tests/unit/benchmarks/quality/scoring.test.ts && git commit -m "test(nexus): run paired current-source safety cases"`.
 
@@ -247,7 +276,7 @@ export function classifyCapabilityEvidence(value: Readonly<{
 
 F3 must actually contain an owned **primary Git worktree plus one linked worktree**, with divergent dirty source, independent storage/catalog/vector/runtime, and a `Q12` Oracle specific to each root. Use #299 `createOwnedGitWorkspace()`, `runGit()` with its safe isolated environment and #297 validated runtime semantics. Do not reuse two-detached-linked fixture as primary+linked. Do not assume #297 GitHub Closed implies all runtime acceptance tests ran. If its requisite evidence is unavailable, mark Q12 `blocked_dependency`; do not conceal that from the overall report. For Q13, test Definition, References, and Implementations individually using existing **test-only stub** and record `CONTRACT_ONLY`; real server test remains `NOT_RUN` without explicit executable/trust approval (#354), never auto-enable a language server. `Q14` no configured server is core. The synthetic SHA-256 route is `FUNCTIONAL_ONLY`, not natural-language relevance.
 
-- [ ] **Step 1 — RED:** Test primary `.git` directory vs linked `.git` file, divergent dirty source, wrong-root result `WRONG_SOURCE`/`FALSE_FRESH` as appropriate; Q12 no ownership proof → `blocked_dependency`; Q13 stub observation cannot imply `REAL_LSP_ELIGIBLE`; no explicit approval → real-server `NOT_RUN`; synthetic-only → semantic `NOT_ESTABLISHED`; no LSP Trust file or executable spawned by default.
+- [ ] **Step 1 — RED:** Test primary `.git` directory vs linked `.git` file, divergent dirty source, wrong-root result `WRONG_SOURCE`/`FALSE_FRESH` as appropriate; Q12 no ownership proof → `blocked_dependency`; Q13 stub observation cannot imply `REAL_LSP_ELIGIBLE`; no explicit approval → real-server `NOT_RUN`; synthetic-only → semantic `NOT_ESTABLISHED`; no LSP Trust file or executable spawned by default; Q13 Definition, References and Implementations independently retain and grade multiple complete locations (including same-line differing characters) against `expectedLocations`, and incomplete/truncated observations cannot be graded as a complete verified set.
 - [ ] **Step 2 — Verify RED:** `npx vitest run tests/integration/quality/worktrees.test.ts tests/integration/quality/lsp-boundary.test.ts tests/unit/benchmarks/quality/capability.test.ts --coverage.enabled=false` → expected FAIL.
 - [ ] **Step 3 — Implement:** Add safe owned primary/linked fixture, stub-only LSP handler adapter and explicit Evidence Class/capability gates. Do **not** add embedding API calls or LSP host permissions. Real semantic relevance may be a later input from a pinned independent corpus/model snapshot; if absent, report `NOT_ESTABLISHED` and do not treat synthetic Recall@K as benefit.
 - [ ] **Step 4 — Verify GREEN:** Same command → expected PASS for approved test-only routes; required live runs remain explicitly NOT_RUN rather than SKIP-as-PASS.
@@ -266,7 +295,13 @@ export interface GateSafetyReport { readonly status: 'SAFETY_PASS' | 'SAFETY_FAI
   readonly expected: number; readonly executed: number; readonly falseFresh: number;
   readonly wrongSource: number; readonly correctRefusals: number; readonly falseRefusals: number; }
 export interface GateDiscoveryReport { readonly status: 'MEASURED' | 'NOT_ESTABLISHED' | 'INCOMPLETE';
-  readonly evaluatedQueries: number; readonly recallAtK?: number; readonly mrr?: number; }
+  readonly evaluatedQueries: number; readonly recallAtK?: number; readonly mrr?: number;
+  readonly expectedFileDiscoveryRate: number | null;
+  readonly expectedSymbolDiscoveryRate: number | null;
+  readonly irrelevantCandidateRate: number | null;
+  readonly metricReasons: Readonly<Partial<Record<'recallAtK' | 'mrr' |
+    'expectedFileDiscoveryRate' | 'expectedSymbolDiscoveryRate' |
+    'irrelevantCandidateRate', string>>>; }
 export interface GateAgentLoopReport { readonly status: 'MEASURED' | 'INCOMPLETE';
   readonly bothSuccess: number; readonly baselineOnly: number; readonly nexusOnly: number;
   readonly bothFail: number; readonly successfulPairCostSummary: Readonly<Record<string, number>>; }
@@ -290,9 +325,9 @@ export function buildQualityReport(expected: readonly string[], pairs: readonly 
 export function renderQualityMarkdown(report: QualityReport): string;
 ```
 
-Gate 1 uses `SAFETY_PASS`/`SAFETY_FAIL`/`INCOMPLETE` with required-case denominator. Gate 2 computes deduplicated file/symbol Recall@K/MRR *only with independent relevance labels*, otherwise `NOT_ESTABLISHED`/ineligible rather than zero or PASS. Gate 3 reports four paired categories (`both succeed`, `R only`, `N only`, `both fail`), full-task completion/failure/false-refusal/wrong-adoption rates and cost distributions. **Compare conditional exploration cost only for both-success tasks**, but always show all-task completion and failures beside it. Include risk and interpretation: if safety fails, no superiority claim; if benefit not established, do not infer intrinsic complexity is worthwhile or automatically simplify the product. No arbitrary improvement threshold.
+Gate 1 uses `SAFETY_PASS`/`SAFETY_FAIL`/`INCOMPLETE` with required-case denominator. Gate 2 computes deduplicated file/symbol Recall@K/MRR *only with independent relevance labels*, otherwise `NOT_ESTABLISHED`/ineligible rather than zero or PASS. Its three additional **required JSON fields** (`expectedFileDiscoveryRate`, `expectedSymbolDiscoveryRate`, `irrelevantCandidateRate`) are finite 0–1 proportions when eligible, or `null` with a `metricReasons` explanation when the relevant Golden/denominator is unavailable; do not substitute 0 for missing evidence. File/symbol discovery rates are task-based fractions among eligible tasks with expected targets; irrelevant rate is the fraction of irrelevant candidates among independently labeled, deduplicated candidates. Report each denominator to permit auditing. Gate 3 reports four paired categories (`both succeed`, `R only`, `N only`, `both fail`), full-task completion/failure/false-refusal/wrong-adoption rates and cost distributions. **Compare conditional exploration cost only for both-success tasks**, but always show all-task completion and failures beside it. Include risk and interpretation: if safety fails, no superiority claim; if benefit not established, do not infer intrinsic complexity is worthwhile or automatically simplify the product. No arbitrary improvement threshold.
 
-- [ ] **Step 1 — RED:** Report tests with R-only success, N-only success, both fail, both success, a wrong-source adoption followed by later recovery, `CORRECT_REFUSAL` without completion, a missing pair, a `NOT_RUN` required case, a non-evaluable relevance case, and a path/string containing an external absolute directory. Verify successful-only metrics cannot inflate task completion and missing tasks make status INCOMPLETE.
+- [ ] **Step 1 — RED:** Report tests with R-only success, N-only success, both fail, both success, a wrong-source adoption followed by later recovery, `CORRECT_REFUSAL` without completion, a missing pair, a `NOT_RUN` required case, a non-evaluable relevance case, and a path/string containing an external absolute directory. Verify successful-only metrics cannot inflate task completion and missing tasks make status INCOMPLETE. A strict JSON report rejects omission of any of the three Gate 2 rate keys, rejects values outside [0,1], permits `null` only with reason, and distinguishes genuinely measured 0 from no eligible denominator.
 - [ ] **Step 2 — Verify RED:** `npx vitest run tests/unit/benchmarks/quality/report.test.ts tests/integration/quality/report.test.ts --coverage.enabled=false` → expected FAIL.
 - [ ] **Step 3 — Implement:** Build strict, versioned JSON report + concise Markdown, with fixture/Oracle/Policy/Nexus/rg/tokenizer versions, source snapshot digests, context bytes/tokens, normalized arguments/digests, trace references and reasons. Do not emit absolute host paths or source bytes in public summaries. Generate files only into an **explicitly owned temporary output root**, and do not update existing #299 reports; `report` can be produced in memory for ordinary tests.
 - [ ] **Step 4 — Verify GREEN:** Same targeted command → expected PASS. Then (only under a separate implementation/test authorization):
@@ -319,4 +354,4 @@ Gate 1 uses `SAFETY_PASS`/`SAFETY_FAIL`/`INCOMPLETE` with required-case denomina
 
 At plan completion, the Owner chooses whether to authorize (a) only Tasks 1–5 for the initial deterministic core, (b) Tasks 1–7 including conditional Worktree/LSP extensions, or (c) no implementation yet. **Recommend (a) plus the smallest in-memory JSON reporting slice of Task 7 initially**: it produces actionable current-source/safety evidence without requiring all optional extensions. Full Task 7 reporting and Tasks 6/7 extensions remain a separate Owner choice. Do not automatically start additional work when the bounded initial evidence is available. This is a planning recommendation only, not an approval request to start the next task now.
 
-**Status:** Implementation Plan R0.1 CREATED (local artifact). `DOCUMENT_ONLY`; no execution or GitHub mutation performed.
+**Status:** Implementation Plan R0.1 — `DOCUMENT_ONLY`, committed for review in PR #357; no implementation or benchmark execution authorized.
