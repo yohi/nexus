@@ -252,6 +252,89 @@ describe('storage ownership collisions (red evidence against unchanged implement
 });
 
 // ---------------------------------------------------------------------------------------------------------------
+// Task 6: positive acceptance (S05, S06, S11) with real runtime assemblies writing real stores.
+// ---------------------------------------------------------------------------------------------------------------
+
+async function onlyFile(root: string, name: string): Promise<string> {
+  const file = `only-${name}.ts`;
+  await writeFile(join(root, file), `export const onlyMarker${name} = '${name}';\n`);
+  return file;
+}
+
+async function expectClaimOwner(resource: string, kind: 'file' | 'directory', owner: string): Promise<void> {
+  const claim = await readOwnerClaim(claimPathFor(resource, kind));
+  expect(claim.state === 'present' && claim.claim.ownerProjectRoot).toBe(owner);
+}
+
+describe('positive storage ownership acceptance (Task 6)', () => {
+  it('S05_disjoint_custom_targets_run_concurrently', { timeout: 120_000 }, async () => {
+    const base = await sandbox();
+    const [rootA, rootB] = [await project(base, 'ownerA'), await project(base, 'ownerB')];
+    const [fileA, fileB] = [await onlyFile(rootA, 'ownerA'), await onlyFile(rootB, 'ownerB')];
+    // Fully custom, disjoint targets outside both projects; the three targets do not even share a parent.
+    const custom = (name: string): Targets => ({ root: join(base, `root-${name}`),
+      metadataDbPath: join(base, `meta-${name}`, 'metadata.db'), vectorDbPath: join(base, `vec-${name}`) });
+    const [a, b] = [custom('a'), custom('b')];
+    const [assemblyA, assemblyB] = [await open(configFor(rootA, a)), await open(configFor(rootB, b))];
+    await Promise.all([startAndIndex(assemblyA), startAndIndex(assemblyB)]); // both live writers at the same time
+    const [pathsA, pathsB] = [await assemblyA.diagnostics.metadataStore.getAllPaths(), await assemblyB.diagnostics.metadataStore.getAllPaths()];
+    expect(pathsA).toContain(fileA);
+    expect(pathsA).not.toContain(fileB);
+    expect(pathsB).toContain(fileB);
+    expect(pathsB).not.toContain(fileA);
+    for (const [owner, t] of [[rootA, a], [rootB, b]] as const) {
+      await expectClaimOwner(t.root, 'directory', owner);
+      await expectClaimOwner(t.metadataDbPath, 'file', owner);
+      await expectClaimOwner(t.vectorDbPath, 'directory', owner);
+    }
+  });
+
+  it('S06_same_owner_sequential_restart_preserves_data', { timeout: 120_000 }, async () => {
+    const base = await sandbox();
+    const owner = await project(base, 'owner');
+    const file = await onlyFile(owner, 'owner');
+    const t = targetsFor(join(base, 'storage'));
+    const first = await open(configFor(owner, t));
+    await startAndIndex(first);
+    const paths = await first.diagnostics.metadataStore.getAllPaths();
+    expect(paths).toContain(file);
+    await first.runtime.close();
+    const claims = claimFiles(t.root);
+    const claimsBefore = await digest(...claims);
+    const metadataInode = (await lstat(t.metadataDbPath)).ino;
+    const restarted = await attempt(configFor(owner, t));
+    expect(restarted.admitted).toBe(true);
+    expect(await digest(...claims)).toEqual(claimsBefore); // claims neither rewritten nor re-published
+    expect((await lstat(t.metadataDbPath)).ino).toBe(metadataInode);
+    const second = await open(configFor(owner, t)).then(() => 'admitted', (error: unknown) => error);
+    expect(second).toMatchObject({ code: 'writer_busy' }); // still one writer while the restarted runtime is live
+  });
+
+  it('S11_memory_vectors_are_runtime_private_without_persistent_claims', { timeout: 120_000 }, async () => {
+    const base = await sandbox();
+    const [rootA, rootB] = [await project(base, 'ownerA'), await project(base, 'ownerB')];
+    const [fileA, fileB] = [await onlyFile(rootA, 'ownerA'), await onlyFile(rootB, 'ownerB')];
+    const a = { ...targetsFor(join(base, 'storage-a')), vectorDbPath: 'memory://' };
+    const b = { ...targetsFor(join(base, 'storage-b')), vectorDbPath: 'memory://' };
+    const [assemblyA, assemblyB] = [await open(configFor(rootA, a)), await open(configFor(rootB, b))];
+    await Promise.all([startAndIndex(assemblyA), startAndIndex(assemblyB)]);
+    const [pathsA, pathsB] = [await assemblyA.diagnostics.metadataStore.getAllPaths(), await assemblyB.diagnostics.metadataStore.getAllPaths()];
+    expect(pathsA).toContain(fileA);
+    expect(pathsA).not.toContain(fileB);
+    expect(pathsB).toContain(fileB);
+    expect(pathsB).not.toContain(fileA);
+    for (const [owner, t] of [[rootA, a], [rootB, b]] as const) {
+      await expectClaimOwner(t.root, 'directory', owner);
+      await expectClaimOwner(t.metadataDbPath, 'file', owner);
+      // No persistent vector directory, no vector claim and no forced canonicalization of the sentinel.
+      expect((await readdir(t.root)).filter((entry) => entry === 'vectors')).toEqual([]);
+      const resolved = await resolveStorageOwnershipTargets(configFor(owner, t));
+      expect(resolved.vectorDbPath).toEqual({ kind: 'ephemeral', source: 'memory://' });
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------------------------------------------
 // Task 3: writer admission across REAL separate processes (kernel-backed leases, crash release, pause, ordering).
 // ---------------------------------------------------------------------------------------------------------------
 

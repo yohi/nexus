@@ -1,15 +1,54 @@
-import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
+import { execFile, spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { once } from 'node:events';
-import { access, lstat, mkdtemp, rm } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { access, lstat, mkdtemp, readdir, readFile, realpath, rm, stat, writeFile } from 'node:fs/promises';
+import { tmpdir, userInfo } from 'node:os';
+import { dirname, join } from 'node:path';
+import { promisify } from 'node:util';
 
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 
 import { readProjectEndpoint } from '../../src/server/project-endpoint.js';
 import { LOCK_FILENAME } from '../../src/server/process-lock.js';
+import { DIRECTORY_CLAIM_FILENAME } from '../../src/server/storage-ownership/index.js';
+import { PROJECT_LOCK_FILENAME } from '../../src/utils/project-lock.js';
+import { createDisposableWorktreeSet, type DisposableWorktreeSet } from '../benchmarks/performance/git-fixture.js';
 
 const cliPath = join(process.cwd(), 'dist', 'bin', 'nexus.js');
+// Nexus #297: every spawned CLI (and, through the Bridge's forwarded execArgv/env, every managed child) uses a
+// disposable storage-ownership coordination root instead of the real OS-account home.
+const coordinationPreload = join(process.cwd(), 'tests', 'fixtures', 'storage-ownership', 'coordination-root-preload.mjs');
+let coordinationBase: string | undefined;
+let coordinationRoot = '';
+const nexusArgs = (args: readonly string[]): string[] => ['--import', coordinationPreload, cliPath, ...args];
+const nexusEnv = (extra: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv =>
+  ({ ...process.env, NEXUS_TEST_COORDINATION_ROOT: coordinationRoot, ...extra });
+const realHomeCoordinationRoot = join(userInfo().homedir, '.local', 'state', 'nexus-ownership-v1');
+let realHomeCoordinationExisted = false;
+
+beforeAll(async () => {
+  realHomeCoordinationExisted = await lstat(realHomeCoordinationRoot).then(() => true, () => false);
+});
+
+beforeEach(async () => {
+  coordinationBase = await realpath(await mkdtemp(join(tmpdir(), 'nexus-e2e-coord-')));
+  coordinationRoot = join(coordinationBase, 'coord');
+});
+
+// File-level afterEach runs after the describe-level process reaping below, so fixtures and the coordination root
+// are removed only once every spawned process is gone.
+const fixtureCleanups: Array<() => Promise<void>> = [];
+afterEach(async () => {
+  for (const cleanup of fixtureCleanups.splice(0).reverse()) await cleanup().catch(() => undefined);
+  if (coordinationBase !== undefined) await rm(coordinationBase, { force: true, recursive: true });
+  coordinationBase = undefined;
+}, 30_000);
+
+afterAll(async () => {
+  // Guard: the e2e run must never create the real account-home coordination root.
+  if (!realHomeCoordinationExisted) {
+    await expect(lstat(realHomeCoordinationRoot)).rejects.toThrow();
+  }
+});
 const initializeRequest = JSON.stringify({
   jsonrpc: '2.0',
   id: 1,
@@ -44,9 +83,10 @@ const waitFor = async <T>(predicate: () => Promise<T | undefined>, timeoutMs: nu
   throw new Error(`Timed out after ${timeoutMs}ms`);
 };
 
-const startBridge = (projectRoot: string): ChildProcessWithoutNullStreams => {
-  const bridge = spawn(process.execPath, [cliPath, 'http-bridge', '--project-root', projectRoot], {
+const startBridge = (projectRoot: string, extraEnv: NodeJS.ProcessEnv = {}): ChildProcessWithoutNullStreams => {
+  const bridge = spawn(process.execPath, nexusArgs(['http-bridge', '--project-root', projectRoot]), {
     stdio: ['pipe', 'pipe', 'pipe'],
+    env: nexusEnv(extraEnv),
   });
   bridges.push(bridge);
   return bridge;
@@ -56,9 +96,9 @@ const sendRequest = async (
   bridge: ChildProcessWithoutNullStreams,
   request: string,
   responseId: number,
-): Promise<void> => {
+): Promise<unknown> => {
   let diagnostics = '';
-  const response = new Promise<void>((resolve, reject) => {
+  const response = new Promise<unknown>((resolve, reject) => {
     let output = '';
     const onData = (chunk: Buffer): void => {
       output += chunk.toString('utf8');
@@ -77,7 +117,7 @@ const sendRequest = async (
             bridge.stdout.off('data', onData);
             bridge.stderr.off('data', onError);
             if ('result' in message) {
-              resolve();
+              resolve(message.result);
             } else {
               reject(new Error(`JSON-RPC error response: ${JSON.stringify(message)}`));
             }
@@ -99,8 +139,76 @@ const sendRequest = async (
   const exited = once(bridge, 'exit').then(([code]) => {
     throw new Error(`Bridge exited with code ${String(code)}: ${diagnostics}`);
   });
-  await Promise.race([response, exited]);
+  return await Promise.race([response, exited]);
 };
+
+/** Calls an MCP tool through a Bridge and returns the serialized result for content assertions. */
+const callTool = async (bridge: ChildProcessWithoutNullStreams, id: number, name: string, args: Record<string, unknown>): Promise<string> =>
+  JSON.stringify(await sendRequest(bridge, JSON.stringify({ jsonrpc: '2.0', id, method: 'tools/call', params: { name, arguments: args } }), id));
+
+const isAlive = (pid: number): boolean => {
+  try { process.kill(pid, 0); return true; } catch { return false; }
+};
+
+const waitForExit = async (pid: number): Promise<void> => {
+  await waitFor(() => Promise.resolve(isAlive(pid) ? undefined : true as const), 10_000);
+};
+
+const stopBridge = async (bridge: ChildProcessWithoutNullStreams): Promise<void> => {
+  if (bridge.exitCode !== null) return;
+  bridge.kill('SIGTERM');
+  await once(bridge, 'exit');
+};
+
+/**
+ * Kernel writer-lease holders per `writer/<resourceKey>.lock` in the disposable coordination root, read from
+ * /proc/locks (POSIX WRITE locks by inode). Only locks with at least one live holder are returned.
+ */
+const heldWriterLeases = async (): Promise<Map<string, Set<number>>> => {
+  const dir = join(coordinationRoot, 'writer');
+  const procLocks = (await readFile('/proc/locks', 'utf8')).split('\n').filter((line) => !line.includes('->'));
+  const held = new Map<string, Set<number>>();
+  for (const name of (await readdir(dir)).filter((entry) => entry.endsWith('.lock'))) {
+    const { ino } = await stat(join(dir, name));
+    const holders = new Set<number>();
+    for (const line of procLocks) {
+      const fields = line.trim().split(/\s+/);
+      if (fields[1] === 'POSIX' && fields[3] === 'WRITE' && fields[5]?.split(':')[2] === String(ino)) holders.add(Number(fields[4]));
+    }
+    if (holders.size > 0) held.set(name, holders);
+  }
+  return held;
+};
+
+const execFileAsync = promisify(execFile);
+
+const worktreeSet = async (skip: (note: string) => never): Promise<DisposableWorktreeSet> => {
+  const set = await createDisposableWorktreeSet('smoke', new AbortController().signal);
+  if (set.status === 'skipped') skip('environment unavailable: git is missing');
+  fixtureCleanups.push(set.dispose);
+  return set;
+};
+
+/** git against the disposable fixture repository with the fixture's isolated (non-user) git configuration. */
+const fixtureGit = async (set: DisposableWorktreeSet, args: readonly string[]): Promise<void> => {
+  await execFileAsync('git', [...args], { cwd: set.primary,
+    env: { ...process.env, GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: join(dirname(set.primary), 'git-config') } });
+};
+
+const recreateWorktree = async (set: DisposableWorktreeSet, oldPath: string, newPath: string): Promise<void> => {
+  await fixtureGit(set, ['worktree', 'remove', '--force', oldPath]);
+  await expect(lstat(oldPath)).rejects.toThrow();
+  await fixtureGit(set, ['worktree', 'add', '--quiet', '--detach', newPath, 'HEAD']);
+};
+
+const OLD_FILE = 'old-incarnation.ts';
+const OLD_SYMBOL = 'oldIncarnationOnlyMarker';
+const NEW_FILE = 'new-incarnation.ts';
+const NEW_SYMBOL = 'newIncarnationOnlyMarker';
+const writeOld = async (root: string): Promise<void> => writeFile(join(root, OLD_FILE), `export const ${OLD_SYMBOL} = 'old';\n`);
+const writeNew = async (root: string): Promise<void> => writeFile(join(root, NEW_FILE), `export const ${NEW_SYMBOL} = 'new';\n`);
+
+const endpointOf = async (storageDir: string) => waitFor(async () => readProjectEndpoint(storageDir), 15_000);
 
 describe('project auto-connector CLI', () => {
   afterEach(async () => {
@@ -126,22 +234,24 @@ describe('project auto-connector CLI', () => {
     // Detached managed children spawned indirectly through the bridge (via
     // ensureProjectEndpoint) have no local ChildProcess handle, so they must
     // be reaped by pid instead of through the `managedProcesses` array above.
-    for (const pid of detachedManagedPids.splice(0)) {
+    // Signal all first, then wait in parallel (several children per test for the #297 worktree cases).
+    const pids = detachedManagedPids.splice(0).filter((pid) => {
       try {
         process.kill(pid, 'SIGTERM');
+        return true;
       } catch {
-        continue;
+        return false;
       }
-      await waitFor(async () => {
-        try {
-          process.kill(pid, 0);
-          return undefined;
-        } catch {
-          return true as const;
-        }
-      }, 5_000).catch(() => {});
-    }
-  });
+    });
+    await Promise.all(pids.map(async (pid) => waitFor(async () => {
+      try {
+        process.kill(pid, 0);
+        return undefined;
+      } catch {
+        return true as const;
+      }
+    }, 10_000).catch(() => {})));
+  }, 30_000);
 
   it('shares one managed endpoint and removes it after both bridge clients disconnect', async () => {
     const projectRoot = await mkdtemp(join(tmpdir(), 'nexus-auto-connector-e2e-'));
@@ -183,8 +293,8 @@ describe('project auto-connector CLI', () => {
 
     const managed = spawn(
       process.execPath,
-      [cliPath, '--project-root', projectRoot, '--port', '0', '--managed'],
-      { stdio: ['pipe', 'pipe', 'pipe'] },
+      nexusArgs(['--project-root', projectRoot, '--port', '0', '--managed']),
+      { stdio: ['pipe', 'pipe', 'pipe'], env: nexusEnv() },
     );
     managedProcesses.push(managed);
 
@@ -215,9 +325,9 @@ await expect(readProjectEndpoint(storageDir)).resolves.toBeUndefined();
     const projectRoot = await mkdtemp(join(tmpdir(), 'nexus-auto-connector-e2e-'));
     projectRoots.push(projectRoot);
     const storageDir = join(projectRoot, '.nexus');
-    const child = spawn(process.execPath, [cliPath, '--project-root', projectRoot, '--port', '0', '--managed'], {
+    const child = spawn(process.execPath, nexusArgs(['--project-root', projectRoot, '--port', '0', '--managed']), {
       stdio: ['pipe', 'pipe', 'pipe'],
-      env: { ...process.env, NEXUS_INTERNAL_STORAGE_TARGETS_FINGERPRINT: 'f'.repeat(64) },
+      env: nexusEnv({ NEXUS_INTERNAL_STORAGE_TARGETS_FINGERPRINT: 'f'.repeat(64) }),
     });
     managedProcesses.push(child);
     let stderr = '';
@@ -262,4 +372,146 @@ await expect(readProjectEndpoint(storageDir)).resolves.toBeUndefined();
     // bridge's termination instead of dying alongside it.
     expect(() => process.kill(endpoint.pid, 0)).not.toThrow();
 });
+
+  // Nexus #297 W04: two sibling worktrees, each through its own Bridge, launched concurrently as real processes.
+  it('W04_concurrent_sibling_runtimes_and_bridges_are_independent', { timeout: 90_000 }, async (ctx) => {
+    const set = await worktreeSet((note) => ctx.skip(note));
+    const roots = [set.primary, set.linkedA] as const;
+    const files = ['sentinel-primary.ts', 'sentinel-linkedA.ts'] as const;
+    const symbols = ['w04SentinelPrimaryMarker', 'w04SentinelLinkedAMarker'] as const;
+    await Promise.all(roots.map(async (root, i) => writeFile(join(root, files[i]!), `export const ${symbols[i]!} = ${i};\n`)));
+    const pair = roots.map((root) => startBridge(root));
+    await Promise.all(pair.map(async (bridge) => sendRequest(bridge, initializeRequest, 1)));
+    const endpoints = await Promise.all(roots.map(async (root) => endpointOf(join(root, '.nexus'))));
+    detachedManagedPids.push(...endpoints.map((endpoint) => endpoint.pid));
+    const [first, second] = endpoints as [typeof endpoints[0], typeof endpoints[0]];
+    expect(first.pid).not.toBe(second.pid);
+    expect(first.url).not.toBe(second.url);
+    expect(first.instanceId).not.toBe(second.instanceId);
+    for (const [i, root] of roots.entries()) {
+      const endpoint = endpoints[i]!;
+      expect(endpoint.projectRoot).toBe(root);
+      expect(endpoint.pid).not.toBe(pair[i]!.pid); // a managed child, not the Bridge
+      expect((await readFile(join(root, '.nexus', LOCK_FILENAME), 'utf8')).trim()).toBe(String(endpoint.pid));
+      await access(join(root, '.nexus', PROJECT_LOCK_FILENAME)); // independent per-root project lock
+    }
+    // Independent writer leases: 3 persistent targets per runtime, each held by exactly its own managed child.
+    const held = await heldWriterLeases();
+    expect(held.size).toBe(6);
+    const holderPids = new Set<number>();
+    for (const holders of held.values()) { expect(holders.size).toBe(1); for (const pid of holders) holderPids.add(pid); }
+    expect([...holderPids].sort()).toEqual(endpoints.map((endpoint) => endpoint.pid).sort());
+    // No cross-routing: each Bridge sees only its own worktree's sentinel.
+    for (const [i, bridge] of pair.entries()) {
+      const other = 1 - i;
+      expect(await callTool(bridge, 10, 'grep_search', { pattern: symbols[i] })).toContain(files[i]);
+      expect(await callTool(bridge, 11, 'grep_search', { pattern: symbols[other] })).not.toContain(files[other]);
+    }
+  });
+
+  // Nexus #297 W05: one linked worktree, two Bridges launched concurrently, reuse one healthy managed runtime.
+  it('W05_same_worktree_two_bridges_reuse_one_managed_runtime', { timeout: 90_000 }, async (ctx) => {
+    const set = await worktreeSet((note) => ctx.skip(note));
+    await writeFile(join(set.linkedB, 'sentinel-linkedB.ts'), 'export const w05SentinelLinkedBMarker = 1;\n');
+    const pair = [startBridge(set.linkedB), startBridge(set.linkedB)];
+    await Promise.all(pair.map(async (bridge) => sendRequest(bridge, initializeRequest, 1)));
+    const endpoint = await endpointOf(join(set.linkedB, '.nexus'));
+    detachedManagedPids.push(endpoint.pid);
+    for (const bridge of pair) {
+      expect(await callTool(bridge, 10, 'grep_search', { pattern: 'w05SentinelLinkedBMarker' })).toContain('sentinel-linkedB.ts');
+    }
+    // Exactly one writer: the three target leases are all held by the single published managed child.
+    const held = await heldWriterLeases();
+    expect(held.size).toBe(3);
+    for (const holders of held.values()) expect([...holders]).toEqual([endpoint.pid]);
+    expect((await readProjectEndpoint(join(set.linkedB, '.nexus')))?.pid).toBe(endpoint.pid);
+  });
+
+  // Nexus #297 W06: delete/recreate with a surviving old managed child, default storage.
+  it('W06_different_path_recreation_with_surviving_old_child', { timeout: 90_000 }, async (ctx) => {
+    const set = await worktreeSet((note) => ctx.skip(note));
+    await writeOld(set.linkedA);
+    const oldBridge = startBridge(set.linkedA);
+    await sendRequest(oldBridge, initializeRequest, 1);
+    const old = await endpointOf(join(set.linkedA, '.nexus'));
+    detachedManagedPids.push(old.pid);
+    await stopBridge(oldBridge);
+    const moved = join(dirname(set.linkedA), 'linkedA-recreated');
+    await recreateWorktree(set, set.linkedA, moved);
+    await writeNew(moved);
+    const bridge = startBridge(moved);
+    await sendRequest(bridge, initializeRequest, 1);
+    const fresh = await endpointOf(join(moved, '.nexus'));
+    detachedManagedPids.push(fresh.pid);
+    expect(isAlive(old.pid)).toBe(true); // the old incarnation's runtime survived the deletion
+    expect(fresh.pid).not.toBe(old.pid);
+    expect(fresh.projectRoot).toBe(moved);
+    expect(await callTool(bridge, 10, 'grep_search', { pattern: NEW_SYMBOL })).toContain(NEW_FILE);
+    expect(await callTool(bridge, 11, 'grep_search', { pattern: OLD_SYMBOL })).not.toContain(OLD_FILE);
+  });
+
+  it('W06_same_path_recreation_default_storage_never_attaches_to_surviving_old_child', { timeout: 90_000 }, async (ctx) => {
+    const set = await worktreeSet((note) => ctx.skip(note));
+    await writeOld(set.linkedA);
+    const oldBridge = startBridge(set.linkedA);
+    await sendRequest(oldBridge, initializeRequest, 1);
+    const old = await endpointOf(join(set.linkedA, '.nexus'));
+    detachedManagedPids.push(old.pid);
+    await stopBridge(oldBridge);
+    await recreateWorktree(set, set.linkedA, set.linkedA);
+    await writeNew(set.linkedA);
+    // The old descriptor went away with the old checkout and the old child still holds the path-keyed writer leases:
+    // the recreated incarnation's Bridge neither reaches the old runtime nor gets a second writer.
+    const blocked = startBridge(set.linkedA);
+    const outcome = await sendRequest(blocked, initializeRequest, 1).then(() => 'connected', (error: unknown) => String(error));
+    expect(outcome).not.toBe('connected');
+    expect(outcome).toContain('writer_busy');
+    expect(isAlive(old.pid)).toBe(true);
+    expect(await readProjectEndpoint(join(set.linkedA, '.nexus'))).toBeUndefined();
+    process.kill(old.pid, 'SIGTERM');
+    await waitForExit(old.pid);
+    const bridge = startBridge(set.linkedA);
+    await sendRequest(bridge, initializeRequest, 1);
+    const fresh = await endpointOf(join(set.linkedA, '.nexus'));
+    detachedManagedPids.push(fresh.pid);
+    expect(fresh.pid).not.toBe(old.pid);
+    expect(await callTool(bridge, 10, 'grep_search', { pattern: NEW_SYMBOL })).toContain(NEW_FILE);
+    expect(await callTool(bridge, 11, 'grep_search', { pattern: OLD_SYMBOL })).not.toContain(OLD_FILE);
+  });
+
+  // EVIDENCE for the W06 Owner checkpoint, NOT an acceptance pass: with external custom storage the descriptor and the
+  // claims survive the deletion, and a same-path recreation has the same canonical owner. Records observed behavior.
+  it('W06_evidence_same_path_recreation_external_storage_reattaches_and_reuses', { timeout: 90_000 }, async (ctx) => {
+    const set = await worktreeSet((note) => ctx.skip(note));
+    const storage = join(dirname(set.primary), 'external-storage');
+    const env = { NEXUS_STORAGE_ROOT_DIR: storage, NEXUS_STORAGE_METADATA_DB_PATH: join(storage, 'metadata.db'),
+      NEXUS_STORAGE_VECTOR_DB_PATH: join(storage, 'vectors') };
+    await writeOld(set.linkedA);
+    const oldBridge = startBridge(set.linkedA, env);
+    await sendRequest(oldBridge, initializeRequest, 1);
+    const old = await endpointOf(storage);
+    detachedManagedPids.push(old.pid);
+    await stopBridge(oldBridge);
+    const claimBefore = await readFile(join(storage, DIRECTORY_CLAIM_FILENAME));
+    await recreateWorktree(set, set.linkedA, set.linkedA);
+    await writeNew(set.linkedA);
+    // Observed (a): the recreated incarnation's Bridge attaches to the OLD incarnation's live runtime.
+    const reattached = startBridge(set.linkedA, env);
+    await sendRequest(reattached, initializeRequest, 1);
+    expect((await readProjectEndpoint(storage))?.pid).toBe(old.pid);
+    await stopBridge(reattached);
+    // Observed (b): once the old runtime stops, a new child is admitted as the same owner onto the old incarnation's
+    // store; the durable claim is unchanged, i.e. the store is silently reused. (SIGTERM, not SIGKILL: after a crash the
+    // pre-existing mtime-based project lock on the storage root refuses a successor for its 30 s stale window.)
+    process.kill(old.pid, 'SIGTERM');
+    await waitForExit(old.pid);
+    const bridge = startBridge(set.linkedA, env);
+    await sendRequest(bridge, initializeRequest, 1);
+    const fresh = await waitFor(async () => {
+      const current = await readProjectEndpoint(storage);
+      return current !== undefined && current.pid !== old.pid ? current : undefined;
+    }, 15_000);
+    detachedManagedPids.push(fresh.pid);
+    expect(await readFile(join(storage, DIRECTORY_CLAIM_FILENAME))).toEqual(claimBefore);
+  });
 });

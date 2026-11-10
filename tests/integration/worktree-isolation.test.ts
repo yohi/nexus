@@ -1,7 +1,7 @@
 import { execFile } from 'node:child_process';
-import { lstat, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { lstat, mkdir, mkdtemp, readFile, realpath, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { promisify } from 'node:util';
 import { afterEach, describe, expect, it } from 'vitest';
 import type { TestContext } from 'vitest';
@@ -34,20 +34,48 @@ async function writeSentinels(set: DisposableWorktreeSet): Promise<void> {
   }
 }
 
-async function startRuntime(projectRoot: string): Promise<RuntimeAssembly> {
-  const config = await loadConfig({ projectRoot, env: {} });
+async function openRuntime(projectRoot: string, env: Record<string, string> = {}): Promise<RuntimeAssembly> {
+  const config = await loadConfig({ projectRoot, env });
   const assembly = await createRuntimeAssembly({ ...config, embedding: syntheticEmbeddingConfig },
     { createEmbeddingProvider: createSyntheticProvider });
   cleanups.push(async () => { await assembly.runtime.close(); });
-  await assembly.runtime.initialize();
-  await assembly.runtime.reindex(true);
+  return assembly;
+}
+
+async function waitIdle(assembly: RuntimeAssembly): Promise<void> {
   await assembly.options.pipeline.waitForActiveReindex();
   const deadline = Date.now() + 60_000;
   while (assembly.options.pipeline.getProgress().status !== 'idle' && Date.now() < deadline) {
     await new Promise((resolve) => setTimeout(resolve, 50));
   }
+}
+
+async function startRuntime(projectRoot: string, env: Record<string, string> = {}): Promise<RuntimeAssembly> {
+  const assembly = await openRuntime(projectRoot, env);
+  await assembly.runtime.initialize();
+  await assembly.runtime.reindex(true);
+  await waitIdle(assembly);
   return assembly;
 }
+
+/** Runs git against the disposable fixture repository with the fixture's isolated (non-user) git configuration. */
+async function fixtureGit(set: DisposableWorktreeSet, args: readonly string[]): Promise<void> {
+  await git('git', [...args], { cwd: set.primary,
+    env: { ...process.env, GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: join(dirname(set.primary), 'git-config') } });
+}
+
+/** Deletes a linked worktree (including its untracked default `.nexus`) and recreates a fresh incarnation at `path`. */
+async function deleteAndRecreate(set: DisposableWorktreeSet, oldPath: string, newPath: string): Promise<void> {
+  await fixtureGit(set, ['worktree', 'remove', '--force', oldPath]);
+  await expect(lstat(oldPath)).rejects.toThrow();
+  await fixtureGit(set, ['worktree', 'add', '--quiet', '--detach', newPath, 'HEAD']);
+}
+
+const externalStorageEnv = (storage: string): Record<string, string> => ({
+  NEXUS_STORAGE_ROOT_DIR: storage,
+  NEXUS_STORAGE_METADATA_DB_PATH: join(storage, 'metadata.db'),
+  NEXUS_STORAGE_VECTOR_DB_PATH: join(storage, 'vectors'),
+});
 
 type Hits = Awaited<ReturnType<RuntimeAssembly['options']['orchestrator']['search']>>;
 // Grep hits are absolute paths; semantic hits are project-relative.
@@ -122,6 +150,94 @@ describe('worktree isolation (disposable git worktrees)', () => {
     expect(hasFile(dirty, sentinelFile('linkedB'))).toBe(true);
     const clean = await assemblyA.options.orchestrator.search({ query: 'DIRTY_LINKED_B', topK: 20 });
     expect(hasFile(clean, sentinelFile('linkedB'))).toBe(false);
+  });
+
+  // W06 (Design §4.6): delete/recreate a linked worktree. Old-incarnation-only content is an untracked file, so a
+  // recreated checkout of the same commit never contains it; seeing it after recreation would be index leakage.
+  const OLD_FILE = 'old-incarnation.ts';
+  const OLD_SYMBOL = 'oldIncarnationOnlyMarker';
+  const NEW_FILE = 'new-incarnation.ts';
+  const NEW_SYMBOL = 'newIncarnationOnlyMarker';
+  const writeOld = (root: string) => writeFile(join(root, OLD_FILE), `export const ${OLD_SYMBOL} = 'old';\n`);
+  const writeNew = (root: string) => writeFile(join(root, NEW_FILE), `export const ${NEW_SYMBOL} = 'new';\n`);
+  async function expectOnlyNewIncarnation(assembly: RuntimeAssembly): Promise<void> {
+    const paths = await assembly.diagnostics.metadataStore.getAllPaths();
+    expect(paths).toContain(NEW_FILE);
+    expect(paths).not.toContain(OLD_FILE);
+    expect(hasFile(await assembly.options.orchestrator.search({ query: OLD_SYMBOL, topK: 20 }), OLD_FILE)).toBe(false);
+    expect(hasFile(await assembly.options.orchestrator.search({ query: NEW_SYMBOL, topK: 20 }), NEW_FILE)).toBe(true);
+  }
+
+  it('W06_different_path_recreation_default_storage', { timeout: 180_000 }, async (ctx) => {
+    const set = await openWorktrees(ctx);
+    await writeOld(set.linkedA);
+    const old = await startRuntime(set.linkedA);
+    expect(await old.diagnostics.metadataStore.getAllPaths()).toContain(OLD_FILE);
+    await old.runtime.close();
+    const moved = join(dirname(set.linkedA), 'linkedA-recreated');
+    await deleteAndRecreate(set, set.linkedA, moved);
+    await writeNew(moved);
+    const fresh = await startRuntime(moved);
+    expect(fresh.diagnostics.metadataDbPath).toBe(join(await realpath(moved), '.nexus', 'metadata.db'));
+    await expectOnlyNewIncarnation(fresh);
+  });
+
+  it('W06_same_path_recreation_default_storage_live_old_writer_blocks_then_fresh_store', { timeout: 180_000 }, async (ctx) => {
+    const set = await openWorktrees(ctx);
+    await writeOld(set.linkedA);
+    const old = await startRuntime(set.linkedA); // stays live (holds its kernel writer leases) across the deletion
+    await deleteAndRecreate(set, set.linkedA, set.linkedA);
+    await writeNew(set.linkedA);
+    // The old live writer still holds the path-keyed leases: the recreated incarnation gets no second writer and the
+    // refusal precedes any Storage bootstrap (no `.nexus` is created in the new checkout).
+    const refused = await openRuntime(set.linkedA).then(() => undefined, (error: unknown) => error);
+    expect(refused).toMatchObject({ code: 'writer_busy' });
+    await expect(lstat(join(set.linkedA, '.nexus'))).rejects.toThrow();
+    await old.runtime.close().catch(() => undefined);
+    // Old writer gone: the deleted default store went with the old checkout, so the new incarnation starts clean.
+    const fresh = await startRuntime(set.linkedA);
+    await expectOnlyNewIncarnation(fresh);
+  });
+
+  // EVIDENCE for the W06 Owner checkpoint, NOT an acceptance pass. With storage outside the worktree, the canonical
+  // project root of a same-path recreation equals the old incarnation's, so the durable claims read as "same owner".
+  // While the old writer is live the recreated incarnation is refused (no second writer); once it is gone the new
+  // incarnation is admitted onto the old incarnation's store. This test records that observed behavior.
+  it('W06_evidence_same_path_recreation_external_storage_is_indistinguishable', { timeout: 180_000 }, async (ctx) => {
+    const set = await openWorktrees(ctx);
+    const storage = join(dirname(set.primary), 'external-storage');
+    const env = externalStorageEnv(storage);
+    await writeOld(set.linkedA);
+    const old = await startRuntime(set.linkedA, env);
+    expect(await old.diagnostics.metadataStore.getAllPaths()).toContain(OLD_FILE);
+    const metadataInode = (await stat(join(storage, 'metadata.db'))).ino;
+    await deleteAndRecreate(set, set.linkedA, set.linkedA);
+    await writeNew(set.linkedA);
+    const refused = await openRuntime(set.linkedA, env).then(() => undefined, (error: unknown) => error);
+    expect(refused).toMatchObject({ code: 'writer_busy' });
+    await old.runtime.close();
+    // Observed: admitted as the same owner onto the old incarnation's external store (same metadata.db inode).
+    const reused = await openRuntime(set.linkedA, env);
+    expect((await stat(join(storage, 'metadata.db'))).ino).toBe(metadataInode);
+    // Before any reconcile the runtime holds the old incarnation's index (silent reuse of prior mutable storage).
+    expect(await reused.diagnostics.metadataStore.getAllPaths()).toContain(OLD_FILE);
+    await reused.runtime.initialize();
+    await waitIdle(reused);
+    // Observed: an already-indexed store triggers no startup full index, so after initialize() the recreated
+    // incarnation still serves the old incarnation's index (old-only file present, new file absent) - index leakage
+    // across incarnations that canonical-path ownership cannot detect.
+    const servedPaths = await reused.diagnostics.metadataStore.getAllPaths();
+    expect(servedPaths).toContain(OLD_FILE);
+    expect(servedPaths).not.toContain(NEW_FILE);
+    expect(hasFile(await reused.options.orchestrator.search({ query: OLD_SYMBOL, topK: 20 }), OLD_FILE)).toBe(true);
+    // Observed: even an explicit full reindex only adds the new checkout's files; the directory scan emits no
+    // deletions for files that vanished while no runtime was live, so the old incarnation's entry keeps being served.
+    await reused.runtime.reindex(true);
+    await waitIdle(reused);
+    const afterFull = await reused.diagnostics.metadataStore.getAllPaths();
+    expect(afterFull).toContain(NEW_FILE);
+    expect(afterFull).toContain(OLD_FILE);
+    expect(hasFile(await reused.options.orchestrator.search({ query: OLD_SYMBOL, topK: 20 }), OLD_FILE)).toBe(true);
   });
 
   it('W07_non_git_start_and_restart', { timeout: 120_000 }, async () => {
