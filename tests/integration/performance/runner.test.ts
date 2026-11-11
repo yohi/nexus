@@ -37,8 +37,10 @@ describe('isolated performance CLI', () => {
 
   it('returns one complete smoke JSON document with no worker stdout pollution', async () => {
     const result = await invoke(['--profile', 'smoke']);
-    expect(result.code, result.stderr).toBe(0);
     const report = reportSchema.parse(JSON.parse(result.stdout));
+    expect(result.code, JSON.stringify({ stderr: result.stderr, diagnostics: report.diagnostics,
+      scenarios: report.scenarios.map((record) => ({ id: record.id, status: record.status,
+        ...(record.status === 'invalid' ? { phase: record.phase, failures: record.failures } : {}) })) })).toBe(0);
     expect(report.status).toBe('complete');
     expect(report.scenarios).toHaveLength(27);
     expect(report.scenarios.every((record) => record.status === 'valid')).toBe(true);
@@ -54,7 +56,9 @@ describe('isolated performance CLI', () => {
     expect(result.code, result.stderr).toBe(0);
     expect(result.stdout).toBe('');
     const report = reportSchema.parse(JSON.parse(await readFile(path, 'utf8')));
-    expect(report.status).toBe('complete');
+    expect(report.status, JSON.stringify({ diagnostics: report.diagnostics,
+      scenarios: report.scenarios.map((record) => ({ id: record.id, status: record.status,
+        ...(record.status === 'invalid' ? { phase: record.phase, failures: record.failures } : {}) })) })).toBe('complete');
   }, 180_000);
 
   it.each(['noise', 'invalid-json', 'killed', 'runtime-failure', 'batch-two', 'over-limit', 'oom'] as const)(
