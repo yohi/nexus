@@ -269,6 +269,7 @@ async function main(args: string[]): Promise<void> {
         startupStderrLog: values["startup-stderr-log"] as string | undefined,
         bridgeStartupLogs: redirectedStartupLogs,
         storageTargetsFingerprint: targetsFingerprint,
+        worktreeWitness: admission.worktreeWitness,
       });
 
       return;
@@ -303,6 +304,7 @@ interface ManagedModeOptions extends RuntimeModeOptions {
   readonly startupStderrLog: string | undefined;
   readonly bridgeStartupLogs: StreamRedirection | undefined;
   readonly storageTargetsFingerprint: string;
+  readonly worktreeWitness: string | undefined;
 }
 
 interface HttpModeOptions extends RuntimeModeOptions {
@@ -343,6 +345,7 @@ async function startManagedMode({
   startupStderrLog,
   bridgeStartupLogs,
   storageTargetsFingerprint: publishedTargetsFingerprint,
+  worktreeWitness,
 }: ManagedModeOptions): Promise<void> {
   if (bridgeStartupLogs === undefined) {
     // Arbitrary (non-Bridge) log paths are opened only now, after writer admission.
@@ -362,6 +365,7 @@ async function startManagedMode({
     projectRoot: root,
     storageDir: config.storage.rootDir,
     storageTargetsFingerprint: publishedTargetsFingerprint,
+    ...(worktreeWitness === undefined ? {} : { worktreeWitness }),
     runtime,
     port,
     idleShutdownMs,

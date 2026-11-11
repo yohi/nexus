@@ -9,7 +9,7 @@ import { lstat, mkdir, realpath } from 'node:fs/promises';
 import { userInfo } from 'node:os';
 import { dirname, join, sep } from 'node:path';
 import Database from 'better-sqlite3';
-import { claimPathFor, CLAIM_FORMAT_VERSION, type ClaimKind, type OwnerClaim } from './claim-format.js';
+import { claimPathFor, CLAIM_FORMAT_VERSION, WITNESS_CLAIM_FORMAT_VERSION, type ClaimKind, type OwnerClaim } from './claim-format.js';
 import { canonicalize } from './targets.js';
 
 /** Design §4.3: SHA-256("nexus-storage-path-v1\0" + canonicalAbsoluteTargetPath). No role/TMPDIR/PID component. */
@@ -282,8 +282,12 @@ export type PublishResult = 'created' | 'exists';
  * `link()` it to the final name (atomic, fails with EEXIST instead of replacing). The attempt-owned temp file is
  * always unlinked; nothing pre-existing is modified or deleted.
  */
-export function publishClaim(resourcePath: string, kind: ClaimKind, ownerProjectRoot: string): PublishResult {
-  const claim: OwnerClaim = { version: CLAIM_FORMAT_VERSION, ownerProjectRoot, resourcePath, kind };
+export function publishClaim(
+  resourcePath: string, kind: ClaimKind, ownerProjectRoot: string, worktreeWitness?: string,
+): PublishResult {
+  const claim: OwnerClaim = worktreeWitness === undefined
+    ? { version: CLAIM_FORMAT_VERSION, ownerProjectRoot, resourcePath, kind }
+    : { version: WITNESS_CLAIM_FORMAT_VERSION, ownerProjectRoot, resourcePath, kind, worktreeWitness };
   const finalPath = claimPathFor(resourcePath, kind);
   const tempPath = `${finalPath}.tmp-${process.pid}-${randomBytes(6).toString('hex')}`;
   const fd = openSync(tempPath, fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_EXCL | fsConstants.O_NOFOLLOW, 0o644);

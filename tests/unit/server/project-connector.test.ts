@@ -193,6 +193,47 @@ describe('project-connector', () => {
     }
   });
 
+  it('W06_external_storage_endpoint_is_reused_only_with_the_current_worktree_witness', async () => {
+    const external = await realpath(await mkdtemp(join(tmpdir(), 'nexus-connector-external-')));
+    try {
+      const externalTargets = await resolveStorageOwnershipTargets(await loadConfig({ projectRoot, env: {
+        NEXUS_STORAGE_ROOT_DIR: external, NEXUS_STORAGE_METADATA_DB_PATH: join(external, 'metadata.db'),
+        NEXUS_STORAGE_VECTOR_DB_PATH: join(external, 'vectors'),
+      } }));
+      const admission = await admitStorageWriter(externalTargets);
+      const witness = admission.worktreeWitness;
+      await admission.release();
+      expect(witness).toMatch(/^[0-9a-f]{64}$/);
+      const externalOptions = (harness: ReturnType<typeof createHarness>): ProjectConnectorOptions =>
+        baseOptions(harness, { storageDir: external, storageOwnershipTargets: externalTargets, startupTimeoutMs: 300 });
+      const publish = (worktreeWitness: string | undefined): Promise<void> => writeProjectEndpoint(external, {
+        ...healthyEndpoint('instance-external', 43150, storageTargetsFingerprint(externalTargets)),
+        ...(worktreeWitness === undefined ? {} : { worktreeWitness }),
+      });
+      const healthy = (harness: ReturnType<typeof createHarness>): void => {
+        harness.fetchImpl.mockResolvedValue(new Response(JSON.stringify({ instanceId: 'instance-external', projectRoot }), { status: 200 }));
+      };
+
+      await publish(witness);
+      const reuse = createHarness();
+      healthy(reuse);
+      expect((await ensureProjectEndpoint(externalOptions(reuse))).port).toBe('43150');
+      expect(reuse.spawnImpl).not.toHaveBeenCalled();
+
+      // A descriptor from another incarnation, or one without a witness, is never reused and never removed.
+      for (const foreign of ['e'.repeat(64), undefined]) {
+        await publish(foreign);
+        const before = await snapshot(external);
+        const harness = createHarness();
+        healthy(harness);
+        await expect(ensureProjectEndpoint(externalOptions(harness))).rejects.toThrow();
+        expect(await snapshot(external)).toEqual(before);
+      }
+    } finally {
+      await rm(external, { force: true, recursive: true });
+    }
+  });
+
   it('spawns once when two connectors race without an endpoint', async () => {
     const harness = createHarness();
     const instanceId = `instance-${randomUUID()}`;

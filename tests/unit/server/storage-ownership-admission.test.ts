@@ -13,6 +13,7 @@ import {
   claimPathFor, DIRECTORY_CLAIM_FILENAME, readOwnerClaim, resolveStorageOwnershipTargets,
 } from '../../../src/server/storage-ownership/index.js';
 import type { Config } from '../../../src/types/index.js';
+import { readWorktreeWitness } from '../../../src/server/storage-ownership/witness.js';
 
 // Single-process admission contract tests. Cross-process contention/crash cases live in
 // tests/integration/storage-ownership-process.test.ts and use real child processes.
@@ -78,7 +79,13 @@ async function digest(...paths: string[]): Promise<Record<string, string>> {
 
 async function expectClaim(resource: string, kind: 'file' | 'directory', owner: string): Promise<void> {
   const result = await readOwnerClaim(claimPathFor(resource, kind));
-  expect(result).toEqual({ state: 'present', claim: { version: 1, ownerProjectRoot: owner, resourcePath: resource, kind } });
+  // Storage outside the project root is bound to the owner's worktree incarnation witness (claim format v2, W06).
+  const witness = await readWorktreeWitness(owner);
+  expect(witness.state).toBe('present');
+  expect(result).toEqual({
+    state: 'present',
+    claim: { version: 2, ownerProjectRoot: owner, resourcePath: resource, kind, worktreeWitness: (witness as { witness: string }).witness },
+  });
 }
 
 describe('stable physical resource keys and coordination', () => {

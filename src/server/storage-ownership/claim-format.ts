@@ -2,6 +2,12 @@ import { lstat, readFile } from 'node:fs/promises';
 
 // Internal ownership claim format version 1. Task 3 (admission) writes these; preflight only reads them.
 export const CLAIM_FORMAT_VERSION = 1;
+/**
+ * Claim format version 2 (Nexus #297 W06): additionally records the Worktree Incarnation Witness. It is written only for
+ * storage that can outlive the worktree (a persistent target outside the project root). Version 1 claims stay valid
+ * for fully in-project storage but are never adopted for external storage (they cannot prove their incarnation).
+ */
+export const WITNESS_CLAIM_FORMAT_VERSION = 2;
 /** Directory resources keep their claim inside the directory. */
 export const DIRECTORY_CLAIM_FILENAME = '.nexus-owner-claim.json';
 /** File resources (SQLite) keep their claim in an adjacent file named `<resource>` + this suffix. */
@@ -11,10 +17,25 @@ export const MAX_CLAIM_BYTES = 64 * 1024;
 export type ClaimKind = 'file' | 'directory';
 
 export interface OwnerClaim {
-  readonly version: typeof CLAIM_FORMAT_VERSION;
+  readonly version: typeof CLAIM_FORMAT_VERSION | typeof WITNESS_CLAIM_FORMAT_VERSION;
   readonly ownerProjectRoot: string;
   readonly resourcePath: string;
   readonly kind: ClaimKind;
+  /** Present exactly on version 2 claims. */
+  readonly worktreeWitness?: string;
+}
+
+/**
+ * Whether `claim` is bound to the current worktree incarnation. `witness === undefined` means no witness is required
+ * (storage fully inside the project): any valid claim qualifies. Otherwise only a version 2 claim carrying exactly the
+ * current witness qualifies; legacy v1 claims and other incarnations' claims never do.
+ */
+export function claimBindingProblem(claim: OwnerClaim, witness: string | undefined): string | undefined {
+  if (witness === undefined) return undefined;
+  if (claim.version !== WITNESS_CLAIM_FORMAT_VERSION || claim.worktreeWitness === undefined) {
+    return 'legacy claim cannot be bound to this worktree incarnation';
+  }
+  return claim.worktreeWitness === witness ? undefined : 'claim belongs to a different worktree incarnation';
 }
 
 export const claimPathFor = (resourcePath: string, kind: ClaimKind): string =>
@@ -53,10 +74,18 @@ export async function readOwnerClaim(claimPath: string): Promise<ClaimReadResult
   try { parsed = JSON.parse(await readFile(claimPath, 'utf8')); }
   catch { return { state: 'invalid', reason: 'claim is malformed' }; }
   const c = parsed as Partial<OwnerClaim> | null;
-  if (!c || typeof c !== 'object' || c.version !== CLAIM_FORMAT_VERSION ||
+  if (!c || typeof c !== 'object' || (c.version !== CLAIM_FORMAT_VERSION && c.version !== WITNESS_CLAIM_FORMAT_VERSION) ||
     typeof c.ownerProjectRoot !== 'string' || typeof c.resourcePath !== 'string' ||
     (c.kind !== 'file' && c.kind !== 'directory')) {
     return { state: 'invalid', reason: 'claim has unsupported version or shape' };
   }
-  return { state: 'present', claim: { version: c.version, ownerProjectRoot: c.ownerProjectRoot, resourcePath: c.resourcePath, kind: c.kind } };
+  const base = { ownerProjectRoot: c.ownerProjectRoot, resourcePath: c.resourcePath, kind: c.kind };
+  if (c.version === CLAIM_FORMAT_VERSION) {
+    if (c.worktreeWitness !== undefined) return { state: 'invalid', reason: 'claim has unsupported version or shape' };
+    return { state: 'present', claim: { version: c.version, ...base } };
+  }
+  if (typeof c.worktreeWitness !== 'string' || !/^[0-9a-f]{64}$/.test(c.worktreeWitness)) {
+    return { state: 'invalid', reason: 'claim has unsupported version or shape' };
+  }
+  return { state: 'present', claim: { version: c.version, ...base, worktreeWitness: c.worktreeWitness } };
 }

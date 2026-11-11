@@ -1,5 +1,6 @@
 import { execFile } from 'node:child_process';
-import { lstat, mkdir, mkdtemp, readFile, realpath, rm, stat, writeFile } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
+import { lstat, mkdir, mkdtemp, readdir, readFile, realpath, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { promisify } from 'node:util';
@@ -199,49 +200,60 @@ describe('worktree isolation (disposable git worktrees)', () => {
     await expectOnlyNewIncarnation(fresh);
   });
 
-  // Safe behavior required by Design §4.6; blocked on the W06 Owner decision (incarnation witness or accepted limit).
-  it.todo('W06_same_path_recreation_external_storage_must_not_reuse_old_incarnation_store (blocked: Owner decision)');
+  /** Recursive byte digest of a directory tree (file contents by hash). */
+  async function digestTree(path: string): Promise<Record<string, string>> {
+    const out: Record<string, string> = {};
+    const walk = async (entry: string): Promise<void> => {
+      const info = await lstat(entry);
+      if (info.isDirectory()) {
+        out[`${entry}/`] = 'dir';
+        for (const name of (await readdir(entry)).sort()) await walk(join(entry, name));
+      } else out[entry] = createHash('sha256').update(await readFile(entry)).digest('hex');
+    };
+    await walk(path);
+    return out;
+  }
 
-  // EVIDENCE OF GAP for the W06 Owner checkpoint, NOT an acceptance pass: it asserts the observed UNSAFE behavior.
-  // With storage outside the worktree, the canonical project root of a same-path recreation equals the old
-  // incarnation's, so the durable claims read as "same owner".
-  // While the old writer is live the recreated incarnation is refused (no second writer); once it is gone the new
-  // incarnation is admitted onto the old incarnation's store. This test records that observed behavior.
-  it('EVIDENCE_GAP_W06_same_path_recreation_external_storage_is_indistinguishable', { timeout: 180_000 }, async (ctx) => {
+  // W06-A/B (Design §4.6, W06 witness): with storage outside the worktree, the canonical project root of a same-path
+  // recreation equals the old incarnation's, so only the worktree incarnation witness tells them apart.
+  it('W06_same_path_recreation_external_storage_must_not_reuse_old_incarnation_store', { timeout: 180_000 }, async (ctx) => {
     const set = await openWorktrees(ctx);
     const storage = join(dirname(set.primary), 'external-storage');
     const env = externalStorageEnv(storage);
     await writeOld(set.linkedA);
     const old = await startRuntime(set.linkedA, env);
     expect(await old.diagnostics.metadataStore.getAllPaths()).toContain(OLD_FILE);
-    const metadataInode = (await stat(join(storage, 'metadata.db'))).ino;
     await deleteAndRecreate(set, set.linkedA, set.linkedA);
     await writeNew(set.linkedA);
-    const refused = await openRuntime(set.linkedA, env).then(() => undefined, (error: unknown) => error);
-    expect(refused).toMatchObject({ code: 'writer_busy' });
+    // W06-A: while the old runtime is live the recreated incarnation is refused by the read-only incarnation check
+    // before it even tries a writer lease, so the old runtime keeps its leases and gets no competing writer.
+    expect(await openRuntime(set.linkedA, env).then(() => undefined, (error: unknown) => error))
+      .toMatchObject({ code: 'incarnation_mismatch' });
+    expect(await old.options.orchestrator.search({ query: OLD_SYMBOL, topK: 20 })).toBeDefined();
     await old.runtime.close();
-    // Observed: admitted as the same owner onto the old incarnation's external store (same metadata.db inode).
-    const reused = await openRuntime(set.linkedA, env);
-    expect((await stat(join(storage, 'metadata.db'))).ino).toBe(metadataInode);
-    // Before any reconcile the runtime holds the old incarnation's index (silent reuse of prior mutable storage).
-    expect(await reused.diagnostics.metadataStore.getAllPaths()).toContain(OLD_FILE);
-    await reused.runtime.initialize();
-    await waitIdle(reused);
-    // Observed: an already-indexed store triggers no startup full index, so after initialize() the recreated
-    // incarnation still serves the old incarnation's index (old-only file present, new file absent) - index leakage
-    // across incarnations that canonical-path ownership cannot detect.
-    const servedPaths = await reused.diagnostics.metadataStore.getAllPaths();
-    expect(servedPaths).toContain(OLD_FILE);
-    expect(servedPaths).not.toContain(NEW_FILE);
-    expect(hasFile(await reused.options.orchestrator.search({ query: OLD_SYMBOL, topK: 20 }), OLD_FILE)).toBe(true);
-    // Observed: even an explicit full reindex only adds the new checkout's files; the directory scan emits no
-    // deletions for files that vanished while no runtime was live, so the old incarnation's entry keeps being served.
-    await reused.runtime.reindex(true);
-    await waitIdle(reused);
-    const afterFull = await reused.diagnostics.metadataStore.getAllPaths();
-    expect(afterFull).toContain(NEW_FILE);
-    expect(afterFull).toContain(OLD_FILE);
-    expect(hasFile(await reused.options.orchestrator.search({ query: OLD_SYMBOL, topK: 20 }), OLD_FILE)).toBe(true);
+    // W06-B: old runtime gone; the recreated incarnation is refused and the old store is left byte-identical.
+    const before = await digestTree(storage);
+    expect(await openRuntime(set.linkedA, env).then(() => undefined, (error: unknown) => error))
+      .toMatchObject({ code: 'incarnation_mismatch' });
+    expect(await digestTree(storage)).toEqual(before);
+    // A new, empty external storage works and never serves the old incarnation's entries.
+    const fresh = await startRuntime(set.linkedA, externalStorageEnv(join(dirname(set.primary), 'external-storage-new')));
+    await expectOnlyNewIncarnation(fresh);
+  });
+
+  // W06-C: the same worktree restarts onto its own external storage without a new witness and keeps its index.
+  it('W06_same_worktree_external_storage_sequential_restart_keeps_index_and_witness', { timeout: 180_000 }, async (ctx) => {
+    const set = await openWorktrees(ctx);
+    const env = externalStorageEnv(join(dirname(set.primary), 'external-storage'));
+    await writeOld(set.linkedA);
+    const first = await startRuntime(set.linkedA, env);
+    const witness = await readFile(join(set.linkedA, '.nexus', 'worktree-witness'));
+    expect(await first.diagnostics.metadataStore.getAllPaths()).toContain(OLD_FILE);
+    await first.runtime.close();
+    const second = await startRuntime(set.linkedA, env);
+    expect(await second.diagnostics.metadataStore.getAllPaths()).toContain(OLD_FILE);
+    expect(hasFile(await second.options.orchestrator.search({ query: OLD_SYMBOL, topK: 20 }), OLD_FILE)).toBe(true);
+    expect(await readFile(join(set.linkedA, '.nexus', 'worktree-witness'))).toEqual(witness);
   });
 
   it('W07_non_git_start_and_restart', { timeout: 120_000 }, async () => {

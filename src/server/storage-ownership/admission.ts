@@ -3,18 +3,21 @@
 import { lstat, readdir } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import type { Config } from '../../types/index.js';
-import { claimPathFor, DIRECTORY_CLAIM_FILENAME, isClaimTempPathFor, readOwnerClaim, type ClaimKind } from './claim-format.js';
+import {
+  claimBindingProblem, claimPathFor, DIRECTORY_CLAIM_FILENAME, isClaimTempPathFor, readOwnerClaim, type ClaimKind,
+} from './claim-format.js';
 import {
   ADMISSION_LOCK_FILENAME, defaultCoordinationRoot, isWithin, listWriterEntries, mkdirVerified, prepareCoordinationRoot, publishClaim,
   RESOURCE_LOCK_DIR, resourceKey, sqliteFcntlLockBackend, WRITER_LOCK_DIR, writeWriterPathRecord, type KernelLock, type KernelLockBackend,
 } from './claims.js';
 import { inspectStorageOwnership } from './preflight.js';
+import { ensureWorktreeWitness, witnessRequired } from './witness.js';
 import { assertNotHardlinked, canonicalize, resolveStorageOwnershipTargets, storageTargetsFingerprint } from './targets.js';
 import type { CanonicalPath, OwnershipPreflight, ResolvedStorageOwnershipTargets } from './types.js';
 
 export type StorageOwnershipErrorCode =
   | 'owner_conflict' | 'owner_unknown' | 'ambiguous_target' | 'writer_busy' | 'lock_unavailable'
-  | 'claim_io_failed' | 'unsupported_kernel_lease' | 'invalid_writer_admission' | 'target_mismatch';
+  | 'claim_io_failed' | 'unsupported_kernel_lease' | 'invalid_writer_admission' | 'target_mismatch' | 'incarnation_mismatch';
 
 /** Bounded internal failure. `code` is the stable classification; `message` is a diagnostic only. */
 export class StorageOwnershipError extends Error {
@@ -31,6 +34,8 @@ declare const writerAdmissionBrand: unique symbol;
 export interface WriterAdmission {
   readonly [writerAdmissionBrand]: true;
   readonly targets: ResolvedStorageOwnershipTargets;
+  /** Worktree incarnation witness bound to the admitted claims; undefined when storage lies fully inside the project. */
+  readonly worktreeWitness?: string;
   /** Releases the live writer leases only while ISSUED (idempotent); a no-op after transfer to a runtime. */
   readonly release: () => Promise<void>;
 }
@@ -110,6 +115,7 @@ function persistentResources(targets: ResolvedStorageOwnershipTargets): Resource
 
 function classifyPreflight(reason: string | undefined): StorageOwnershipError {
   const text = reason ?? 'unknown';
+  if (/worktree incarnation|worktree witness|witness/.test(text)) return new StorageOwnershipError('incarnation_mismatch', text);
   if (/different (owner|project)/.test(text)) return new StorageOwnershipError('owner_conflict', text);
   if (/alias|hard-linked|not a directory|no existing ancestor/.test(text)) return new StorageOwnershipError('ambiguous_target', text);
   return new StorageOwnershipError('owner_unknown', text);
@@ -137,7 +143,7 @@ async function assertStableIdentity(resource: Resource): Promise<void> {
   }
 }
 
-async function checkAncestorClaims(resource: Resource, owner: string): Promise<void> {
+async function checkAncestorClaims(resource: Resource, owner: string, witness: string | undefined): Promise<void> {
   for (let dir = dirname(resource.path), prev = ''; dir !== prev; prev = dir, dir = dirname(dir)) {
     const result = await readOwnerClaim(join(dir, DIRECTORY_CLAIM_FILENAME));
     if (result.state === 'invalid') throw new StorageOwnershipError('owner_unknown', `ancestor claim at ${dir}: ${result.reason}`);
@@ -146,6 +152,8 @@ async function checkAncestorClaims(resource: Resource, owner: string): Promise<v
       throw new StorageOwnershipError('owner_unknown', `ancestor claim at ${dir} does not match its directory`);
     }
     if (result.claim.ownerProjectRoot !== owner) throw new StorageOwnershipError('owner_conflict', `ancestor ${dir} is owned by another project`);
+    const problem = claimBindingProblem(result.claim, witness);
+    if (problem) throw new StorageOwnershipError('incarnation_mismatch', `ancestor ${dir}: ${problem}`);
   }
 }
 
@@ -175,9 +183,11 @@ async function assertOnlyExplainedEntries(dir: string, self: Resource, all: read
  * Full validation of one resource against the single owner. Returns whether the resource is already claimed by that
  * owner. Throws for any foreign, malformed, unexplained or ambiguous state. Read-only.
  */
-async function validateResource(resource: Resource, all: readonly Resource[], owner: string): Promise<boolean> {
+async function validateResource(
+  resource: Resource, all: readonly Resource[], owner: string, witness: string | undefined,
+): Promise<boolean> {
   await assertStableIdentity(resource);
-  await checkAncestorClaims(resource, owner);
+  await checkAncestorClaims(resource, owner, witness);
   const claim = await readOwnerClaim(claimPathFor(resource.path, resource.kind));
   if (claim.state === 'invalid') throw new StorageOwnershipError('owner_unknown', `claim for ${resource.path}: ${claim.reason}`);
   if (claim.state === 'present') {
@@ -186,6 +196,8 @@ async function validateResource(resource: Resource, all: readonly Resource[], ow
       throw new StorageOwnershipError('owner_unknown', `claim for ${resource.path} does not match the resource`);
     }
     if (c.ownerProjectRoot !== owner) throw new StorageOwnershipError('owner_conflict', `${resource.path} is owned by another project`);
+    const problem = claimBindingProblem(c, witness);
+    if (problem) throw new StorageOwnershipError('incarnation_mismatch', `${resource.path}: ${problem}`);
     return true;
   }
   if (resource.kind === 'file') {
@@ -206,9 +218,11 @@ async function validateResource(resource: Resource, all: readonly Resource[], ow
   return false;
 }
 
-async function validateAll(resources: readonly Resource[], owner: string): Promise<Map<Resource, boolean>> {
+async function validateAll(
+  resources: readonly Resource[], owner: string, witness: string | undefined,
+): Promise<Map<Resource, boolean>> {
   const claimed = new Map<Resource, boolean>();
-  for (const r of resources) claimed.set(r, await validateResource(r, resources, owner));
+  for (const r of resources) claimed.set(r, await validateResource(r, resources, owner, witness));
   return claimed;
 }
 
@@ -265,6 +279,7 @@ export function createStorageOwnershipAdmissionService(options: AdmissionInterna
     const shortLocks: KernelLock[] = [];
     const leases: KernelLock[] = [];
     let admitted = false;
+    let admittedWitness: string | undefined;
     try {
       // 2. Global gate, then sorted per-resource admission locks, then sorted nonblocking lifetime writer leases.
       shortLocks.push(await acquireShort(join(coordinationRoot, ADMISSION_LOCK_FILENAME)));
@@ -298,8 +313,17 @@ export function createStorageOwnershipAdmissionService(options: AdmissionInterna
         throw new StorageOwnershipError('lock_unavailable', `cannot record writer target: ${(error as Error).message}`, { cause: error });
       }
 
+      // 2c. Worktree incarnation witness (W06): required only when storage can outlive the worktree. Created at most
+      // once, atomically, under the live leases; a missing/malformed/foreign witness never gets regenerated over claims.
+      let witness: string | undefined;
+      if (witnessRequired(owner, resources)) {
+        const ensured = await ensureWorktreeWitness(owner, resources);
+        if (!ensured.ok) throw new StorageOwnershipError('incarnation_mismatch', `worktree witness unusable: ${ensured.reason}`);
+        witness = ensured.witness;
+      }
+
       // 3. Validate the complete set before any Storage mkdir or claim publication.
-      await validateAll(resources, owner);
+      await validateAll(resources, owner, witness);
 
       // 4. F-004 bootstrap: only missing empty claim-required directories / the metadata claim parent.
       try {
@@ -311,24 +335,25 @@ export function createStorageOwnershipAdmissionService(options: AdmissionInterna
       }
 
       // 5. Revalidate identities/keys and content after bootstrap, then publish missing claims (no overwrite).
-      const claimed = await validateAll(resources, owner);
+      const claimed = await validateAll(resources, owner, witness);
       for (const r of resources) {
         if (claimed.get(r)) continue;
         let result;
         try {
           options.beforeClaimPublish?.(r.path);
-          result = publishClaim(r.path, r.kind, owner);
+          result = publishClaim(r.path, r.kind, owner, witness);
         } catch (error) {
           throw new StorageOwnershipError('claim_io_failed', `claim publication failed for ${r.path}: ${errno(error) ?? (error as Error).message}`, { cause: error });
         }
-        if (result === 'exists') await validateResource(r, resources, owner); // must be our own valid claim
+        if (result === 'exists') await validateResource(r, resources, owner, witness); // must be our own valid claim
       }
 
       // 6. Verify the complete claim set and live leases before issuing the handle.
-      const final = await validateAll(resources, owner);
+      const final = await validateAll(resources, owner, witness);
       if (![...final.values()].every(Boolean)) throw new StorageOwnershipError('claim_io_failed', 'claim set incomplete after publication');
       for (const r of resources) await assertStableIdentity(r);
       if (!leases.every((l) => l.isHeld())) throw new StorageOwnershipError('unsupported_kernel_lease', 'writer lease lost during admission');
+      admittedWitness = witness;
       admitted = true;
     } finally {
       releaseLeases(shortLocks);
@@ -340,6 +365,7 @@ export function createStorageOwnershipAdmissionService(options: AdmissionInterna
     liveLeaseSets.add(leases);
     const handle = Object.freeze({
       targets: frozenTargets,
+      ...(admittedWitness === undefined ? {} : { worktreeWitness: admittedWitness }),
       release: (): Promise<void> => {
         if (entry.state === 'ISSUED') { // after transfer the runtime alone owns the release
           entry.state = 'RELEASED';

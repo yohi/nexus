@@ -18,6 +18,8 @@ export interface ManagedHttpServerOptions {
    * published in the Endpoint so a discovery-only Bridge reuses this runtime only for the same three effective targets.
    */
   storageTargetsFingerprint: string;
+  /** Internal (Nexus #297 W06): Worktree Incarnation Witness of the admission; published in the Endpoint when set. */
+  worktreeWitness?: string;
   runtime: NexusRuntime;
   port?: number;
   idleShutdownMs?: number;
@@ -218,6 +220,7 @@ export async function startManagedHttpServer(
       projectRoot: options.projectRoot,
       url: url.toString(),
       storageTargetsFingerprint: options.storageTargetsFingerprint,
+      ...(options.worktreeWitness === undefined ? {} : { worktreeWitness: options.worktreeWitness }),
     };
     await writeProjectEndpoint(options.storageDir, published);
     endpoint = published;

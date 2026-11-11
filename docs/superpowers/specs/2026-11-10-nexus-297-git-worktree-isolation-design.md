@@ -232,7 +232,7 @@ Deletion and recreation **at a different path** naturally create different canon
 
 - Include an actual same-path delete/recreate test with persistent external storage and an old descriptor/runtime, plus the ordinary default-storage case.
 - A recreated worktree must never attach to an old live runtime or silently trust prior mutable storage when the old worktree identity cannot be established.
-- If the test fails, evaluate a minimal root-local lifetime/incarnation witness checked against persistent owner claims or an equivalent filesystem identity guard. It must not be branch/revision based, and it must not silently migrate old stores.
+- Owner selected the minimal witness (W06, 2026-11-11): see SPEC §10.1 "Worktree incarnation witness" (`<projectRoot>/.nexus/worktree-witness`, bound into claim format v2 and the Endpoint, created only inside writer admission, legacy external v1 claims refused). Original note: evaluate a minimal root-local lifetime/incarnation witness checked against persistent owner claims or an equivalent filesystem identity guard. It must not be branch/revision based, and it must not silently migrate old stores.
 - Because such a witness changes identity semantics, stop at the Human Owner checkpoint before adding it if safe implementation exceeds the bounded storage-owner mechanism. Never claim this acceptance criterion passed based on pathname equality alone.
 
 ## 5. Verification design (implementation is not authorized by this document)

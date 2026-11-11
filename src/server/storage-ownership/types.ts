@@ -16,4 +16,6 @@ export type OwnershipPreflight = Readonly<{
   targets: ResolvedStorageOwnershipTargets;
   disposition: 'owned' | 'unclaimed-clean' | 'refuse';
   reason?: string;
+  /** Current worktree incarnation witness; present only when one is required for these targets and valid. */
+  worktreeWitness?: string;
 }>;

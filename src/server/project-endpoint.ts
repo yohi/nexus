@@ -13,6 +13,11 @@ export interface ProjectEndpoint {
    * publishing managed runtime was admitted for. Absent on legacy descriptors, which are never optimistically reused.
    */
   readonly storageTargetsFingerprint?: string;
+  /**
+   * Internal endpoint metadata (Nexus #297 W06): the Worktree Incarnation Witness the publishing runtime was admitted
+   * under. Present only when storage can outlive the worktree; a Bridge reuses the endpoint only on an exact match.
+   */
+  readonly worktreeWitness?: string;
 }
 
 export const PROJECT_ENDPOINT_FILENAME = "endpoint.json";
@@ -24,6 +29,7 @@ const projectEndpointSchema = z
     projectRoot: z.string(),
     url: z.string(),
     storageTargetsFingerprint: z.string().regex(/^[0-9a-f]{64}$/).optional(),
+    worktreeWitness: z.string().regex(/^[0-9a-f]{64}$/).optional(),
   })
   .strict();
 
@@ -137,7 +143,8 @@ export async function removeProjectEndpointIfMatching(
         result.data.pid !== expected.pid ||
         result.data.projectRoot !== expected.projectRoot ||
         result.data.url !== expected.url ||
-        result.data.storageTargetsFingerprint !== expected.storageTargetsFingerprint
+        result.data.storageTargetsFingerprint !== expected.storageTargetsFingerprint ||
+        result.data.worktreeWitness !== expected.worktreeWitness
       ) {
         return;
       }

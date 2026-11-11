@@ -372,17 +372,30 @@ The Bridge does not create storage or write logs under it, and never deletes any
 - *Recreation at the same path with default storage* starts from a fresh store, because the old store was deleted with the old checkout.
   - While an old managed child survives, the recreated worktree cannot reach it, because the old descriptor is gone.
   - It also cannot start a second writer: it is refused with `writer_busy` until the old child exits.
-- *Recreation at the same path with storage outside the worktree is not protected.* Canonical-path identity cannot tell the old incarnation from the new one:
-  - The recreated worktree's Bridge reattaches to a surviving old managed runtime through the surviving descriptor.
-  - Once the old runtime is gone, a new runtime is admitted onto the old store as the same owner.
-  - In testing, index entries for files that existed only in the old incarnation were still served after startup and after an explicit full reindex. The directory scan reports no deletions for files that disappeared while no runtime was running.
-  - Until this is resolved, stop the old runtime and remove or relocate external storage before recreating a worktree at the same path.
+- *Recreation at the same path with storage outside the worktree* is told apart by the worktree incarnation witness (below):
+  - The recreated worktree's Bridge does not attach to a surviving old managed runtime, even though the descriptor survives in the external storage. It is refused with a `worktree incarnation` diagnostic, and the old descriptor, claims and runtime are left untouched.
+  - After the old runtime exits, the recreated worktree is still refused with `incarnation_mismatch`. Claims, metadata and vector data of the old store stay byte-identical, so no index entry of the old incarnation is ever served.
+  - A new, empty external storage works for the recreated worktree.
+  - Nexus never deletes, resets or migrates the old store; the Owner removes or relocates it.
+
+**Worktree incarnation witness.** The canonical project root stays the only runtime identity. The witness is additional evidence that a claim or Endpoint belongs to the current worktree incarnation, not a public identifier, and it is not derived from the branch, commit or any Git state.
+
+- *Required when* at least one persistent target lies outside the project root, because only then can claims outlive the worktree. Storage fully inside the project (the default) needs no witness, writes version 1 claims and behaves as before.
+- *Location and lifetime.* `<projectRoot>/.nexus/worktree-witness` (untracked local state, mode `0600`), holding 32 random bytes plus the canonical project root. It disappears with the worktree and is independent of external storage. A normal restart keeps it. It is never regenerated while a file exists.
+- *Creation* happens only inside writer admission, under the admission gate and the writer leases, by an atomic no-overwrite `link()` of an attempt-owned temp file. An interrupted attempt leaves only a temp name that is never read.
+- *Validation* is no-follow: a missing, malformed, symlinked, hard-linked, foreign-owned or other-project-root witness (or an aliased `.nexus`) is refused with `incarnation_mismatch` and never repaired.
+- *Claim binding.* For such storage every claim (including ancestor claims) is version 2 and records the witness. Admission and the Bridge preflight require an exact match before any storage read or write. A version 1 claim on external storage, or a claim with another witness, is refused.
+- *Endpoint binding.* The managed runtime publishes the witness in `endpoint.json`; the Bridge reuses an Endpoint only when it equals the witness currently on disk.
+- *Fail-closed.* On any mismatch nothing under storage, no PID file, no Endpoint and no coordination state is changed or removed.
 
 **Limitations.**
 
 - Writer admission and the Bridge startup gate are Linux-only. They verify kernel lock ownership through `/proc/locks`, and other platforms are refused with `unsupported_kernel_lease`. They also fail closed when `/proc/locks` cannot attest the lock. That happens when the PID namespace does not match the procfs mount. It may also happen on filesystems whose reported device numbers differ from `/proc/locks` entries, such as btrfs subvolumes or overlayfs.
 - The coordination root is refused on network and userspace filesystems (NFS, SMB/CIFS, FUSE, Ceph and similar), decided by the `statfs` filesystem type.
 - Populated stores created before ownership claims existed are refused rather than adopted. Nexus provides no migration procedure.
+- External storage claimed before the witness existed (version 1 claims) is refused with `incarnation_mismatch`, not adopted: those claims cannot prove which worktree incarnation wrote the data. There is no migration; an explicit, Owner-approved adoption procedure remains undecided.
+- The witness cannot detect a deliberate copy of an entire worktree directory including its `.nexus/worktree-witness` to the same path, or a recreated worktree whose `.nexus` is restored from a backup.
+- A configuration that puts a claim-required storage directory at or above `<projectRoot>/.nexus` while another target lies outside the project is refused (the witness location would overlap it).
 
 **Implemented but not exercised by tests.** The implementation does the following, but no executed test has shown it end to end:
 

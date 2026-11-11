@@ -525,13 +525,9 @@ await expect(readProjectEndpoint(storageDir)).resolves.toBeUndefined();
     expect(await callTool(bridge, 11, 'grep_search', { pattern: OLD_SYMBOL })).not.toContain(OLD_FILE);
   });
 
-  // Safe behavior required by Design §4.6; blocked on the W06 Owner decision (incarnation witness or accepted limit).
-  it.todo('W06_same_path_recreation_external_storage_must_not_reattach_or_reuse_old_incarnation (blocked: Owner decision)');
-
-  // EVIDENCE OF GAP for the W06 Owner checkpoint, NOT an acceptance pass: it asserts the observed UNSAFE behavior.
-  // With external custom storage the descriptor and the claims survive the deletion, and a same-path recreation has
-  // the same canonical owner.
-  it('EVIDENCE_GAP_W06_same_path_recreation_external_storage_reattaches_and_reuses', { timeout: 120_000 }, async (ctx) => {
+  // Nexus #297 W06-A/B/C (witness): external custom storage and its Endpoint survive a same-path worktree recreation,
+  // but the recreated incarnation must neither attach to the old runtime nor adopt the old store.
+  it('W06_same_path_recreation_external_storage_must_not_reattach_or_reuse_old_incarnation', { timeout: 150_000 }, async (ctx) => {
     const set = await worktreeSet((note) => ctx.skip(note));
     const storage = join(dirname(set.primary), 'external-storage');
     const env = { NEXUS_STORAGE_ROOT_DIR: storage, NEXUS_STORAGE_METADATA_DB_PATH: join(storage, 'metadata.db'),
@@ -541,28 +537,60 @@ await expect(readProjectEndpoint(storageDir)).resolves.toBeUndefined();
     await sendRequest(oldBridge, initializeRequest, 1);
     const old = await endpointOf(storage);
     detachedManagedPids.push(old.pid);
+    expect(old.worktreeWitness).toMatch(/^[0-9a-f]{64}$/);
     await stopBridge(oldBridge);
     const claimBefore = await readFile(join(storage, DIRECTORY_CLAIM_FILENAME));
+    const endpointBefore = await readFile(join(storage, 'endpoint.json'));
     await recreateWorktree(set, set.linkedA, set.linkedA);
     await writeNew(set.linkedA);
-    // Observed (a): the recreated incarnation's Bridge attaches to the OLD incarnation's live runtime.
+    // W06-A: the old runtime is alive; the recreated incarnation's Bridge must not attach to it.
     const reattached = startBridge(set.linkedA, env);
-    await sendRequest(reattached, initializeRequest, 1);
-    expect((await readProjectEndpoint(storage))?.pid).toBe(old.pid);
+    const attachOutcome = await sendRequest(reattached, initializeRequest, 1).then(() => 'connected', (error: unknown) => String(error));
+    expect(attachOutcome).not.toBe('connected');
+    expect(attachOutcome).toContain('worktree incarnation');
+    expect(isAlive(old.pid)).toBe(true);
+    expect((await readProjectEndpoint(storage))?.pid).toBe(old.pid); // Bridge never removed/replaced the old descriptor
+    expect(await readFile(join(storage, 'endpoint.json'))).toEqual(endpointBefore);
+    expect(await readFile(join(storage, DIRECTORY_CLAIM_FILENAME))).toEqual(claimBefore);
     await stopBridge(reattached);
-    // Observed (b): once the old runtime stops, a new child is admitted as the same owner onto the old incarnation's
-    // store; the durable claim is unchanged, i.e. the store is silently reused. (SIGTERM, not SIGKILL: after a crash the
-    // pre-existing mtime-based project lock on the storage root refuses a successor for its 30 s stale window.)
+    // W06-B: once the old runtime stops, the recreated incarnation is still refused and the claim stays untouched.
     process.kill(old.pid, 'SIGTERM');
     await waitForExit(old.pid);
-    const bridge = startBridge(set.linkedA, env);
-    await sendRequest(bridge, initializeRequest, 1);
-    const fresh = await waitFor(async () => {
-      const current = await readProjectEndpoint(storage);
-      return current !== undefined && current.pid !== old.pid ? current : undefined;
-    }, 15_000);
-    detachedManagedPids.push(fresh.pid);
+    const blocked = startBridge(set.linkedA, env);
+    const blockedOutcome = await sendRequest(blocked, initializeRequest, 1).then(() => 'connected', (error: unknown) => String(error));
+    expect(blockedOutcome).not.toBe('connected');
+    expect(blockedOutcome).toContain('worktree incarnation');
     expect(await readFile(join(storage, DIRECTORY_CLAIM_FILENAME))).toEqual(claimBefore);
+    await stopBridge(blocked);
+    // A new, empty external storage works for the recreated worktree and never serves the old incarnation.
+    const storage2 = join(dirname(set.primary), 'external-storage-new');
+    const env2 = { NEXUS_STORAGE_ROOT_DIR: storage2, NEXUS_STORAGE_METADATA_DB_PATH: join(storage2, 'metadata.db'),
+      NEXUS_STORAGE_VECTOR_DB_PATH: join(storage2, 'vectors') };
+    const bridge = startBridge(set.linkedA, env2);
+    await sendRequest(bridge, initializeRequest, 1);
+    const fresh = await endpointOf(storage2);
+    detachedManagedPids.push(fresh.pid);
+    expect(fresh.pid).not.toBe(old.pid);
+    expect(await callTool(bridge, 10, 'grep_search', { pattern: NEW_SYMBOL })).toContain(NEW_FILE);
+    expect(await callTool(bridge, 11, 'grep_search', { pattern: OLD_SYMBOL })).not.toContain(OLD_FILE);
+  });
+
+  // W06-C: the same worktree's Bridge reattaches to its own healthy runtime on external storage (same witness).
+  it('W06_same_worktree_external_storage_bridge_reuses_own_runtime', { timeout: 90_000 }, async (ctx) => {
+    const set = await worktreeSet((note) => ctx.skip(note));
+    const storage = join(dirname(set.primary), 'external-storage');
+    const env = { NEXUS_STORAGE_ROOT_DIR: storage, NEXUS_STORAGE_METADATA_DB_PATH: join(storage, 'metadata.db'),
+      NEXUS_STORAGE_VECTOR_DB_PATH: join(storage, 'vectors') };
+    const first = startBridge(set.linkedA, env);
+    await sendRequest(first, initializeRequest, 1);
+    const endpoint = await endpointOf(storage);
+    detachedManagedPids.push(endpoint.pid);
+    const witness = await readFile(join(set.linkedA, '.nexus', 'worktree-witness'));
+    await stopBridge(first);
+    const second = startBridge(set.linkedA, env);
+    await sendRequest(second, initializeRequest, 1);
+    expect((await readProjectEndpoint(storage))?.pid).toBe(endpoint.pid);
+    expect(await readFile(join(set.linkedA, '.nexus', 'worktree-witness'))).toEqual(witness);
   });
 
   // Nexus #297: a real managed process whose writer lease is lost (lock-file inode replaced in the coordination

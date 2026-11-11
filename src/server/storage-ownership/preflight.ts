@@ -1,6 +1,7 @@
 import { lstat, readdir } from 'node:fs/promises';
 import { dirname, join, sep } from 'node:path';
-import { claimPathFor, DIRECTORY_CLAIM_FILENAME, isClaimTempPathFor, readOwnerClaim, type ClaimKind } from './claim-format.js';
+import { claimBindingProblem, claimPathFor, DIRECTORY_CLAIM_FILENAME, isClaimTempPathFor, readOwnerClaim, type ClaimKind, type OwnerClaim } from './claim-format.js';
+import { readWorktreeWitness, witnessRequired } from './witness.js';
 import type { OwnershipPreflight, ResolvedStorageOwnershipTargets } from './types.js';
 
 interface Resource { readonly path: string; readonly kind: ClaimKind }
@@ -18,19 +19,33 @@ async function exists(path: string): Promise<boolean> {
   }
 }
 
-async function checkAncestors(resource: Resource, owner: string): Promise<string | undefined> {
+/** Current worktree evidence: `required` when any claim must be bound to this worktree incarnation. */
+interface Binding { readonly required: boolean; readonly witness: string | undefined; readonly witnessReason: string }
+
+/** Problem binding `claim` to the current incarnation (read-only); undefined when bound or when no witness is required. */
+function bindingProblem(claim: OwnerClaim, binding: Binding): string | undefined {
+  if (!binding.required) return undefined;
+  if (binding.witness === undefined) return `claim cannot be bound to this worktree incarnation (${binding.witnessReason})`;
+  return claimBindingProblem(claim, binding.witness);
+}
+
+async function checkAncestors(resource: Resource, owner: string, binding: Binding): Promise<string | undefined> {
   for (let dir = dirname(resource.path), prev = ''; dir !== prev; prev = dir, dir = dirname(dir)) {
     const result = await readOwnerClaim(join(dir, DIRECTORY_CLAIM_FILENAME));
     if (result.state === 'invalid') return `ancestor claim at ${dir} is invalid: ${result.reason}`;
     if (result.state === 'present' && result.claim.ownerProjectRoot !== owner) {
       return `ancestor ${dir} is claimed by a different owner`;
     }
+    if (result.state === 'present') {
+      const problem = bindingProblem(result.claim, binding);
+      if (problem) return `ancestor ${dir}: ${problem}`;
+    }
   }
   return undefined;
 }
 
-async function evaluate(resource: Resource, all: readonly Resource[], owner: string): Promise<Verdict> {
-  const nested = await checkAncestors(resource, owner);
+async function evaluate(resource: Resource, all: readonly Resource[], owner: string, binding: Binding): Promise<Verdict> {
+  const nested = await checkAncestors(resource, owner, binding);
   if (nested) return { refuse: nested };
   const claim = await readOwnerClaim(claimPathFor(resource.path, resource.kind));
   if (claim.state === 'invalid') return { refuse: `claim for ${resource.path} is invalid: ${claim.reason}` };
@@ -38,6 +53,8 @@ async function evaluate(resource: Resource, all: readonly Resource[], owner: str
     const c = claim.claim;
     if (c.resourcePath !== resource.path || c.kind !== resource.kind) return { refuse: `claim for ${resource.path} does not match the resource` };
     if (c.ownerProjectRoot !== owner) return { refuse: `${resource.path} is owned by a different project` };
+    const problem = bindingProblem(c, binding);
+    if (problem) return { refuse: `${resource.path}: ${problem}` };
     return 'claimed';
   }
   if (!(await exists(resource.path))) {
@@ -73,11 +90,19 @@ export async function inspectStorageOwnership(targets: ResolvedStorageOwnershipT
   ];
   if (targets.vectorDbPath.kind === 'persistent') resources.push({ path: targets.vectorDbPath.path, kind: 'directory' });
   try {
+    const required = witnessRequired(targets.ownerProjectRoot, resources);
+    const current = required ? await readWorktreeWitness(targets.ownerProjectRoot) : undefined;
+    const binding: Binding = {
+      required,
+      witness: current?.state === 'present' ? current.witness : undefined,
+      witnessReason: current === undefined ? 'not required' : current.state === 'invalid' ? current.reason : 'worktree witness absent',
+    };
     const verdicts: Verdict[] = [];
-    for (const r of resources) verdicts.push(await evaluate(r, resources, targets.ownerProjectRoot));
+    for (const r of resources) verdicts.push(await evaluate(r, resources, targets.ownerProjectRoot, binding));
     const refused = verdicts.find((v): v is { refuse: string } => typeof v === 'object');
     if (refused) return { targets, disposition: 'refuse', reason: refused.refuse };
-    return { targets, disposition: verdicts.every((v) => v === 'claimed') ? 'owned' : 'unclaimed-clean' };
+    const disposition = verdicts.every((v) => v === 'claimed') ? 'owned' : 'unclaimed-clean';
+    return binding.witness === undefined ? { targets, disposition } : { targets, disposition, worktreeWitness: binding.witness };
   } catch (error) {
     return { targets, disposition: 'refuse', reason: `inspection failed: ${(error as NodeJS.ErrnoException).code ?? 'unknown'}` };
   }

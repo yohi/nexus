@@ -169,7 +169,9 @@ async function findReusableEndpoint(context: DiscoveryContext, timeoutMs: number
   if (
     endpoint === undefined ||
     endpoint.projectRoot !== context.projectRoot ||
-    endpoint.storageTargetsFingerprint !== context.fingerprint
+    endpoint.storageTargetsFingerprint !== context.fingerprint ||
+    // W06: when storage can outlive the worktree, the runtime must have been admitted under THIS incarnation's witness.
+    (preflight.worktreeWitness !== undefined && endpoint.worktreeWitness !== preflight.worktreeWitness)
   ) {
     return undefined;
   }
