@@ -180,8 +180,25 @@ async function main(args: string[]): Promise<void> {
       (values["startup-stderr-log"] as string | undefined) ?? process.env.NEXUS_STARTUP_STDERR_LOG,
     )
     : undefined;
+  const pathStartupLogs: StreamRedirection[] = [];
+  let bridgeStartupLogsDetached = false;
+  const detachBridgeStartupLogs = () => {
+    if (bridgeStartupLogsDetached) return;
+    bridgeStartupLogsDetached = true;
+    redirectedStartupLogs?.detach();
+  };
+  const detachStartupLogs = () => {
+    detachBridgeStartupLogs();
+    for (const redirection of pathStartupLogs.splice(0).reverse()) redirection.detach();
+  };
 
-  const config = await loadConfig({ projectRoot: root });
+  let config: Config;
+  try {
+    config = await loadConfig({ projectRoot: root });
+  } catch (error) {
+    detachStartupLogs();
+    throw error;
+  }
 
   // Nexus #297: storage writer admission precedes every PID/Endpoint mutation, project lock, storage directory
   // initialization, store open and runtime logging. A refusal leaves all storage and PID bytes untouched.
@@ -201,12 +218,20 @@ async function main(args: string[]): Promise<void> {
       `\u274c Nexus refused to start: ${error instanceof Error ? error.message : String(error)}\n` +
         `   Storage: ${config.storage.rootDir}`,
     );
+    detachStartupLogs();
     process.exit(1);
     return;
   }
 
   // Acquire single-instance lock keyed on storage directory (under the live writer lease).
-  const lockResult = await acquireProcessLock(config.storage.rootDir, { handle: admission, config });
+  let lockResult: Awaited<ReturnType<typeof acquireProcessLock>>;
+  try {
+    lockResult = await acquireProcessLock(config.storage.rootDir, { handle: admission, config });
+  } catch (error) {
+    await admission.release();
+    detachStartupLogs();
+    throw error;
+  }
   if (!lockResult.acquired) {
     await admission.release();
     const pidStr = lockResult.existingPid ?? "unknown";
@@ -221,6 +246,7 @@ async function main(args: string[]): Promise<void> {
         `   To force start, remove: ${path.join(config.storage.rootDir, LOCK_FILENAME)}` +
         progressLine,
     );
+    detachStartupLogs();
     process.exit(1);
     return;
   }
@@ -247,39 +273,54 @@ async function main(args: string[]): Promise<void> {
     await releaseOwnedProcessLock(config.storage.rootDir).catch(() => {});
     process.removeListener("exit", exitCleanup);
     await admission.release();
+    detachStartupLogs();
     throw error;
   }
 
-  if (values["reindex"]) {
-    await startReindexMode({ config, exitCleanup, full: !!values["full"], runtime });
-    return;
-  }
-
-  if (serverPort !== undefined) {
-    const port = serverPort;
-    if (isManagedMode) {
-      await startManagedMode({
-        config,
-        exitCleanup,
-        idleShutdownMs,
-        port,
-        root,
-        runtime,
-        startupStdoutLog: values["startup-stdout-log"] as string | undefined,
-        startupStderrLog: values["startup-stderr-log"] as string | undefined,
-        bridgeStartupLogs: redirectedStartupLogs,
-        storageTargetsFingerprint: targetsFingerprint,
-        worktreeWitness: admission.worktreeWitness,
-      });
-
+  try {
+    if (values["reindex"]) {
+      try {
+        await startReindexMode({ config, exitCleanup, full: !!values["full"], runtime });
+      } finally {
+        detachStartupLogs();
+      }
       return;
     }
 
-    startHttpMode({ config, exitCleanup, port, root, runtime });
-    return;
-  }
+    if (serverPort !== undefined) {
+      const port = serverPort;
+      if (isManagedMode) {
+        await startManagedMode({
+          config,
+          exitCleanup,
+          idleShutdownMs,
+          port,
+          root,
+          runtime,
+          startupStdoutLog: values["startup-stdout-log"] as string | undefined,
+          startupStderrLog: values["startup-stderr-log"] as string | undefined,
+          bridgeStartupLogs: redirectedStartupLogs === undefined
+            ? undefined
+            : { detach: detachBridgeStartupLogs },
+          registerStartupLogRedirection: (redirection) => pathStartupLogs.push(redirection),
+          storageTargetsFingerprint: targetsFingerprint,
+          worktreeWitness: admission.worktreeWitness,
+        });
+        return;
+      }
 
-  await startStdioMode({ config, exitCleanup, root, runtime });
+      startHttpMode({ config, exitCleanup, port, root, runtime });
+      return;
+    }
+
+    await startStdioMode({ config, exitCleanup, root, runtime });
+  } catch (error) {
+    await releaseOwnedProcessLock(config.storage.rootDir).catch(() => undefined);
+    process.removeListener("exit", exitCleanup);
+    await runtime.close().catch(() => undefined);
+    detachStartupLogs();
+    throw error;
+  }
 }
 
 interface ReindexModeOptions {
@@ -303,6 +344,7 @@ interface ManagedModeOptions extends RuntimeModeOptions {
   readonly startupStdoutLog: string | undefined;
   readonly startupStderrLog: string | undefined;
   readonly bridgeStartupLogs: StreamRedirection | undefined;
+  readonly registerStartupLogRedirection: (redirection: StreamRedirection) => void;
   readonly storageTargetsFingerprint: string;
   readonly worktreeWitness: string | undefined;
 }
@@ -344,6 +386,7 @@ async function startManagedMode({
   startupStdoutLog,
   startupStderrLog,
   bridgeStartupLogs,
+  registerStartupLogRedirection,
   storageTargetsFingerprint: publishedTargetsFingerprint,
   worktreeWitness,
 }: ManagedModeOptions): Promise<void> {
@@ -352,10 +395,10 @@ async function startManagedMode({
     const stdoutLogPath = startupStdoutLog ?? process.env.NEXUS_STARTUP_STDOUT_LOG;
     const stderrLogPath = startupStderrLog ?? process.env.NEXUS_STARTUP_STDERR_LOG;
     if (stdoutLogPath !== undefined) {
-      redirectStreamToPath(process.stdout, stdoutLogPath);
+      registerStartupLogRedirection(redirectStreamToPath(process.stdout, stdoutLogPath));
     }
     if (stderrLogPath !== undefined) {
-      redirectStreamToPath(process.stderr, stderrLogPath);
+      registerStartupLogRedirection(redirectStreamToPath(process.stderr, stderrLogPath));
     }
   }
 

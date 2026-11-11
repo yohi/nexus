@@ -525,8 +525,14 @@ describe("nexus CLI shutdown", () => {
     });
 
     it("keeps pre-admission Bridge log redirection even when admission refuses, and never falls back to path appends", async () => {
+      const detachers: Array<ReturnType<typeof vi.fn>> = [];
       mocks.isBridgeStartupLogPath.mockResolvedValue(true);
       mocks.openBridgeStartupLog.mockReturnValueOnce(41).mockReturnValueOnce(42);
+      mocks.redirectStreamToFd.mockImplementation(() => {
+        const detach = vi.fn();
+        detachers.push(detach);
+        return { detach };
+      });
       mocks.admitStorageWriter.mockRejectedValue(ownershipRefusal());
 
       await runCli(["--port", "0", "--managed"]);
@@ -534,6 +540,83 @@ describe("nexus CLI shutdown", () => {
 
       expect(mocks.redirectStreamToFd).toHaveBeenCalledTimes(2);
       expect(mocks.redirectStreamToPath).not.toHaveBeenCalled();
+      expect(detachers).toHaveLength(2);
+      expect(detachers.every((detach) => detach.mock.calls.length === 1)).toBe(true);
+    });
+
+    it("releases startup resources and detaches Bridge logs when managed startup fails", async () => {
+      const runtime = managedRuntime();
+      const detachers: Array<ReturnType<typeof vi.fn>> = [];
+      mocks.isBridgeStartupLogPath.mockResolvedValue(true);
+      mocks.openBridgeStartupLog.mockReturnValueOnce(41).mockReturnValueOnce(42);
+      mocks.redirectStreamToFd.mockImplementation(() => {
+        const detach = vi.fn();
+        detachers.push(detach);
+        return { detach };
+      });
+      mocks.createRuntime.mockResolvedValue(runtime);
+      mocks.startManagedHttpServer.mockRejectedValue(new Error("managed startup failed"));
+
+      await runCli(["--port", "0", "--managed"]);
+      await vi.waitFor(() => expect(process.exit).toHaveBeenCalledWith(1));
+
+      expect(mocks.releaseOwnedProcessLock).toHaveBeenCalledWith("/storage");
+      expect(runtime.close).toHaveBeenCalledOnce();
+      expect(detachers).toHaveLength(2);
+      expect(detachers.every((detach) => detach.mock.calls.length === 1)).toBe(true);
+    });
+
+    it("detaches Bridge logs when runtime construction fails after acquiring the PID lock", async () => {
+      const detachers: Array<ReturnType<typeof vi.fn>> = [];
+      mocks.isBridgeStartupLogPath.mockResolvedValue(true);
+      mocks.openBridgeStartupLog.mockReturnValueOnce(41).mockReturnValueOnce(42);
+      mocks.redirectStreamToFd.mockImplementation(() => {
+        const detach = vi.fn();
+        detachers.push(detach);
+        return { detach };
+      });
+      mocks.createRuntime.mockRejectedValue(new Error("runtime construction failed"));
+
+      await runCli(["--port", "0", "--managed"]);
+      await vi.waitFor(() => expect(process.exit).toHaveBeenCalledWith(1));
+
+      expect(mocks.releaseOwnedProcessLock).toHaveBeenCalledWith("/storage");
+      expect(detachers).toHaveLength(2);
+      expect(detachers.every((detach) => detach.mock.calls.length === 1)).toBe(true);
+    });
+
+    it("detaches Bridge logs after managed reindex completes", async () => {
+      const runtime = managedRuntime();
+      const detachers: Array<ReturnType<typeof vi.fn>> = [];
+      mocks.isBridgeStartupLogPath.mockResolvedValue(true);
+      mocks.openBridgeStartupLog.mockReturnValueOnce(41).mockReturnValueOnce(42);
+      mocks.redirectStreamToFd.mockImplementation(() => {
+        const detach = vi.fn();
+        detachers.push(detach);
+        return { detach };
+      });
+      mocks.createRuntime.mockResolvedValue(runtime);
+
+      await runCli(["--managed", "--reindex"]);
+      await vi.waitFor(() => expect(process.exit).toHaveBeenCalledWith(0));
+
+      expect(runtime.close).toHaveBeenCalledOnce();
+      expect(detachers).toHaveLength(2);
+      expect(detachers.every((detach) => detach.mock.calls.length === 1)).toBe(true);
+    });
+
+    it("releases runtime resources when stdio transport connection fails", async () => {
+      const runtime = {
+        ...managedRuntime(),
+        createServer: vi.fn(() => ({ connect: vi.fn().mockRejectedValue(new Error("stdio connect failed")) })),
+      };
+      mocks.createRuntime.mockResolvedValue(runtime);
+
+      await runCli([]);
+      await vi.waitFor(() => expect(process.exit).toHaveBeenCalledWith(1));
+
+      expect(mocks.releaseOwnedProcessLock).toHaveBeenCalledWith("/storage");
+      expect(runtime.close).toHaveBeenCalledOnce();
     });
 
     it("does not redirect at all when a Bridge log cannot be opened safely (no O_CREAT fallback)", async () => {

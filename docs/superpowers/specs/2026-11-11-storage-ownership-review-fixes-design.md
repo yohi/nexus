@@ -8,17 +8,17 @@ Address the confirmed review findings around storage ownership admission, filesy
 
 ### Admission and claims
 
-After resolving targets asynchronously, admission validation must re-check that the registered handle remains `ISSUED`, every required kernel lease remains held, and the resolved target fingerprint matches the admitted fingerprint. Admissions carrying a worktree witness must also compare that witness with current worktree evidence; absent or mismatched evidence follows the existing refusal path.
+After resolving targets asynchronously, admission validation must re-check that the registered handle remains `ISSUED`, every required kernel lease remains held, and the resolved target fingerprint matches the admitted fingerprint. Handle state or lease loss is refused as `invalid_writer_admission`; witness absence or mismatch is refused as `incarnation_mismatch`.
 
 Claim reads must open with `O_NOFOLLOW`, read through the opened handle, and confirm that the opened inode and size correspond to the regular file inspected before parsing. Coordination-root setup must validate parent ownership and permissions as well as root permissions. It must keep the verified parent/root identity stable through lock use using existing safe filesystem mechanisms.
 
-Preflight ancestor-claim validation must require both the expected ancestor resource path and `directory` kind, consistent with writer admission. Unclaimed empty bootstrap directories remain ownership-neutral: a failed admission does not award them to another owner, but a later owner may acquire them only after complete revalidation. Partial same-owner claims remain unavailable to a different owner.
+Preflight ancestor-claim validation must require both the expected ancestor resource path and `directory` kind, consistent with writer admission. Invalid ancestor claims and path/kind mismatches are refused as `owner_unknown`; a different owner is `owner_conflict`; a witness-binding failure is `incarnation_mismatch`. Unclaimed empty bootstrap directories remain ownership-neutral: a failed admission does not award them to another owner, but a later owner may acquire them only after complete revalidation. Partial same-owner claims remain unavailable to a different owner.
 
 ### Startup and runtime lifecycle
 
 The Bridge's endpoint polling receives cancellation; definite child failure cancels outstanding polling and releases its timers. Ownership preflight and waiting both observe cancellation.
 
-Runtime close and lease-loss paths record a permanent terminal state. In-flight and subsequent initialization stop at asynchronous boundaries, including after index-stat reads, before metrics-port writes or startup-reindex metadata changes. Any watcher that has started is stopped as part of shutdown.
+Runtime close and lease-loss paths record a permanent terminal state. `NexusRuntime` exposes the optional `terminate?(): void` lifecycle hook used to enter that state synchronously. In-flight and subsequent initialization stop at asynchronous boundaries, including after index-stat reads, before metrics-port writes or startup-reindex metadata changes. Any watcher that has started is stopped as part of shutdown.
 
 ### Bounded log reads and complexity
 
@@ -32,4 +32,4 @@ Add or update focused tests for the race/cancellation and identity boundaries, r
 
 ## Scope
 
-Changes are limited to the reviewed `SPEC.md` contract and the named server/storage-ownership modules, plus focused tests. No public API changes are intended unless an internal cancellation signal must be threaded through existing private functions.
+Affected implementation modules are `src/server/index.ts` (`buildNexusRuntime` and `NexusRuntime`), `src/server/runtime-assembly.ts`, `src/server/project-connector.ts`, and the applicable files under `src/server/storage-ownership/` (including admission, claim-format, claims, preflight, startup-gate, and witness). Also update the reviewed `SPEC.md` contract and focused tests. The optional `NexusRuntime.terminate?(): void` method is an intentional public interface change; cancellation signals threaded through private connector and ownership functions remain internal.

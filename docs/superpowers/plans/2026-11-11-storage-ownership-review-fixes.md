@@ -59,7 +59,7 @@ Expected: PASS.
 
 **Files:**
 - Modify: `src/server/storage-ownership/claim-format.ts`
-- Test: `tests/unit/server/storage-ownership-admission.test.ts` (or the existing claim-format coverage location if present)
+- Test: `tests/unit/server/storage-ownership-claim-format.test.ts`
 
 **Interfaces:**
 - Consumes: existing `readOwnerClaim(claimPath)` contract.
@@ -71,7 +71,7 @@ Test claim parsing with a deterministic filesystem seam or controlled replacemen
 
 - [ ] **Step 2: Run the focused test and confirm failure**
 
-Run: `npx vitest run tests/unit/server/storage-ownership-admission.test.ts`
+Run: `npx vitest run tests/unit/server/storage-ownership-claim-format.test.ts`
 Expected: FAIL because `readOwnerClaim` reads by path after `lstat`.
 
 - [ ] **Step 3: Read through a no-follow handle**
@@ -80,7 +80,7 @@ Open with `O_RDONLY | O_NOFOLLOW`, compare handle `stat()` with the inspected re
 
 - [ ] **Step 4: Run the focused test**
 
-Run: `npx vitest run tests/unit/server/storage-ownership-admission.test.ts`
+Run: `npx vitest run tests/unit/server/storage-ownership-claim-format.test.ts`
 Expected: PASS.
 
 ### Task 3: Coordination-root trusted ancestry and same-root lock use
@@ -142,12 +142,12 @@ Expected: PASS.
 ### Task 5: Runtime terminal state across close and lease loss
 
 **Files:**
-- Modify: `src/server/runtime-assembly.ts` and the runtime initialization implementation reached by `runtime.initialize()`.
+- Modify: `src/server/index.ts` (`buildNexusRuntime` and the returned `NexusRuntime`) and `src/server/runtime-assembly.ts`.
 - Test: `tests/unit/server/runtime.test.ts`, `tests/unit/server/runtime-auto-index.test.ts` (add or extend the most relevant existing suite).
 
 **Interfaces:**
 - Consumes: `NexusRuntime.initialize()`, runtime `onClose`, `IndexPipeline`, watcher start/stop.
-- Produces: internal permanent terminal-state guard; no public API change.
+- Produces: permanent terminal-state guard and the `NexusRuntime.terminate?(): void` lifecycle hook.
 
 - [ ] **Step 1: Add failing lifecycle tests**
 
@@ -199,7 +199,7 @@ Expected: PASS.
 
 **Files:**
 - Modify: `src/server/storage-ownership/startup-gate.ts`
-- Test: `tests/unit/bin/http-bridge.test.ts` or a focused startup-gate test in `tests/unit/server/`.
+- Test: `tests/unit/server/storage-ownership-startup-gate.test.ts`
 
 **Interfaces:**
 - Consumes: `readAttemptLog(path)` and its caller’s existing maximum output length.
@@ -211,7 +211,7 @@ Test a log shorter than the limit and a log larger than the limit, asserting the
 
 - [ ] **Step 2: Run focused test and confirm failure**
 
-Run: `npx vitest run tests/unit/bin/http-bridge.test.ts`
+Run: `npx vitest run tests/unit/server/storage-ownership-startup-gate.test.ts`
 Expected: FAIL because `readAttemptLog` reads the entire file.
 
 - [ ] **Step 3: Read from the end using a file descriptor**
@@ -220,7 +220,7 @@ Open the log, determine its size, read only the trailing bounded bytes, preserve
 
 - [ ] **Step 4: Run focused tests**
 
-Run: `npx vitest run tests/unit/bin/http-bridge.test.ts`
+Run: `npx vitest run tests/unit/server/storage-ownership-startup-gate.test.ts`
 Expected: PASS.
 
 ### Task 8: Complexity-only helper extraction
