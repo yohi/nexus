@@ -1,4 +1,5 @@
-import { realpath } from 'node:fs/promises';
+import { realpath, writeFile } from 'node:fs/promises';
+import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createOwnedGitWorkspace, createSiblingGitFixture } from '../../../benchmarks/performance/git-fixture.js';
 import type { GitCommandContext, GitCommandResult } from '../../../benchmarks/performance/git-command.js';
@@ -63,6 +64,17 @@ describe('disposable Git fixture ownership guards', () => {
     const result = await createSiblingGitFixture('smoke', new AbortController().signal, { workspace,
       run: () => Promise.resolve({ status: 'unavailable', stdout: '', stderr: '' }) });
     expect(result).toMatchObject({ status: 'skipped', reason: 'git_unavailable' });
+  });
+
+  it('removes owned sibling worktrees containing generated untracked files', async () => {
+    const fixture = await createSiblingGitFixture('smoke', new AbortController().signal);
+    if (fixture.status === 'skipped') return;
+
+    const first = fixture.worktrees[0];
+    if (first === undefined) throw new Error('first sibling worktree missing');
+    await writeFile(join(first.root, 'generated-after-checkout.tmp'), 'fixture-owned\n', 'utf8');
+
+    await expect(fixture.dispose()).resolves.toBeUndefined();
   });
 
   it('does not invoke cleanup supplied by a forged ownership record', async () => {

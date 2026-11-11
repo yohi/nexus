@@ -67,7 +67,7 @@ export async function createSiblingGitFixture(profile: Profile, signal: AbortSig
     let failed = false;
     try {
       for (const path of peers.toReversed()) {
-        if (!success(await run(['worktree', 'remove', path], { ...context, signal: new AbortController().signal }))) failed = true;
+        if (!success(await run(['worktree', 'remove', '--force', path], { ...context, signal: new AbortController().signal }))) failed = true;
       }
     } finally { await workspace.dispose(); }
     if (failed) throw new GitFixtureError('git_cleanup_failed');
