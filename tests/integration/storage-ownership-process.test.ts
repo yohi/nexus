@@ -416,6 +416,25 @@ describe('storage writer admission across processes (Task 3)', () => {
     await first.release();
   });
 
+  it('refuses admission in another process after the coordination root is replaced', { timeout: 60_000 }, async () => {
+    const base = await sandbox();
+    const owner = await project(base, 'owner');
+    const parent = join(base, 'coord-parent');
+    const coordinationRoot = join(parent, 'coord');
+    const movedRoot = join(parent, 'coord-original');
+    const spec = specFor(owner, join(base, 'storage'), coordinationRoot, { hold: true });
+    const first = spawnAdmission(spec);
+    expect((await first.outcome()).event).toBe('admitted');
+
+    await rename(coordinationRoot, movedRoot);
+    await mkdir(coordinationRoot, { mode: 0o700 });
+
+    const second = spawnAdmission(spec);
+    expect(await second.outcome()).toMatchObject({ event: 'refused' });
+    await second.release();
+    await first.release();
+  });
+
   it('S09_same_owner_second_independent_writer_is_rejected', { timeout: 60_000 }, async () => {
     const base = await sandbox();
     const owner = await project(base, 'owner');
