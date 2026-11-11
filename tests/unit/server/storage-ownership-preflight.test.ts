@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, readdir, realpath, rm, stat, writeFile } from 'node:fs/promises';
+import { lstat, mkdir, mkdtemp, readdir, realpath, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -31,6 +31,33 @@ async function claimAll(owner: string, root: string, withVector = true): Promise
 const inspect = async (c: Config) => inspectStorageOwnership(await resolveStorageOwnershipTargets(c));
 
 describe('inspectStorageOwnership', () => {
+  it('refuses an invalid external-storage witness before changing coordination or empty storage', async () => {
+    const base = await sandbox();
+    const project = join(base, 'project');
+    const root = join(base, 'empty-storage');
+    const coordination = join(base, 'coordination');
+    await mkdir(project);
+    await mkdir(join(project, '.nexus'));
+    await writeFile(join(project, '.nexus', 'worktree-witness'), '{invalid');
+    const before = await Promise.all([root, coordination].map(async (path) => {
+      try { return await lstat(path); } catch { return undefined; }
+    }));
+    const result = await inspect(cfg(project, root));
+    expect(result.disposition).toBe('refuse');
+    expect(result.reason).toMatch(/worktree witness/i);
+    const after = await Promise.all([root, coordination].map(async (path) => {
+      try { return await lstat(path); } catch { return undefined; }
+    }));
+    expect(after).toEqual(before);
+  });
+
+  it('permits first admission when an external-storage witness is absent', async () => {
+    const base = await sandbox();
+    const project = join(base, 'project');
+    await mkdir(project);
+    expect((await inspect(cfg(project, join(base, 'fresh-storage')))).disposition).toBe('unclaimed-clean');
+  });
+
   it('S05_disjoint_clean_targets_are_unclaimed_clean', async () => {
     const base = await sandbox();
     expect((await inspect(cfg(base, join(base, 'missing')))).disposition).toBe('unclaimed-clean');

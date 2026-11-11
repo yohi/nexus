@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { lstat, mkdir, mkdtemp, readdir, readFile, realpath, rm, symlink, writeFile } from 'node:fs/promises';
+import { link, lstat, mkdir, mkdtemp, readdir, readFile, realpath, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -166,6 +166,10 @@ describe('W06 worktree incarnation witness', () => {
     await writeFile(real, await readFile(witnessFile(project)));
     await rm(witnessFile(project));
     await symlink(real, witnessFile(project));
+    expect((await refusal(admit(svc, cfg(project, storage)))).code).toBe('incarnation_mismatch');
+    await rm(witnessFile(project));
+    await link(real, witnessFile(project));
+    expect((await readWorktreeWitness(project)).state).toBe('invalid');
     expect((await refusal(admit(svc, cfg(project, storage)))).code).toBe('incarnation_mismatch');
   });
 

@@ -7,7 +7,7 @@
 // external custom storage (and its claims) survives. It is created exactly once, only inside WriterAdmission.
 import { randomBytes } from 'node:crypto';
 import { closeSync, constants as fsConstants, fsyncSync, linkSync, openSync, unlinkSync, writeSync } from 'node:fs';
-import { lstat, mkdir, readFile, realpath } from 'node:fs/promises';
+import { lstat, mkdir, open, realpath } from 'node:fs/promises';
 import { join, dirname } from 'node:path';
 import { isWithin } from './claims.js';
 import type { ClaimKind } from './claim-format.js';
@@ -69,8 +69,31 @@ export async function readWorktreeWitness(ownerProjectRoot: string): Promise<Wit
   if (stat.uid !== process.getuid?.()) return { state: 'invalid', reason: 'witness is not owned by the current account' };
   if (stat.size > MAX_WITNESS_BYTES) return { state: 'invalid', reason: 'witness too large' };
   let parsed: unknown;
-  try { parsed = JSON.parse(await readFile(path, 'utf8')); }
-  catch { return { state: 'invalid', reason: 'witness is malformed' }; }
+  let fd;
+  try {
+    fd = await open(path, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW);
+    const opened = await fd.stat();
+    if (!opened.isFile() || opened.nlink !== 1 || opened.uid !== process.getuid?.() || opened.size > MAX_WITNESS_BYTES ||
+      opened.dev !== stat.dev || opened.ino !== stat.ino) {
+      return { state: 'invalid', reason: 'witness file identity or metadata changed while opening' };
+    }
+    const chunks: Buffer[] = [];
+    let total = 0;
+    const chunk = Buffer.alloc(1024);
+    while (true) {
+      const { bytesRead } = await fd.read(chunk, 0, chunk.length, null);
+      if (bytesRead === 0) break;
+      total += bytesRead;
+      if (total > MAX_WITNESS_BYTES) return { state: 'invalid', reason: 'witness too large' };
+      chunks.push(Buffer.from(chunk.subarray(0, bytesRead)));
+    }
+    const after = await fd.stat();
+    if (after.dev !== opened.dev || after.ino !== opened.ino || after.size !== total) {
+      return { state: 'invalid', reason: 'witness changed while reading' };
+    }
+    parsed = JSON.parse(Buffer.concat(chunks).toString('utf8'));
+  } catch { return { state: 'invalid', reason: 'witness is malformed or changed while opening' }; }
+  finally { await fd?.close().catch(() => undefined); }
   const w = parsed as { version?: unknown; projectRoot?: unknown; witness?: unknown } | null;
   if (!w || typeof w !== 'object' || w.version !== WITNESS_FORMAT_VERSION || typeof w.witness !== 'string' ||
     !WITNESS_PATTERN.test(w.witness) || typeof w.projectRoot !== 'string') {

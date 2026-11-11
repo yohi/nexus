@@ -92,10 +92,13 @@ export async function inspectStorageOwnership(targets: ResolvedStorageOwnershipT
   try {
     const required = witnessRequired(targets.ownerProjectRoot, resources);
     const current = required ? await readWorktreeWitness(targets.ownerProjectRoot) : undefined;
+    if (current?.state === 'invalid') {
+      return { targets, disposition: 'refuse', reason: `worktree witness is invalid: ${current.reason}` };
+    }
     const binding: Binding = {
       required,
       witness: current?.state === 'present' ? current.witness : undefined,
-      witnessReason: current === undefined ? 'not required' : current.state === 'invalid' ? current.reason : 'worktree witness absent',
+      witnessReason: current === undefined ? 'not required' : 'worktree witness absent',
     };
     const verdicts: Verdict[] = [];
     for (const r of resources) verdicts.push(await evaluate(r, resources, targets.ownerProjectRoot, binding));
