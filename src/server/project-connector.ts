@@ -234,19 +234,30 @@ async function waitForHealthyEndpoint(
   deadline: number,
   pollIntervalMs: number,
 ): Promise<ProjectEndpoint> {
+  let lastOwnershipRefusal: StorageOwnershipRefusedError | undefined;
   while (true) {
     const remainingMs = deadline - Date.now();
     if (remainingMs <= 0) {
+      if (lastOwnershipRefusal !== undefined) throw lastOwnershipRefusal;
       throw new Error('Timed out waiting for a healthy project endpoint');
     }
 
-    const validated = await findReusableEndpoint(context, remainingMs);
-    if (validated !== undefined) {
-      return validated;
+    try {
+      const validated = await findReusableEndpoint(context, remainingMs);
+      if (validated !== undefined) {
+        return validated;
+      }
+      lastOwnershipRefusal = undefined;
+    } catch (error) {
+      if (!(error instanceof StorageOwnershipRefusedError)) throw error;
+      // The spawned child may be between creating a storage directory and publishing its ownership claim.
+      // Continue read-only discovery while it starts; the child failure/timeout path remains authoritative.
+      lastOwnershipRefusal = error;
     }
 
     const remainingAfterCheck = deadline - Date.now();
     if (remainingAfterCheck <= 0) {
+      if (lastOwnershipRefusal !== undefined) throw lastOwnershipRefusal;
       throw new Error('Timed out waiting for a healthy project endpoint');
     }
     await sleep(Math.min(pollIntervalMs, remainingAfterCheck));
