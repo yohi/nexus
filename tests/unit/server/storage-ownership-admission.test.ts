@@ -325,6 +325,23 @@ describe('F-004 bootstrap and partial claims', () => {
     expect((await readdir(p.root)).filter((n) => n.includes('.tmp'))).toEqual([]);
   });
 
+  it('another owner can claim empty bootstrap directories left without claims', async () => {
+    const base = await sandbox();
+    const [firstOwner, nextOwner] = [await project(base, 'ownerA'), await project(base, 'ownerB')];
+    const p = pathsFor(join(base, 'storage'));
+    const failed = service(base, { beforeClaimPublish: () => { throw new Error('publication interrupted'); } });
+
+    expect((await refusal(admit(failed, cfg(firstOwner, p)))).code).toBe('claim_io_failed');
+    expect(await readOwnerClaim(claimPathFor(p.root, 'directory'))).toEqual({ state: 'absent' });
+    expect(await readdir(p.root)).toEqual(['vectors']);
+    expect(await readdir(p.vector)).toEqual([]);
+
+    const next = await admit(service(base), cfg(nextOwner, p));
+
+    expect(next.targets.rootDir.path).toBe(p.root);
+    await expectClaim(p.root, 'directory', nextOwner);
+  });
+
   it('S07_foreign_owner_refused_before_any_directory_creation', async () => {
     const base = await sandbox();
     const [a, b] = [await project(base, 'ownerA'), await project(base, 'ownerB')];
