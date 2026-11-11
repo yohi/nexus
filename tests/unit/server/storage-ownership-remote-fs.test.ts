@@ -14,7 +14,7 @@ vi.mock('node:fs', async (importOriginal) => {
     ...actual,
     statfsSync: ((path: string, options?: unknown) => {
       const real = actual.statfsSync(path, options as never);
-      return path === simulated.root ? { ...real, type: simulated.type } : real;
+      return actual.realpathSync(path) === simulated.root ? { ...real, type: simulated.type } : real;
     }) as typeof actual.statfsSync,
   };
 });

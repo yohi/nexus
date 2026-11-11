@@ -87,32 +87,67 @@ function buildOutputPreview(stdoutLog: string, stderrLog: string): string {
   return `${stderrSection}${stdoutSection}`;
 }
 
-const sleep = (ms: number): Promise<void> => new Promise((resolve) => { setTimeout(resolve, ms); });
+function abortReason(signal: AbortSignal): Error {
+  return signal.reason instanceof Error ? signal.reason : new DOMException('Operation aborted', 'AbortError');
+}
+
+function throwIfAborted(signal: AbortSignal | undefined): void {
+  if (signal?.aborted) throw abortReason(signal);
+}
+
+function sleep(ms: number, signal?: AbortSignal): Promise<void> {
+  throwIfAborted(signal);
+  if (signal === undefined) return new Promise((resolve) => { setTimeout(resolve, ms); });
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      signal.removeEventListener('abort', onAbort);
+      resolve();
+    }, ms);
+    const onAbort = (): void => {
+      clearTimeout(timer);
+      signal.removeEventListener('abort', onAbort);
+      reject(abortReason(signal));
+    };
+    signal.addEventListener('abort', onAbort, { once: true });
+    if (signal.aborted) onAbort();
+  });
+}
 
 async function fetchHealth(
   endpoint: ProjectEndpoint,
   projectRoot: string,
   fetchImpl: FetchFn,
   timeoutMs: number,
+  signal?: AbortSignal,
 ): Promise<ProjectEndpoint | undefined> {
+  throwIfAborted(signal);
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
+  const abortForCaller = (): void => {
+    clearTimeout(timer);
+    if (signal !== undefined) controller.abort(abortReason(signal));
+  };
+  signal?.addEventListener('abort', abortForCaller, { once: true });
   try {
     let response: Response;
     try {
       response = await fetchImpl(new URL('/health', endpoint.url).toString(), { signal: controller.signal });
     } catch {
+      if (signal?.aborted) throw abortReason(signal);
       return undefined;
     }
+    throwIfAborted(signal);
 
     if (!response.ok) {
       return undefined;
     }
+    throwIfAborted(signal);
 
     let body: unknown;
     try {
       body = await response.json();
     } catch {
+      if (signal?.aborted) throw abortReason(signal);
       return undefined;
     }
 
@@ -128,6 +163,7 @@ async function fetchHealth(
     return endpoint;
   } finally {
     clearTimeout(timer);
+    signal?.removeEventListener('abort', abortForCaller);
   }
 }
 
@@ -149,8 +185,14 @@ class StorageOwnershipRefusedError extends Error {
  * A legacy descriptor without a fingerprint is never optimistically reused. Throws on a `refuse` preflight. Nothing
  * is ever deleted or written, whatever the descriptor state.
  */
-async function findReusableEndpoint(context: DiscoveryContext, timeoutMs: number): Promise<ProjectEndpoint | undefined> {
+async function findReusableEndpoint(
+  context: DiscoveryContext,
+  timeoutMs: number,
+  signal?: AbortSignal,
+): Promise<ProjectEndpoint | undefined> {
+  throwIfAborted(signal);
   const preflight = await inspectStorageOwnership(context.targets);
+  throwIfAborted(signal);
   if (preflight.disposition === 'refuse') {
     throw new StorageOwnershipRefusedError(
       `Storage ownership preflight refused the managed endpoint: ${preflight.reason ?? 'unknown reason'}`,
@@ -161,6 +203,7 @@ async function findReusableEndpoint(context: DiscoveryContext, timeoutMs: number
   }
 
   let endpoint: ProjectEndpoint | undefined;
+  throwIfAborted(signal);
   try {
     endpoint = await readProjectEndpoint(context.storageDir);
   } catch {
@@ -186,15 +229,18 @@ async function findReusableEndpoint(context: DiscoveryContext, timeoutMs: number
     return undefined;
   }
 
-  return fetchHealth(endpoint, context.projectRoot, context.fetch, timeoutMs);
+  throwIfAborted(signal);
+  return fetchHealth(endpoint, context.projectRoot, context.fetch, timeoutMs, signal);
 }
 
-async function assertConsistentTargets(options: ProjectConnectorOptions): Promise<void> {
+async function assertConsistentTargets(options: ProjectConnectorOptions, signal?: AbortSignal): Promise<void> {
+  throwIfAborted(signal);
   const targets = options.storageOwnershipTargets;
   const [owner, root] = await Promise.all([
     canonicalize(options.projectRoot, 'projectRoot'),
     canonicalize(options.storageDir, 'storage.rootDir'),
   ]);
+  throwIfAborted(signal);
   if (owner !== targets.ownerProjectRoot || root !== targets.rootDir.path) {
     throw new Error('Project connector options do not match the resolved storage ownership targets');
   }
@@ -209,8 +255,10 @@ async function acquireStartupGate(
   context: DiscoveryContext,
   deadline: number,
   pollIntervalMs: number,
+  signal?: AbortSignal,
 ): Promise<{ readonly gate: KernelLock } | { readonly endpoint: ProjectEndpoint }> {
   while (true) {
+    throwIfAborted(signal);
     const gate = coordination.tryAcquireGate();
     if (gate !== null) {
       return { gate };
@@ -219,7 +267,7 @@ async function acquireStartupGate(
     if (remainingMs <= 0) {
       throw new Error('Timed out waiting for a healthy project endpoint');
     }
-    const winner = await findReusableEndpoint(context, remainingMs);
+    const winner = await findReusableEndpoint(context, remainingMs, signal);
     if (winner !== undefined) {
       return { endpoint: winner };
     }
@@ -227,7 +275,7 @@ async function acquireStartupGate(
     if (remainingAfterCheck <= 0) {
       throw new Error('Timed out waiting for a healthy project endpoint');
     }
-    await sleep(Math.min(pollIntervalMs, remainingAfterCheck));
+    await sleep(Math.min(pollIntervalMs, remainingAfterCheck), signal);
   }
 }
 
@@ -235,9 +283,11 @@ async function waitForHealthyEndpoint(
   context: DiscoveryContext,
   deadline: number,
   pollIntervalMs: number,
+  signal?: AbortSignal,
 ): Promise<ProjectEndpoint> {
   let lastOwnershipRefusal: StorageOwnershipRefusedError | undefined;
   while (true) {
+    throwIfAborted(signal);
     const remainingMs = deadline - Date.now();
     if (remainingMs <= 0) {
       if (lastOwnershipRefusal !== undefined) throw lastOwnershipRefusal;
@@ -245,12 +295,13 @@ async function waitForHealthyEndpoint(
     }
 
     try {
-      const validated = await findReusableEndpoint(context, remainingMs);
+      const validated = await findReusableEndpoint(context, remainingMs, signal);
       if (validated !== undefined) {
         return validated;
       }
       lastOwnershipRefusal = undefined;
     } catch (error) {
+      if (signal?.aborted) throw abortReason(signal);
       if (!(error instanceof StorageOwnershipRefusedError)) throw error;
       // The spawned child may be between creating a storage directory and publishing its ownership claim.
       // Continue read-only discovery while it starts; the child failure/timeout path remains authoritative.
@@ -262,7 +313,7 @@ async function waitForHealthyEndpoint(
       if (lastOwnershipRefusal !== undefined) throw lastOwnershipRefusal;
       throw new Error('Timed out waiting for a healthy project endpoint');
     }
-    await sleep(Math.min(pollIntervalMs, remainingAfterCheck));
+    await sleep(Math.min(pollIntervalMs, remainingAfterCheck), signal);
   }
 }
 
@@ -312,7 +363,7 @@ async function spawnManagedChild(
   const buildFailureError = (code: number | null, signal: NodeJS.Signals | null): Error => {
     const readLog = (path: string, label: string): string => {
       try {
-        return readAttemptLog(path);
+        return readAttemptLog(path, MAX_STARTUP_LOG_BYTES);
       } catch (error) {
         return `[Unable to read ${label} startup log: ${(error as Error).message}]`;
       }
@@ -326,26 +377,33 @@ async function spawnManagedChild(
     );
   };
   let childSettled = false;
+  const pollingController = new AbortController();
   const onChildError = (error: Error): void => {
     childSettled = true;
+    pollingController.abort(error);
     rejectChildFailure(error);
   };
   const onChildClose = (code: number | null, signal: NodeJS.Signals | null): void => {
     childSettled = true;
-    rejectChildFailure(buildFailureError(code, signal));
+    const error = buildFailureError(code, signal);
+    pollingController.abort(error);
+    rejectChildFailure(error);
   };
   child.once('error', onChildError);
   child.once('close', onChildClose);
   child.unref();
 
   try {
-    const endpoint = await Promise.race([waitForHealthyEndpoint(context, deadline, pollIntervalMs), childFailure]);
+    const endpoint = await Promise.race([
+      waitForHealthyEndpoint(context, deadline, pollIntervalMs, pollingController.signal), childFailure,
+    ]);
     return { outcome: 'healthy', endpoint };
   } catch (error) {
     // `close`/`error` from the child is a definite outcome; a timeout or preflight refusal while the child may still
     // be running is not, so its logs are retained for owner-directed cleanup.
     return { outcome: childSettled ? 'definite-failure' : 'uncertain', error };
   } finally {
+    pollingController.abort();
     child.removeListener('error', onChildError);
     child.removeListener('close', onChildClose);
   }

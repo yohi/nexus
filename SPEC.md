@@ -342,7 +342,7 @@ Admission runs these steps in order:
 
 The admission handle is opaque, single-use and bound to the resolved targets.
 
-If admission fails, no handle is returned and no store is opened. Partial same-owner claims and empty bootstrap directories are kept so that a later retry can complete them after full revalidation. A different owner is never granted them.
+If admission fails, no handle is returned and no store is opened. Partial claims already bound to an owner are kept so that a retry by that same owner can complete admission after full revalidation; they are never granted to a different owner. Empty bootstrap directories that remain unclaimed are ownership-neutral and may be acquired by another owner only after that owner's complete revalidation.
 
 An existing nonempty target without a trustworthy claim is refused with `owner_unknown`, with no adoption, migration or deletion. This covers pre-#297 stores, malformed claims and unwritable claim locations.
 

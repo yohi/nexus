@@ -179,15 +179,17 @@ async function createRuntimeAssemblyCore(config: Config,
     // reconcile/reindex writes and remove the metrics-port file, i.e. keep mutating storage after the loss.
     // 1. synchronously abort the pipeline (IndexPipeline.stop() aborts before its first await);
     // 2. hand over to the process-level fail-fast handler (CLI/serve exit non-zero; the kernel drops the leases);
-    // 3. without a handler (library callers), quiesce the watcher/event processing and leave stores untouched.
+    // 3. quiesce watcher/event processing and leave stores untouched while fail-fast handling proceeds.
     const onWriterLeaseLost = (): void => {
       clearInterval(leaseMonitor);
+      runtime.terminate?.();
       pipeline.stop().catch(() => undefined);
       const lost = new StorageOwnershipError('invalid_writer_admission', 'storage writer lease was lost while serving');
       console.error('[Nexus] Storage writer lease was lost; stopping all storage mutation (fail-closed).');
+      watcher.stop().catch(() => undefined);
+      onClose().catch(() => undefined);
       const handler = dependencies.onWriterLeaseLost ?? getWriterLeaseLostHandler();
       if (handler !== undefined) { handler(lost); return; }
-      onClose().catch(() => undefined);
     };
     leaseMonitor = setInterval(() => {
       if (!writerLease.isHeld()) onWriterLeaseLost();

@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { chmod, lstat, mkdir, mkdtemp, readdir, readFile, realpath, rm, symlink, writeFile } from 'node:fs/promises';
+import { chmod, lstat, mkdir, mkdtemp, readdir, readFile, realpath, rename, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -7,7 +7,7 @@ import {
   createStorageOwnershipAdmissionService, StorageOwnershipError, type AdmissionInternalOptions, type WriterAdmission,
 } from '../../../src/server/storage-ownership/admission.js';
 import {
-  resourceKey, sqliteFcntlLockBackend, type KernelLockBackend,
+  coordinationRootPath, prepareCoordinationRoot, resourceKey, sqliteFcntlLockBackend, type KernelLockBackend,
 } from '../../../src/server/storage-ownership/claims.js';
 import {
   claimPathFor, DIRECTORY_CLAIM_FILENAME, readOwnerClaim, resolveStorageOwnershipTargets,
@@ -153,6 +153,33 @@ describe('stable physical resource keys and coordination', () => {
     expect((await refusal(admit(open, cfg(owner, p)))).code).toBe('lock_unavailable');
     expect(await digest(p.root)).toEqual({ [p.root]: 'absent' });
   });
+
+  it('rejects a coordination root with an untrusted parent before creating the root', async () => {
+    const base = await sandbox();
+    const owner = await project(base, 'owner');
+    const p = pathsFor(join(base, 'storage'));
+    await chmod(base, 0o755);
+
+    expect((await refusal(admit(service(base), cfg(owner, p)))).code).toBe('lock_unavailable');
+    await expect(lstat(join(base, 'coord'))).rejects.toThrow();
+  });
+
+  it('keeps lock paths anchored to the verified root inode after its path is replaced', async () => {
+    const base = await sandbox();
+    const root = join(base, 'coord');
+    const moved = join(base, 'coord-original');
+    await prepareCoordinationRoot(root, []);
+    const pinned = coordinationRootPath(root);
+
+    await rename(root, moved);
+    await mkdir(root, { mode: 0o700 });
+    await writeFile(join(pinned, 'identity-probe'), 'original');
+
+    expect(await readFile(join(moved, 'identity-probe'), 'utf8')).toBe('original');
+    expect(await lstat(join(root, 'identity-probe')).then(() => true, () => false)).toBe(false);
+    expect(() => coordinationRootPath(root)).toThrow('coordination root changed identity');
+  });
+
 });
 
 describe('admitStorageWriter collisions', () => {
@@ -414,6 +441,56 @@ describe('F-004 bootstrap and partial claims', () => {
 });
 
 describe('WriterAdmission registry (F-003 primitives)', () => {
+  it('refuses a released admission if release occurs during target resolution', async () => {
+    const base = await sandbox();
+    const owner = await project(base, 'owner');
+    const p = pathsFor(join(base, 'storage'));
+    const svc = service(base);
+    const handle = await admit(svc, cfg(owner, p));
+
+    const pending = svc.assertLiveWriterAdmission(handle, cfg(owner, p));
+    await handle.release();
+
+    expect((await refusal(pending)).code).toBe('invalid_writer_admission');
+  });
+
+  it('refuses an admission if its writer lease is lost during target resolution', async () => {
+    const base = await sandbox();
+    const owner = await project(base, 'owner');
+    const p = pathsFor(join(base, 'storage'));
+    let writerLeaseHeld = true;
+    const backend: KernelLockBackend = {
+      name: 'controllable',
+      tryAcquire: (path) => {
+        let released = false;
+        const writerLease = path.includes('/writer/');
+        return {
+          isHeld: () => !released && (!writerLease || writerLeaseHeld),
+          release: () => { released = true; },
+        };
+      },
+    };
+    const svc = service(base, { lockBackend: backend });
+    const handle = await admit(svc, cfg(owner, p));
+
+    const pending = svc.assertLiveWriterAdmission(handle, cfg(owner, p));
+    writerLeaseHeld = false;
+
+    expect((await refusal(pending)).code).toBe('invalid_writer_admission');
+  });
+
+  it('refuses an admission when its worktree witness disappears', async () => {
+    const base = await sandbox();
+    const owner = await project(base, 'owner');
+    const p = { ...pathsFor(join(base, 'storage')), vector: join(base, 'external-vectors') };
+    const svc = service(base);
+    const handle = await admit(svc, cfg(owner, p));
+
+    await rm(join(owner, '.nexus', 'worktree-witness'));
+
+    expect((await refusal(svc.assertLiveWriterAdmission(handle, cfg(owner, p)))).code).toBe('incarnation_mismatch');
+  });
+
   it('rejects forged, cloned or mismatched handles and consumes exactly once', async () => {
     const base = await sandbox();
     const owner = await project(base, 'owner');

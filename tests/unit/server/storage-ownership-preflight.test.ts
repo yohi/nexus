@@ -71,6 +71,19 @@ describe('inspectStorageOwnership', () => {
     expect((await inspect(cfg(base, join(base, 's')))).disposition).toBe('owned');
   });
 
+  it.each([
+    ['wrong resource path', join('..', 'not-project'), 'directory'],
+    ['wrong resource kind', '.', 'file'],
+  ] as const)('refuses an ancestor claim with %s', async (_case, relativeResource, kind) => {
+    const base = await sandbox();
+    const project = join(base, 'project');
+    const root = join(project, 'storage');
+    await mkdir(project);
+    await writeFile(claimPathFor(project, 'directory'), claimJson(project, join(project, relativeResource), kind));
+
+    expect((await inspect(cfg(project, root))).disposition).toBe('refuse');
+  });
+
   it('S02_foreign_metadata_owner_is_refused_read_only', async () => {
     const base = await sandbox();
     await claimAll(join(base, 'other'), join(base, 's'));

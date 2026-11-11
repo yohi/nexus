@@ -2,7 +2,7 @@
 // (Nexus #297, Design §4.3 F-002/F-004). Internal only; not a public API.
 import { createHash, randomBytes } from 'node:crypto';
 import {
-  closeSync, constants as fsConstants, fsyncSync, linkSync, lstatSync, openSync, readdirSync, readFileSync, renameSync, statfsSync,
+  closeSync, constants as fsConstants, fstatSync, fsyncSync, linkSync, lstatSync, openSync, readdirSync, readFileSync, renameSync, statfsSync,
   unlinkSync, writeSync,
 } from 'node:fs';
 import { lstat, mkdir, realpath } from 'node:fs/promises';
@@ -49,18 +49,41 @@ const REMOTE_FS_TYPES = new Set([
   0x00c36400, // CEPH
 ]);
 
-async function verifyPrivateDirectory(path: string, uid: number): Promise<void> {
+async function verifyPrivateDirectory(path: string, uid: number, canonicalPath = path): Promise<void> {
   const stat = await lstat(path);
   if (stat.isSymbolicLink() || !stat.isDirectory()) throw new Error(`coordination path ${path} is not a real directory`);
   if (stat.uid !== uid) throw new Error(`coordination path ${path} is not owned by the current account`);
   if ((stat.mode & 0o077) !== 0) throw new Error(`coordination path ${path} is accessible by other accounts`);
-  if (await realpath(path) !== path) throw new Error(`coordination path ${path} is reached through an alias`);
+  if (await realpath(path) !== canonicalPath) throw new Error(`coordination path ${path} is reached through an alias`);
 }
 
-export async function ensurePrivateDirectory(path: string, uid: number): Promise<void> {
+interface VerifiedCoordinationRoot {
+  readonly fd: number;
+  readonly dev: bigint;
+  readonly ino: bigint;
+}
+
+const verifiedCoordinationRoots = new Map<string, VerifiedCoordinationRoot>();
+
+/** Path anchored to the verified coordination-root inode; callers use it for every lock and gate path. */
+export function coordinationRootPath(root: string): string {
+  const verified = verifiedCoordinationRoots.get(root);
+  if (verified === undefined) throw new Error('coordination root has not been verified');
+  let pathStat;
+  try { pathStat = lstatSync(root, { bigint: true }); }
+  catch { throw new Error('coordination root changed identity'); }
+  const opened = fstatSync(verified.fd, { bigint: true });
+  if (pathStat.isSymbolicLink() || !pathStat.isDirectory() || pathStat.dev !== verified.dev || pathStat.ino !== verified.ino ||
+    opened.dev !== verified.dev || opened.ino !== verified.ino) {
+    throw new Error('coordination root changed identity');
+  }
+  return `/proc/self/fd/${verified.fd}`;
+}
+
+export async function ensurePrivateDirectory(path: string, uid: number, canonicalPath = path): Promise<void> {
   try { await mkdir(path, { mode: 0o700 }); }
   catch (error) { if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error; }
-  await verifyPrivateDirectory(path, uid);
+  await verifyPrivateDirectory(path, uid, canonicalPath);
 }
 
 /**
@@ -82,12 +105,39 @@ export async function prepareCoordinationRoot(root: string, persistentTargets: r
   }
   const parent = dirname(canonicalRoot);
   await mkdir(parent, { recursive: true, mode: 0o700 });
-  if (await realpath(parent) !== parent) throw new Error('coordination root parent changed identity');
-  await ensurePrivateDirectory(canonicalRoot, uid);
-  const fsType = statfsSync(canonicalRoot).type;
+  await verifyPrivateDirectory(parent, uid);
+  const parentBefore = lstatSync(parent, { bigint: true });
+  const parentFd = openSync(parent, fsConstants.O_RDONLY | fsConstants.O_DIRECTORY | fsConstants.O_NOFOLLOW);
+  try {
+    const parentOpened = fstatSync(parentFd, { bigint: true });
+    if (parentOpened.dev !== parentBefore.dev || parentOpened.ino !== parentBefore.ino) {
+      throw new Error('coordination root parent changed identity while opening');
+    }
+    if (verifiedCoordinationRoots.has(canonicalRoot)) {
+      coordinationRootPath(canonicalRoot);
+    } else {
+      await ensurePrivateDirectory(canonicalRoot, uid);
+      const before = lstatSync(canonicalRoot, { bigint: true });
+      const fd = openSync(canonicalRoot, fsConstants.O_RDONLY | fsConstants.O_DIRECTORY | fsConstants.O_NOFOLLOW);
+      try {
+        const opened = fstatSync(fd, { bigint: true });
+        const parentAfter = lstatSync(parent, { bigint: true });
+        if (opened.dev !== before.dev || opened.ino !== before.ino || !opened.isDirectory() ||
+          parentAfter.dev !== parentOpened.dev || parentAfter.ino !== parentOpened.ino) {
+          throw new Error('coordination root or parent changed identity while opening');
+        }
+        verifiedCoordinationRoots.set(canonicalRoot, { fd, dev: opened.dev, ino: opened.ino });
+      } catch (error) {
+        closeSync(fd);
+        throw error;
+      }
+    }
+  } finally { closeSync(parentFd); }
+  const pinnedRoot = coordinationRootPath(canonicalRoot);
+  const fsType = statfsSync(pinnedRoot).type;
   if (REMOTE_FS_TYPES.has(fsType)) throw new Error('coordination root is on a remote or userspace filesystem');
-  await ensurePrivateDirectory(join(canonicalRoot, RESOURCE_LOCK_DIR), uid);
-  await ensurePrivateDirectory(join(canonicalRoot, WRITER_LOCK_DIR), uid);
+  await ensurePrivateDirectory(join(pinnedRoot, RESOURCE_LOCK_DIR), uid, join(canonicalRoot, RESOURCE_LOCK_DIR));
+  await ensurePrivateDirectory(join(pinnedRoot, WRITER_LOCK_DIR), uid, join(canonicalRoot, WRITER_LOCK_DIR));
   return canonicalRoot;
 }
 
@@ -138,15 +188,16 @@ export function kernelHoldsWriteLock(path: string): boolean {
   for (let attempt = 0; attempt < PROC_LOCKS_READ_ATTEMPTS; attempt += 1) {
     let table: string;
     try { table = readFileSync('/proc/locks', 'utf8'); } catch { return false; }
-    for (const line of table.split('\n')) {
-      const fields = line.trim().split(/\s+/);
-      if (fields[1] === '->') continue; // blocked waiter, not a holder
-      if (fields[1] !== 'POSIX' || fields[3] !== 'WRITE' || fields[4] !== pid) continue;
-      const id = fields[5]?.split(':');
-      if (id?.length === 3 && `${id[0]}:${id[1]}` === device && id[2] === inode) return true;
-    }
+    if (table.split('\n').some((line) => procLockLineMatches(line, device, inode, pid))) return true;
   }
   return false;
+}
+
+function procLockLineMatches(line: string, device: string, inode: string, pid: string): boolean {
+  const fields = line.trim().split(/\s+/);
+  if (fields[1] === '->' || fields[1] !== 'POSIX' || fields[3] !== 'WRITE' || fields[4] !== pid) return false;
+  const id = fields[5]?.split(':');
+  return id?.length === 3 && `${id[0]}:${id[1]}` === device && id[2] === inode;
 }
 
 /**
@@ -249,7 +300,7 @@ export function listWriterEntries(writerDir: string): WriterEntry[] {
  * the component is a real, non-symlink directory whose canonical path equals the expected canonical path. Existing
  * entries are never modified. Returns the components created by this call.
  */
-export async function mkdirVerified(target: string): Promise<string[]> {
+async function findMissingDirectories(target: string): Promise<string[]> {
   const missing: string[] = [];
   for (let current = target; ; current = dirname(current)) {
     try {
@@ -263,6 +314,10 @@ export async function mkdirVerified(target: string): Promise<string[]> {
       missing.unshift(current);
     }
   }
+  return missing;
+}
+
+async function createAndVerifyDirectories(missing: readonly string[]): Promise<string[]> {
   const created: string[] = [];
   for (const dir of missing) {
     try { await mkdir(dir); created.push(dir); }
@@ -273,6 +328,10 @@ export async function mkdirVerified(target: string): Promise<string[]> {
     }
   }
   return created;
+}
+
+export async function mkdirVerified(target: string): Promise<string[]> {
+  return await createAndVerifyDirectories(await findMissingDirectories(target));
 }
 
 export type PublishResult = 'created' | 'exists';

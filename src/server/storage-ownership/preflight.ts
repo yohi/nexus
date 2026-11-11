@@ -33,6 +33,9 @@ async function checkAncestors(resource: Resource, owner: string, binding: Bindin
   for (let dir = dirname(resource.path), prev = ''; dir !== prev; prev = dir, dir = dirname(dir)) {
     const result = await readOwnerClaim(join(dir, DIRECTORY_CLAIM_FILENAME));
     if (result.state === 'invalid') return `ancestor claim at ${dir} is invalid: ${result.reason}`;
+    if (result.state === 'present' && (result.claim.resourcePath !== dir || result.claim.kind !== 'directory')) {
+      return `ancestor claim at ${dir} does not match its directory`;
+    }
     if (result.state === 'present' && result.claim.ownerProjectRoot !== owner) {
       return `ancestor ${dir} is claimed by a different owner`;
     }
@@ -44,10 +47,12 @@ async function checkAncestors(resource: Resource, owner: string, binding: Bindin
   return undefined;
 }
 
-async function evaluate(resource: Resource, all: readonly Resource[], owner: string, binding: Binding): Promise<Verdict> {
-  const nested = await checkAncestors(resource, owner, binding);
-  if (nested) return { refuse: nested };
-  const claim = await readOwnerClaim(claimPathFor(resource.path, resource.kind));
+function evaluateExistingClaim(
+  resource: Resource,
+  claim: Awaited<ReturnType<typeof readOwnerClaim>>,
+  owner: string,
+  binding: Binding,
+): Verdict | undefined {
   if (claim.state === 'invalid') return { refuse: `claim for ${resource.path} is invalid: ${claim.reason}` };
   if (claim.state === 'present') {
     const c = claim.claim;
@@ -57,6 +62,10 @@ async function evaluate(resource: Resource, all: readonly Resource[], owner: str
     if (problem) return { refuse: `${resource.path}: ${problem}` };
     return 'claimed';
   }
+  return undefined;
+}
+
+async function evaluateUnclaimedResource(resource: Resource, all: readonly Resource[]): Promise<Verdict> {
   if (!(await exists(resource.path))) {
     if (resource.kind === 'file') {
       for (const s of SQLITE_SIDECARS) if (await exists(resource.path + s)) return { refuse: `unclaimed SQLite sidecar present for ${resource.path}` };
@@ -80,6 +89,14 @@ async function evaluate(resource: Resource, all: readonly Resource[], owner: str
     if (!allowed(entry) && !(await claimTemp(entry))) return { refuse: `unclaimed non-empty directory ${resource.path}` };
   }
   return 'clean';
+}
+
+async function evaluate(resource: Resource, all: readonly Resource[], owner: string, binding: Binding): Promise<Verdict> {
+  const nested = await checkAncestors(resource, owner, binding);
+  if (nested) return { refuse: nested };
+  const claim = await readOwnerClaim(claimPathFor(resource.path, resource.kind));
+  const existing = evaluateExistingClaim(resource, claim, owner, binding);
+  return existing ?? await evaluateUnclaimedResource(resource, all);
 }
 
 /** Read-only advisory inspection. Never creates, writes or deletes; never authorizes opening stores. */

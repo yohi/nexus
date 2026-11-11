@@ -7,10 +7,10 @@
 //   <coordinationRoot>/startup/<sha256(ownerProjectRoot)>.lock
 //   <coordinationRoot>/startup-logs/<token>-{stdout,stderr}.log
 import { createHash, randomBytes } from 'node:crypto';
-import { closeSync, constants as fsConstants, lstatSync, openSync, readFileSync, unlinkSync } from 'node:fs';
+import { closeSync, constants as fsConstants, fstatSync, lstatSync, openSync, readSync, unlinkSync } from 'node:fs';
 import { basename, dirname, join, resolve } from 'node:path';
 import { processCoordinationRoot, StorageOwnershipError } from './admission.js';
-import { ensurePrivateDirectory, prepareCoordinationRoot, sqliteFcntlLockBackend, type KernelLock, type KernelLockBackend } from './claims.js';
+import { coordinationRootPath, ensurePrivateDirectory, prepareCoordinationRoot, sqliteFcntlLockBackend, type KernelLock, type KernelLockBackend } from './claims.js';
 import type { ResolvedStorageOwnershipTargets } from './types.js';
 
 export const STARTUP_LOCK_DIR = 'startup';
@@ -23,6 +23,7 @@ export const STARTUP_LOGS_DIR = 'startup-logs';
 export const INTERNAL_TARGETS_FINGERPRINT_ENV = 'NEXUS_INTERNAL_STORAGE_TARGETS_FINGERPRINT';
 
 const LOG_NAME_PATTERN = /^[0-9a-f]{32}-(stdout|stderr)\.log$/;
+const DEFAULT_ATTEMPT_LOG_BYTES = 64 * 1024;
 
 export function startupGateKey(ownerProjectRoot: string): string {
   return createHash('sha256').update(ownerProjectRoot).digest('hex');
@@ -79,13 +80,16 @@ export async function openBridgeStartupCoordination(
   try {
     root = await prepareCoordinationRoot(options.coordinationRoot ?? await processCoordinationRoot(), persistent);
     const uid = process.getuid?.() ?? -1;
-    await ensurePrivateDirectory(join(root, STARTUP_LOCK_DIR), uid);
-    await ensurePrivateDirectory(join(root, STARTUP_LOGS_DIR), uid);
+    const pinnedRoot = coordinationRootPath(root);
+    await ensurePrivateDirectory(join(pinnedRoot, STARTUP_LOCK_DIR), uid, join(root, STARTUP_LOCK_DIR));
+    await ensurePrivateDirectory(join(pinnedRoot, STARTUP_LOGS_DIR), uid, join(root, STARTUP_LOGS_DIR));
   } catch (error) {
     throw new StorageOwnershipError('lock_unavailable', `coordination root unusable: ${(error as Error).message}`, { cause: error });
   }
-  const gatePath = join(root, STARTUP_LOCK_DIR, `${startupGateKey(targets.ownerProjectRoot)}.lock`);
+  const pinnedRoot = coordinationRootPath(root);
+  const gatePath = join(pinnedRoot, STARTUP_LOCK_DIR, `${startupGateKey(targets.ownerProjectRoot)}.lock`);
   const logsDir = join(root, STARTUP_LOGS_DIR);
+  const pinnedLogsDir = join(pinnedRoot, STARTUP_LOGS_DIR);
 
   return {
     coordinationRoot: root,
@@ -105,21 +109,45 @@ export async function openBridgeStartupCoordination(
       const token = randomBytes(16).toString('hex');
       const stdoutPath = join(logsDir, `${token}-stdout.log`);
       const stderrPath = join(logsDir, `${token}-stderr.log`);
-      createPrivateLog(stdoutPath);
-      try { createPrivateLog(stderrPath); }
-      catch (error) { removeOwnedLog(stdoutPath); throw error; }
+      const pinnedStdoutPath = join(pinnedLogsDir, `${token}-stdout.log`);
+      const pinnedStderrPath = join(pinnedLogsDir, `${token}-stderr.log`);
+      createPrivateLog(pinnedStdoutPath);
+      try { createPrivateLog(pinnedStderrPath); }
+      catch (error) { removeOwnedLog(pinnedStdoutPath); throw error; }
       return {
         token, stdoutPath, stderrPath,
-        remove: () => { removeOwnedLog(stdoutPath); removeOwnedLog(stderrPath); },
+        remove: () => { removeOwnedLog(pinnedStdoutPath); removeOwnedLog(pinnedStderrPath); },
       };
     },
   };
 }
 
 /** Read a token-owned attempt log (bounded by the caller). Missing file reads as empty. */
-export function readAttemptLog(path: string): string {
-  try { return readFileSync(path, 'utf8'); }
-  catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return ''; throw error; }
+export function readAttemptLog(path: string, maxBytes = DEFAULT_ATTEMPT_LOG_BYTES): string {
+  let fd: number | undefined;
+  try {
+    fd = openSync(path, fsConstants.O_RDONLY);
+    const size = fstatSync(fd).size;
+    const bytesToRead = Math.min(size, Math.max(0, maxBytes) + 3);
+    const buffer = Buffer.alloc(bytesToRead);
+    const bytesRead = readSync(fd, buffer, 0, bytesToRead, Math.max(0, size - bytesToRead));
+    const text = buffer.subarray(0, bytesRead).toString('utf8');
+    const characters = Array.from(text);
+    let start = characters.length;
+    let totalBytes = 0;
+    for (let index = characters.length - 1; index >= 0; index -= 1) {
+      const charBytes = Buffer.byteLength(characters[index] ?? '', 'utf8');
+      if (totalBytes + charBytes > maxBytes) break;
+      totalBytes += charBytes;
+      start = index;
+    }
+    return characters.slice(start).join('');
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return '';
+    throw error;
+  } finally {
+    if (fd !== undefined) closeSync(fd);
+  }
 }
 
 /**

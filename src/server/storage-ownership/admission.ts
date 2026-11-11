@@ -7,11 +7,11 @@ import {
   claimBindingProblem, claimPathFor, DIRECTORY_CLAIM_FILENAME, isClaimTempPathFor, readOwnerClaim, type ClaimKind,
 } from './claim-format.js';
 import {
-  ADMISSION_LOCK_FILENAME, defaultCoordinationRoot, isWithin, listWriterEntries, mkdirVerified, prepareCoordinationRoot, publishClaim,
+  ADMISSION_LOCK_FILENAME, coordinationRootPath, defaultCoordinationRoot, isWithin, listWriterEntries, mkdirVerified, prepareCoordinationRoot, publishClaim,
   RESOURCE_LOCK_DIR, resourceKey, sqliteFcntlLockBackend, WRITER_LOCK_DIR, writeWriterPathRecord, type KernelLock, type KernelLockBackend,
 } from './claims.js';
 import { inspectStorageOwnership } from './preflight.js';
-import { ensureWorktreeWitness, witnessRequired } from './witness.js';
+import { ensureWorktreeWitness, readWorktreeWitness, witnessRequired } from './witness.js';
 import { assertNotHardlinked, canonicalize, resolveStorageOwnershipTargets, storageTargetsFingerprint } from './targets.js';
 import type { CanonicalPath, OwnershipPreflight, ResolvedStorageOwnershipTargets } from './types.js';
 
@@ -72,6 +72,7 @@ interface RegistryEntry {
   readonly issuer: object;
   readonly fingerprint: string;
   readonly leases: readonly KernelLock[];
+  readonly worktreeWitness?: string;
   state: AdmissionState;
 }
 const registry = new WeakMap<object, RegistryEntry>();
@@ -84,6 +85,13 @@ const releaseLeases = (leases: readonly KernelLock[]): void => {
   }
   liveLeaseSets.delete(leases);
 };
+
+function assertIssuedAdmission(entry: RegistryEntry): void {
+  if (entry.state !== 'ISSUED') throw new StorageOwnershipError('invalid_writer_admission', 'admission is no longer issued');
+  if (!entry.leases.every((lease) => lease.isHeld())) {
+    throw new StorageOwnershipError('invalid_writer_admission', 'writer lease is no longer held');
+  }
+}
 
 interface Resource {
   readonly role: 'rootDir' | 'metadataDbPath' | 'vectorDbPath';
@@ -275,6 +283,11 @@ export function createStorageOwnershipAdmissionService(options: AdmissionInterna
     } catch (error) {
       throw new StorageOwnershipError('lock_unavailable', `coordination root unusable: ${(error as Error).message}`, { cause: error });
     }
+    let pinnedCoordinationRoot: string;
+    try { pinnedCoordinationRoot = coordinationRootPath(coordinationRoot); }
+    catch (error) {
+      throw new StorageOwnershipError('lock_unavailable', `coordination root changed identity: ${(error as Error).message}`, { cause: error });
+    }
 
     const shortLocks: KernelLock[] = [];
     const leases: KernelLock[] = [];
@@ -282,10 +295,10 @@ export function createStorageOwnershipAdmissionService(options: AdmissionInterna
     let admittedWitness: string | undefined;
     try {
       // 2. Global gate, then sorted per-resource admission locks, then sorted nonblocking lifetime writer leases.
-      shortLocks.push(await acquireShort(join(coordinationRoot, ADMISSION_LOCK_FILENAME)));
-      for (const r of resources) shortLocks.push(await acquireShort(join(coordinationRoot, RESOURCE_LOCK_DIR, `${r.key}.lock`)));
+      shortLocks.push(await acquireShort(join(pinnedCoordinationRoot, ADMISSION_LOCK_FILENAME)));
+      for (const r of resources) shortLocks.push(await acquireShort(join(pinnedCoordinationRoot, RESOURCE_LOCK_DIR, `${r.key}.lock`)));
       for (const r of resources) {
-        const lease = tryLock(join(coordinationRoot, WRITER_LOCK_DIR, `${r.key}.lock`));
+        const lease = tryLock(join(pinnedCoordinationRoot, WRITER_LOCK_DIR, `${r.key}.lock`));
         if (!lease) throw new StorageOwnershipError('writer_busy', `${r.role} already has a live writer`);
         leases.push(lease);
       }
@@ -293,7 +306,7 @@ export function createStorageOwnershipAdmissionService(options: AdmissionInterna
       // 2b. Overlap exclusion across independent admissions (even for the same owner): any *live* writer whose
       // canonical path is an ancestor/descendant of a requested target refuses. Unknown records are probed too.
       // Liveness is decided only by the kernel lock (nonblocking probe), never by time or PID.
-      const writerDir = join(coordinationRoot, WRITER_LOCK_DIR);
+      const writerDir = join(pinnedCoordinationRoot, WRITER_LOCK_DIR);
       const ownKeys = new Set(resources.map((r) => r.key));
       for (const other of listWriterEntries(writerDir)) {
         if (ownKeys.has(other.key)) continue;
@@ -361,7 +374,11 @@ export function createStorageOwnershipAdmissionService(options: AdmissionInterna
     }
 
     const frozenTargets = deepFreeze(structuredClone(targets));
-    const entry: RegistryEntry = { issuer, fingerprint: storageTargetsFingerprint(targets), leases, state: 'ISSUED' };
+    const entry: RegistryEntry = {
+      issuer, fingerprint: storageTargetsFingerprint(targets), leases,
+      ...(admittedWitness === undefined ? {} : { worktreeWitness: admittedWitness }),
+      state: 'ISSUED',
+    };
     liveLeaseSets.add(leases);
     const handle = Object.freeze({
       targets: frozenTargets,
@@ -381,14 +398,25 @@ export function createStorageOwnershipAdmissionService(options: AdmissionInterna
   async function assertLiveWriterAdmission(handle: unknown, config: Config): Promise<void> {
     const entry = typeof handle === 'object' && handle !== null ? registry.get(handle) : undefined;
     if (!entry || entry.issuer !== issuer) throw new StorageOwnershipError('invalid_writer_admission', 'handle was not issued by this service');
-    if (entry.state !== 'ISSUED') throw new StorageOwnershipError('invalid_writer_admission', `handle is ${entry.state}`);
-    if (!entry.leases.every((l) => l.isHeld())) throw new StorageOwnershipError('invalid_writer_admission', 'writer lease is no longer held');
+    assertIssuedAdmission(entry);
     let fresh: ResolvedStorageOwnershipTargets;
     try { fresh = await resolveStorageOwnershipTargets(config); }
     catch (error) { throw new StorageOwnershipError('target_mismatch', (error as Error).message, { cause: error }); }
+    assertIssuedAdmission(entry);
     if (storageTargetsFingerprint(fresh) !== entry.fingerprint) {
       throw new StorageOwnershipError('target_mismatch', 'configuration does not match the admitted storage targets');
     }
+    const freshResources = persistentResources(fresh);
+    if (witnessRequired(fresh.ownerProjectRoot, freshResources)) {
+      if (entry.worktreeWitness === undefined) {
+        throw new StorageOwnershipError('incarnation_mismatch', 'admission has no worktree witness');
+      }
+      const current = await readWorktreeWitness(fresh.ownerProjectRoot);
+      if (current.state !== 'present' || current.witness !== entry.worktreeWitness) {
+        throw new StorageOwnershipError('incarnation_mismatch', 'worktree witness is absent or changed');
+      }
+    }
+    assertIssuedAdmission(entry);
   }
 
   async function consumeWriterAdmission(handle: WriterAdmission, config: Config): Promise<ConsumedWriterLease> {

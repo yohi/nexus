@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { chmod, lstat, mkdir, mkdtemp, readdir, readFile, realpath, rm, stat, writeFile } from 'node:fs/promises';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { randomUUID } from 'node:crypto';
 import { spawn, type ChildProcess } from 'node:child_process';
@@ -48,7 +48,7 @@ function createFakeChildProcess(): FakeChildProcess {
 }
 
 function createHarness() {
-  const fetchImpl = vi.fn<(_url: string) => Promise<Response>>();
+  const fetchImpl = vi.fn<ProjectConnectorOptions['fetch']>();
   const spawnImpl = vi.fn<(_exec: string, _args: readonly string[], _options: object) => ChildProcess>();
 
   return { fetchImpl, spawnImpl };
@@ -275,7 +275,7 @@ describe('project-connector', () => {
 
     expect(url.port).toBe('43125');
     expect(atSpawn).toEqual({ storageExists: false, gateHeldByBridge: true });
-    expect(coordination.gatePath.startsWith(join(testCoordinationRoot(), 'startup'))).toBe(true);
+    expect(await realpath(dirname(coordination.gatePath))).toBe(join(testCoordinationRoot(), 'startup'));
     // Released after the verified healthy endpoint.
     const after = coordination.tryAcquireGate();
     expect(after).not.toBeNull();
@@ -401,7 +401,7 @@ describe('project-connector', () => {
     const stdoutLog = env.NEXUS_STARTUP_STDOUT_LOG!;
     const stderrLog = env.NEXUS_STARTUP_STDERR_LOG!;
     for (const log of [stdoutLog, stderrLog]) {
-      expect(log.startsWith(`${logsDir}/`)).toBe(true);
+      expect((await realpath(log)).startsWith(`${logsDir}/`)).toBe(true);
       expect(log.startsWith(storageDir)).toBe(false);
       expect(log).toMatch(/\/[0-9a-f]{32}-(stdout|stderr)\.log$/);
       expect((await stat(log)).mode & 0o777).toBe(0o600);
@@ -570,6 +570,37 @@ describe('project-connector', () => {
     fakeChild!.emit('error', Object.assign(new Error('spawn ENOENT'), { code: 'ENOENT' }));
 
     await expect(pending).rejects.toThrow('spawn ENOENT');
+  });
+
+  it('cancels in-flight health polling and its timeout when the child fails', async () => {
+    const harness = createHarness();
+    const instanceId = `instance-${randomUUID()}`;
+    let fakeChild: FakeChildProcess | undefined;
+    let fetchSignal: AbortSignal | undefined;
+    let reportFetchStarted: () => void = () => undefined;
+    const fetchStarted = new Promise<void>((resolve) => { reportFetchStarted = resolve; });
+    harness.fetchImpl.mockImplementation((_url, init) => {
+      fetchSignal = init?.signal;
+      reportFetchStarted();
+      return new Promise<Response>((_resolve, reject) => {
+        init?.signal?.addEventListener('abort', () => reject(init.signal?.reason), { once: true });
+      });
+    });
+    harness.spawnImpl.mockImplementation(() => {
+      fakeChild = createFakeChildProcess();
+      void (async () => {
+        await claimStorage();
+        await writeProjectEndpoint(storageDir, healthyEndpoint(instanceId, 43151));
+      })();
+      return fakeChild;
+    });
+
+    const pending = ensureProjectEndpoint(baseOptions(harness, { startupTimeoutMs: 3_000 }));
+    await fetchStarted;
+    fakeChild?.emit('error', new Error('spawn ENOENT'));
+
+    await expect(pending).rejects.toThrow('spawn ENOENT');
+    expect(fetchSignal?.aborted).toBe(true);
   });
 
   it('rejects immediately when the spawned child exits before publishing a healthy endpoint', async () => {

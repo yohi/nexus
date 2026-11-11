@@ -1,4 +1,5 @@
-import { lstat, readFile } from 'node:fs/promises';
+import { constants as fsConstants } from 'node:fs';
+import { lstat, open } from 'node:fs/promises';
 
 // Internal ownership claim format version 1. Task 3 (admission) writes these; preflight only reads them.
 export const CLAIM_FORMAT_VERSION = 1;
@@ -71,8 +72,29 @@ export async function readOwnerClaim(claimPath: string): Promise<ClaimReadResult
   if (!stat.isFile()) return { state: 'invalid', reason: 'claim is not a regular file' };
   if (stat.size > MAX_CLAIM_BYTES) return { state: 'invalid', reason: 'claim too large' };
   let parsed: unknown;
-  try { parsed = JSON.parse(await readFile(claimPath, 'utf8')); }
+  let handle;
+  try {
+    handle = await open(claimPath, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW);
+    const opened = await handle.stat();
+    if (!opened.isFile() || opened.dev !== stat.dev || opened.ino !== stat.ino || opened.size !== stat.size) {
+      return { state: 'invalid', reason: 'claim identity or size changed while opening' };
+    }
+    const buffer = Buffer.alloc(MAX_CLAIM_BYTES + 1);
+    let bytesRead = 0;
+    while (bytesRead < buffer.length) {
+      const result = await handle.read(buffer, bytesRead, buffer.length - bytesRead, bytesRead);
+      if (result.bytesRead === 0) break;
+      bytesRead += result.bytesRead;
+    }
+    const after = await handle.stat();
+    if (bytesRead > MAX_CLAIM_BYTES || after.dev !== opened.dev || after.ino !== opened.ino ||
+      after.size !== opened.size || bytesRead !== opened.size) {
+      return { state: 'invalid', reason: bytesRead > MAX_CLAIM_BYTES ? 'claim too large' : 'claim changed while reading' };
+    }
+    parsed = JSON.parse(buffer.subarray(0, bytesRead).toString('utf8'));
+  }
   catch { return { state: 'invalid', reason: 'claim is malformed' }; }
+  finally { await handle?.close().catch(() => undefined); }
   const c = parsed as Partial<OwnerClaim> | null;
   if (!c || typeof c !== 'object' || (c.version !== CLAIM_FORMAT_VERSION && c.version !== WITNESS_CLAIM_FORMAT_VERSION) ||
     typeof c.ownerProjectRoot !== 'string' || typeof c.resourcePath !== 'string' ||

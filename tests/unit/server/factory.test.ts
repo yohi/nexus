@@ -363,6 +363,7 @@ describe('NexusServerFactory writer admission gate (Nexus #297)', () => {
     cleanups.push(() => assembly.runtime.close());
     const close = vi.spyOn(assembly.runtime, 'close');
     const stop = vi.spyOn(assembly.options.pipeline, 'stop');
+    const watcherStop = vi.spyOn(assembly.options.watcher, 'stop');
     vi.spyOn(console, 'error').mockImplementation(() => undefined);
     await new Promise((resolve) => setTimeout(resolve, 60));
     expect(onWriterLeaseLost).not.toHaveBeenCalled(); // healthy lease: keeps serving
@@ -373,6 +374,7 @@ describe('NexusServerFactory writer admission gate (Nexus #297)', () => {
     // no metrics-port removal) runs on the lease-lost path.
     expect(stop).toHaveBeenCalledOnce();
     expect(stop.mock.invocationCallOrder[0]).toBeLessThan(onWriterLeaseLost.mock.invocationCallOrder[0] ?? 0);
+    expect(watcherStop).toHaveBeenCalledOnce();
     expect(close).not.toHaveBeenCalled();
     await new Promise((resolve) => setTimeout(resolve, 60));
     expect(onWriterLeaseLost).toHaveBeenCalledOnce(); // monitor stopped after the first detection
