@@ -160,6 +160,27 @@ const callTool = async (bridge: ChildProcessWithoutNullStreams, id: number, name
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === 'object' && value !== null && !Array.isArray(value);
 
+const initialIndexSettled = async (bridge: ChildProcessWithoutNullStreams): Promise<boolean> => {
+  const raw: unknown = JSON.parse(await callTool(bridge, 20, 'index_status', {}));
+  const result = isRecord(raw) ? raw : undefined;
+  const structuredContent = isRecord(result?.structuredContent) ? result.structuredContent : undefined;
+  const content = Array.isArray(result?.content) ? result.content : [];
+  const textContent = content
+    .map((entry) => isRecord(entry) ? entry : undefined)
+    .find((entry) => entry?.type === 'text' && typeof entry.text === 'string');
+  let textResult: Record<string, unknown> | undefined;
+  if (typeof textContent?.text === 'string') {
+    const parsedText: unknown = JSON.parse(textContent.text);
+    if (isRecord(parsedText)) textResult = parsedText;
+  }
+  const status = structuredContent ?? textResult;
+  const indexStats = isRecord(status?.indexStats) ? status.indexStats : undefined;
+  const pipelineProgress = isRecord(status?.pipelineProgress) ? status.pipelineProgress : undefined;
+  const settled = indexStats?.lastIndexedAt !== null && indexStats?.lastIndexedAt !== undefined
+    || typeof pipelineProgress?.lastError === 'string';
+  return pipelineProgress?.status === 'idle' && settled;
+};
+
 const isAlive = (pid: number): boolean => {
   try { process.kill(pid, 0); return true; } catch { return false; }
 };
@@ -480,6 +501,7 @@ await expect(readProjectEndpoint(storageDir)).resolves.toBeUndefined();
     await sendRequest(oldBridge, initializeRequest, 1);
     const old = await endpointOf(join(set.linkedA, '.nexus'));
     detachedManagedPids.push(old.pid);
+    await waitFor(() => initialIndexSettled(oldBridge).then((settled) => settled ? true : undefined), 90_000);
     expect(await callTool(oldBridge, 21, 'grep_search', { pattern: OLD_SYMBOL })).toContain(OLD_FILE);
     await stopBridge(oldBridge);
     await recreateWorktree(set, set.linkedA, set.linkedA);
