@@ -371,7 +371,14 @@ class AdmissionChild {
       await new Promise<void>((resolve) => { this.waiters.push(resolve); setTimeout(resolve, 100); });
     }
   }
-  async release(): Promise<void> { this.proc.stdin?.write('release\n'); await this.exited; }
+  async release(): Promise<void> {
+    if (this.events.some((event) => event.event === 'refused')) {
+      await this.exited;
+      return;
+    }
+    this.proc.stdin?.write('release\n');
+    await this.exited;
+  }
 }
 
 function spawnAdmission(spec: ChildSpec, env: NodeJS.ProcessEnv = process.env): AdmissionChild {
@@ -398,6 +405,7 @@ describe('storage writer admission across processes (Task 3)', () => {
     expect((await first.outcome()).event).toBe('admitted');
     const second = spawnAdmission(spec);
     expect(await second.outcome()).toMatchObject({ event: 'refused', code: 'writer_busy' });
+    await expect(second.release()).resolves.toBeUndefined();
     await first.release();
     const third = spawnAdmission(spec);
     expect((await third.outcome()).event).toBe('admitted');
@@ -421,7 +429,10 @@ describe('storage writer admission across processes (Task 3)', () => {
         const claim = await readOwnerClaim(join(dir, DIRECTORY_CLAIM_FILENAME));
         expect(claim.state === 'present' && claim.claim.ownerProjectRoot).toBe(winnerOwner); // no split ownership
       }
-      await Promise.all([childA.release(), childB.release()]);
+      await Promise.all([
+        outcomes[0]?.event === 'admitted' ? childA.release() : childA.exited,
+        outcomes[1]?.event === 'admitted' ? childB.release() : childB.exited,
+      ]);
     }
   });
 
