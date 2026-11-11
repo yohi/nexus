@@ -1,7 +1,11 @@
 import { describe, expect, it, vi } from 'vitest';
+import { mkdtemp, readdir, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { Registry } from 'prom-client';
 
 import { EventQueue } from '../../../src/indexer/event-queue.js';
-import { initializeNexusRuntime, type NexusRuntimeOptions } from '../../../src/server/index.js';
+import { buildNexusRuntime, initializeNexusRuntime, type NexusRuntimeOptions } from '../../../src/server/index.js';
 import type { IndexStatsRow, ReindexResult } from '../../../src/types/index.js';
 
 const indexedStats: IndexStatsRow = {
@@ -75,6 +79,45 @@ const tick = async (): Promise<void> => {
 };
 
 describe('NexusRuntime automatic initial full index', () => {
+  it('does not start startup work when shutdown occurs while index stats are pending', async () => {
+    const storageDir = await mkdtemp(join(tmpdir(), 'nexus-runtime-shutdown-'));
+    let releaseStats: (stats: IndexStatsRow | null) => void = () => {
+      throw new Error('stats resolver was not initialized');
+    };
+    const statsPending = new Promise<IndexStatsRow | null>((resolve) => {
+      releaseStats = resolve;
+    });
+    let markStatsStarted: () => void = () => {
+      throw new Error('stats start signal was not initialized');
+    };
+    const statsStarted = new Promise<void>((resolve) => {
+      markStatsStarted = resolve;
+    });
+    const options = makeOptions();
+    options.metricsCollectorRegistry = new Registry();
+    options.storageDir = storageDir;
+    options.metadataStore.getIndexStats = vi.fn(() => {
+      markStatsStarted();
+      return statsPending;
+    });
+    const runtime = buildNexusRuntime(options);
+    const initialization = runtime.initialize();
+
+    await statsStarted;
+    runtime.terminate?.();
+    releaseStats(null);
+    await initialization;
+    await runtime.initialize();
+
+    expect(options.metadataStore.getIndexStats).toHaveBeenCalledOnce();
+    expect(options.pipeline.start).not.toHaveBeenCalled();
+    expect(options.pipeline.reindex).not.toHaveBeenCalled();
+    expect(options.watcher.start).not.toHaveBeenCalled();
+    expect(await readdir(storageDir)).not.toContain('metrics.port');
+    await runtime.close();
+    await rm(storageDir, { recursive: true, force: true });
+  });
+
   it('starts an unindexed full reindex without blocking initialization', async () => {
     let releaseReindex: (() => void) | undefined;
     const reindexDone = new Promise<void>((resolve) => {

@@ -164,6 +164,18 @@ describe('stable physical resource keys and coordination', () => {
     await expect(lstat(join(base, 'coord'))).rejects.toThrow();
   });
 
+  it('rejects a coordination root when an ancestor is writable by another account', async () => {
+    const base = await sandbox();
+    const ancestor = join(base, 'ancestor');
+    const parent = join(ancestor, 'parent');
+    await mkdir(parent, { recursive: true, mode: 0o700 });
+    await chmod(ancestor, 0o777);
+    const root = join(parent, 'coord');
+
+    await expect(prepareCoordinationRoot(root, [])).rejects.toThrow();
+    await expect(lstat(root)).rejects.toThrow();
+  });
+
   it('keeps lock paths anchored to the verified root inode after its path is replaced', async () => {
     const base = await sandbox();
     const root = join(base, 'coord');
