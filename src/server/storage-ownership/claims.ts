@@ -98,6 +98,39 @@ export async function ensurePrivateDirectory(path: string, uid: number, canonica
   await verifyPrivateDirectory(path, uid, canonicalPath);
 }
 
+function verifyCoordinationParentPin(
+  root: string,
+  parent: string,
+  uid: number,
+  expected: { readonly dev: bigint; readonly ino: bigint },
+): void {
+  const pin = join(dirname(parent), `.nexus-ownership-parent-${createHash('sha256').update(root).digest('hex')}`);
+  const identity = `${expected.dev}:${expected.ino}\n`;
+  let fd: number | undefined;
+  try {
+    try { fd = openSync(pin, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW); }
+    catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+      const temp = `${pin}.tmp-${process.pid}-${randomBytes(6).toString('hex')}`;
+      const tempFd = openSync(temp, fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_EXCL | fsConstants.O_NOFOLLOW, 0o600);
+      try { writeSync(tempFd, identity); fsyncSync(tempFd); }
+      finally { closeSync(tempFd); }
+      try { linkSync(temp, pin); }
+      catch (linkError) {
+        if ((linkError as NodeJS.ErrnoException).code !== 'EEXIST') throw linkError;
+      } finally { unlinkSync(temp); }
+      fd = openSync(pin, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW);
+    }
+    const stat = fstatSync(fd, { bigint: true });
+    if (!stat.isFile() || stat.uid !== BigInt(uid) || (stat.mode & 0o077n) !== 0n || stat.nlink !== 1n ||
+      readFileSync(fd, 'utf8') !== identity) {
+      throw new Error('coordination root parent changed identity');
+    }
+  } finally {
+    if (fd !== undefined) closeSync(fd);
+  }
+}
+
 /**
  * Create (if needed) and verify the private coordination root and its lock subdirectories. Rejects symlink/alias
  * substitution, foreign ownership, group/other access, remote filesystems, account mismatch and overlap with any
@@ -126,6 +159,7 @@ export async function prepareCoordinationRoot(root: string, persistentTargets: r
     if (parentOpened.dev !== parentBefore.dev || parentOpened.ino !== parentBefore.ino) {
       throw new Error('coordination root parent changed identity while opening');
     }
+    verifyCoordinationParentPin(canonicalRoot, parent, uid, parentOpened);
     if (verifiedCoordinationRoots.has(canonicalRoot)) {
       coordinationRootPath(canonicalRoot);
     } else {
@@ -139,6 +173,7 @@ export async function prepareCoordinationRoot(root: string, persistentTargets: r
           parentAfter.dev !== parentOpened.dev || parentAfter.ino !== parentOpened.ino) {
           throw new Error('coordination root or parent changed identity while opening');
         }
+        verifyCoordinationParentPin(canonicalRoot, parent, uid, parentOpened);
         verifiedCoordinationRoots.set(canonicalRoot, { fd, dev: opened.dev, ino: opened.ino });
       } catch (error) {
         closeSync(fd);

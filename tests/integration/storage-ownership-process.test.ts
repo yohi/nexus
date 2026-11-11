@@ -1,7 +1,7 @@
 import { spawn, type ChildProcess } from 'node:child_process';
 import { EventEmitter } from 'node:events';
 import { createHash } from 'node:crypto';
-import { lstat, mkdir, mkdtemp, readdir, readFile, realpath, rm, symlink, utimes, writeFile } from 'node:fs/promises';
+import { lstat, mkdir, mkdtemp, readdir, readFile, realpath, rename, rm, symlink, utimes, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -397,6 +397,25 @@ const claimFiles = (storage: string): string[] =>
   [join(storage, DIRECTORY_CLAIM_FILENAME), claimPathFor(join(storage, 'metadata.db'), 'file'), join(storage, 'vectors', DIRECTORY_CLAIM_FILENAME)];
 
 describe('storage writer admission across processes (Task 3)', () => {
+  it('refuses admission in another process after the coordination parent is replaced', { timeout: 60_000 }, async () => {
+    const base = await sandbox();
+    const owner = await project(base, 'owner');
+    const parent = join(base, 'coord-parent');
+    const coordinationRoot = join(parent, 'coord');
+    const movedParent = join(base, 'coord-parent-original');
+    const spec = specFor(owner, join(base, 'storage'), coordinationRoot, { hold: true });
+    const first = spawnAdmission(spec);
+    expect((await first.outcome()).event).toBe('admitted');
+
+    await rename(parent, movedParent);
+    await mkdir(parent, { mode: 0o700 });
+
+    const second = spawnAdmission(spec);
+    expect(await second.outcome()).toMatchObject({ event: 'refused' });
+    await second.release();
+    await first.release();
+  });
+
   it('S09_same_owner_second_independent_writer_is_rejected', { timeout: 60_000 }, async () => {
     const base = await sandbox();
     const owner = await project(base, 'owner');
