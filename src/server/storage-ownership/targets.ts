@@ -48,6 +48,11 @@ export async function resolveStorageOwnershipTargets(config: Config): Promise<Re
   const root: PersistentTarget = { kind: 'persistent', path: await canonicalize(config.storage.rootDir, 'storage.rootDir') };
   const metadataPath = await canonicalize(config.storage.metadataDbPath, 'storage.metadataDbPath');
   await assertNotHardlinked(metadataPath, 'storage.metadataDbPath');
+  const metadataSidecars = await Promise.all(['-wal', '-shm', '-journal'].map(async (suffix) => {
+    const sidecar = await canonicalize(`${metadataPath}${suffix}`, `storage.metadataDbPath${suffix}`);
+    await assertNotHardlinked(sidecar, `storage.metadataDbPath${suffix}`);
+    return sidecar;
+  }));
   const metadataDbPath: PersistentTarget = { kind: 'persistent', path: metadataPath };
 
   const rawVector = config.storage.vectorDbPath;
@@ -58,6 +63,10 @@ export async function resolveStorageOwnershipTargets(config: Config): Promise<Re
     throw new Error('Unsupported storage.vectorDbPath: only exact "memory://" or a local path is allowed');
   } else {
     vectorDbPath = { kind: 'persistent', path: await canonicalize(rawVector, 'storage.vectorDbPath') };
+  }
+  const otherTargets = [root.path, ...(vectorDbPath.kind === 'persistent' ? [vectorDbPath.path] : [])];
+  if (otherTargets.some((target) => metadataSidecars.includes(target))) {
+    throw new Error('Ambiguous storage targets: a storage target collides with a SQLite metadata sidecar');
   }
   return { ownerProjectRoot, rootDir: root, metadataDbPath, vectorDbPath };
 }

@@ -45,6 +45,20 @@ describe('resolveStorageOwnershipTargets', () => {
     await expect(resolveStorageOwnershipTargets(cfg(base, join(base, 'dangling'), join(base, 'x.db'), 'memory://'))).rejects.toThrow(/dangling/);
   });
 
+  it.each(['-wal', '-shm', '-journal'])('rejects_vector_target_at_metadata_sidecar%s', async (sidecar) => {
+    const base = await sandbox();
+    const metadata = join(base, 'storage', 'metadata.db');
+    await expect(resolveStorageOwnershipTargets(cfg(base, join(base, 'storage'), metadata,
+      `${metadata}${sidecar}`))).rejects.toThrow(/overlap|ambiguous/i);
+  });
+
+  it('rejects_root_target_at_metadata_sidecar', async () => {
+    const base = await sandbox();
+    const metadata = join(base, 'metadata.db');
+    await expect(resolveStorageOwnershipTargets(cfg(base, `${metadata}-wal`, metadata, join(base, 'vectors'))))
+      .rejects.toThrow(/metadata sidecar/i);
+  });
+
   it('classifies_only_exact_memory_sentinel', async () => {
     const base = await sandbox();
     const mk = (v: string) => resolveStorageOwnershipTargets(cfg(base, join(base, 's'), join(base, 's', 'm.db'), v));

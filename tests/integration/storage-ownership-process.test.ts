@@ -149,19 +149,38 @@ describe('storage ownership collisions (red evidence against unchanged implement
     const endpointPath = join(storageDir, PROJECT_ENDPOINT_FILENAME);
     await writeFile(endpointPath, foreignEndpoint(rootA, DEAD_PID));
     const before = await digest(endpointPath);
-    const spawn: SpawnFn = () => {
-      const child = new EventEmitter() as unknown as ReturnType<SpawnFn>;
-      (child as unknown as { unref: () => void }).unref = () => undefined;
-      setImmediate(() => child.emit('error', new Error('fixture_spawn_refused')));
-      return child;
+    const spawnCalls: string[][] = [];
+    const spawn: SpawnFn = (command, args) => {
+      spawnCalls.push([command, ...args]);
+      throw new Error('spawn must not occur after ownership refusal');
     };
     // Task 5: the Bridge passes the full effective target set and runs a read-only preflight first.
     const storageOwnershipTargets = await resolveStorageOwnershipTargets(configFor(rootB, targetsFor(storageDir)));
     const outcome = await ensureProjectEndpoint({ projectRoot: rootB, storageDir, storageOwnershipTargets, childExecutable: 'unused', env: {},
       spawn, fetch: () => Promise.reject(new Error('fixture_no_network')), startupTimeoutMs: 1_000, pollIntervalMs: 20 })
-      .then(() => 'resolved', () => 'rejected');
-    expect(outcome).toBe('rejected');
+      .then(() => undefined, (error: unknown) => error);
+    expect(outcome).toMatchObject({ name: 'StorageOwnershipRefusedError' });
+    expect(String(outcome)).toContain('Storage ownership preflight refused');
+    expect(spawnCalls).toEqual([]);
     expect(await digest(endpointPath)).toEqual(before); // foreign descriptor bytes must survive
+  });
+
+  it('refuses a target that collides with a live metadata sidecar reservation', { timeout: 60_000 }, async () => {
+    const base = await sandbox();
+    const rootA = await project(base, 'ownerA');
+    const rootB = await project(base, 'ownerB');
+    const ownerTargets = { ...targetsFor(join(base, 'owner-storage')),
+      metadataDbPath: join(base, 'shared-metadata', 'metadata.db') };
+    await liveOwner(configFor(rootA, ownerTargets));
+
+    const sidecarTarget = `${ownerTargets.metadataDbPath}-journal`;
+    const challenger = await attempt(configFor(rootB, {
+      ...targetsFor(join(base, 'challenger-storage')),
+      metadataDbPath: sidecarTarget,
+    }));
+
+    expect(challenger.admitted).toBe(false);
+    expect(challenger.error).toMatchObject({ code: 'writer_busy' });
   });
 
   it('S01_red_shared_root_stale_foreign_pid_file', { timeout: 60_000 }, async () => {

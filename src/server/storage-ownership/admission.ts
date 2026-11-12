@@ -113,6 +113,10 @@ function persistentResources(targets: ResolvedStorageOwnershipTargets): Resource
   if (targets.vectorDbPath.kind === 'persistent') {
     list.push({ role: 'vectorDbPath', path: targets.vectorDbPath.path, kind: 'directory', key: resourceKey(targets.vectorDbPath.path) });
   }
+  const sidecars = SQLITE_SIDECARS.map((suffix) => `${targets.metadataDbPath.path}${suffix}`);
+  if (list.some((resource) => resource.role !== 'metadataDbPath' && sidecars.includes(resource.path))) {
+    throw new StorageOwnershipError('ambiguous_target', 'a storage target collides with a SQLite metadata sidecar');
+  }
   const seen = new Set<string>();
   for (const r of list) {
     if (seen.has(r.path)) throw new StorageOwnershipError('ambiguous_target', `${r.role} shares a physical path with another role`);
@@ -311,8 +315,14 @@ export function createStorageOwnershipAdmissionService(options: AdmissionInterna
       for (const other of listWriterEntries(writerDir)) {
         if (ownKeys.has(other.key)) continue;
         const otherPath = other.path;
-        if (otherPath !== undefined &&
-          !resources.some((r) => isWithin(r.path, otherPath) || isWithin(otherPath, r.path))) continue;
+        const overlaps = otherPath !== undefined && resources.some((resource) => {
+          if (isWithin(resource.path, otherPath) || isWithin(otherPath, resource.path)) return true;
+          const requestedSidecars = resource.role === 'metadataDbPath'
+            ? SQLITE_SIDECARS.map((suffix) => `${resource.path}${suffix}`) : [];
+          const existingSidecars = SQLITE_SIDECARS.map((suffix) => `${otherPath}${suffix}`);
+          return requestedSidecars.includes(otherPath) || existingSidecars.includes(resource.path);
+        });
+        if (otherPath !== undefined && !overlaps) continue;
         const probe = tryLock(join(writerDir, `${other.key}.lock`));
         if (!probe) {
           throw new StorageOwnershipError('writer_busy',
