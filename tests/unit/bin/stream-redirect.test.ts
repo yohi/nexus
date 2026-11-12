@@ -1,4 +1,4 @@
-import { lstat, mkdtemp, readdir, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises";
+import { chmod, lstat, mkdtemp, readdir, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -76,6 +76,7 @@ describe("Bridge startup log redirection", () => {
 
     const shared = join(base, `${"c".repeat(32)}-stdout.log`);
     await writeFile(shared, "", { mode: 0o644 });
+    await chmod(shared, 0o644);
     expect(() => openBridgeStartupLog(shared)).toThrow("unsafe Bridge startup log");
   });
 

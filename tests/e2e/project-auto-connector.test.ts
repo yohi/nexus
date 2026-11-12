@@ -425,9 +425,14 @@ await expect(readProjectEndpoint(storageDir)).resolves.toBeUndefined();
     const symbols = ['w04SentinelPrimaryMarker', 'w04SentinelLinkedAMarker'] as const;
     await Promise.all(roots.map(async (root, i) => writeFile(join(root, files[i]!), `export const ${symbols[i]!} = ${i};\n`)));
     const pair = roots.map((root) => startBridge(root));
-    await Promise.all(pair.map(async (bridge) => sendRequest(bridge, initializeRequest, 1)));
-    const endpoints = await Promise.all(roots.map(async (root) => endpointOf(join(root, '.nexus'))));
-    detachedManagedPids.push(...endpoints.map((endpoint) => endpoint.pid));
+    const endpoints: Awaited<ReturnType<typeof endpointOf>>[] = [];
+    try {
+      await Promise.all(pair.map(async (bridge) => sendRequest(bridge, initializeRequest, 1)));
+    } finally {
+      endpoints.push(...(await Promise.all(roots.map(async (root) =>
+        await endpointOf(join(root, '.nexus')).catch(() => undefined)))).filter((endpoint) => endpoint !== undefined));
+      detachedManagedPids.push(...endpoints.map((endpoint) => endpoint.pid));
+    }
     const [first, second] = endpoints as [typeof endpoints[0], typeof endpoints[0]];
     expect(first.pid).not.toBe(second.pid);
     expect(first.url).not.toBe(second.url);
