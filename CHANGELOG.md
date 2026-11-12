@@ -1,5 +1,44 @@
 # Changelog
 
+## [2.9.0](https://github.com/yohi/nexus/compare/v2.8.0...v2.9.0) (2026-11-12)
+
+
+### Features
+
+* **nexus:** [#297](https://github.com/yohi/nexus/issues/297) bounded multi-resource writer admission with kernel leases ([9fd75f7](https://github.com/yohi/nexus/commit/9fd75f7ea7835a7180c2e82caf50efaa5d928751))
+* **nexus:** [#297](https://github.com/yohi/nexus/issues/297) gate CLI and every runtime construction path behind writer admission ([fae9056](https://github.com/yohi/nexus/commit/fae9056e66f24190c69d20aa22495b17857f01e3))
+* **nexus:** [#297](https://github.com/yohi/nexus/issues/297) make HTTP Bridge a read-only discovery client with an external startup gate ([d04def3](https://github.com/yohi/nexus/commit/d04def37fdd48ae98d82e5ad922ce24fc5a6e0b7))
+* **nexus:** [#297](https://github.com/yohi/nexus/issues/297) resolve storage ownership targets and inspect read-only ([8eab757](https://github.com/yohi/nexus/commit/8eab75798ccd5b3a40da1aa2f3525af1c53346a4))
+* **nexus:** [#297](https://github.com/yohi/nexus/issues/297) worktree isolation and storage ownership admission (draft) ([722d2de](https://github.com/yohi/nexus/commit/722d2de69b96e4495f2c4bc47433223a5020ddf6))
+* 外部StorageのW06同一パス再作成をWorktree Witnessで防止 ([2bb1641](https://github.com/yohi/nexus/commit/2bb1641cb895990b58fca9b0822bce19fd572c02))
+
+
+### Bug Fixes
+
+* Bridge 起動中の所有権判定競合を回避 ([557640d](https://github.com/yohi/nexus/commit/557640dec618c743e3ccc34a4b881c5d730f7eec))
+* coordination root の停止後再作成から復旧 ([c4133a4](https://github.com/yohi/nexus/commit/c4133a4b6fbc9d3e89e1ac67622cdfe7afa383e4))
+* coordination root置換後のlease分岐を防止 ([38fd331](https://github.com/yohi/nexus/commit/38fd331ab2f3b1bffcdd0370119eaaa98663e477))
+* coordination祖先の信頼性と終了時レースを検証 ([017ebd4](https://github.com/yohi/nexus/commit/017ebd47a23475fbd56508be4a95d9d38747b106))
+* coordination親の置換後のlease分岐を防止 ([404aef2](https://github.com/yohi/nexus/commit/404aef24b59dce062e3dcd8562720a9365fd2aae))
+* disposable worktree cleanupを強制実行 ([f7eb884](https://github.com/yohi/nexus/commit/f7eb8841d45220d1cfcb926d31dc0a29aeb72d62))
+* E2Eのcoordination領域と初回待機を修正 ([a3d04c5](https://github.com/yohi/nexus/commit/a3d04c58959261c00c6b3d06eb60f40cc952f942))
+* **nexus:** [#297](https://github.com/yohi/nexus/issues/297) fail fast on writer lease loss and pin managed shutdown order ([a47718d](https://github.com/yohi/nexus/commit/a47718d2164b875eeec626e30ddb1f6f8f865faf))
+* **nexus:** [#297](https://github.com/yohi/nexus/issues/297) re-read /proc/locks before reporting a held lease as absent ([1af1727](https://github.com/yohi/nexus/commit/1af1727c2607384507b992a0cb19f3e03553f5ee))
+* **nexus:** [#297](https://github.com/yohi/nexus/issues/297) refuse admission overlapping a live writer's nested targets ([2050257](https://github.com/yohi/nexus/commit/20502574f1f56878c3ae5c2a91b1246a9af4ff5d))
+* **nexus:** [#297](https://github.com/yohi/nexus/issues/297) treat claim-publication temp files as explained entries ([b0427cc](https://github.com/yohi/nexus/commit/b0427cc1896e89bb0da42cc1972edc0759f3ee7d))
+* **nexus:** [#297](https://github.com/yohi/nexus/issues/297) validate --port and --idle-shutdown-ms before writer admission ([e7f4d52](https://github.com/yohi/nexus/commit/e7f4d52805d154f92494dc878a69d1de799bd559))
+* **nexus:** [#297](https://github.com/yohi/nexus/issues/297) write Bridge startup logs through a single no-create fd and detach after publish ([1d91220](https://github.com/yohi/nexus/commit/1d912201884e56ea1b3c662611d12b177d568d0c))
+* SQLite sidecarの所有権衝突を拒否 ([e7e8ab5](https://github.com/yohi/nexus/commit/e7e8ab5aa525dc6a33737775470102fb68055ae2))
+* W06で初回index処理の終了を待機 ([10e93e3](https://github.com/yohi/nexus/commit/10e93e31ede5e481ea28e3cb43b163f3853dddae))
+* Witness検証と早期拒否を強化 ([ed04d44](https://github.com/yohi/nexus/commit/ed04d44e548af2fa82ef607f7bcddec8e09694a1))
+* WriterAdmission検証とW06初期化競合を修正 ([fa66603](https://github.com/yohi/nexus/commit/fa66603d5100a7147d8f9d423fc4862d4c035e1e))
+* ストレージ所有権レビュー指摘を修正 ([5ddbdec](https://github.com/yohi/nexus/commit/5ddbdec0019938c4bdb5bee0edf8a4e9c094b579))
+* レビュー指摘の起動と所有権検証を修正 ([9fe66ec](https://github.com/yohi/nexus/commit/9fe66ec65675a8635986ac77921320ae7a1a5467))
+* 性能実行の一時ディレクトリを保護 ([8f2765b](https://github.com/yohi/nexus/commit/8f2765bdedec3d2163afb2cf8a5f0fca6064987e))
+* 拒否された子プロセスへの解放書き込みを防止 ([1448328](https://github.com/yohi/nexus/commit/1448328f4f67335b03fd1a6e91285972a4ae05ca))
+* 起動失敗時のリソース解放と所有権資料を修正 ([6be6ffe](https://github.com/yohi/nexus/commit/6be6ffeaf839fe39f280a58d9e0ac7d28f0a9ad2))
+* 起動時のlease検証と終了中reindexを修正 ([aca2546](https://github.com/yohi/nexus/commit/aca25460daba36f3bf3ac1904e71c258a2def7f9))
+
 ## [2.8.0](https://github.com/yohi/nexus/compare/v2.7.0...v2.8.0) (2026-11-09)
 
 
