@@ -61,8 +61,9 @@ async function startRuntime(projectRoot: string, env: Record<string, string> = {
 
 /** Runs git against the disposable fixture repository with the fixture's isolated (non-user) git configuration. */
 async function fixtureGit(set: DisposableWorktreeSet, args: readonly string[]): Promise<void> {
+  const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith('GIT_')));
   await git('git', [...args], { cwd: set.primary,
-    env: { ...process.env, GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: join(dirname(set.primary), 'git-config') } });
+    env: { ...env, GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: join(dirname(set.primary), 'git-config'), GIT_ATTR_NOSYSTEM: '1' } });
 }
 
 /** Deletes a linked worktree (including its untracked default `.nexus`) and recreates a fresh incarnation at `path`. */
@@ -229,7 +230,7 @@ describe('worktree isolation (disposable git worktrees)', () => {
     // before it even tries a writer lease, so the old runtime keeps its leases and gets no competing writer.
     expect(await openRuntime(set.linkedA, env).then(() => undefined, (error: unknown) => error))
       .toMatchObject({ code: 'incarnation_mismatch' });
-    expect(await old.options.orchestrator.search({ query: OLD_SYMBOL, topK: 20 })).toBeDefined();
+    expect(hasFile(await old.options.orchestrator.search({ query: OLD_SYMBOL, topK: 20 }), OLD_FILE)).toBe(true);
     await old.runtime.close();
     // W06-B: old runtime gone; the recreated incarnation is refused and the old store is left byte-identical.
     const before = await digestTree(storage);

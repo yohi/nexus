@@ -66,7 +66,15 @@ export async function createSiblingGitFixture(profile: Profile, signal: AbortSig
   const dispose = () => disposing ??= (async () => {
     let failed = false;
     try {
+      const worktreeList = await run(['worktree', 'list', '--porcelain'], {
+        ...context, signal: new AbortController().signal,
+      });
+      const registeredPaths = new Set(worktreeList.status === 'exited' && worktreeList.exitCode === 0
+        ? worktreeList.stdout.split(/\r?\n/).filter((line) => line.startsWith('worktree ')).map((line) => line.slice(9))
+        : []);
+      if (worktreeList.status !== 'exited' || worktreeList.exitCode !== 0) failed = true;
       for (const path of peers.toReversed()) {
+        if (!registeredPaths.has(path)) continue;
         if (!success(await run(['worktree', 'remove', '--force', path], { ...context, signal: new AbortController().signal }))) failed = true;
       }
     } finally { await workspace.dispose(); }
