@@ -541,6 +541,35 @@ describe('storage writer admission across processes (Task 3)', () => {
     await next.exited;
   });
 
+  it('recovers_coordination_root_recreated_after_all_processes_stop', { timeout: 60_000 }, async () => {
+    const base = await sandbox();
+    const owner = await project(base, 'owner');
+    const coord = join(base, 'coord');
+    const spec = specFor(owner, join(base, 'storage'), coord);
+    const first = spawnAdmission(spec);
+    expect((await first.outcome()).event).toBe('admitted');
+    await first.exited;
+    await rm(coord, { recursive: true, force: true });
+
+    const recreated = spawnAdmission(spec);
+    expect(await recreated.outcome()).toMatchObject({ event: 'admitted' });
+    await recreated.exited;
+  });
+
+  it('refuses_coordination_root_recreation_while_old_writer_is_live', { timeout: 60_000 }, async () => {
+    const base = await sandbox();
+    const owner = await project(base, 'owner');
+    const coord = join(base, 'coord');
+    const spec = specFor(owner, join(base, 'storage'), coord, { hold: true });
+    const holder = spawnAdmission(spec);
+    expect((await holder.outcome()).event).toBe('admitted');
+    await rm(coord, { recursive: true, force: true });
+
+    const contender = spawnAdmission({ ...spec, hold: false });
+    expect(await contender.outcome()).toMatchObject({ event: 'refused', code: 'lock_unavailable' });
+    await holder.release();
+  });
+
   it('S10_crashed_claim_is_not_transferred', { timeout: 60_000 }, async () => {
     const base = await sandbox();
     const [a, b] = [await project(base, 'ownerA'), await project(base, 'ownerB')];

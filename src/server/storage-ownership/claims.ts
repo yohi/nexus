@@ -81,6 +81,7 @@ interface VerifiedCoordinationRoot {
   readonly fd: number;
   readonly dev: bigint;
   readonly ino: bigint;
+  readonly livenessLease: KernelLock;
 }
 
 const verifiedCoordinationRoots = new Map<string, VerifiedCoordinationRoot>();
@@ -113,7 +114,9 @@ function verifyCoordinationPin(
   kind: 'parent' | 'root',
   expected: { readonly dev: bigint; readonly ino: bigint },
 ): void {
-  const pin = join(dirname(parent), `.nexus-ownership-${kind}-${createHash('sha256').update(root).digest('hex')}`);
+  const pinDir = dirname(parent);
+  const rootKey = createHash('sha256').update(root).digest('hex');
+  const pin = join(pinDir, `.nexus-ownership-${kind}-${rootKey}`);
   const identity = `${expected.dev}:${expected.ino}\n`;
   let fd: number | undefined;
   try {
@@ -131,9 +134,29 @@ function verifyCoordinationPin(
       fd = openSync(pin, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW);
     }
     const stat = fstatSync(fd, { bigint: true });
-    if (!stat.isFile() || stat.uid !== BigInt(uid) || (stat.mode & 0o077n) !== 0n || stat.nlink !== 1n ||
-      readFileSync(fd, 'utf8') !== identity) {
-      throw new Error(`coordination root ${kind} changed identity`);
+    if (!stat.isFile() || stat.uid !== BigInt(uid) || (stat.mode & 0o077n) !== 0n || stat.nlink !== 1n) {
+      throw new Error(`coordination root ${kind} pin is unsafe at ${pin}`);
+    }
+    if (readFileSync(fd, 'utf8') !== identity) {
+      closeSync(fd);
+      fd = undefined;
+      const prefix = `.nexus-ownership-live-${rootKey}-`;
+      for (const name of readdirSync(pinDir)) {
+        if (!name.startsWith(prefix)) continue;
+        const marker = join(pinDir, name);
+        const lease = sqliteFcntlLockBackend.tryAcquire(marker);
+        if (lease === null) {
+          throw new Error(`coordination root ${kind} changed identity while a process still holds a lease; stop Nexus processes using this root and retry (pin: ${pin})`);
+        }
+        lease.release();
+        unlinkSync(marker);
+      }
+      const temp = `${pin}.tmp-${process.pid}-${randomBytes(6).toString('hex')}`;
+      const tempFd = openSync(temp, fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_EXCL | fsConstants.O_NOFOLLOW, 0o600);
+      try { writeSync(tempFd, identity); fsyncSync(tempFd); }
+      finally { closeSync(tempFd); }
+      try { renameSync(temp, pin); }
+      catch (error) { try { unlinkSync(temp); } catch { /* attempt-owned temp already gone */ } throw error; }
     }
   } finally {
     if (fd !== undefined) closeSync(fd);
@@ -163,10 +186,19 @@ export async function prepareCoordinationRoot(root: string, persistentTargets: r
   await verifyCoordinationParent(parent, uid);
   const parentBefore = lstatSync(parent, { bigint: true });
   const parentFd = openSync(parent, fsConstants.O_RDONLY | fsConstants.O_DIRECTORY | fsConstants.O_NOFOLLOW);
+  let setupLock: KernelLock | null = null;
   try {
     const parentOpened = fstatSync(parentFd, { bigint: true });
     if (parentOpened.dev !== parentBefore.dev || parentOpened.ino !== parentBefore.ino) {
       throw new Error('coordination root parent changed identity while opening');
+    }
+    const setupLockPath = join(dirname(parent), `.nexus-ownership-setup-${createHash('sha256').update(canonicalRoot).digest('hex')}.lock`);
+    const deadline = Date.now() + 5_000;
+    while (setupLock === null) {
+      setupLock = sqliteFcntlLockBackend.tryAcquire(setupLockPath);
+      if (setupLock !== null) break;
+      if (Date.now() >= deadline) throw new Error('timed out waiting for coordination root setup lock');
+      await new Promise((resolve) => setTimeout(resolve, 10));
     }
     verifyCoordinationPin(canonicalRoot, parent, uid, 'parent', parentOpened);
     const verifiedRoot = verifiedCoordinationRoots.get(canonicalRoot);
@@ -186,13 +218,19 @@ export async function prepareCoordinationRoot(root: string, persistentTargets: r
         }
         verifyCoordinationPin(canonicalRoot, parent, uid, 'parent', parentOpened);
         verifyCoordinationPin(canonicalRoot, parent, uid, 'root', opened);
-        verifiedCoordinationRoots.set(canonicalRoot, { fd, dev: opened.dev, ino: opened.ino });
+        const markerPath = join(dirname(parent), `.nexus-ownership-live-${createHash('sha256').update(canonicalRoot).digest('hex')}-${process.pid}-${randomBytes(8).toString('hex')}`);
+        const livenessLease = sqliteFcntlLockBackend.tryAcquire(markerPath);
+        if (livenessLease === null) throw new Error('could not acquire coordination root liveness lease');
+        verifiedCoordinationRoots.set(canonicalRoot, { fd, dev: opened.dev, ino: opened.ino, livenessLease });
       } catch (error) {
         closeSync(fd);
         throw error;
       }
     }
-  } finally { closeSync(parentFd); }
+  } finally {
+    setupLock?.release();
+    closeSync(parentFd);
+  }
   const pinnedRoot = coordinationRootPath(canonicalRoot);
   const fsType = statfsSync(pinnedRoot).type;
   if (REMOTE_FS_TYPES.has(fsType)) throw new Error('coordination root is on a remote or userspace filesystem');
