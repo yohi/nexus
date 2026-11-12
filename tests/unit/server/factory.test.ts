@@ -1,5 +1,6 @@
 import { EventEmitter } from 'node:events';
 import { lstat, mkdir, mkdtemp, readdir, realpath, rename, rm, writeFile } from 'node:fs/promises';
+import { readdirSync, renameSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { PassThrough, Writable } from 'node:stream';
@@ -18,6 +19,7 @@ import { setWriterLeaseLostHandler } from '../../../src/server/runtime/writer-le
 import { createStorageOwnershipAdmissionService, storageOwnershipAdmissionService, type WriterAdmission }
   from '../../../src/server/storage-ownership/admission.js';
 import { testCoordinationRoot } from '../../shared/storage-ownership-coordination-setup.js';
+import { createSyntheticProvider, syntheticEmbeddingConfig } from '../../benchmarks/performance/synthetic-provider.js';
 
 interface FactoryInternals {
   setupPluginRegistry(config: Config): PluginRegistry;
@@ -338,23 +340,36 @@ describe('NexusServerFactory writer admission gate (Nexus #297)', () => {
     const { config } = await fixture();
     const issued = await admit(config);
     await issued.release();
-    await issued.release();
+    await expect(issued.release()).resolves.toBeUndefined();
     const handle = await admit(config);
     const runtime = await NexusServerFactory.createRuntime(config, handle);
     await runtime.close();
-    await runtime.close();
+    await expect(runtime.close()).resolves.toBeUndefined();
     await handle.release();
     const next = await admit(config, contender());
     await next.release();
   });
 
-  const replaceWriterLockInodes = async (): Promise<void> => {
+  const replaceWriterLockInodes = (): void => {
     const writerDir = path.join(testCoordinationRoot(), 'writer');
-    for (const name of (await readdir(writerDir)).filter((n) => n.endsWith('.lock'))) {
-      await writeFile(path.join(writerDir, `${name}.replacement`), '');
-      await rename(path.join(writerDir, `${name}.replacement`), path.join(writerDir, name)); // inode substitution
+    for (const name of readdirSync(writerDir).filter((n) => n.endsWith('.lock'))) {
+      writeFileSync(path.join(writerDir, `${name}.replacement`), '');
+      renameSync(path.join(writerDir, `${name}.replacement`), path.join(writerDir, name)); // inode substitution
     }
   };
+
+  it('fails runtime construction when the lease is lost during assembly', async () => {
+    const { config } = await fixture();
+    const onWriterLeaseLost = vi.fn();
+    const build = createRuntimeAssembly({ ...config, embedding: syntheticEmbeddingConfig }, {
+      createEmbeddingProvider: () => { replaceWriterLockInodes(); return createSyntheticProvider(); },
+      writerLeaseCheckIntervalMs: 1,
+      onWriterLeaseLost,
+    });
+
+    await expect(build).rejects.toMatchObject({ code: 'invalid_writer_admission' });
+    expect(onWriterLeaseLost).toHaveBeenCalledOnce();
+  });
 
   it('lost_writer_lease_closes_runtime_fail_closed', async () => {
     const { config } = await fixture();

@@ -229,6 +229,24 @@ describe('initializeNexusRuntime', () => {
     await runtime.close();
   });
 
+  it('rejects manual reindexing when shutdown begins during initialization', async () => {
+    const options = makeServerOptions();
+    let releaseStart: () => void = () => undefined;
+    let reportStartEntered: () => void = () => undefined;
+    const startEntered = new Promise<void>((resolve) => { reportStartEntered = resolve; });
+    const startGate = new Promise<void>((resolve) => { releaseStart = resolve; });
+    const runtime = buildNexusRuntime({ ...options, watcher: {
+      start: async () => { reportStartEntered(); await startGate; },
+      stop: async () => undefined,
+    } as unknown as NexusRuntimeOptions['watcher'] });
+    const reindex = runtime.reindex();
+    await startEntered;
+    const closing = runtime.close();
+    releaseStart();
+    await expect(reindex).rejects.toThrow(/shutdown|shutting down/i);
+    await closing;
+  });
+
   it('reports an incomplete manual reindex separately from an already-running reindex', async () => {
     const options = makeServerOptions();
     options.pipeline.reindex = vi.fn(async () => ({ status: 'incomplete' as const }));

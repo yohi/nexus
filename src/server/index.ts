@@ -337,12 +337,13 @@ export const buildNexusRuntime = (
 
   const performReindex = async (fullRebuild?: boolean) => {
     await initialize();
-    if (isShuttingDown) return;
+    if (isShuttingDown) throw new Error('Reindex cancelled because the runtime is shutting down');
     const result = await options.pipeline.reindex(
       options.runReindex,
       options.loadFileContent,
       fullRebuild,
     );
+    if (isShuttingDown) throw new Error('Reindex cancelled because the runtime is shutting down');
     if ("status" in result) {
       if (result.status === 'already_running' && autoReindexPromise) {
         const startupResult = await autoReindexPromise;
@@ -353,6 +354,7 @@ export const buildNexusRuntime = (
         if (lastError !== undefined) {
           throw new Error(lastError);
         }
+        if (isShuttingDown) throw new Error('Reindex cancelled because the runtime is shutting down');
         return;
       }
       const message = result.status === 'already_running'

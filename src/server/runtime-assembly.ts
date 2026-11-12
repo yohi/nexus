@@ -71,31 +71,55 @@ async function createRuntimeAssemblyCore(config: Config,
   dependencies: RuntimeAssemblyDependencies = {}): Promise<RuntimeAssembly> {
   const { projectRoot } = config;
   const writerLease = await acquireRuntimeWriterLease(config, dependencies.writerAdmission);
+  let leaseLost = false;
+  const lostLeaseError = new StorageOwnershipError('invalid_writer_admission', 'storage writer lease was lost');
+  let onWriterLeaseLost = (): void => {
+    if (leaseLost) return;
+    leaseLost = true;
+    clearInterval(leaseMonitor);
+    const handler = dependencies.onWriterLeaseLost ?? getWriterLeaseLostHandler();
+    handler?.(lostLeaseError);
+  };
+  const assertWriterLeaseHeld = (): void => {
+    if (!writerLease.isHeld()) onWriterLeaseLost();
+    if (leaseLost) throw lostLeaseError;
+  };
+  const leaseMonitor = setInterval(() => {
+    if (!writerLease.isHeld()) onWriterLeaseLost();
+  }, dependencies.writerLeaseCheckIntervalMs ?? DEFAULT_WRITER_LEASE_CHECK_INTERVAL_MS);
+  leaseMonitor.unref();
   let projectLock;
   try {
+    assertWriterLeaseHeld();
     await StorageManager.ensureDirectories(config);
+    assertWriterLeaseHeld();
     try { projectLock = await acquireProjectLock(config.storage.rootDir); }
     catch (lockError) {
       console.error('[Nexus] Failed to acquire project lock:', lockError);
       throw lockError;
     }
+    assertWriterLeaseHeld();
   } catch (error) {
+    clearInterval(leaseMonitor);
     await writerLease.release();
     throw error;
   }
-  let leaseMonitor: NodeJS.Timeout | undefined;
   const stopLeaseMonitor = (): Promise<void> => { clearInterval(leaseMonitor); return Promise.resolve(); };
   let stores: Awaited<ReturnType<typeof StorageManager.initializeStores>> | undefined;
   let logging: ReturnType<typeof createRuntimeLogging> | undefined;
   let stopEvents: (() => Promise<void>) | undefined;
   let lspManager: RuntimeLocalLspManager | undefined;
   try {
+    assertWriterLeaseHeld();
     const { metadataStore, vectorStore } = await StorageManager.initializeStores(config);
     stores = { metadataStore, vectorStore };
+    assertWriterLeaseHeld();
     const pluginConfig = config.http !== undefined && config.embedding.provider === 'ollama'
       ? { ...config, embedding: { ...config.embedding,
         baseUrl: await resolveLocalOllamaBaseUrl(config.embedding.baseUrl) } } : config;
+    assertWriterLeaseHeld();
     const pluginRegistry = setupPluginRegistry(pluginConfig, dependencies.createEmbeddingProvider);
+    assertWriterLeaseHeld();
     const metricsCollector = new MetricsCollector({ projectName: config.projectName || basename(projectRoot) });
     const provider = pluginRegistry.getEmbeddingProvider();
     if (!provider) throw new Error('No embedding provider configured.');
@@ -135,6 +159,7 @@ async function createRuntimeAssemblyCore(config: Config,
       : withoutRuntimeDiagnosticContext(() => eventManager.setup());
     stopEvents = onClose;
     const sanitizer = await PathSanitizer.create(projectRoot);
+    assertWriterLeaseHeld();
     const workspaceId = config.projectName ?? projectRoot.split(/[\\/]/).findLast(Boolean) ?? 'unknown';
     const contentStore = new LocalContentStoreFactory({
       projectRoot, sanitize: (filePath) => sanitizer.resolveExisting(filePath),
@@ -180,21 +205,19 @@ async function createRuntimeAssemblyCore(config: Config,
     // 1. synchronously abort the pipeline (IndexPipeline.stop() aborts before its first await);
     // 2. hand over to the process-level fail-fast handler (CLI/serve exit non-zero; the kernel drops the leases);
     // 3. quiesce watcher/event processing and leave stores untouched while fail-fast handling proceeds.
-    const onWriterLeaseLost = (): void => {
+    onWriterLeaseLost = (): void => {
+      if (leaseLost) return;
+      leaseLost = true;
       clearInterval(leaseMonitor);
       runtime.terminate?.();
       pipeline.stop().catch(() => undefined);
-      const lost = new StorageOwnershipError('invalid_writer_admission', 'storage writer lease was lost while serving');
       console.error('[Nexus] Storage writer lease was lost; stopping all storage mutation (fail-closed).');
       watcher.stop().catch(() => undefined);
       onClose().catch(() => undefined);
       const handler = dependencies.onWriterLeaseLost ?? getWriterLeaseLostHandler();
-      if (handler !== undefined) { handler(lost); return; }
+      if (handler !== undefined) { handler(lostLeaseError); return; }
     };
-    leaseMonitor = setInterval(() => {
-      if (!writerLease.isHeld()) onWriterLeaseLost();
-    }, dependencies.writerLeaseCheckIntervalMs ?? DEFAULT_WRITER_LEASE_CHECK_INTERVAL_MS);
-    leaseMonitor.unref();
+    assertWriterLeaseHeld();
     const initializationContext = dependencies.diagnosticTraceContext;
     if (initializationContext !== undefined) {
       const initialize = runtime.initialize.bind(runtime);
@@ -213,7 +236,10 @@ async function createRuntimeAssemblyCore(config: Config,
     };
   } catch (error) {
     try {
-      await closeResources([
+      await closeResources(leaseLost ? [
+        () => projectLock.release(),
+        () => writerLease.release(),
+      ] : [
         () => lspManager?.close() ?? Promise.resolve(),
         () => stopEvents?.() ?? Promise.resolve(),
         () => stores?.metadataStore.close() ?? Promise.resolve(),

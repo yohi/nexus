@@ -328,9 +328,11 @@ describe("nexus CLI shutdown", () => {
   it.each([
     [["--port", "abc"], "Invalid port"],
     [["--port", "70000"], "Invalid port"],
+    [["--port", "1.5"], "Invalid port"],
     [["--port", "0"], "Invalid port"],
     [["--managed", "--port", "0", "--idle-shutdown-ms", "-5"], "Invalid idle-shutdown-ms"],
     [["--managed", "--port", "0", "--idle-shutdown-ms", "soon"], "Invalid idle-shutdown-ms"],
+    [["--managed", "--port", "0", "--idle-shutdown-ms", "2147483648"], "Invalid idle-shutdown-ms"],
   ])("invalid server arguments %j refuse before writer admission", async (args, message) => {
     const error = vi.spyOn(console, "error").mockImplementation(() => undefined);
     await runCli(args);
@@ -611,8 +613,9 @@ describe("nexus CLI shutdown", () => {
       });
       mocks.createRuntime.mockResolvedValue(runtime);
 
-      await runCli(["--managed", "--reindex"]);
+      await runCli(["--managed", "--port", "0", "--reindex"]);
       await vi.waitFor(() => expect(process.exit).toHaveBeenCalledWith(0));
+      expect(process.exit).not.toHaveBeenCalledWith(1);
 
       expect(runtime.close).toHaveBeenCalledOnce();
       expect(detachers).toHaveLength(2);

@@ -51,6 +51,8 @@ interface CommandModule {
   readonly main?: (args: string[]) => Promise<void>;
 }
 
+const MAX_TIMER_DELAY_MS = 2 ** 31 - 1;
+
 const commands: readonly CliCommand[] = [
   {
     name: "dashboard",
@@ -148,7 +150,7 @@ async function main(args: string[]): Promise<void> {
   let serverPort: number | undefined;
   if (values["port"] && !values["reindex"]) {
     serverPort = Number(values["port"]);
-    if (Number.isNaN(serverPort) || serverPort < 0 || serverPort > 65535 || (serverPort === 0 && !isManagedArg)) {
+    if (!Number.isInteger(serverPort) || serverPort < 0 || serverPort > 65535 || (serverPort === 0 && !isManagedArg)) {
       console.error(`\u274c Invalid port: ${String(values["port"])}`);
       process.exit(1);
       return;
@@ -156,7 +158,8 @@ async function main(args: string[]): Promise<void> {
   }
   const idleShutdownMsRaw = values["idle-shutdown-ms"] ?? process.env.NEXUS_IDLE_SHUTDOWN_MS ?? "0";
   const idleShutdownMs = Number(idleShutdownMsRaw);
-  if (isManagedArg && serverPort !== undefined && (!Number.isFinite(idleShutdownMs) || idleShutdownMs < 0)) {
+  if (isManagedArg && serverPort !== undefined &&
+    (!Number.isFinite(idleShutdownMs) || idleShutdownMs < 0 || idleShutdownMs > MAX_TIMER_DELAY_MS)) {
     console.error(`\u274c Invalid idle-shutdown-ms: ${String(idleShutdownMsRaw)}`);
     process.exit(1);
     return;
