@@ -35,6 +35,7 @@ export interface NexusRuntime {
   orchestrator: SearchOrchestrator;
   sanitizer: PathSanitizer;
   initialize(): Promise<void>;
+  terminate?(): void;
   close(): Promise<void>;
   reindex(fullRebuild?: boolean): Promise<void>;
   registrationClient?: RegistrationClient | null;
@@ -117,17 +118,24 @@ export const buildNexusRuntime = (
   let isShuttingDown = false;
 
   const initialize = (): Promise<void> => {
+    if (isShuttingDown) {
+      return Promise.resolve();
+    }
     if (initPromise) {
       return initPromise;
     }
   initPromise = (async () => {
       await options.metadataStore.initialize();
+      if (isShuttingDown) return;
       await options.vectorStore.initialize();
+      if (isShuttingDown) return;
       await options.pipeline.reconcileOnStartup();
+      if (isShuttingDown) return;
 
       let needsPostScan = false;
       try {
         const stats = await options.metadataStore.getIndexStats();
+        if (isShuttingDown) return;
         const isUnindexed =
           stats === null ||
           stats.lastIndexedAt === null ||
@@ -139,6 +147,7 @@ export const buildNexusRuntime = (
       } catch (statsError) {
         console.error('[Nexus] Failed to check index status for auto Full Index:', statsError);
       }
+      if (isShuttingDown) return;
 
       try {
         withoutRuntimeDiagnosticContext(() => options.pipeline.start());
@@ -158,6 +167,7 @@ export const buildNexusRuntime = (
             throw error;
           }
         }));
+        if (isShuttingDown) return;
 
         // Use port 0 for auto-assignment, unless explicitly overridden.
         const preferredPort = options.metricsPort ?? 0;
@@ -176,8 +186,10 @@ export const buildNexusRuntime = (
           await withoutRuntimeDiagnosticContext(async () => await metricsServer?.start(preferredPort).catch((err) => {
             console.warn("[Nexus] Failed to start metrics HTTP server:", err);
           }));
+          if (isShuttingDown) return;
           const resolvedPort = metricsServer.getPort();
           await syncMetricsPortFile(options.storageDir, resolvedPort);
+          if (isShuttingDown) return;
           registrationClient = withoutRuntimeDiagnosticContext(() => options.packageMode
             ? null
             : createRegistrationClient(
@@ -243,13 +255,14 @@ export const buildNexusRuntime = (
       }
     })().catch((err) => {
       // Reset initPromise on failure so initialize() can be retried later
-      initPromise = null;
+      if (!isShuttingDown) initPromise = null;
       throw err;
     });
     return initPromise;
   };
+  const terminate = (): void => { isShuttingDown = true; };
   const close = async () => {
-    isShuttingDown = true;
+    terminate();
     const shutdownErrors: unknown[] = [];
 
     // Wait for any ongoing initialization to complete or fail before
@@ -324,11 +337,13 @@ export const buildNexusRuntime = (
 
   const performReindex = async (fullRebuild?: boolean) => {
     await initialize();
+    if (isShuttingDown) throw new Error('Reindex cancelled because the runtime is shutting down');
     const result = await options.pipeline.reindex(
       options.runReindex,
       options.loadFileContent,
       fullRebuild,
     );
+    if (isShuttingDown) throw new Error('Reindex cancelled because the runtime is shutting down');
     if ("status" in result) {
       if (result.status === 'already_running' && autoReindexPromise) {
         const startupResult = await autoReindexPromise;
@@ -339,6 +354,7 @@ export const buildNexusRuntime = (
         if (lastError !== undefined) {
           throw new Error(lastError);
         }
+        if (isShuttingDown) throw new Error('Reindex cancelled because the runtime is shutting down');
         return;
       }
       const message = result.status === 'already_running'
@@ -361,6 +377,7 @@ export const buildNexusRuntime = (
     orchestrator: options.orchestrator,
     sanitizer: options.sanitizer,
     initialize,
+    terminate,
     close,
     reindex,
     get registrationClient() { return registrationClient; }

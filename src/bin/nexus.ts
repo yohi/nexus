@@ -5,7 +5,6 @@ import path from "node:path";
 import { parseArgs } from "node:util";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { unlinkSync, appendFileSync } from "node:fs";
 
 import { loadConfig } from "../config/index.js";
 import { handleFatalError } from "./fatal-error.js";
@@ -16,10 +15,31 @@ import {
   type StreamableHttpHandler,
 } from "../server/transport.js";
 import { createRestApiHandler } from "../server/rest-api.js";
-import { acquireProcessLock, releaseProcessLock, LOCK_FILENAME } from "../server/process-lock.js";
+import {
+  acquireProcessLock,
+  releaseOwnedProcessLock,
+  releaseOwnedProcessLockSync,
+  LOCK_FILENAME,
+} from "../server/process-lock.js";
+import {
+  admitStorageWriter,
+  assertExpectedStorageTargetsFingerprint,
+  INTERNAL_TARGETS_FINGERPRINT_ENV,
+  isBridgeStartupLogPath,
+  resolveStorageOwnershipTargets,
+  storageTargetsFingerprint,
+  type WriterAdmission,
+} from "../server/storage-ownership/index.js";
 import type { ManagedHttpServer } from "../server/managed-http-server.js";
+import { setWriterLeaseLostHandler } from "../server/runtime/writer-lease-loss.js";
 import type { Config } from "../types/index.js";
 import { readIndexProgress } from "./index-progress.js";
+import {
+  openBridgeStartupLog,
+  redirectStreamToFd,
+  redirectStreamToPath,
+  type StreamRedirection,
+} from "./stream-redirect.js";
 
 interface CliCommand {
   readonly name: string;
@@ -30,6 +50,8 @@ interface CliCommand {
 interface CommandModule {
   readonly main?: (args: string[]) => Promise<void>;
 }
+
+const MAX_TIMER_DELAY_MS = 2 ** 31 - 1;
 
 const commands: readonly CliCommand[] = [
   {
@@ -122,6 +144,27 @@ async function main(args: string[]): Promise<void> {
     process.exit(1);
   }
 
+  // Nexus #297: reject malformed server arguments before writer admission, so a typo never creates claims, Storage
+  // directories, PID or locks. (--reindex ignores --port, exactly as before.)
+  const isManagedArg = values["managed"] === true;
+  let serverPort: number | undefined;
+  if (values["port"] && !values["reindex"]) {
+    serverPort = Number(values["port"]);
+    if (!Number.isInteger(serverPort) || serverPort < 0 || serverPort > 65535 || (serverPort === 0 && !isManagedArg)) {
+      console.error(`\u274c Invalid port: ${String(values["port"])}`);
+      process.exit(1);
+      return;
+    }
+  }
+  const idleShutdownMsRaw = values["idle-shutdown-ms"] ?? process.env.NEXUS_IDLE_SHUTDOWN_MS ?? "0";
+  const idleShutdownMs = Number(idleShutdownMsRaw);
+  if (isManagedArg && serverPort !== undefined &&
+    (!Number.isFinite(idleShutdownMs) || idleShutdownMs < 0 || idleShutdownMs > MAX_TIMER_DELAY_MS)) {
+    console.error(`\u274c Invalid idle-shutdown-ms: ${String(idleShutdownMsRaw)}`);
+    process.exit(1);
+    return;
+  }
+
   const rawProjectRoot = (
     (values["project-root"] as string) ??
     process.env.NEXUS_PROJECT_ROOT ??
@@ -129,13 +172,71 @@ async function main(args: string[]): Promise<void> {
   ).trim();
   const root = rawProjectRoot ? path.resolve(rawProjectRoot) : process.cwd();
 
-  const config = await loadConfig({ projectRoot: root });
+  const isManagedMode = values["managed"] === true;
+  // Nexus #297: the Bridge hands its inspected target fingerprint to a managed child through an internal-only spawn
+  // environment entry. Consume it so it never leaks into grandchildren; it is ignored outside managed mode.
+  const expectedTargetsFingerprint = process.env[INTERNAL_TARGETS_FINGERPRINT_ENV];
+  delete process.env[INTERNAL_TARGETS_FINGERPRINT_ENV];
+  const redirectedStartupLogs = isManagedMode
+    ? await redirectBridgeStartupLogs(
+      (values["startup-stdout-log"] as string | undefined) ?? process.env.NEXUS_STARTUP_STDOUT_LOG,
+      (values["startup-stderr-log"] as string | undefined) ?? process.env.NEXUS_STARTUP_STDERR_LOG,
+    )
+    : undefined;
+  const pathStartupLogs: StreamRedirection[] = [];
+  let bridgeStartupLogsDetached = false;
+  const detachBridgeStartupLogs = () => {
+    if (bridgeStartupLogsDetached) return;
+    bridgeStartupLogsDetached = true;
+    redirectedStartupLogs?.detach();
+  };
+  const detachStartupLogs = () => {
+    detachBridgeStartupLogs();
+    for (const redirection of pathStartupLogs.splice(0).reverse()) redirection.detach();
+  };
 
-  // Acquire single-instance lock keyed on storage directory.
-  // Prevents two nexus processes from corrupting the shared
-  // SQLite/LanceDB stores or doubling the embedding load.
-  const lockResult = await acquireProcessLock(config.storage.rootDir);
+  let config: Config;
+  try {
+    config = await loadConfig({ projectRoot: root });
+  } catch (error) {
+    detachStartupLogs();
+    throw error;
+  }
+
+  // Nexus #297: storage writer admission precedes every PID/Endpoint mutation, project lock, storage directory
+  // initialization, store open and runtime logging. A refusal leaves all storage and PID bytes untouched.
+  // A managed child re-resolves its own effective targets; a mismatch with the Bridge preflight refuses early
+  // (fail-fast only: a match authorizes nothing and admission still runs in full).
+  let admission: WriterAdmission;
+  let targetsFingerprint: string;
+  try {
+    const targets = await resolveStorageOwnershipTargets(config);
+    targetsFingerprint = storageTargetsFingerprint(targets);
+    if (isManagedMode) {
+      assertExpectedStorageTargetsFingerprint(targetsFingerprint, expectedTargetsFingerprint);
+    }
+    admission = await admitStorageWriter(targets);
+  } catch (error) {
+    console.error(
+      `\u274c Nexus refused to start: ${error instanceof Error ? error.message : String(error)}\n` +
+        `   Storage: ${config.storage.rootDir}`,
+    );
+    detachStartupLogs();
+    process.exit(1);
+    return;
+  }
+
+  // Acquire single-instance lock keyed on storage directory (under the live writer lease).
+  let lockResult: Awaited<ReturnType<typeof acquireProcessLock>>;
+  try {
+    lockResult = await acquireProcessLock(config.storage.rootDir, { handle: admission, config });
+  } catch (error) {
+    await admission.release();
+    detachStartupLogs();
+    throw error;
+  }
   if (!lockResult.acquired) {
+    await admission.release();
     const pidStr = lockResult.existingPid ?? "unknown";
     const progress = await readIndexProgress(config.storage.rootDir);
     const progressStatus = progress?.active ? "running" : "idle";
@@ -148,64 +249,90 @@ async function main(args: string[]): Promise<void> {
         `   To force start, remove: ${path.join(config.storage.rootDir, LOCK_FILENAME)}` +
         progressLine,
     );
+    detachStartupLogs();
     process.exit(1);
+    return;
   }
 
-  // Register best-effort exit cleanup immediately after acquiring the lock so
-  // it runs even if createRuntime/connect throws before setupSignalHandlers.
-  // setupSignalHandlers will replace this with a named handler that removes
-  // itself after a clean shutdown to prevent double-unlink.
+  // Best-effort exit cleanup that only ever removes the PID file this process wrote. Clean shutdown paths
+  // deregister it after removing the owned PID themselves, before the runtime releases the writer lease.
   const exitCleanup = () => {
-    try {
-      unlinkSync(path.join(config.storage.rootDir, LOCK_FILENAME));
-    } catch {
-      // Ignore - stale lock will be detected by next startup.
-    }
+    releaseOwnedProcessLockSync(config.storage.rootDir);
   };
   process.on("exit", exitCleanup);
 
-  if (values["reindex"]) {
-    await startReindexMode({ config, exitCleanup, full: !!values["full"] });
-    return;
+  // Transfer the issued admission to the guarded Factory. After a successful transfer only the runtime may release
+  // the lease (runtime.close() releases it last); before transfer a failure releases only this unconsumed handle.
+  // A lost writer lease terminates this process fail-fast (non-zero): no graceful close that could keep writing, no
+  // zombie owner left serving. The owned-PID exit handler still runs; the kernel drops the remaining leases.
+  setWriterLeaseLostHandler((error) => {
+    console.error(`\u274c Nexus storage writer lease lost; exiting: ${error.message}`);
+    process.exit(75);
+  });
+  let runtime: NexusRuntime;
+  try {
+    runtime = await NexusServerFactory.createRuntime(config, admission);
+  } catch (error) {
+    await releaseOwnedProcessLock(config.storage.rootDir).catch(() => {});
+    process.removeListener("exit", exitCleanup);
+    await admission.release();
+    detachStartupLogs();
+    throw error;
   }
 
-  const runtime = await NexusServerFactory.createRuntime(config);
-
-  if (values["port"]) {
-    const port = Number(values["port"]);
-    const isManaged = values["managed"] === true;
-    if (Number.isNaN(port) || port < 0 || port > 65535 || (port === 0 && !isManaged)) {
-      console.error(`\u274c Invalid port: ${values["port"]}`);
-      process.exit(1);
-    }
-
-    if (isManaged) {
-      await startManagedMode({
-        config,
-        exitCleanup,
-        idleShutdownMsRaw:
-          values["idle-shutdown-ms"] ?? process.env.NEXUS_IDLE_SHUTDOWN_MS ?? "0",
-        port,
-        root,
-        runtime,
-        startupStdoutLog: values["startup-stdout-log"] as string | undefined,
-        startupStderrLog: values["startup-stderr-log"] as string | undefined,
-      });
-
+  try {
+    if (values["reindex"]) {
+      try {
+        await startReindexMode({ config, exitCleanup, full: !!values["full"], runtime });
+      } finally {
+        detachStartupLogs();
+      }
       return;
     }
 
-    startHttpMode({ config, exitCleanup, port, root, runtime });
-    return;
-  }
+    if (serverPort !== undefined) {
+      const port = serverPort;
+      if (isManagedMode) {
+        await startManagedMode({
+          config,
+          exitCleanup,
+          idleShutdownMs,
+          port,
+          root,
+          runtime,
+          startupStdoutLog: values["startup-stdout-log"] as string | undefined,
+          startupStderrLog: values["startup-stderr-log"] as string | undefined,
+          bridgeStartupLogs: redirectedStartupLogs === undefined
+            ? undefined
+            : { detach: detachBridgeStartupLogs },
+          registerStartupLogRedirection: (redirection) => pathStartupLogs.push(redirection),
+          storageTargetsFingerprint: targetsFingerprint,
+          worktreeWitness: admission.worktreeWitness,
+        });
+        return;
+      }
 
-  await startStdioMode({ config, exitCleanup, root, runtime });
+      startHttpMode({ config, exitCleanup, port, root, runtime });
+      return;
+    }
+
+    await startStdioMode({ config, exitCleanup, root, runtime });
+  } catch (error) {
+    await releaseOwnedProcessLock(config.storage.rootDir).catch(() => undefined);
+    process.removeListener("exit", exitCleanup);
+    if (!values["reindex"]) {
+      await runtime.close().catch(() => undefined);
+    }
+    detachStartupLogs();
+    throw error;
+  }
 }
 
 interface ReindexModeOptions {
   readonly config: Config;
   readonly exitCleanup: () => void;
   readonly full: boolean;
+  readonly runtime: NexusRuntime;
 }
 
 interface RuntimeModeOptions {
@@ -216,10 +343,15 @@ interface RuntimeModeOptions {
 }
 
 interface ManagedModeOptions extends RuntimeModeOptions {
-  readonly idleShutdownMsRaw: string | boolean;
+  /** Validated before writer admission in main(). */
+  readonly idleShutdownMs: number;
   readonly port: number;
   readonly startupStdoutLog: string | undefined;
   readonly startupStderrLog: string | undefined;
+  readonly bridgeStartupLogs: StreamRedirection | undefined;
+  readonly registerStartupLogRedirection: (redirection: StreamRedirection) => void;
+  readonly storageTargetsFingerprint: string;
+  readonly worktreeWitness: string | undefined;
 }
 
 interface HttpModeOptions extends RuntimeModeOptions {
@@ -230,8 +362,8 @@ async function startReindexMode({
   config,
   exitCleanup,
   full,
+  runtime,
 }: ReindexModeOptions): Promise<void> {
-  const runtime = await NexusServerFactory.createRuntime(config);
   let exitCode = 0;
   try {
     console.log(`Starting indexing...`);
@@ -241,9 +373,10 @@ async function startReindexMode({
     console.error(`Indexing failed:`, error);
     exitCode = 1;
   } finally {
-    await runtime.close();
-    await releaseProcessLock(config.storage.rootDir);
+    // Owned PID first (under the live lease), then stores; runtime.close() releases the writer lease last.
+    await releaseOwnedProcessLock(config.storage.rootDir).catch(() => {});
     process.removeListener("exit", exitCleanup);
+    await runtime.close();
   }
   process.exit(exitCode);
 }
@@ -251,27 +384,27 @@ async function startReindexMode({
 async function startManagedMode({
   config,
   exitCleanup,
-  idleShutdownMsRaw,
+  idleShutdownMs,
   port,
   root,
   runtime,
   startupStdoutLog,
   startupStderrLog,
+  bridgeStartupLogs,
+  registerStartupLogRedirection,
+  storageTargetsFingerprint: publishedTargetsFingerprint,
+  worktreeWitness,
 }: ManagedModeOptions): Promise<void> {
-  const stdoutLogPath = startupStdoutLog ?? process.env.NEXUS_STARTUP_STDOUT_LOG;
-  const stderrLogPath = startupStderrLog ?? process.env.NEXUS_STARTUP_STDERR_LOG;
-  if (stdoutLogPath !== undefined) {
-    redirectStream(process.stdout, stdoutLogPath);
-  }
-  if (stderrLogPath !== undefined) {
-    redirectStream(process.stderr, stderrLogPath);
-  }
-
-  const idleShutdownMs = Number(idleShutdownMsRaw);
-
-  if (!Number.isFinite(idleShutdownMs) || idleShutdownMs < 0) {
-    console.error(`\u274c Invalid idle-shutdown-ms: ${idleShutdownMsRaw}`);
-    process.exit(1);
+  if (bridgeStartupLogs === undefined) {
+    // Arbitrary (non-Bridge) log paths are opened only now, after writer admission.
+    const stdoutLogPath = startupStdoutLog ?? process.env.NEXUS_STARTUP_STDOUT_LOG;
+    const stderrLogPath = startupStderrLog ?? process.env.NEXUS_STARTUP_STDERR_LOG;
+    if (stdoutLogPath !== undefined) {
+      registerStartupLogRedirection(redirectStreamToPath(process.stdout, stdoutLogPath));
+    }
+    if (stderrLogPath !== undefined) {
+      registerStartupLogRedirection(redirectStreamToPath(process.stderr, stderrLogPath));
+    }
   }
 
   const { startManagedHttpServer } = await import("../server/managed-http-server.js");
@@ -279,12 +412,17 @@ async function startManagedMode({
     instanceId: randomUUID(),
     projectRoot: root,
     storageDir: config.storage.rootDir,
+    storageTargetsFingerprint: publishedTargetsFingerprint,
+    ...(worktreeWitness === undefined ? {} : { worktreeWitness }),
     runtime,
     port,
     idleShutdownMs,
     startupGraceMs: 30_000,
     exitOnShutdown: true,
   });
+  // The healthy Endpoint is published: the Bridge attempt is over (it removes its token-owned logs), so stop writing
+  // into them and close the descriptors instead of feeding a deleted file for the runtime's lifetime.
+  bridgeStartupLogs?.detach();
 
   console.error(
     `\ud83d\ude80 Nexus managed HTTP server running on ${managed.url.toString()} (root: ${root})`
@@ -297,24 +435,36 @@ async function startManagedMode({
     handleFatalError("Nexus background initialization failed", error);
   });
 }
-function redirectStream(source: NodeJS.WriteStream, logPath: string): void {
-  const originalWrite = source.write.bind(source);
-  source.write = (
-    chunk: unknown,
-    encodingOrCallback?: BufferEncoding | ((error: Error | null | undefined) => void),
-    callback?: (error: Error | null | undefined) => void,
-  ): boolean => {
-    const resolvedEncoding = typeof encodingOrCallback === "string" ? encodingOrCallback : "utf8";
-    const resolvedCallback = typeof encodingOrCallback === "function" ? encodingOrCallback : callback;
-    // Write synchronously so diagnostics survive an immediate process.exit()
-    // call (e.g. after a fatal console.error). An async WriteStream's queued
-    // write would otherwise be dropped when the process exits before it flushes.
-    try {
-      appendFileSync(logPath, chunk as string | Uint8Array, typeof chunk === "string" ? resolvedEncoding : undefined);
-    } catch {
-      // Best-effort diagnostics only; never let a logging failure crash startup.
-    }
-    return originalWrite(chunk as string | Buffer, resolvedEncoding, resolvedCallback);
+/**
+ * Nexus #297: Bridge attempt logs live in the coordination root (`startup-logs/`), never under Storage, so a managed
+ * child may redirect into them before writer admission and pre-admission refusals reach the Bridge. Applies only when
+ * BOTH supplied paths are Bridge attempt logs. Each log is opened ONCE without O_CREAT and with O_NOFOLLOW (the Bridge
+ * created it 0600) and written through that descriptor, so a log the Bridge already removed is never re-created.
+ * Returns undefined for non-Bridge paths (those are opened only after admission). If a Bridge log cannot be opened
+ * safely, nothing is redirected at all (no fallback to path-based appends).
+ */
+async function redirectBridgeStartupLogs(
+  stdoutLogPath: string | undefined,
+  stderrLogPath: string | undefined,
+): Promise<StreamRedirection | undefined> {
+  if (stdoutLogPath === undefined || stderrLogPath === undefined) {
+    return undefined;
+  }
+  if (!(await isBridgeStartupLogPath(stdoutLogPath)) || !(await isBridgeStartupLogPath(stderrLogPath))) {
+    return undefined;
+  }
+  const redirections: StreamRedirection[] = [];
+  try {
+    redirections.push(redirectStreamToFd(process.stdout, openBridgeStartupLog(stdoutLogPath)));
+    redirections.push(redirectStreamToFd(process.stderr, openBridgeStartupLog(stderrLogPath)));
+  } catch {
+    for (const redirection of redirections) redirection.detach();
+    return { detach: () => {} };
+  }
+  return {
+    detach: () => {
+      for (const redirection of redirections.reverse()) redirection.detach();
+    },
   };
 }
 
@@ -429,11 +579,10 @@ function setupSignalHandlers(
         await mcpServer.close();
       }
       if (managedServer) {
-        // managedServer.close() releases the process lock (nexus.pid) via
-        // releaseProcessLock() and then calls process.exit(0) synchronously
-        // when exitOnShutdown is set, firing Node's synchronous "exit" event.
-        // Remove exitCleanup first so the still-registered listener does not
-        // attempt a redundant (no-op) unlink of the already-released PID lock file.
+        // managedServer.close() removes the owned Endpoint and nexus.pid under
+        // the live writer lease, then closes the runtime (releasing the lease
+        // last) and calls process.exit(0) when exitOnShutdown is set. Remove
+        // exitCleanup first so it never runs after the lease is released.
         process.removeListener("exit", exitCleanup);
         await managedServer.close();
         return;
@@ -444,14 +593,15 @@ function setupSignalHandlers(
         });
         await mcpHandler?.dispose();
       }
+      // Work has stopped: remove the owned PID under the still-live writer lease, then close stores.
+      // runtime.close() releases the writer lease as its final step.
+      await releaseOwnedProcessLock(storageDir).catch(() => {});
+      process.removeListener("exit", exitCleanup);
       await runtime.close();
-      await releaseProcessLock(storageDir);
     };
     cleanup()
       .then(() => {
-        // Deregister the exit handler before process.exit(0) so the PID file
-        // already removed by releaseProcessLock is not touched again (and a
-        // concurrently started process's file is not mistakenly deleted).
+        // Already deregistered before runtime.close(); kept for the managed path.
         process.removeListener("exit", exitCleanup);
         process.exit(0);
       })

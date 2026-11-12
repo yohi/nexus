@@ -14,6 +14,7 @@ import { loadConfig } from '../../src/config/index.js';
 import { SqliteMetadataStore } from '../../src/storage/metadata-store.js';
 import { createMockMetricsHooks } from '../shared/test-helpers.js';
 import { createTestNexusOptions } from '../shared/create-test-nexus-options.js';
+import { storageOwnershipAdmissionService } from '../../src/server/storage-ownership/admission.js';
 import {
   connectMcpClient,
   startMcpHttpTestServer,
@@ -257,7 +258,9 @@ describe('MCP reindex factory integration', () => {
   it('returns a normal reindex result when the factory scanner callback is used', async () => {
     const projectRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'nexus-mcp-reindex-'));
     const config = await loadConfig({ projectRoot, env: {} });
-    await fs.mkdir(path.dirname(config.storage.metadataDbPath), { recursive: true });
+    // Nexus #297: claim the storage (as a previous runtime would have) before seeding the metadata DB directly.
+    const ownership = storageOwnershipAdmissionService;
+    await (await ownership.admitStorageWriter(await ownership.resolveStorageOwnershipTargets(config))).release();
     const metadataStore = new SqliteMetadataStore({
       databasePath: config.storage.metadataDbPath,
       batchSize: config.storage.batchSize,

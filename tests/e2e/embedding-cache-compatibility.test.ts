@@ -12,6 +12,10 @@ const requestSchema = z.object({
   dimensions: z.literal(2),
 });
 const cli = join(process.cwd(), "dist/bin/nexus.js");
+const coordinationPreload = join(
+  process.cwd(),
+  "tests/fixtures/storage-ownership/coordination-root-preload.mjs",
+);
 
 describe.skipIf(process.env.NEXUS_E2E !== "1")(
   "embedding cache compatibility through the CLI",
@@ -80,12 +84,13 @@ describe.skipIf(process.env.NEXUS_E2E !== "1")(
       return new Promise((resolve, reject) => {
         const child = spawn(
           process.execPath,
-          [cli, "--project-root", project, "--reindex", "--full"],
+          ["--import", coordinationPreload, cli, "--project-root", project, "--reindex", "--full"],
           {
             stdio: ["ignore", "pipe", "pipe"],
             signal: AbortSignal.timeout(30000),
             env: {
               ...process.env,
+              NEXUS_TEST_COORDINATION_ROOT: join(directory, "coordination"),
               NEXUS_PACKAGE_MODE: "0",
               NEXUS_STORAGE_ROOT_DIR: join(directory, "storage"),
               NEXUS_EMBEDDING_PROVIDER: "openai-compat",

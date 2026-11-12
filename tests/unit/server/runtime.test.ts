@@ -1,8 +1,10 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import path from 'node:path';
+import { mkdtemp, mkdir, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
 import { Registry } from 'prom-client';
 
-import { initializeNexusRuntime, type NexusRuntimeOptions } from '../../../src/server/index.js';
+import { buildNexusRuntime, initializeNexusRuntime, type NexusRuntimeOptions } from '../../../src/server/index.js';
 
 import { PathSanitizer } from '../../../src/server/path-sanitizer.js';
 
@@ -123,6 +125,51 @@ describe('initializeNexusRuntime', () => {
     expect(calls.at(-1)).toBe('watcher.stop');
   });
 
+  it('does not start startup reindex when close happens during watcher startup', async () => {
+    const options = makeServerOptions();
+    options.metadataStore.getIndexStats = async () => null;
+    const storageDir = await mkdtemp(path.join(tmpdir(), 'nexus-runtime-close-'));
+    await mkdir(path.join(storageDir, 'metrics.port'));
+    options.metricsCollectorRegistry = new Registry();
+    options.storageDir = storageDir;
+    options.metricsPort = 0;
+    const reindex = vi.fn(async () => ({
+      startedAt: '2026-08-20T00:00:00.000Z',
+      finishedAt: '2026-08-20T00:00:01.000Z',
+      durationMs: 1000,
+      reconciliation: { added: 0, modified: 0, deleted: 0, unchanged: 0 },
+      chunksIndexed: 0,
+    }));
+    options.pipeline.reindex = reindex;
+
+    let releaseStart: () => void = () => undefined;
+    let reportStartEntered: () => void = () => undefined;
+    const startEntered = new Promise<void>((resolve) => { reportStartEntered = resolve; });
+    const startGate = new Promise<void>((resolve) => { releaseStart = resolve; });
+    let watcherStopped = false;
+    const watcher = {
+      start: async () => { reportStartEntered(); await startGate; },
+      stop: async () => { watcherStopped = true; },
+    };
+    const runtime = buildNexusRuntime({ ...options, watcher } as unknown as NexusRuntimeOptions);
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+
+    try {
+      const initialization = runtime.initialize();
+      await startEntered;
+      const closing = runtime.close();
+      releaseStart();
+      await Promise.all([initialization, closing]);
+
+      expect(reindex).not.toHaveBeenCalled();
+      expect(watcherStopped).toBe(true);
+      expect(warn).not.toHaveBeenCalledWith('[Nexus] Failed to write metrics port file:', expect.anything());
+    } finally {
+      warn.mockRestore();
+      await rm(storageDir, { recursive: true, force: true });
+    }
+  });
+
   it('starts the server even if watcher.start fails (e.g. EMFILE)', async () => {
     const options = makeServerOptions();
     const watcher = {
@@ -180,6 +227,24 @@ describe('initializeNexusRuntime', () => {
       'Reindex already running: already_running',
     );
     await runtime.close();
+  });
+
+  it('rejects manual reindexing when shutdown begins during initialization', async () => {
+    const options = makeServerOptions();
+    let releaseStart: () => void = () => undefined;
+    let reportStartEntered: () => void = () => undefined;
+    const startEntered = new Promise<void>((resolve) => { reportStartEntered = resolve; });
+    const startGate = new Promise<void>((resolve) => { releaseStart = resolve; });
+    const runtime = buildNexusRuntime({ ...options, watcher: {
+      start: async () => { reportStartEntered(); await startGate; },
+      stop: async () => undefined,
+    } as unknown as NexusRuntimeOptions['watcher'] });
+    const reindex = runtime.reindex();
+    await startEntered;
+    const closing = runtime.close();
+    releaseStart();
+    await expect(reindex).rejects.toThrow(/shutdown|shutting down/i);
+    await closing;
   });
 
   it('reports an incomplete manual reindex separately from an already-running reindex', async () => {

@@ -1,9 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 
 import {
+  inspectProjectEndpoint,
   PROJECT_ENDPOINT_FILENAME,
   readProjectEndpoint,
   removeProjectEndpoint,
@@ -130,5 +131,45 @@ describe('project-endpoint', () => {
 
   it('treats a missing descriptor as already removed in compare-and-delete', async () => {
     await expect(removeProjectEndpointIfMatching(storageDir, endpoint)).resolves.toBeUndefined();
+  });
+
+  // Nexus #297: internal three-target fingerprint metadata on the managed Endpoint descriptor.
+  describe('internal storage targets fingerprint', () => {
+    const fingerprint = 'a'.repeat(64);
+
+    it('round-trips the fingerprint and still parses legacy descriptors without it', async () => {
+      await writeProjectEndpoint(storageDir, { ...endpoint, storageTargetsFingerprint: fingerprint });
+      await expect(readProjectEndpoint(storageDir)).resolves.toEqual({ ...endpoint, storageTargetsFingerprint: fingerprint });
+
+      await writeProjectEndpoint(storageDir, endpoint);
+      const legacy = await readProjectEndpoint(storageDir);
+      expect(legacy).toEqual(endpoint);
+      expect(legacy?.storageTargetsFingerprint).toBeUndefined();
+    });
+
+    it('treats a malformed fingerprint as an unverifiable descriptor', async () => {
+      await writeFile(join(storageDir, PROJECT_ENDPOINT_FILENAME), JSON.stringify({ ...endpoint, storageTargetsFingerprint: 'nope' }));
+      await expect(readProjectEndpoint(storageDir)).resolves.toBeUndefined();
+      await expect(inspectProjectEndpoint(storageDir)).resolves.toEqual({ state: 'invalid' });
+    });
+
+    it('compare-and-delete requires the same fingerprint', async () => {
+      await writeProjectEndpoint(storageDir, { ...endpoint, storageTargetsFingerprint: fingerprint });
+      await removeProjectEndpointIfMatching(storageDir, { ...endpoint, storageTargetsFingerprint: 'b'.repeat(64) });
+      await removeProjectEndpointIfMatching(storageDir, endpoint);
+      await expect(readProjectEndpoint(storageDir)).resolves.toMatchObject({ storageTargetsFingerprint: fingerprint });
+      await removeProjectEndpointIfMatching(storageDir, { ...endpoint, storageTargetsFingerprint: fingerprint });
+      await expect(readProjectEndpoint(storageDir)).resolves.toBeUndefined();
+    });
+
+    it('inspectProjectEndpoint distinguishes absent, valid and invalid descriptors without mutating', async () => {
+      await expect(inspectProjectEndpoint(join(storageDir, 'missing-root'))).resolves.toEqual({ state: 'absent' });
+      await expect(inspectProjectEndpoint(storageDir)).resolves.toEqual({ state: 'absent' });
+      await writeProjectEndpoint(storageDir, endpoint);
+      await expect(inspectProjectEndpoint(storageDir)).resolves.toEqual({ state: 'valid', endpoint });
+      await writeFile(join(storageDir, PROJECT_ENDPOINT_FILENAME), '{');
+      await expect(inspectProjectEndpoint(storageDir)).resolves.toEqual({ state: 'invalid' });
+      await expect(readFile(join(storageDir, PROJECT_ENDPOINT_FILENAME), 'utf8')).resolves.toBe('{');
+    });
   });
 });

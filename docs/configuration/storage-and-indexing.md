@@ -11,6 +11,8 @@ This document is part of the canonical Nexus configuration reference. See [Confi
 | `storage.vectorDbPath` | `<projectRoot>/.nexus/vectors` | `NEXUS_STORAGE_VECTOR_DB_PATH` | LanceDB vector store. |
 | `storage.batchSize` | `1000` | `NEXUS_STORAGE_BATCH_SIZE` | SQLite bulk-operation batch size. |
 
+Each persistent storage target (`rootDir`, `metadataDbPath`, and `vectorDbPath` unless it is exactly `memory://`) is owned by one canonical project root. A writer is refused if it reuses another root's target, if it reuses a populated target that has no owner claim, or if it would become a second live writer on a target. Custom paths must therefore be disjoint across projects and Git worktrees. The ownership, admission and limitation contract (including Linux-only admission) is defined in [SPEC.md §10.1](../../SPEC.md#101-git-worktree-isolation-and-storage-ownership).
+
 ## Watcher
 
 | Field | Default | Environment variable | Purpose |
@@ -73,5 +75,5 @@ Nexus uses a file-based `proper-lockfile` lock to prevent conflicting processes 
 - The lock file is `nexus.pid` under `storage.rootDir`.
 - Failure to acquire the lock stops startup.
 - Normal shutdown releases the lock.
-- Stale locks from crashes are recovered through `proper-lockfile` stale detection.
+- Stale locks from crashes are recovered through `proper-lockfile` stale detection. A stale `nexus.pid` is reclaimed only by a process holding writer admission for that `storage.rootDir`.
 - `nexus dashboard` does not index data and does not acquire this project lock.

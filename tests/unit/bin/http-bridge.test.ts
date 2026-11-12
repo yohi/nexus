@@ -1,6 +1,6 @@
 import { PassThrough, Readable } from "node:stream";
 import { EventEmitter } from "node:events";
-import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
+import { lstat, mkdtemp, mkdir, readdir, realpath, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { pathToFileURL } from "node:url";
@@ -8,7 +8,9 @@ import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import type { JSONRPCMessage } from "@modelcontextprotocol/sdk/types.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+import type { ChildProcess } from "node:child_process";
 import {
+  createProjectConnectorOptions,
   DEFAULT_BRIDGE_URL,
   type BridgeCliDependencies,
   type HttpBridgeOptions,
@@ -18,6 +20,10 @@ import {
   runBridgeCli,
   runHttpBridgeWithSignalSource,
 } from "../../../src/bin/http-bridge.js";
+import { ensureProjectEndpoint, type SpawnFn } from "../../../src/server/project-connector.js";
+import { writeProjectEndpoint } from "../../../src/server/project-endpoint.js";
+import { admitStorageWriter, storageTargetsFingerprint } from "../../../src/server/storage-ownership/index.js";
+import { testCoordinationRoot } from "../../shared/storage-ownership-coordination-setup.js";
 
 class FakeTransport implements Transport {
   readonly sent: JSONRPCMessage[] = [];
@@ -567,6 +573,99 @@ describe("http bridge", () => {
       expect(Buffer.concat(chunks).toString("utf8")).not.toContain(
         "default: http://127.0.0.1:3001",
       );
+    });
+  });
+
+  // Nexus #297 (Design §4.4 F-001): discovery-only Bridge preflight over the full effective target set.
+  describe("storage ownership discovery (Nexus #297)", () => {
+    let projectRoot: string;
+
+    beforeEach(async () => {
+      projectRoot = await realpath(await mkdtemp(join(tmpdir(), "nexus-bridge-owner-")));
+    });
+
+    afterEach(async () => {
+      await rm(projectRoot, { recursive: true, force: true });
+    });
+
+    const exists = async (path: string): Promise<boolean> => lstat(path).then(() => true, () => false);
+
+    it("S13_bridge_passes_custom_metadata_and_vector_targets", async () => {
+      const metadataDbPath = join(projectRoot, "custom-meta", "index.sqlite");
+      const vectorDbPath = join(projectRoot, "custom-vectors");
+      await writeFile(join(projectRoot, ".nexus.json"), JSON.stringify({ storage: { metadataDbPath } }));
+      const spawnFn = vi.fn() as unknown as SpawnFn;
+      const fetchFn = vi.fn<(url: string) => Promise<Response>>();
+
+      const options = await createProjectConnectorOptions(
+        projectRoot,
+        { NEXUS_STORAGE_VECTOR_DB_PATH: vectorDbPath },
+        { spawn: spawnFn, fetch: fetchFn, childExecutable: "/test/nexus.js" },
+      );
+
+      expect(options.storageDir).toBe(join(projectRoot, ".nexus"));
+      expect(options.storageOwnershipTargets).toEqual({
+        ownerProjectRoot: projectRoot,
+        rootDir: { kind: "persistent", path: join(projectRoot, ".nexus") },
+        metadataDbPath: { kind: "persistent", path: metadataDbPath },
+        vectorDbPath: { kind: "persistent", path: vectorDbPath },
+      });
+      expect(options.childExecutable).toBe("/test/nexus.js");
+      expect(options.spawn).toBe(spawnFn);
+
+      const memory = await createProjectConnectorOptions(
+        projectRoot,
+        { NEXUS_STORAGE_VECTOR_DB_PATH: "memory://" },
+        { spawn: spawnFn, fetch: fetchFn, childExecutable: "/test/nexus.js" },
+      );
+      expect(memory.storageOwnershipTargets.vectorDbPath).toEqual({ kind: "ephemeral", source: "memory://" });
+      // Resolution is read-only: nothing was created for any target.
+      for (const path of [join(projectRoot, ".nexus"), join(projectRoot, "custom-meta"), vectorDbPath]) {
+        expect(await exists(path)).toBe(false);
+      }
+    });
+
+    it("bridge_never_acquires_writer_lease", async () => {
+      const writerDir = join(testCoordinationRoot(), "writer");
+      const writerLocksBefore = await readdir(writerDir).catch(() => [] as string[]);
+      let childAdmission: "admitted" | string | undefined;
+      let options: Awaited<ReturnType<typeof createProjectConnectorOptions>> | undefined;
+      const spawnFn: SpawnFn = () => {
+        const child = new EventEmitter() as unknown as ChildProcess;
+        (child as unknown as { unref: () => void }).unref = () => undefined;
+        void (async () => {
+          // A real child admission while the Bridge is mid-startup: it would fail with writer_busy if the Bridge
+          // held any writer lease for these targets.
+          try {
+            const admission = await admitStorageWriter(options!.storageOwnershipTargets);
+            childAdmission = "admitted";
+            await writeProjectEndpoint(options!.storageDir, {
+              instanceId: "child", pid: process.pid, projectRoot, url: "http://127.0.0.1:43999",
+              storageTargetsFingerprint: storageTargetsFingerprint(options!.storageOwnershipTargets),
+            });
+            await admission.release();
+          } catch (error) {
+            childAdmission = (error as { code?: string }).code ?? String(error);
+          }
+        })();
+        return child;
+      };
+      const fetchFn = async (): Promise<Response> =>
+        new Response(JSON.stringify({ instanceId: "child", projectRoot }), { status: 200 });
+      options = await createProjectConnectorOptions(projectRoot, {}, {
+        spawn: spawnFn, fetch: fetchFn, childExecutable: "/test/nexus.js", startupTimeoutMs: 5_000, pollIntervalMs: 20,
+      });
+
+      const url = await ensureProjectEndpoint(options);
+
+      expect(childAdmission).toBe("admitted");
+      expect(url.port).toBe("43999");
+      // The only writer lease files are the child's own three target keys; the Bridge added none of its own.
+      const added = (await readdir(writerDir)).filter((name) => !writerLocksBefore.includes(name) && name.endsWith(".lock"));
+      expect(added).toHaveLength(3);
+      // After the child released, the Bridge holds nothing either: a fresh admission succeeds immediately.
+      const again = await admitStorageWriter(options.storageOwnershipTargets);
+      await again.release();
     });
   });
 });

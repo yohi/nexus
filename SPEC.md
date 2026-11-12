@@ -283,7 +283,7 @@ The server exposes health/readiness endpoints as implemented by the current HTTP
 
 `nexus http-bridge` is a stdio-facing MCP bridge for clients that cannot connect directly to Streamable HTTP.
 
-Without an explicit URL, the bridge discovers a healthy project-scoped local server from the storage descriptor or launches a managed loopback server. Managed discovery validates project identity and health before reuse.
+Without an explicit URL, the bridge discovers a healthy project-scoped local server from the storage descriptor or launches a managed loopback server. Managed discovery validates project identity and health before reuse. Discovery is read-only, and the bridge is never a storage writer; see [§10.1](#101-git-worktree-isolation-and-storage-ownership).
 
 Multiple bridge clients for the same project can share the managed runtime while keeping client-side MCP transport state isolated.
 
@@ -291,9 +291,123 @@ Managed servers can shut down automatically after the configured idle period whe
 
 ## 10. Process Coordination <a name="9-process-coordination"></a>
 
-Nexus uses project-level process locking to prevent conflicting runtime/index writers for the same project.
+Nexus uses project-level process locking to prevent conflicting runtime/index writers for the same project. Writer exclusion across projects, Git worktrees and custom storage paths is defined by storage ownership and writer admission in [§10.1](#101-git-worktree-isolation-and-storage-ownership).
 
 Ollama embedding calls use a machine-global lock to prevent multiple Nexus processes from oversubscribing the same local provider. Lock acquisition supports cancellation and bounded waiting according to configuration, and lock release is guaranteed on success and failure paths.
+
+### 10.1 Git worktree isolation and storage ownership
+
+**Runtime identity.** One canonical project root (`realpath`) is one independently correct runtime. Primary worktrees (`.git` directory), linked worktrees (`.git` file), detached HEAD, dirty working trees and non-Git directories all use this same rule. Branch names, commits, dirty state and the shape of `.git` are not identity inputs. Nexus has no repository, worktree or revision identifier.
+
+**Default storage.** Each canonical root gets its own default storage under `<projectRoot>/.nexus`. Sibling worktrees never share search results, structured-catalog generations, vector data, Endpoint descriptors, `nexus.pid`, project locks or writer leases. Sibling runtimes can run at the same time, each behind its own Bridge, and no request is routed to another worktree's runtime.
+
+**Protected persistent targets.** Ownership is evaluated separately for each of three targets:
+
+- `storage.rootDir`, a directory;
+- `storage.metadataDbPath`, a file, together with its SQLite sidecars;
+- `storage.vectorDbPath`, a directory, unless it is exactly `memory://`.
+
+Paths are canonicalized with the same effective resolution the stores use. An absent target resolves through its nearest existing ancestor. A symlink alias of a target is the same resource.
+
+Admission fails closed on any of the following:
+
+- a hard-linked SQLite file;
+- a dangling, inaccessible or ambiguous path;
+- one physical path used for two storage roles.
+
+**Ephemeral vector exception.** The exact value `storage.vectorDbPath = "memory://"` gives each runtime a private temporary vector store. The empty string passed directly to runtime assembly is treated the same way. This vector store has no owner claim, no writer lease and no persistent canonical path. It skips only vector ownership: `rootDir` and `metadataDbPath` are still protected, so sharing either of them is refused even when vectors are ephemeral.
+
+**Durable owner claims.** Each persistent target carries an internal, versioned claim. The claim records the canonical `ownerProjectRoot` and the canonical target. A directory target stores it in `.nexus-owner-claim.json` inside the directory. The metadata file stores it in an adjacent `<metadataDbPath>.nexus-owner-claim`. Claims are created atomically, never overwritten, and never deleted or rolled back by Nexus.
+
+A runtime from a different canonical root is refused with `owner_conflict` when it requests any target already claimed by another root. That includes a crashed root's claims, which are not inferred to be abandoned. The refusal leaves the other owner's data, claims, `nexus.pid` and Endpoint bytes unchanged.
+
+**Writer admission.** Every writer entry point obtains writer admission before it mutates anything under storage. Writer entry points are the CLI in stdio, HTTP, managed and `--reindex` modes, `createRuntime`, and direct runtime assembly. A writer must hold admission before it can:
+
+- create storage directories;
+- write `nexus.pid` or reclaim a stale one;
+- take the project lock;
+- open SQLite or LanceDB;
+- write logs;
+- publish an Endpoint.
+
+Admission runs these steps in order:
+
+1. A read-only preflight.
+2. An account-private coordination gate and the sorted per-resource locks.
+3. Nonblocking writer leases.
+4. Full validation of every target and claim.
+5. Creation of only the missing, empty claim-required directories. `metadata.db` is never created or opened here.
+6. Atomic claim publication.
+7. Verification of the complete claim set.
+
+The admission handle is opaque, single-use and bound to the resolved targets.
+
+If admission fails, no handle is returned and no store is opened. Partial claims already bound to an owner are kept so that a retry by that same owner can complete admission after full revalidation; they are never granted to a different owner. Empty bootstrap directories that remain unclaimed are ownership-neutral and may be acquired by another owner only after that owner's complete revalidation.
+
+An existing nonempty target without a trustworthy claim is refused with `owner_unknown`, with no adoption, migration or deletion. This covers pre-#297 stores, malformed claims and unwritable claim locations.
+
+**Writer exclusion.** At most one live writer may hold any persistent physical target. The same owner is no exception: a second independent writer is refused with `writer_busy`, including one that uses a different `rootDir` that overlaps, nests inside or contains a live writer's target.
+
+The writer lease is a kernel-backed POSIX advisory lock (`fcntl`) held for the whole writer lifetime. It is never taken over based on mtime, a TTL or a PID. A paused live writer keeps its lease. A crash releases the lease through the kernel and leaves the claims in place.
+
+A same-owner sequential restart, whether after a clean shutdown or a crash, passes writer admission onto the existing claimed store without rewriting the claims. After a crash, the separate mtime-based project lock on `storage.rootDir` still refuses an immediate successor runtime. That lock only becomes reclaimable after its stale window (see the untested items below).
+
+A running writer checks its leases periodically (every 5 s by default). If a lease is lost, the CLI stops the pipeline and exits with status 75 instead of continuing to serve. In a test, a real managed process whose lease files were replaced exited with status 75. The observed delay was about 5 s, but the test asserts only that it is under 15 s.
+
+**Coordination root.** Locks, leases, Bridge startup gates and Bridge attempt logs live under `<account home>/.local/state/nexus-ownership-v1`. The account home comes from the OS account database, not from `HOME` or `TMPDIR`. The directory must be account-private (mode `0700`, owned by the account, no symlink substitution) and must not overlap a storage target. Network and userspace filesystems are refused, as listed below. Different `TMPDIR` values reach the same locks.
+
+**HTTP Bridge.** The Bridge is a read-only discovery client and never holds a writer lease. It resolves all three effective targets and runs the read-only preflight. It reuses an Endpoint only when all of the following hold:
+
+- the preflight reports the targets as owned;
+- the descriptor's internal target fingerprint matches;
+- loopback address, PID, instance and health all check out.
+
+Otherwise the Bridge serializes managed startup on a per-project gate in the coordination root and spawns the managed child.
+
+The Bridge does not create storage or write logs under it, and never deletes any descriptor. Only the admitted managed child may replace a stale same-owner descriptor. The child refuses to publish over a foreign, unverifiable or live descriptor. The child also re-resolves its own targets and exits with `target_mismatch` if they differ from what the Bridge inspected. Concurrent Bridges for one worktree share a single healthy managed runtime, which is the only writer.
+
+**Deletion and recreation of a worktree.** The behavior that has been demonstrated is:
+
+- *Recreation at a different path* is a new canonical root with independent default storage. It never reaches the old runtime, even if the old managed child is still alive.
+- *Recreation at the same path with default storage* starts from a fresh store, because the old store was deleted with the old checkout.
+  - While an old managed child survives, the recreated worktree cannot reach it, because the old descriptor is gone.
+  - It also cannot start a second writer: it is refused with `writer_busy` until the old child exits.
+- *Recreation at the same path with storage outside the worktree* is told apart by the worktree incarnation witness (below):
+  - The recreated worktree's Bridge does not attach to a surviving old managed runtime, even though the descriptor survives in the external storage. It is refused with a `worktree incarnation` diagnostic, and the old descriptor, claims and runtime are left untouched.
+  - After the old runtime exits, the recreated worktree is still refused with `incarnation_mismatch`. Claims, metadata and vector data of the old store stay byte-identical, so no index entry of the old incarnation is ever served.
+  - A new, empty external storage works for the recreated worktree.
+  - Nexus never deletes, resets or migrates the old store; the Owner removes or relocates it.
+
+**Worktree incarnation witness.** The canonical project root stays the only runtime identity. The witness is additional evidence that a claim or Endpoint belongs to the current worktree incarnation, not a public identifier, and it is not derived from the branch, commit or any Git state.
+
+- *Required when* at least one persistent target lies outside the project root, because only then can claims outlive the worktree. Storage fully inside the project (the default) needs no witness, writes version 1 claims and behaves as before.
+- *Location and lifetime.* `<projectRoot>/.nexus/worktree-witness` (untracked local state, mode `0600`), holding 32 random bytes plus the canonical project root. It disappears with the worktree and is independent of external storage. A normal restart keeps it. It is never regenerated while a file exists.
+- *Creation* happens only inside writer admission, under the admission gate and the writer leases, by an atomic no-overwrite `link()` of an attempt-owned temp file. An interrupted attempt leaves only a temp name that is never read.
+- *Validation* is no-follow: a missing, malformed, symlinked, hard-linked, foreign-owned or other-project-root witness (or an aliased `.nexus`) is refused with `incarnation_mismatch` and never repaired.
+- *Claim binding.* For such storage every claim (including ancestor claims) is version 2 and records the witness. Admission and the Bridge preflight require an exact match before any storage read or write. A version 1 claim on external storage, or a claim with another witness, is refused.
+- *Endpoint binding.* The managed runtime publishes the witness in `endpoint.json`; the Bridge reuses an Endpoint only when it equals the witness currently on disk.
+- *Fail-closed.* On any mismatch nothing under storage, no PID file, no Endpoint and no coordination state is changed or removed.
+
+**Limitations.**
+
+- Writer admission and the Bridge startup gate are Linux-only. They verify kernel lock ownership through `/proc/locks`, and other platforms are refused with `unsupported_kernel_lease`. They also fail closed when `/proc/locks` cannot attest the lock. That happens when the PID namespace does not match the procfs mount. It may also happen on filesystems whose reported device numbers differ from `/proc/locks` entries, such as btrfs subvolumes or overlayfs.
+- The coordination root is refused on network and userspace filesystems (NFS, SMB/CIFS, FUSE, Ceph and similar), decided by the `statfs` filesystem type.
+- Populated stores created before ownership claims existed are refused rather than adopted. Nexus provides no migration procedure.
+- External storage claimed before the witness existed (version 1 claims) is refused with `incarnation_mismatch`, not adopted: those claims cannot prove which worktree incarnation wrote the data. There is no migration; an explicit, Owner-approved adoption procedure remains undecided.
+- The witness cannot detect a deliberate copy of an entire worktree directory including its `.nexus/worktree-witness` to the same path, or a recreated worktree whose `.nexus` is restored from a backup.
+- A configuration that puts a claim-required storage directory at or above `<projectRoot>/.nexus` while another target lies outside the project is refused (the witness location would overlap it).
+
+**Implemented but not exercised by tests.** The implementation does the following, but no executed test has shown it end to end:
+
+- Refusing a coordination root on a physical network or userspace mount. Only the `statfs`-type refusal branch is unit-tested, with a simulated filesystem type.
+- Reclaiming the project lock after its 30-second `proper-lockfile` stale window. Only the immediate refusal after a crash is tested.
+- Fail-closed `/proc/locks` attestation when the PID namespace does not match the procfs mount, and on btrfs subvolumes or overlayfs.
+- Writer admission on non-Linux platforms. The `unsupported_kernel_lease` refusal is unit-tested by overriding the platform value.
+- Exclusion of a reused PID. Liveness is decided only by the kernel lease, never by a PID, but PID reuse is not exercised.
+- Deriving the coordination root from the OS account database home directory. Every test overrides the coordination root with a disposable directory, so the real `<account home>/.local/state/nexus-ownership-v1` is never used by tests.
+- Rejecting symlink substitution of the coordination root or its lock subdirectories. The tested coordination-root refusals are overlap with a storage target, group/other-accessible permissions and filesystem type.
+
+**Exclusions.** This contract provides no shared mutable storage across canonical roots. It also provides no cross-worktree cache reuse, Global Manager, multi-worktree runtime manager or remote routing. Those remain separate roadmap items.
 
 ## 11. Package Mode <a name="10-package-mode"></a>
 

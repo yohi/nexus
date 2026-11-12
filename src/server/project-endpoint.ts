@@ -8,6 +8,16 @@ export interface ProjectEndpoint {
   readonly pid: number;
   readonly projectRoot: string;
   readonly url: string;
+  /**
+   * Internal endpoint metadata (Nexus #297): `storageTargetsFingerprint()` of the three effective storage targets the
+   * publishing managed runtime was admitted for. Absent on legacy descriptors, which are never optimistically reused.
+   */
+  readonly storageTargetsFingerprint?: string;
+  /**
+   * Internal endpoint metadata (Nexus #297 W06): the Worktree Incarnation Witness the publishing runtime was admitted
+   * under. Present only when storage can outlive the worktree; a Bridge reuses the endpoint only on an exact match.
+   */
+  readonly worktreeWitness?: string;
 }
 
 export const PROJECT_ENDPOINT_FILENAME = "endpoint.json";
@@ -18,6 +28,8 @@ const projectEndpointSchema = z
     pid: z.number(),
     projectRoot: z.string(),
     url: z.string(),
+    storageTargetsFingerprint: z.string().regex(/^[0-9a-f]{64}$/).optional(),
+    worktreeWitness: z.string().regex(/^[0-9a-f]{64}$/).optional(),
   })
   .strict();
 
@@ -66,6 +78,34 @@ export async function readProjectEndpoint(storageDir: string): Promise<ProjectEn
   return result.success ? result.data : undefined;
 }
 
+export type ProjectEndpointInspection =
+  | { readonly state: "absent" }
+  | { readonly state: "valid"; readonly endpoint: ProjectEndpoint }
+  | { readonly state: "invalid" };
+
+/** Read-only: distinguishes an absent descriptor from a present but unverifiable (malformed/unreadable) one. */
+export async function inspectProjectEndpoint(storageDir: string): Promise<ProjectEndpointInspection> {
+  const target = join(storageDir, PROJECT_ENDPOINT_FILENAME);
+  let content: string;
+  try {
+    content = await readFile(target, "utf8");
+  } catch (error: unknown) {
+    const code: unknown = typeof error === "object" && error !== null ? Reflect.get(error, "code") : undefined;
+    if (code === "ENOENT" || code === "ENOTDIR") {
+      return { state: "absent" };
+    }
+    return { state: "invalid" };
+  }
+  let rawEndpoint: unknown;
+  try {
+    rawEndpoint = JSON.parse(content);
+  } catch {
+    return { state: "invalid" };
+  }
+  const result = projectEndpointSchema.safeParse(rawEndpoint);
+  return result.success ? { state: "valid", endpoint: result.data } : { state: "invalid" };
+}
+
 export async function removeProjectEndpoint(storageDir: string): Promise<void> {
   const target = join(storageDir, PROJECT_ENDPOINT_FILENAME);
 
@@ -102,7 +142,9 @@ export async function removeProjectEndpointIfMatching(
         result.data.instanceId !== expected.instanceId ||
         result.data.pid !== expected.pid ||
         result.data.projectRoot !== expected.projectRoot ||
-        result.data.url !== expected.url
+        result.data.url !== expected.url ||
+        result.data.storageTargetsFingerprint !== expected.storageTargetsFingerprint ||
+        result.data.worktreeWitness !== expected.worktreeWitness
       ) {
         return;
       }

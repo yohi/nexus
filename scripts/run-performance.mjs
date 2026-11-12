@@ -36,7 +36,7 @@ export async function runPerformance(args = process.argv.slice(2), services = {}
     const diagnostics = cli.valid ? [] : [{ code: cli.error ?? 'invalid_options', count: 1, examples: [] }];
     if (options !== null) {
       for (const job of performanceJobs(options.sampleMode)) {
-        const root = join(owner, job.id); await mkdir(root);
+        const root = join(owner, job.id); await mkdir(root, { mode: 0o700 });
         const resultFile = join(root, 'result.json'); const phaseFile = join(root, 'phase.json');
         const requestFile = join(root, 'request.json');
         const request = { schemaVersion: 1, mode: 'scenario', runId, ownerRoot: root, resultFile, phaseFile,
@@ -50,7 +50,7 @@ export async function runPerformance(args = process.argv.slice(2), services = {}
           timeoutMs: cli.timeoutMs, resultFile, phaseFile, signal: controller.signal, diagnostic }));
       }
     }
-    const root = join(owner, 'aggregation'); await mkdir(root);
+    const root = join(owner, 'aggregation'); await mkdir(root, { mode: 0o700 });
     const resultFile = join(root, 'report.json'); const phaseFile = join(root, 'phase.json'); const requestFile = join(root, 'request.json');
     await writeFile(requestFile, JSON.stringify({ schemaVersion: 1, mode: 'aggregate', runId, ownerRoot: root,
       resultFile, phaseFile, deadlineEpochMs: Date.now() + Math.max(cli.timeoutMs, 10_000), memoryLimitMb: cli.memoryLimitMb,

@@ -10,6 +10,13 @@ import { afterEach, describe, expect, it } from 'vitest';
 
 const isE2EEnabled = process.env.NEXUS_E2E === '1';
 const cliPath = join(process.cwd(), 'dist', 'bin', 'nexus.js');
+const coordinationPreload = join(
+  process.cwd(),
+  'tests',
+  'fixtures',
+  'storage-ownership',
+  'coordination-root-preload.mjs',
+);
 
 const waitForStartup = (child: ChildProcessWithoutNullStreams): Promise<string> =>
   new Promise((resolve, reject) => {
@@ -144,9 +151,15 @@ describe.skipIf(!isE2EEnabled)('nexus serve E2E', () => {
       }),
     );
     await writeFile(join(projectRoot, 'e2e-fixture.ts'), 'export const e2eGrepNeedle = true;\n');
-    const child = spawn(process.execPath, [cliPath, 'serve', '--project-root', projectRoot, '--port', '0'], {
+    const child = spawn(process.execPath, [
+      '--import', coordinationPreload, cliPath, 'serve', '--project-root', projectRoot, '--port', '0',
+    ], {
       stdio: ['pipe', 'pipe', 'pipe'],
-      env: { ...process.env, NEXUS_E2E: '1' },
+      env: {
+        ...process.env,
+        NEXUS_E2E: '1',
+        NEXUS_TEST_COORDINATION_ROOT: join(projectRoot, 'coordination'),
+      },
     });
     server = child;
 

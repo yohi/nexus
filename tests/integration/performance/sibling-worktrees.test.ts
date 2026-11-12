@@ -11,7 +11,11 @@ describe('independent disposable sibling worktrees', () => {
     try {
       const records = await runSiblingScenarios('smoke', { run, collector, signal: new AbortController().signal, setupMs: 0 });
       expect(records).toHaveLength(2);
-      expect(records.map((record) => record.status)).toEqual(['valid', 'valid']);
+      expect(records.map((record) => record.status), JSON.stringify(records.map((record) => ({
+        id: record.id,
+        status: record.status,
+        ...(record.status === 'invalid' ? { phase: record.phase, failures: record.failures } : {}),
+      })))).toEqual(['valid', 'valid']);
       for (const record of records) {
         if (record.status !== 'valid') throw new Error('sibling readiness required');
         expect(record.cacheState).toBe('empty');
