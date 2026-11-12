@@ -57,6 +57,14 @@ async function verifyPrivateDirectory(path: string, uid: number, canonicalPath =
   if (await realpath(path) !== canonicalPath) throw new Error(`coordination path ${path} is reached through an alias`);
 }
 
+async function verifyCoordinationParent(path: string, uid: number): Promise<void> {
+  const stat = await lstat(path);
+  if (stat.isSymbolicLink() || !stat.isDirectory()) throw new Error(`coordination path ${path} is not a real directory`);
+  if (stat.uid !== uid) throw new Error(`coordination path ${path} is not owned by the current account`);
+  if ((stat.mode & 0o022) !== 0) throw new Error(`coordination path ${path} is writable by other accounts`);
+  if (await realpath(path) !== path) throw new Error(`coordination path ${path} is reached through an alias`);
+}
+
 function verifyTrustedAncestors(path: string, uid: number): void {
   for (let current = path; ; current = dirname(current)) {
     const stat = lstatSync(current);
@@ -152,7 +160,7 @@ export async function prepareCoordinationRoot(root: string, persistentTargets: r
   const parent = dirname(canonicalRoot);
   await mkdir(parent, { recursive: true, mode: 0o700 });
   verifyTrustedAncestors(parent, uid);
-  await verifyPrivateDirectory(parent, uid);
+  await verifyCoordinationParent(parent, uid);
   const parentBefore = lstatSync(parent, { bigint: true });
   const parentFd = openSync(parent, fsConstants.O_RDONLY | fsConstants.O_DIRECTORY | fsConstants.O_NOFOLLOW);
   try {

@@ -436,6 +436,20 @@ describe("nexus CLI shutdown", () => {
     expect(mocks.createRuntime).toHaveBeenCalledWith(config, admission);
   });
 
+  it("does not close the runtime twice when reindex shutdown fails", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const runtime = {
+      close: vi.fn().mockRejectedValueOnce(new Error("close failed")),
+      reindex: vi.fn(async () => {}),
+    };
+    mocks.createRuntime.mockResolvedValue(runtime);
+
+    await runCli(["--reindex"]);
+
+    await vi.waitFor(() => expect(process.exit).toHaveBeenCalledWith(1));
+    expect(runtime.close).toHaveBeenCalledOnce();
+  });
+
   it("registers a fail-fast non-zero exit for a lost writer lease before transferring the admission", async () => {
     const leaseLoss = await import("../../../src/server/runtime/writer-lease-loss.js");
     const error = vi.spyOn(console, "error").mockImplementation(() => undefined);

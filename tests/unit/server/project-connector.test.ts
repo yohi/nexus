@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { chmod, lstat, mkdir, mkdtemp, readdir, readFile, realpath, rm, stat, writeFile } from 'node:fs/promises';
+import { chmod, lstat, mkdir, mkdtemp, readdir, readFile, realpath, rm, stat, symlink, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { randomUUID } from 'node:crypto';
@@ -707,8 +707,40 @@ describe('project-connector', () => {
     expect(observed?.options).toMatchObject({
       detached: true,
       stdio: ['ignore', 'ignore', 'ignore'],
-      env: { NEXUS_FOO: 'bar', [INTERNAL_TARGETS_FINGERPRINT_ENV]: fingerprint },
+      env: {
+        NEXUS_FOO: 'bar', NEXUS_PROJECT_ROOT: projectRoot,
+        [INTERNAL_TARGETS_FINGERPRINT_ENV]: fingerprint,
+      },
     });
+  });
+
+  it('uses the canonical project root for discovery and the managed child', async () => {
+    const alias = join(dirname(projectRoot), `nexus-project-alias-${randomUUID()}`);
+    await symlink(projectRoot, alias, 'dir');
+    const harness = createHarness();
+    const instanceId = `instance-${randomUUID()}`;
+    healthFromCurrentDescriptor(harness);
+    let spawnedArgs: readonly string[] | undefined;
+    let spawnedEnvironment: Record<string, string> | undefined;
+    harness.spawnImpl.mockImplementation((_command, args, options) => {
+      spawnedArgs = args;
+      spawnedEnvironment = spawnEnv(options);
+      void (async () => {
+        await claimStorage();
+        await writeProjectEndpoint(storageDir, healthyEndpoint(instanceId, 43161));
+      })();
+      return createFakeChildProcess();
+    });
+
+    try {
+      await expect(ensureProjectEndpoint(baseOptions(harness, { projectRoot: alias }))).resolves.toEqual(
+        new URL('http://127.0.0.1:43161/'),
+      );
+      expect(spawnedArgs).toEqual(['--project-root', projectRoot, '--port', '0', '--managed']);
+      expect(spawnedEnvironment?.NEXUS_PROJECT_ROOT).toBe(projectRoot);
+    } finally {
+      await rm(alias, { force: true });
+    }
   });
 
   it('rethrows coordination failures from the startup gate without spawning', async () => {

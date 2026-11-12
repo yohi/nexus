@@ -158,7 +158,7 @@ describe('stable physical resource keys and coordination', () => {
     const base = await sandbox();
     const owner = await project(base, 'owner');
     const p = pathsFor(join(base, 'storage'));
-    await chmod(base, 0o755);
+    await chmod(base, 0o777);
 
     expect((await refusal(admit(service(base), cfg(owner, p)))).code).toBe('lock_unavailable');
     await expect(lstat(join(base, 'coord'))).rejects.toThrow();
@@ -174,6 +174,19 @@ describe('stable physical resource keys and coordination', () => {
 
     await expect(prepareCoordinationRoot(root, [])).rejects.toThrow();
     await expect(lstat(root)).rejects.toThrow();
+  });
+
+  it('allows a non-writable shared parent while keeping the coordination root private', async () => {
+    const base = await sandbox();
+    const parent = join(base, '.local', 'state');
+    const root = join(parent, 'nexus-ownership-v1');
+    await mkdir(parent, { recursive: true, mode: 0o755 });
+    await chmod(parent, 0o755);
+
+    await expect(prepareCoordinationRoot(root, [])).resolves.toBe(root);
+
+    expect((await lstat(parent)).mode & 0o777).toBe(0o755);
+    expect((await lstat(root)).mode & 0o777).toBe(0o700);
   });
 
   it('keeps lock paths anchored to the verified root inode after its path is replaced', async () => {

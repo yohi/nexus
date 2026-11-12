@@ -8,7 +8,7 @@ import {
 } from './storage-ownership/startup-gate.js';
 import type { KernelLock } from './storage-ownership/claims.js';
 import { canonicalize } from './storage-ownership/targets.js';
-import type { ResolvedStorageOwnershipTargets } from './storage-ownership/types.js';
+import type { CanonicalPath, ResolvedStorageOwnershipTargets } from './storage-ownership/types.js';
 import { readProjectEndpoint, type ProjectEndpoint } from './project-endpoint.js';
 import { isProcessAlive } from './process-lock.js';
 import type { ChildProcess, StdioOptions } from 'node:child_process';
@@ -233,7 +233,7 @@ async function findReusableEndpoint(
   return fetchHealth(endpoint, context.projectRoot, context.fetch, timeoutMs, signal);
 }
 
-async function assertConsistentTargets(options: ProjectConnectorOptions, signal?: AbortSignal): Promise<void> {
+async function assertConsistentTargets(options: ProjectConnectorOptions, signal?: AbortSignal): Promise<CanonicalPath> {
   throwIfAborted(signal);
   const targets = options.storageOwnershipTargets;
   const [owner, root] = await Promise.all([
@@ -244,6 +244,7 @@ async function assertConsistentTargets(options: ProjectConnectorOptions, signal?
   if (owner !== targets.ownerProjectRoot || root !== targets.rootDir.path) {
     throw new Error('Project connector options do not match the resolved storage ownership targets');
   }
+  return owner;
 }
 
 /**
@@ -279,6 +280,19 @@ async function acquireStartupGate(
   }
 }
 
+function isOwnershipRefusal(error: unknown): error is StorageOwnershipRefusedError {
+  return error instanceof StorageOwnershipRefusedError;
+}
+
+function throwIfEndpointWaitExpired(
+  remainingMs: number,
+  lastOwnershipRefusal: StorageOwnershipRefusedError | undefined,
+): void {
+  if (remainingMs > 0) return;
+  if (lastOwnershipRefusal !== undefined) throw lastOwnershipRefusal;
+  throw new Error('Timed out waiting for a healthy project endpoint');
+}
+
 async function waitForHealthyEndpoint(
   context: DiscoveryContext,
   deadline: number,
@@ -289,10 +303,7 @@ async function waitForHealthyEndpoint(
   while (true) {
     throwIfAborted(signal);
     const remainingMs = deadline - Date.now();
-    if (remainingMs <= 0) {
-      if (lastOwnershipRefusal !== undefined) throw lastOwnershipRefusal;
-      throw new Error('Timed out waiting for a healthy project endpoint');
-    }
+    throwIfEndpointWaitExpired(remainingMs, lastOwnershipRefusal);
 
     try {
       const validated = await findReusableEndpoint(context, remainingMs, signal);
@@ -302,17 +313,14 @@ async function waitForHealthyEndpoint(
       lastOwnershipRefusal = undefined;
     } catch (error) {
       if (signal?.aborted) throw abortReason(signal);
-      if (!(error instanceof StorageOwnershipRefusedError)) throw error;
+      if (!isOwnershipRefusal(error)) throw error;
       // The spawned child may be between creating a storage directory and publishing its ownership claim.
       // Continue read-only discovery while it starts; the child failure/timeout path remains authoritative.
       lastOwnershipRefusal = error;
     }
 
     const remainingAfterCheck = deadline - Date.now();
-    if (remainingAfterCheck <= 0) {
-      if (lastOwnershipRefusal !== undefined) throw lastOwnershipRefusal;
-      throw new Error('Timed out waiting for a healthy project endpoint');
-    }
+    throwIfEndpointWaitExpired(remainingAfterCheck, lastOwnershipRefusal);
     await sleep(Math.min(pollIntervalMs, remainingAfterCheck), signal);
   }
 }
@@ -333,7 +341,7 @@ async function spawnManagedChild(
       [
         ...(options.childArgs ?? []),
         '--project-root',
-        options.projectRoot,
+        context.projectRoot,
         '--port',
         '0',
         '--managed',
@@ -342,6 +350,7 @@ async function spawnManagedChild(
         detached: true,
         env: {
           ...options.env,
+          NEXUS_PROJECT_ROOT: context.projectRoot,
           NEXUS_STARTUP_STDOUT_LOG: logs.stdoutPath,
           NEXUS_STARTUP_STDERR_LOG: logs.stderrPath,
           [INTERNAL_TARGETS_FINGERPRINT_ENV]: context.fingerprint,
@@ -416,9 +425,9 @@ export async function ensureProjectEndpoint(options: ProjectConnectorOptions): P
     DEFAULT_STARTUP_TIMEOUT_MS,
   );
   const pollIntervalMs = validateTimeout(options.pollIntervalMs, 'pollIntervalMs', DEFAULT_POLL_INTERVAL_MS);
-  await assertConsistentTargets(options);
+  const projectRoot = await assertConsistentTargets(options);
   const context: DiscoveryContext = {
-    projectRoot: options.projectRoot,
+    projectRoot,
     storageDir: options.storageDir,
     targets: options.storageOwnershipTargets,
     fingerprint: storageTargetsFingerprint(options.storageOwnershipTargets),

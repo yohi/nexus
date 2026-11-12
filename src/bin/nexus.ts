@@ -317,7 +317,9 @@ async function main(args: string[]): Promise<void> {
   } catch (error) {
     await releaseOwnedProcessLock(config.storage.rootDir).catch(() => undefined);
     process.removeListener("exit", exitCleanup);
-    await runtime.close().catch(() => undefined);
+    if (!values["reindex"]) {
+      await runtime.close().catch(() => undefined);
+    }
     detachStartupLogs();
     throw error;
   }
