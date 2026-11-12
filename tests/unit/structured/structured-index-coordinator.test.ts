@@ -38,6 +38,48 @@ describe('StructuredIndexCoordinator', () => {
     expect(coordinator['stagedGenerationRowCounts'].size).toBe(0);
   });
 
+  it('preserves structured vectors when activating the same generation again', async () => {
+    const stage = createStructuredStage('src/same.ts', 'export function same() { return 1; }', 'same');
+    await stageStructuredFile(coordinator, stage);
+    await coordinator.activateFile({ filePath: stage.source.filePath, generationId: stage.generationId });
+
+    const query = new Array<number>(64).fill(0);
+    expect(await vectorStore.search(query, 10)).toHaveLength(1);
+
+    // C only prevents the destructive delete; this does not assert a full No-op.
+    await stageStructuredFile(coordinator, stage);
+    await coordinator.activateFile({ filePath: stage.source.filePath, generationId: stage.generationId });
+
+    const results = await vectorStore.search(query, 10);
+    expect(results).toHaveLength(1);
+    expect(results[0]?.chunk.symbolId).toBe(stage.symbolId);
+    expect(results[0]?.generationId).toBe(stage.generationId);
+    expect(await metadataStore.resolveFile(stage.source.filePath)).toEqual({
+      kind: 'active',
+      generationId: stage.generationId,
+    });
+  });
+
+  it('removes the previous generation when activating a different generation', async () => {
+    const first = createStructuredStage('src/change.ts', 'export function before() { return 1; }', 'before');
+    await stageStructuredFile(coordinator, first);
+    await coordinator.activateFile({ filePath: first.source.filePath, generationId: first.generationId });
+
+    const second = createStructuredStage('src/change.ts', 'export function after() { return 2; }', 'after');
+    expect(second.generationId).not.toBe(first.generationId);
+    await stageStructuredFile(coordinator, second);
+    await coordinator.activateFile({ filePath: second.source.filePath, generationId: second.generationId });
+
+    const results = await vectorStore.search(new Array<number>(64).fill(0), 10);
+    expect(results).toHaveLength(1);
+    expect(results[0]?.chunk.symbolId).toBe(second.symbolId);
+    expect(results[0]?.generationId).toBe(second.generationId);
+    expect(await metadataStore.resolveFile(second.source.filePath)).toEqual({
+      kind: 'active',
+      generationId: second.generationId,
+    });
+  });
+
   it('does not leave a pending generation when embedding counts mismatch', async () => {
     const stage = createStructuredStage('src/mismatch.ts', 'export function mismatch() { return 1; }', 'mismatch');
 

@@ -182,7 +182,8 @@ export class StructuredIndexCoordinator {
         this.stagedGenerationRowCounts.delete(generationKey);
       }
 
-      if (expectedActiveGeneration !== null) {
+      // Do not delete freshly activated rows when replaying the same generation.
+      if (expectedActiveGeneration !== null && expectedActiveGeneration !== input.generationId) {
         await this.options.vectorStore.removeGenerationRows(input.filePath, expectedActiveGeneration);
       }
     });
