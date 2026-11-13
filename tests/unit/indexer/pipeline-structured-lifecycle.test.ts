@@ -441,9 +441,10 @@ describe('IndexPipeline structured lifecycle', () => {
     );
   });
 
-  it('keeps a successful generation after finalization cleanup fails', async () => {
+  it('preserves recovery evidence after catalog finalization cleanup fails', async () => {
     const { metadataStore, vectorStore, pipeline } = await createStructuredPipeline();
-    vi.spyOn(vectorStore, 'finalizeStructuredShadowTable').mockRejectedValueOnce(new Error('structured cleanup failed'));
+    const finalizeStructuredShadowTable = vi.spyOn(vectorStore, 'finalizeStructuredShadowTable');
+    const finalizeLegacyShadowTable = vi.spyOn(vectorStore, 'finalizeLegacyShadowTable');
     vi.spyOn(metadataStore, 'finalizeFullRebuild').mockRejectedValueOnce(new Error('catalog cleanup failed'));
 
     await expect(pipeline.reindex(
@@ -456,7 +457,12 @@ describe('IndexPipeline structured lifecycle', () => {
       true,
     )).resolves.toMatchObject({ chunksIndexed: expect.any(Number) });
 
-    await expect(metadataStore.getStructuredIndexState()).resolves.toMatchObject({ rebuildState: 'idle' });
+    await expect(metadataStore.getStructuredIndexState()).resolves.toMatchObject({
+      rebuildState: 'merkle-activated',
+      lastErrorCode: 'structured_backup_cleanup_failed',
+    });
+    expect(finalizeStructuredShadowTable).not.toHaveBeenCalled();
+    expect(finalizeLegacyShadowTable).not.toHaveBeenCalled();
   });
 
   it('retires structured state when incremental indexing skips an oversized file', async () => {

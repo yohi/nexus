@@ -81,7 +81,7 @@ describe('structured storage diagnostic stages', () => {
 
     const finished = context.recorder.snapshot().events.filter((event) => event.event === 'span_finished');
     expect(finished.some((event) => event.stateIntegrity === 'backup_cleanup_failed')).toBe(true);
-    expect((await fixture.metadataStore.getStructuredIndexState()).rebuildState).toBe('idle');
+    expect((await fixture.metadataStore.getStructuredIndexState()).rebuildState).toBe('merkle-activated');
   });
 
   it('marks rollback uncertainty when full-rebuild rollback fails', async () => {

@@ -393,9 +393,24 @@ export class StructuredIndexCoordinator {
 
       // Finalize SQLite (retire the journal) only after the Commit phase is durable.
       // If this fails, leave phase merkle-activated and preserve both vector backups.
-      await this.options.metadataStore.finalizeFullRebuild(activation);
+      let catalogCleanupFailed = false;
+      try {
+        await this.options.metadataStore.finalizeFullRebuild(activation);
+      } catch (cleanupError) {
+        catalogCleanupFailed = true;
+        await this.markStateIntegrity('backup_cleanup_failed');
+        try {
+          await this.options.metadataStore.setStructuredRebuildState({
+            rebuildState: 'merkle-activated',
+            lastErrorCode: 'structured_backup_cleanup_failed',
+          });
+        } catch (stateError) {
+          console.error('[StructuredIndexCoordinator] Failed to record pending catalog cleanup:', stateError);
+        }
+        console.error('[StructuredIndexCoordinator] Failed to finalize structured catalog backup:', cleanupError);
+      }
       let cleanupFailed = false;
-      if (shadowTable !== undefined) {
+      if (!catalogCleanupFailed && shadowTable !== undefined) {
         try {
           await this.options.vectorStore.finalizeStructuredShadowTable(shadowTable);
         } catch (cleanupError) {
@@ -404,6 +419,7 @@ export class StructuredIndexCoordinator {
           console.error('[StructuredIndexCoordinator] Failed to finalize structured vector backup:', cleanupError);
         }
       }
+      if (catalogCleanupFailed) return;
       await this.options.metadataStore.setStructuredRebuildState({ rebuildState: 'idle', lastErrorCode: cleanupFailed ? 'structured_backup_cleanup_failed' : null });
       if (!cleanupFailed) {
         await runRuntimeDiagnosticStage('S08_storage_write', () => markRuntimeDiagnosticStateIntegrity('verified'));

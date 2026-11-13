@@ -460,8 +460,13 @@ export class IndexPipeline implements IIndexPipeline {
         // Full Rebuild retires Active files omitted from input: reject unaccounted omissions.
         const activeBefore = (await metadataStore.getStructuredIndexState()).activeGenerations;
         const included = new Set(structuredRebuildFiles.map((file) => file.source.filePath));
-        const explicitlyDeleted = new Set(events.filter((event) => event.type === 'deleted').map((event) => event.filePath));
-        const unaccounted = [...activeBefore.keys()].filter((filePath) => !included.has(filePath) && !explicitlyDeleted.has(filePath));
+        const explicitlyDeleted = events
+          .filter((event) => event.type === 'deleted')
+          .map((event) => event.filePath);
+        const unaccounted = [...activeBefore.keys()].filter((filePath) =>
+          !included.has(filePath)
+          && !explicitlyDeleted.some((deletedPath) =>
+            filePath === deletedPath || filePath.startsWith(`${deletedPath}/`)));
         if (unaccounted.length > 0) {
           throw new Error(`Structured full rebuild aborted: active files missing from complete scan: ${unaccounted.join(', ')}`);
         }
@@ -1190,17 +1195,20 @@ export class IndexPipeline implements IIndexPipeline {
           this.diagnosticCounter('S09_index_settlement', 'index.pipeline_files_indexed_succeeded', files.length, 'files', 'succeeded');
         });
       }
-      let legacyCleanupFailed = false;
-      await runRuntimeDiagnosticStage('S08_storage_write', async () => {
-        try {
-          await this.options.vectorStore.finalizeLegacyShadowTable(legacyShadow);
-        } catch (error) {
-          legacyCleanupFailed = true;
-          markRuntimeDiagnosticStateIntegrity('backup_cleanup_failed');
-          console.error('[IndexPipeline] Failed to finalize legacy vector backup:', error);
-        }
-      });
       const catalogState = await metadataStore.getStructuredIndexState();
+      const catalogFinalizationPending = catalogState.rebuildState === 'merkle-activated';
+      let legacyCleanupFailed = catalogFinalizationPending;
+      if (!catalogFinalizationPending) {
+        await runRuntimeDiagnosticStage('S08_storage_write', async () => {
+          try {
+            await this.options.vectorStore.finalizeLegacyShadowTable(legacyShadow);
+          } catch (error) {
+            legacyCleanupFailed = true;
+            markRuntimeDiagnosticStateIntegrity('backup_cleanup_failed');
+            console.error('[IndexPipeline] Failed to finalize legacy vector backup:', error);
+          }
+        });
+      }
       const integrity = legacyCleanupFailed || catalogState.lastErrorCode === 'structured_backup_cleanup_failed'
         ? 'backup_cleanup_failed' : 'verified';
       await runRuntimeDiagnosticStage('S08_storage_write', () => markRuntimeDiagnosticStateIntegrity(integrity));
