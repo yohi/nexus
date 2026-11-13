@@ -224,7 +224,7 @@ describe('SQLite structured catalog', () => {
     expect(await store.resolveFile('src/a.ts')).toEqual({ kind: 'active', generationId: 'g2' });
   });
 
-  it('removes backup remnants from earlier rebuild epochs before preparing a new rebuild', async () => {
+  it('preserves unresolved recovery evidence and allows a new epoch after explicit rollback', async () => {
     await store.initialize();
     await activateInitialGeneration(store);
 
@@ -232,6 +232,18 @@ describe('SQLite structured catalog', () => {
     const firstActivation = fullRebuildActivation(firstEpoch);
     await store.prepareFullRebuild(firstActivation, []);
 
+    await expect(store.incrementRebuildEpoch()).rejects.toThrow(
+      'SqliteMetadataStore.incrementRebuildEpoch: unresolved recovery journal',
+    );
+    expect((await store.getStructuredIndexState()).rebuildEpoch).toBe(firstEpoch);
+    const unresolvedRows = readRows<{ rebuild_epoch: number }>(
+      path.join(dir, 'metadata.db'),
+      'SELECT rebuild_epoch FROM structured_rebuild_backup_runs ORDER BY rebuild_epoch',
+    );
+    expect(unresolvedRows).toEqual([{ rebuild_epoch: firstEpoch }]);
+
+    // Only an explicit successful rollback may retire the old journal.
+    await store.rollbackFullRebuild(firstActivation);
     const secondEpoch = await store.incrementRebuildEpoch();
     const secondActivation = fullRebuildActivation(secondEpoch, 'g3');
     await store.prepareFullRebuild(secondActivation, []);
