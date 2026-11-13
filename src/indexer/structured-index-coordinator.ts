@@ -46,6 +46,17 @@ export class StructuredIndexCoordinator {
 
   constructor(private readonly options: StructuredIndexCoordinatorOptions) {}
 
+  private async assertNoPendingFullRebuildRecovery(): Promise<void> {
+    const state = await this.options.metadataStore.getStructuredIndexState();
+    const recovery = await this.options.metadataStore.getFullRebuildRecovery?.();
+    const stateIsQuiescent = state.rebuildState === null
+      || state.rebuildState === 'idle'
+      || state.rebuildState === 'failed';
+    if (recovery != null || !stateIsQuiescent) {
+      throw new Error('StructuredIndexCoordinator: unresolved full-rebuild recovery');
+    }
+  }
+
   async stageFile(input: {
     source: StructuredSource;
     generationId: string;
@@ -59,6 +70,7 @@ export class StructuredIndexCoordinator {
     embeddings?: number[][];
   }): Promise<void> {
     return this.options.projectWriteCoordinator.run(async () => {
+      await this.assertNoPendingFullRebuildRecovery();
       const state = await this.options.metadataStore.getStructuredIndexState();
       const expectedActiveGeneration = state.activeGenerations.get(input.source.filePath) ?? null;
       const rebuildEpoch = state.rebuildEpoch;
@@ -152,6 +164,7 @@ export class StructuredIndexCoordinator {
 
   async activateFile(input: { filePath: string; generationId: string }): Promise<void> {
     return this.options.projectWriteCoordinator.run(async () => {
+      await this.assertNoPendingFullRebuildRecovery();
       const state = await this.options.metadataStore.getStructuredIndexState();
       const activeGenerations = state.activeGenerations;
       const expectedActiveGeneration = activeGenerations.get(input.filePath) ?? null;
@@ -193,6 +206,7 @@ export class StructuredIndexCoordinator {
 
   async deleteFile(input: { filePath: string }): Promise<void> {
     return this.options.projectWriteCoordinator.run(async () => {
+      await this.assertNoPendingFullRebuildRecovery();
       const state = await this.options.metadataStore.getStructuredIndexState();
       const activeGenerations = state.activeGenerations;
       const expectedActiveGeneration = activeGenerations.get(input.filePath) ?? null;
@@ -380,6 +394,14 @@ export class StructuredIndexCoordinator {
                 throw cleanupError;
               }
             });
+          }
+        }
+        if (metadataRollbackCompleted) {
+          try {
+            await this.options.vectorStore.cleanupOrphanedRebuildTables?.();
+          } catch (cleanupError) {
+            await this.markStateIntegrity('backup_cleanup_failed');
+            console.error('[StructuredIndexCoordinator] Failed to clean rolled-back vector backups:', cleanupError);
           }
         }
         if (!metadataPrepared || metadataRollbackCompleted) {

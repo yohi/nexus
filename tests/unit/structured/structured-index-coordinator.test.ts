@@ -1,4 +1,4 @@
-import { describe, expect, it, beforeEach } from 'vitest';
+import { describe, expect, it, beforeEach, vi } from 'vitest';
 import {
   createStructuredCoordinatorFixture,
   createStructuredStage,
@@ -36,6 +36,46 @@ describe('StructuredIndexCoordinator', () => {
     await stageStructuredFile(coordinator, stage);
 
     expect(coordinator['stagedGenerationRowCounts'].size).toBe(0);
+  });
+
+  it('does not stage incremental generations while rollback recovery is pending', async () => {
+    const stage = createStructuredStage('src/recovery-pending.ts', 'export function pending() { return 1; }', 'pending');
+    const stageGeneration = vi.spyOn(metadataStore, 'stageGeneration');
+    await metadataStore.setStructuredRebuildState({ rebuildState: 'catalog-activated' });
+
+    await expect(stageStructuredFile(coordinator, stage)).rejects.toThrow('unresolved full-rebuild recovery');
+
+    expect(stageGeneration).not.toHaveBeenCalled();
+    await expect(metadataStore.resolveFile(stage.source.filePath)).resolves.toEqual({ kind: 'missing' });
+  });
+
+  it('runs orphan vector cleanup after a successful catalog rollback', async () => {
+    const stage = createStructuredStage('src/rollback-cleanup.ts', 'export function cleanup() { return 1; }', 'cleanup');
+    const order: string[] = [];
+    const originalRollback = metadataStore.rollbackFullRebuild.bind(metadataStore);
+    vi.spyOn(metadataStore, 'rollbackFullRebuild').mockImplementation(async (input) => {
+      await originalRollback(input);
+      order.push('catalog-rollback');
+    });
+    Object.defineProperty(vectorStore, 'cleanupOrphanedRebuildTables', {
+      configurable: true,
+      value: async () => { order.push('vector-cleanup'); },
+    });
+
+    await expect(coordinator.runFullRebuild({
+      files: [{
+        source: stage.source,
+        generationId: stage.generationId,
+        contentHash: stage.contentHash,
+        fileCompleteness: 'complete',
+        declarations: [stage.symbol],
+        imports: [],
+      }],
+      merkleSnapshot: [],
+      beforeCommit: async () => { throw new Error('injected pre-commit failure'); },
+    })).rejects.toThrow('injected pre-commit failure');
+
+    expect(order).toEqual(['catalog-rollback', 'vector-cleanup']);
   });
 
   it('preserves structured vectors when activating the same generation again', async () => {

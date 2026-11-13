@@ -100,6 +100,15 @@ describe('Nexus #360 B recovery safety (temporary storage)', () => {
     expect((await metadata.getStructuredIndexState()).rebuildEpoch).toBe(1);
   });
 
+  it('does not replace a Legacy shadow while the journal protects its backup', async () => {
+    const { backup } = await startRebuild(metadata, vectors);
+
+    await expect(vectors.beginLegacyShadowTable()).rejects.toThrow('unresolved recovery journal');
+
+    expect(await (await lancedb.connect(vectorDir)).tableNames()).toContain(backup);
+    expect(await metadata.getFullRebuildRecovery()).not.toBeNull();
+  });
+
   it('keeps backup until finalize has durably retired the commit journal', async () => {
     const { backup } = await startRebuild(metadata, vectors);
     await metadata.setStructuredRebuildState({ rebuildState: 'merkle-activated' });

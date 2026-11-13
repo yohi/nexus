@@ -17,6 +17,22 @@ const legacyChunk: CodeChunk = {
   hash: 'hash-1',
 };
 
+const structuredRow = {
+  vector: new Array<number>(64).fill(0),
+  id: 'structured-row',
+  filepath: 'src/structured.ts',
+  content: 'structured',
+  language: 'typescript',
+  symbolname: 'structured',
+  symbolkind: 'function' as const,
+  startline: 1,
+  endline: 1,
+  hash: 'structured-hash',
+  symbolid: 'structured-symbol',
+  generationid: 'generation-1',
+  visibility: 'active' as const,
+};
+
 describe('LanceVectorStore structured rows', () => {
   let tmpDir: string;
   let store: LanceVectorStore;
@@ -95,5 +111,30 @@ describe('LanceVectorStore structured rows', () => {
     expect(names).toContain('structured_chunks');
     expect(names.filter((name) => name.includes('orphan'))).toEqual([]);
     await restarted.close();
+  });
+
+  it('clears an aborted structured shadow reference while retaining its recovery backup', async () => {
+    const db = await lancedb.connect(tmpDir);
+    const shadowName = 'structured_chunks_shadow_stale';
+    const backupName = 'structured_chunks_backup_recovery';
+    const live = await db.createTable('structured_chunks', [structuredRow]);
+    const shadow = await db.createTable(shadowName, [structuredRow]);
+    await db.createTable(backupName, [structuredRow]);
+    store['structuredTable'] = live;
+    store['structuredShadowTable'] = shadow;
+    store['structuredShadowName'] = shadowName;
+    store['structuredSwapBackup'] = {
+      handleName: shadowName,
+      tableName: backupName,
+      hadLiveTable: true,
+    };
+
+    await store.abortStructuredShadowTable({ name: shadowName });
+
+    expect(store['structuredShadowTable']).toBeUndefined();
+    expect(store['structuredShadowName']).toBeUndefined();
+    const names = await db.tableNames();
+    expect(names).not.toContain(shadowName);
+    expect(names).toContain(backupName);
   });
 });

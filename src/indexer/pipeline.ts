@@ -305,6 +305,7 @@ export class IndexPipeline implements IIndexPipeline {
       throw new Error('Structured full rebuild requires structured catalog support');
     }
     const structuredRebuildFiles: FullRebuildFile[] = [];
+    const structuredRebuildScannedFiles = new Set<string>();
     const structuredParseFailures: string[] = [];
     if (events.length === 0) {
       if (useStructuredFullRebuild) {
@@ -350,10 +351,15 @@ export class IndexPipeline implements IIndexPipeline {
     let completedSuccessfully = false;
 
     let legacyShadow: LegacyShadowTable | undefined;
+    let initialStructuredRebuildEpoch: number | undefined;
     const deferredMerkleOps: DeferredMerkleOp[] = [];
 
     try {
       if (useStructuredFullRebuild) {
+        if (!supportsStructuredCatalog(metadataStore)) {
+          throw new Error('Structured full rebuild requires structured catalog support');
+        }
+        initialStructuredRebuildEpoch = (await metadataStore.getStructuredIndexState()).rebuildEpoch;
         legacyShadow = await this.options.vectorStore.beginLegacyShadowTable();
       }
       const renameCandidates = MerkleTree.detectRenameCandidates(events);
@@ -416,6 +422,7 @@ export class IndexPipeline implements IIndexPipeline {
           loadContent as ContentLoader,
           trackProgress,
           useStructuredFullRebuild ? structuredRebuildFiles : undefined,
+          useStructuredFullRebuild ? structuredRebuildScannedFiles : undefined,
           structuredParseFailures,
           useStructuredFullRebuild ? legacyShadow : undefined,
           useStructuredFullRebuild ? deferredMerkleOps : undefined,
@@ -459,12 +466,11 @@ export class IndexPipeline implements IIndexPipeline {
         }
         // Full Rebuild retires Active files omitted from input: reject unaccounted omissions.
         const activeBefore = (await metadataStore.getStructuredIndexState()).activeGenerations;
-        const included = new Set(structuredRebuildFiles.map((file) => file.source.filePath));
         const explicitlyDeleted = events
           .filter((event) => event.type === 'deleted')
           .map((event) => event.filePath);
         const unaccounted = [...activeBefore.keys()].filter((filePath) =>
-          !included.has(filePath)
+          !structuredRebuildScannedFiles.has(filePath)
           && !explicitlyDeleted.some((deletedPath) =>
             filePath === deletedPath || filePath.startsWith(`${deletedPath}/`)));
         if (unaccounted.length > 0) {
@@ -488,7 +494,20 @@ export class IndexPipeline implements IIndexPipeline {
       };
     } finally {
       if (legacyShadow !== undefined) {
-        await this.options.vectorStore.abortLegacyShadowTable(legacyShadow).catch(() => {});
+        let preserveCommittedLegacy = false;
+        if (initialStructuredRebuildEpoch !== undefined && supportsStructuredCatalog(metadataStore)) {
+          try {
+            const state = await metadataStore.getStructuredIndexState();
+            preserveCommittedLegacy = state.rebuildState === 'merkle-activated'
+              && state.rebuildEpoch > initialStructuredRebuildEpoch;
+          } catch (error) {
+            preserveCommittedLegacy = true;
+            console.error('[IndexPipeline] Could not establish Legacy rollback safety; preserving its backup:', error);
+          }
+        }
+        if (!preserveCommittedLegacy) {
+          await this.options.vectorStore.abortLegacyShadowTable(legacyShadow).catch(() => {});
+        }
       }
       if (trackProgress) {
         this.progress.currentFile = undefined;
@@ -719,6 +738,7 @@ export class IndexPipeline implements IIndexPipeline {
     loadContent: ContentLoader,
     trackProgress: boolean,
     structuredRebuildFiles?: FullRebuildFile[],
+    structuredRebuildScannedFiles?: Set<string>,
     structuredParseFailures?: string[],
     legacyShadow?: LegacyShadowTable,
     deferredMerkleOps?: DeferredMerkleOp[],
@@ -755,6 +775,13 @@ export class IndexPipeline implements IIndexPipeline {
         parseFailures,
         shouldAbortStructuredFullRebuild: true,
       };
+    }
+    if (structuredRebuildScannedFiles !== undefined) {
+      for (const work of works) {
+        if (!work.skipped && (work.structured !== undefined || work.structuredRetirement)) {
+          structuredRebuildScannedFiles.add(work.event.filePath);
+        }
+      }
     }
 
     // Stage 2: L1 (memory) + L2 (persistent) cache-aware embed.

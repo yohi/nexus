@@ -624,7 +624,7 @@ export class SqliteMetadataStore implements IMetadataStore, IStructuredCatalog {
     this.immediateTransaction(() => {
       this.validateFullRebuildTargets(input, 'prepare');
       // Do not overwrite recovery evidence from a prior interrupted rebuild.
-      if (this.db.prepare('SELECT 1 FROM structured_rebuild_backup_runs LIMIT 1').get() !== undefined) {
+      if (this.db.prepare("SELECT 1 FROM structured_rebuild_backup_runs WHERE phase <> 'idle' LIMIT 1").get() !== undefined) {
         throw new Error('SqliteMetadataStore.prepareFullRebuild: unresolved recovery journal');
       }
       this.db.prepare(`
@@ -942,7 +942,7 @@ export class SqliteMetadataStore implements IMetadataStore, IStructuredCatalog {
     await this.asyncBoundary();
     return this.immediateTransaction(() => {
       // Checked before advancing the epoch: an old journal must remain discoverable.
-      if (this.db.prepare('SELECT 1 FROM structured_rebuild_backup_runs LIMIT 1').get() !== undefined) {
+      if (this.db.prepare("SELECT 1 FROM structured_rebuild_backup_runs WHERE phase <> 'idle' LIMIT 1").get() !== undefined) {
         throw new Error('SqliteMetadataStore.incrementRebuildEpoch: unresolved recovery journal');
       }
       this.db.prepare('UPDATE index_stats SET structured_rebuild_epoch = COALESCE(structured_rebuild_epoch, 0) + 1 WHERE id=?').run(PRIMARY_STATS_ID);
