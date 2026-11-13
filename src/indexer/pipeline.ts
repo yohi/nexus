@@ -28,6 +28,7 @@ import {
   type EmbeddingCacheEntry,
   type IndexStatsRow,
   type ReindexOptions,
+  supportsStructuredCatalog,
 } from '../types/index.js';
 import type { StructuredSource, StructuredDeclaration, StructuredImport } from '../structured/contracts.js';
 import type { FullRebuildFile, StructuredIndexCoordinator } from './structured-index-coordinator.js';
@@ -298,14 +299,26 @@ export class IndexPipeline implements IIndexPipeline {
     options: { trackProgress?: boolean; fullRebuild?: boolean } = {},
   ): Promise<ProcessEventsResult> {
     const structuredIndexCoordinator = this.options.structuredIndexCoordinator;
+    const metadataStore = this.options.metadataStore;
     const useStructuredFullRebuild = options.fullRebuild === true && structuredIndexCoordinator !== undefined;
+    if (useStructuredFullRebuild && !supportsStructuredCatalog(metadataStore)) {
+      throw new Error('Structured full rebuild requires structured catalog support');
+    }
     const structuredRebuildFiles: FullRebuildFile[] = [];
+    const structuredRebuildScannedFiles = new Set<string>();
     const structuredParseFailures: string[] = [];
     if (events.length === 0) {
       if (useStructuredFullRebuild) {
+        if (!supportsStructuredCatalog(metadataStore)) {
+          throw new Error('Structured full rebuild requires structured catalog support');
+        }
         if (!this.isTreeLoaded) {
           await this.merkleTree.load();
           this.isTreeLoaded = true;
+        }
+        const active = (await metadataStore.getStructuredIndexState()).activeGenerations;
+        if (active.size > 0) {
+          throw new Error('Structured full rebuild: empty scan cannot retire existing active files');
         }
         const legacyShadow = await this.options.vectorStore.beginLegacyShadowTable();
         await this.commitStructuredFullRebuild(
@@ -313,7 +326,7 @@ export class IndexPipeline implements IIndexPipeline {
           structuredRebuildFiles,
           [],
           legacyShadow,
-          await this.options.metadataStore.getAllNodes(),
+          await metadataStore.getAllNodes(),
         );
       }
       return { chunksIndexed: 0, structuredParseFailures: [], embeddingFailures: [] };
@@ -338,10 +351,15 @@ export class IndexPipeline implements IIndexPipeline {
     let completedSuccessfully = false;
 
     let legacyShadow: LegacyShadowTable | undefined;
+    let initialStructuredRebuildEpoch: number | undefined;
     const deferredMerkleOps: DeferredMerkleOp[] = [];
 
     try {
       if (useStructuredFullRebuild) {
+        if (!supportsStructuredCatalog(metadataStore)) {
+          throw new Error('Structured full rebuild requires structured catalog support');
+        }
+        initialStructuredRebuildEpoch = (await metadataStore.getStructuredIndexState()).rebuildEpoch;
         legacyShadow = await this.options.vectorStore.beginLegacyShadowTable();
       }
       const renameCandidates = MerkleTree.detectRenameCandidates(events);
@@ -404,6 +422,7 @@ export class IndexPipeline implements IIndexPipeline {
           loadContent as ContentLoader,
           trackProgress,
           useStructuredFullRebuild ? structuredRebuildFiles : undefined,
+          useStructuredFullRebuild ? structuredRebuildScannedFiles : undefined,
           structuredParseFailures,
           useStructuredFullRebuild ? legacyShadow : undefined,
           useStructuredFullRebuild ? deferredMerkleOps : undefined,
@@ -431,16 +450,31 @@ export class IndexPipeline implements IIndexPipeline {
       }
 
       if (useStructuredFullRebuild && !this.abortController.signal.aborted) {
-        if (structuredParseFailures.length > 0) {
+        if (!supportsStructuredCatalog(metadataStore)) {
+          throw new Error('Structured full rebuild requires structured catalog support');
+        }
+        if (structuredParseFailures.length > 0 || embeddingFailures.length > 0) {
           if (legacyShadow !== undefined) {
             await this.options.vectorStore.abortLegacyShadowTable(legacyShadow).catch(() => {});
             legacyShadow = undefined;
           }
-          const filePaths = [...new Set(structuredParseFailures)].join(', ');
-          throw new Error(`Structured full rebuild aborted: parsing failed for ${filePaths}`);
+          const failures = [...new Set([...structuredParseFailures, ...embeddingFailures])].join(', ');
+          throw new Error(`Structured full rebuild aborted: incomplete input for ${failures}`);
         }
         if (legacyShadow === undefined || merkleSnapshot === undefined) {
           throw new Error('Structured full rebuild transaction was not initialized');
+        }
+        // Full Rebuild retires Active files omitted from input: reject unaccounted omissions.
+        const activeBefore = (await metadataStore.getStructuredIndexState()).activeGenerations;
+        const explicitlyDeleted = events
+          .filter((event) => event.type === 'deleted')
+          .map((event) => event.filePath);
+        const unaccounted = [...activeBefore.keys()].filter((filePath) =>
+          !structuredRebuildScannedFiles.has(filePath)
+          && !explicitlyDeleted.some((deletedPath) =>
+            filePath === deletedPath || filePath.startsWith(`${deletedPath}/`)));
+        if (unaccounted.length > 0) {
+          throw new Error(`Structured full rebuild aborted: active files missing from complete scan: ${unaccounted.join(', ')}`);
         }
         await this.commitStructuredFullRebuild(
           structuredIndexCoordinator,
@@ -460,7 +494,20 @@ export class IndexPipeline implements IIndexPipeline {
       };
     } finally {
       if (legacyShadow !== undefined) {
-        await this.options.vectorStore.abortLegacyShadowTable(legacyShadow).catch(() => {});
+        let preserveCommittedLegacy = false;
+        if (initialStructuredRebuildEpoch !== undefined && supportsStructuredCatalog(metadataStore)) {
+          try {
+            const state = await metadataStore.getStructuredIndexState();
+            preserveCommittedLegacy = state.rebuildState === 'merkle-activated'
+              && state.rebuildEpoch > initialStructuredRebuildEpoch;
+          } catch (error) {
+            preserveCommittedLegacy = true;
+            console.error('[IndexPipeline] Could not establish Legacy rollback safety; preserving its backup:', error);
+          }
+        }
+        if (!preserveCommittedLegacy) {
+          await this.options.vectorStore.abortLegacyShadowTable(legacyShadow).catch(() => {});
+        }
       }
       if (trackProgress) {
         this.progress.currentFile = undefined;
@@ -691,6 +738,7 @@ export class IndexPipeline implements IIndexPipeline {
     loadContent: ContentLoader,
     trackProgress: boolean,
     structuredRebuildFiles?: FullRebuildFile[],
+    structuredRebuildScannedFiles?: Set<string>,
     structuredParseFailures?: string[],
     legacyShadow?: LegacyShadowTable,
     deferredMerkleOps?: DeferredMerkleOp[],
@@ -727,6 +775,13 @@ export class IndexPipeline implements IIndexPipeline {
         parseFailures,
         shouldAbortStructuredFullRebuild: true,
       };
+    }
+    if (structuredRebuildScannedFiles !== undefined) {
+      for (const work of works) {
+        if (!work.skipped && (work.structured !== undefined || work.structuredRetirement)) {
+          structuredRebuildScannedFiles.add(work.event.filePath);
+        }
+      }
     }
 
     // Stage 2: L1 (memory) + L2 (persistent) cache-aware embed.
@@ -1129,6 +1184,10 @@ export class IndexPipeline implements IIndexPipeline {
     legacyShadow: LegacyShadowTable,
     merkleSnapshot: readonly MerkleNodeRow[],
   ): Promise<void> {
+    const metadataStore = this.options.metadataStore;
+    if (!supportsStructuredCatalog(metadataStore)) {
+      throw new Error('Structured full rebuild requires structured catalog support');
+    }
     try {
       const retainedChunks = files.reduce((total, file) => total + (file.chunks?.length ?? 0), 0);
       const retainedVectors = files.reduce((total, file) => total + (file.embeddings?.length ?? 0), 0);
@@ -1152,6 +1211,10 @@ export class IndexPipeline implements IIndexPipeline {
           afterCommit: async () => {
             await this.applyDeferredMerkleOps(deferredMerkleOps);
           },
+          beforeRollback: async () => {
+            await this.options.vectorStore.abortLegacyShadowTable(legacyShadow);
+            await this.merkleTree.restore(merkleSnapshot);
+          },
         });
       });
       if (files.length > 0) {
@@ -1159,16 +1222,28 @@ export class IndexPipeline implements IIndexPipeline {
           this.diagnosticCounter('S09_index_settlement', 'index.pipeline_files_indexed_succeeded', files.length, 'files', 'succeeded');
         });
       }
-      await runRuntimeDiagnosticStage('S08_storage_write', async () => {
-        try {
-          await this.options.vectorStore.finalizeLegacyShadowTable(legacyShadow);
-        } catch (error) {
-          markRuntimeDiagnosticStateIntegrity('backup_cleanup_failed');
-          console.error('[IndexPipeline] Failed to finalize legacy vector backup:', error);
-        }
-      });
-      await runRuntimeDiagnosticStage('S08_storage_write', () => markRuntimeDiagnosticStateIntegrity('verified'));
+      const catalogState = await metadataStore.getStructuredIndexState();
+      const catalogFinalizationPending = catalogState.rebuildState === 'merkle-activated';
+      let legacyCleanupFailed = catalogFinalizationPending;
+      if (!catalogFinalizationPending) {
+        await runRuntimeDiagnosticStage('S08_storage_write', async () => {
+          try {
+            await this.options.vectorStore.finalizeLegacyShadowTable(legacyShadow);
+          } catch (error) {
+            legacyCleanupFailed = true;
+            markRuntimeDiagnosticStateIntegrity('backup_cleanup_failed');
+            console.error('[IndexPipeline] Failed to finalize legacy vector backup:', error);
+          }
+        });
+      }
+      const integrity = legacyCleanupFailed || catalogState.lastErrorCode === 'structured_backup_cleanup_failed'
+        ? 'backup_cleanup_failed' : 'verified';
+      await runRuntimeDiagnosticStage('S08_storage_write', () => markRuntimeDiagnosticStateIntegrity(integrity));
     } catch (error) {
+      // The catalog commit already completed; aborting here would undo only Legacy.
+      // Leave its journal and vector backups for startup finalization.
+      const state = await metadataStore.getStructuredIndexState();
+      if (state.rebuildState === 'merkle-activated') throw error;
       await runRuntimeDiagnosticStage('S08_storage_write', async () => {
         try {
           await this.options.vectorStore.abortLegacyShadowTable(legacyShadow);

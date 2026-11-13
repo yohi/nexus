@@ -144,6 +144,30 @@ describe('IndexPipeline structured lifecycle', () => {
     await expect(merkleTree.getNode(filePath)).resolves.toBeUndefined();
   });
 
+  it('treats a successfully scanned retire result as accounted during full rebuild', async () => {
+    const { metadataStore, pipeline } = await createStructuredPipeline();
+    const filePath = 'src/retired.ts';
+    const originalContent = 'export function retired(): number { return 1; }\n';
+    const commentOnlyContent = '// no structured declarations remain\n';
+
+    await indexContent(pipeline, 'added', filePath, originalContent);
+    const activateFullRebuild = vi.spyOn(metadataStore, 'activateFullRebuild');
+
+    await expect(pipeline.reindex(
+      () => Promise.resolve([createEvent('modified', filePath, commentOnlyContent)]),
+      () => Promise.resolve(commentOnlyContent),
+      true,
+    )).resolves.toMatchObject({ chunksIndexed: expect.any(Number) });
+
+    await expect(metadataStore.resolveFile(filePath)).resolves.toEqual({ kind: 'missing' });
+    expect((await metadataStore.getStructuredIndexState()).activeGenerations.has(filePath)).toBe(false);
+    expect(activateFullRebuild).toHaveBeenCalledOnce();
+    expect(activateFullRebuild.mock.calls[0]?.[0].files).toEqual([]);
+    expect(activateFullRebuild.mock.calls[0]?.[0].retiredFiles).toEqual([
+      expect.objectContaining({ filePath }),
+    ]);
+  });
+
   it('does not abort the legacy shadow after a successful swap', async () => {
     const { pipeline, vectorStore } = await createStructuredPipeline();
     const swapLegacyShadowTableSpy = vi.spyOn(vectorStore, 'swapLegacyShadowTable');
@@ -441,9 +465,10 @@ describe('IndexPipeline structured lifecycle', () => {
     );
   });
 
-  it('keeps a successful generation after finalization cleanup fails', async () => {
+  it('preserves recovery evidence after catalog finalization cleanup fails', async () => {
     const { metadataStore, vectorStore, pipeline } = await createStructuredPipeline();
-    vi.spyOn(vectorStore, 'finalizeStructuredShadowTable').mockRejectedValueOnce(new Error('structured cleanup failed'));
+    const finalizeStructuredShadowTable = vi.spyOn(vectorStore, 'finalizeStructuredShadowTable');
+    const finalizeLegacyShadowTable = vi.spyOn(vectorStore, 'finalizeLegacyShadowTable');
     vi.spyOn(metadataStore, 'finalizeFullRebuild').mockRejectedValueOnce(new Error('catalog cleanup failed'));
 
     await expect(pipeline.reindex(
@@ -456,7 +481,33 @@ describe('IndexPipeline structured lifecycle', () => {
       true,
     )).resolves.toMatchObject({ chunksIndexed: expect.any(Number) });
 
-    await expect(metadataStore.getStructuredIndexState()).resolves.toMatchObject({ rebuildState: 'idle' });
+    await expect(metadataStore.getStructuredIndexState()).resolves.toMatchObject({
+      rebuildState: 'merkle-activated',
+      lastErrorCode: 'structured_backup_cleanup_failed',
+    });
+    expect(finalizeStructuredShadowTable).not.toHaveBeenCalled();
+    expect(finalizeLegacyShadowTable).not.toHaveBeenCalled();
+  });
+
+  it('does not abort Legacy after durable commit when idle-state persistence fails', async () => {
+    const { metadataStore, vectorStore, pipeline } = await createStructuredPipeline();
+    const originalSetState = metadataStore.setStructuredRebuildState.bind(metadataStore);
+    vi.spyOn(metadataStore, 'setStructuredRebuildState').mockImplementation(async (input) => {
+      if (input.rebuildState === 'idle') throw new Error('idle state write failed');
+      await originalSetState(input);
+    });
+    const abortLegacy = vi.spyOn(vectorStore, 'abortLegacyShadowTable');
+    const content = 'export function committedAfterStatusFailure(): number { return 1; }\n';
+
+    await expect(pipeline.reindex(
+      () => Promise.resolve([createEvent('added', 'src/committed-after-status-failure.ts', content)]),
+      () => Promise.resolve(content),
+      true,
+    )).rejects.toThrow('idle state write failed');
+
+    expect(abortLegacy).not.toHaveBeenCalled();
+    await expect(metadataStore.resolveFile('src/committed-after-status-failure.ts'))
+      .resolves.toMatchObject({ kind: 'active' });
   });
 
   it('retires structured state when incremental indexing skips an oversized file', async () => {

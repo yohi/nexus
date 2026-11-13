@@ -623,11 +623,10 @@ export class SqliteMetadataStore implements IMetadataStore, IStructuredCatalog {
     await this.asyncBoundary();
     this.immediateTransaction(() => {
       this.validateFullRebuildTargets(input, 'prepare');
-
-      this.db.prepare('DELETE FROM structured_rebuild_backup_runs').run();
-      this.db.prepare('DELETE FROM structured_rebuild_backup_files').run();
-      this.db.prepare('DELETE FROM structured_rebuild_backup_tombstones').run();
-      this.db.prepare('DELETE FROM structured_rebuild_backup_vectors').run();
+      // Do not overwrite recovery evidence from a prior interrupted rebuild.
+      if (this.db.prepare("SELECT 1 FROM structured_rebuild_backup_runs WHERE phase <> 'idle' LIMIT 1").get() !== undefined) {
+        throw new Error('SqliteMetadataStore.prepareFullRebuild: unresolved recovery journal');
+      }
       this.db.prepare(`
         INSERT INTO structured_rebuild_backup_files (rebuild_epoch,file_path,active_generation,pending_generation)
         SELECT ?,file_path,active_generation,pending_generation
@@ -941,9 +940,15 @@ export class SqliteMetadataStore implements IMetadataStore, IStructuredCatalog {
 
   async incrementRebuildEpoch(): Promise<number> {
     await this.asyncBoundary();
-    this.db.prepare('UPDATE index_stats SET structured_rebuild_epoch = COALESCE(structured_rebuild_epoch, 0) + 1 WHERE id=?').run(PRIMARY_STATS_ID);
-    const row = this.db.prepare('SELECT structured_rebuild_epoch AS epoch FROM index_stats WHERE id=?').get(PRIMARY_STATS_ID) as { epoch: number } | undefined;
-    return row?.epoch ?? 0;
+    return this.immediateTransaction(() => {
+      // Checked before advancing the epoch: an old journal must remain discoverable.
+      if (this.db.prepare("SELECT 1 FROM structured_rebuild_backup_runs WHERE phase <> 'idle' LIMIT 1").get() !== undefined) {
+        throw new Error('SqliteMetadataStore.incrementRebuildEpoch: unresolved recovery journal');
+      }
+      this.db.prepare('UPDATE index_stats SET structured_rebuild_epoch = COALESCE(structured_rebuild_epoch, 0) + 1 WHERE id=?').run(PRIMARY_STATS_ID);
+      const row = this.db.prepare('SELECT structured_rebuild_epoch AS epoch FROM index_stats WHERE id=?').get(PRIMARY_STATS_ID) as { epoch: number } | undefined;
+      return row?.epoch ?? 0;
+    });
   }
 
   async bulkUpsertMerkleNodes(nodes: MerkleNodeRow[]): Promise<void> {

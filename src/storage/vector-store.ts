@@ -518,6 +518,15 @@ export class LanceVectorStore implements IVectorStore {
     }
   }
 
+  private async assertRebuildTablesUnprotected(tableNames: readonly (string | undefined)[]): Promise<void> {
+    const names = tableNames.filter((name): name is string => name !== undefined);
+    if (names.length === 0) return;
+    const protectedNames = await this.getProtectedRebuildTableNames();
+    if (protectedNames === undefined || names.some((name) => protectedNames.has(name))) {
+      throw new Error('LanceVectorStore: unresolved recovery journal protects an existing rebuild table');
+    }
+  }
+
   async cleanupOrphanedRebuildTables(): Promise<void> {
     await this.runInWriteLock(async () => {
       if (!this.db) return;
@@ -540,13 +549,9 @@ export class LanceVectorStore implements IVectorStore {
         await this.dropTableIfPresent(artifact.shadowName);
         await this.dropTableIfPresent(artifact.replacementName);
 
-        if (mode === 'finalize') {
-          await this.dropTableIfPresent(artifact.backupName);
-          continue;
-        }
-
-        if (!artifact.backupComplete) {
-          await this.dropTableIfPresent(artifact.backupName);
+        // Keep every backup until the entire vector + SQLite recovery is complete.
+        // A subsequent artifact may still fail after this one was restored.
+        if (mode === 'finalize' || !artifact.backupComplete) {
           continue;
         }
 
@@ -572,7 +577,7 @@ export class LanceVectorStore implements IVectorStore {
             legacyTableChanged = true;
           }
         }
-        await this.dropTableIfPresent(artifact.backupName);
+        // The caller will retire the SQLite journal before orphan cleanup removes backups.
       }
 
       if (legacyTableChanged) {
@@ -990,6 +995,10 @@ export class LanceVectorStore implements IVectorStore {
       if (!this.db) {
         throw new Error('VectorStore not initialized');
       }
+      await this.assertRebuildTablesUnprotected([
+        this.structuredShadowName,
+        this.structuredSwapBackup?.tableName,
+      ]);
       if (this.structuredShadowTable && this.structuredShadowName) {
         await this.db.dropTable(this.structuredShadowName).catch(() => {});
       }
@@ -1075,6 +1084,8 @@ export class LanceVectorStore implements IVectorStore {
         this.structuredShadowName = undefined;
       } catch (error) {
         if (promotionStarted) {
+          // Retain the recovery handle if the first restore attempt fails.
+          this.structuredSwapBackup = { handleName: shadowTable.name, tableName: backupName, hadLiveTable };
           try {
             this.structuredTable = await this.restoreTableFromBackup(backupName, STRUCTURED_TABLE_NAME, hadLiveTable);
           } catch (restoreError) {
@@ -1082,7 +1093,7 @@ export class LanceVectorStore implements IVectorStore {
           }
         }
         await this.db.dropTable(replacementName).catch(() => {});
-        if (backupName !== undefined) await this.db.dropTable(backupName).catch(() => {});
+        // Never destroy the only usable backup on a failed promotion/restore.
         throw error;
       }
     });
@@ -1105,13 +1116,21 @@ export class LanceVectorStore implements IVectorStore {
       }
       if (this.structuredSwapBackup?.handleName === shadowTable.name) {
         const backup = this.structuredSwapBackup;
+        const shadowName = this.structuredShadowName === shadowTable.name
+          ? this.structuredShadowName
+          : undefined;
         this.structuredTable = await this.restoreTableFromBackup(
           backup.tableName,
           STRUCTURED_TABLE_NAME,
           backup.hadLiveTable,
         );
         this.structuredSwapBackup = undefined;
-        if (backup.tableName !== undefined) await this.db.dropTable(backup.tableName).catch(() => {});
+        if (shadowName !== undefined) {
+          this.structuredShadowTable = undefined;
+          this.structuredShadowName = undefined;
+          await this.db.dropTable(shadowName).catch(() => {});
+        }
+        // Keep the backup until SQLite rollback has durably retired the journal.
         return;
       }
       if (this.structuredShadowTable && this.structuredShadowName === shadowTable.name) {
@@ -1128,6 +1147,10 @@ export class LanceVectorStore implements IVectorStore {
       if (!this.db) {
         throw new Error('VectorStore not initialized');
       }
+      await this.assertRebuildTablesUnprotected([
+        this.legacyShadowName,
+        this.legacySwapBackup?.tableName,
+      ]);
       if (this.legacyShadowTable && this.legacyShadowName) {
         await this.db.dropTable(this.legacyShadowName).catch(() => {});
       }
@@ -1319,6 +1342,13 @@ export class LanceVectorStore implements IVectorStore {
         this.legacyShadowName = undefined;
       } catch (error) {
         if (promotionStarted) {
+          this.legacySwapBackup = {
+            handleName: shadow.name,
+            tableName: backupName,
+            hadLiveTable,
+            staleCount: previousStaleCount,
+            totalFiles: previousTotalFiles,
+          };
           try {
             this.table = await this.restoreTableFromBackup(backupName, 'chunks', hadLiveTable);
           } catch (restoreError) {
@@ -1327,9 +1357,8 @@ export class LanceVectorStore implements IVectorStore {
         }
         this.staleCount = previousStaleCount;
         this.totalFiles = previousTotalFiles;
-        this.legacySwapBackup = undefined;
         await this.db.dropTable(replacementName).catch(() => {});
-        if (backupName !== undefined) await this.db.dropTable(backupName).catch(() => {});
+        // Retain the original backup for a retry after failed restoration.
         throw error;
       }
     });
@@ -1352,11 +1381,19 @@ export class LanceVectorStore implements IVectorStore {
       }
       if (this.legacySwapBackup?.handleName === shadow.name) {
         const backup = this.legacySwapBackup;
+        const shadowName = this.legacyShadowName === shadow.name
+          ? this.legacyShadowName
+          : undefined;
         this.table = await this.restoreTableFromBackup(backup.tableName, 'chunks', backup.hadLiveTable);
         this.staleCount = backup.staleCount;
         this.totalFiles = backup.totalFiles;
         this.legacySwapBackup = undefined;
-        if (backup.tableName !== undefined) await this.db.dropTable(backup.tableName).catch(() => {});
+        if (shadowName !== undefined) {
+          this.legacyShadowTable = undefined;
+          this.legacyShadowName = undefined;
+          await this.db.dropTable(shadowName).catch(() => {});
+        }
+        // The SQLite journal, not an individual table rollback, owns backup retirement.
         return;
       }
       if (this.legacyShadowTable && this.legacyShadowName === shadow.name) {

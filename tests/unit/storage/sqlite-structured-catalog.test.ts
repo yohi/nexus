@@ -107,6 +107,37 @@ describe('SQLite structured catalog', () => {
     });
   });
 
+  it('allows a new rebuild past idle journal rows without deleting their vector references', async () => {
+    await store.initialize();
+    const idleEpoch = await store.incrementRebuildEpoch();
+    await store.prepareFullRebuild({ rebuildEpoch: idleEpoch, files: [], retiredFiles: [] }, []);
+    await store.recordFullRebuildVectorArtifact({
+      rebuildEpoch: idleEpoch,
+      table: 'legacy',
+      shadowName: 'chunks_shadow_idle',
+      replacementName: 'chunks_replacement_idle',
+      backupName: 'chunks_backup_idle',
+      hadLiveTable: true,
+      backupComplete: true,
+    });
+    await store.setStructuredRebuildState({ rebuildState: 'idle' });
+
+    const nextEpoch = await store.incrementRebuildEpoch();
+    await store.prepareFullRebuild({ rebuildEpoch: nextEpoch, files: [], retiredFiles: [] }, []);
+
+    expect(readRows<{ rebuild_epoch: number; phase: string }>(
+      path.join(dir, 'metadata.db'),
+      'SELECT rebuild_epoch, phase FROM structured_rebuild_backup_runs ORDER BY rebuild_epoch',
+    )).toEqual([
+      { rebuild_epoch: idleEpoch, phase: 'idle' },
+      { rebuild_epoch: nextEpoch, phase: 'building' },
+    ]);
+    expect(readRows<{ rebuild_epoch: number; backup_name: string }>(
+      path.join(dir, 'metadata.db'),
+      "SELECT rebuild_epoch, backup_name FROM structured_rebuild_backup_vectors WHERE rebuild_epoch = 1 AND table_kind = 'legacy'",
+    )).toEqual([{ rebuild_epoch: idleEpoch, backup_name: 'chunks_backup_idle' }]);
+  });
+
   it('initializes when the persisted Merkle snapshot is malformed', async () => {
     const databasePath = path.join(dir, 'metadata.db');
     await store.initialize();
@@ -224,7 +255,7 @@ describe('SQLite structured catalog', () => {
     expect(await store.resolveFile('src/a.ts')).toEqual({ kind: 'active', generationId: 'g2' });
   });
 
-  it('removes backup remnants from earlier rebuild epochs before preparing a new rebuild', async () => {
+  it('preserves unresolved recovery evidence and allows a new epoch after explicit rollback', async () => {
     await store.initialize();
     await activateInitialGeneration(store);
 
@@ -232,6 +263,18 @@ describe('SQLite structured catalog', () => {
     const firstActivation = fullRebuildActivation(firstEpoch);
     await store.prepareFullRebuild(firstActivation, []);
 
+    await expect(store.incrementRebuildEpoch()).rejects.toThrow(
+      'SqliteMetadataStore.incrementRebuildEpoch: unresolved recovery journal',
+    );
+    expect((await store.getStructuredIndexState()).rebuildEpoch).toBe(firstEpoch);
+    const unresolvedRows = readRows<{ rebuild_epoch: number }>(
+      path.join(dir, 'metadata.db'),
+      'SELECT rebuild_epoch FROM structured_rebuild_backup_runs ORDER BY rebuild_epoch',
+    );
+    expect(unresolvedRows).toEqual([{ rebuild_epoch: firstEpoch }]);
+
+    // Only an explicit successful rollback may retire the old journal.
+    await store.rollbackFullRebuild(firstActivation);
     const secondEpoch = await store.incrementRebuildEpoch();
     const secondActivation = fullRebuildActivation(secondEpoch, 'g3');
     await store.prepareFullRebuild(secondActivation, []);

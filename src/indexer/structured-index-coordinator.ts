@@ -28,6 +28,8 @@ export interface FullRebuildFile {
 export interface FullRebuildCommitHooks {
   readonly beforeCommit?: (rebuildEpoch: number) => Promise<void>;
   readonly afterCommit?: () => Promise<void>;
+  /** Restore Legacy vectors and Merkle before retiring SQLite recovery evidence. */
+  readonly beforeRollback?: () => Promise<void>;
   readonly merkleSnapshot: readonly MerkleNodeRow[];
 }
 
@@ -44,6 +46,17 @@ export class StructuredIndexCoordinator {
 
   constructor(private readonly options: StructuredIndexCoordinatorOptions) {}
 
+  private async assertNoPendingFullRebuildRecovery(): Promise<void> {
+    const state = await this.options.metadataStore.getStructuredIndexState();
+    const recovery = await this.options.metadataStore.getFullRebuildRecovery?.();
+    const stateIsQuiescent = state.rebuildState === null
+      || state.rebuildState === 'idle'
+      || state.rebuildState === 'failed';
+    if ((recovery !== null && recovery !== undefined) || !stateIsQuiescent) {
+      throw new Error('StructuredIndexCoordinator: unresolved full-rebuild recovery');
+    }
+  }
+
   async stageFile(input: {
     source: StructuredSource;
     generationId: string;
@@ -57,6 +70,7 @@ export class StructuredIndexCoordinator {
     embeddings?: number[][];
   }): Promise<void> {
     return this.options.projectWriteCoordinator.run(async () => {
+      await this.assertNoPendingFullRebuildRecovery();
       const state = await this.options.metadataStore.getStructuredIndexState();
       const expectedActiveGeneration = state.activeGenerations.get(input.source.filePath) ?? null;
       const rebuildEpoch = state.rebuildEpoch;
@@ -150,6 +164,7 @@ export class StructuredIndexCoordinator {
 
   async activateFile(input: { filePath: string; generationId: string }): Promise<void> {
     return this.options.projectWriteCoordinator.run(async () => {
+      await this.assertNoPendingFullRebuildRecovery();
       const state = await this.options.metadataStore.getStructuredIndexState();
       const activeGenerations = state.activeGenerations;
       const expectedActiveGeneration = activeGenerations.get(input.filePath) ?? null;
@@ -191,6 +206,7 @@ export class StructuredIndexCoordinator {
 
   async deleteFile(input: { filePath: string }): Promise<void> {
     return this.options.projectWriteCoordinator.run(async () => {
+      await this.assertNoPendingFullRebuildRecovery();
       const state = await this.options.metadataStore.getStructuredIndexState();
       const activeGenerations = state.activeGenerations;
       const expectedActiveGeneration = activeGenerations.get(input.filePath) ?? null;
@@ -330,15 +346,36 @@ export class StructuredIndexCoordinator {
         await input.afterCommit?.();
         await this.options.metadataStore.setStructuredRebuildState({ rebuildState: 'merkle-activated' });
       } catch (error) {
-        if (metadataPrepared) {
+        // Restore both vector tables and Merkle before deleting the SQLite journal.
+        // If any restore fails, preserve the journal and backups for startup retry.
+        let physicalRollbackCompleted = true;
+        if (shadowTable !== undefined) {
           try {
-            await runRuntimeDiagnosticStage('S08_storage_write', async () => {
+            await this.options.vectorStore.abortStructuredShadowTable(shadowTable);
+          } catch (abortError) {
+            physicalRollbackCompleted = false;
+            await this.markStateIntegrity('rollback_incomplete');
+            console.error('[StructuredIndexCoordinator] Failed to roll back structured vectors:', abortError);
+          }
+        }
+        if (metadataPrepared && input.beforeRollback !== undefined) {
+          try {
+            await input.beforeRollback();
+          } catch (rollbackError) {
+            physicalRollbackCompleted = false;
+            await this.markStateIntegrity('rollback_incomplete');
+            console.error('[StructuredIndexCoordinator] Failed to roll back legacy vectors or Merkle:', rollbackError);
+          }
+        }
+        if (metadataPrepared) {
+          if (physicalRollbackCompleted) {
+            try {
               await this.options.metadataStore.rollbackFullRebuild(activation);
               metadataRollbackCompleted = true;
-            });
-          } catch (rollbackError) {
-            await this.markStateIntegrity('rollback_incomplete');
-            console.error('[StructuredIndexCoordinator] Failed to roll back catalog activation:', rollbackError);
+            } catch (rollbackError) {
+              await this.markStateIntegrity('rollback_incomplete');
+              console.error('[StructuredIndexCoordinator] Failed to roll back catalog activation:', rollbackError);
+            }
           }
         } else {
           for (const filePath of stagedFiles) {
@@ -359,14 +396,13 @@ export class StructuredIndexCoordinator {
             });
           }
         }
-        if (shadowTable !== undefined) {
-          const tableToAbort = shadowTable;
-          await runRuntimeDiagnosticStage('S08_storage_write', async () => {
-            await this.options.vectorStore.abortStructuredShadowTable(tableToAbort);
-          }).catch(async (abortError) => {
-            await this.markStateIntegrity('rollback_incomplete');
-            console.error('[StructuredIndexCoordinator] Failed to roll back structured vectors:', abortError);
-          });
+        if (metadataRollbackCompleted) {
+          try {
+            await this.options.vectorStore.cleanupOrphanedRebuildTables?.();
+          } catch (cleanupError) {
+            await this.markStateIntegrity('backup_cleanup_failed');
+            console.error('[StructuredIndexCoordinator] Failed to clean rolled-back vector backups:', cleanupError);
+          }
         }
         if (!metadataPrepared || metadataRollbackCompleted) {
           await this.options.metadataStore.setStructuredRebuildState({
@@ -377,26 +413,39 @@ export class StructuredIndexCoordinator {
         throw error;
       }
 
-      if (shadowTable !== undefined) {
-        await runRuntimeDiagnosticStage('S08_storage_write', async () => {
-          try {
-            await this.options.vectorStore.finalizeStructuredShadowTable(shadowTable);
-          } catch (cleanupError) {
-            markRuntimeDiagnosticStateIntegrity('backup_cleanup_failed');
-            console.error('[StructuredIndexCoordinator] Failed to finalize structured vector backup:', cleanupError);
-          }
-        });
-      }
-      await runRuntimeDiagnosticStage('S08_storage_write', async () => {
+      // Finalize SQLite (retire the journal) only after the Commit phase is durable.
+      // If this fails, leave phase merkle-activated and preserve both vector backups.
+      let catalogCleanupFailed = false;
+      try {
+        await this.options.metadataStore.finalizeFullRebuild(activation);
+      } catch (cleanupError) {
+        catalogCleanupFailed = true;
+        await this.markStateIntegrity('backup_cleanup_failed');
         try {
-          await this.options.metadataStore.finalizeFullRebuild(activation);
-        } catch (cleanupError) {
-          markRuntimeDiagnosticStateIntegrity('backup_cleanup_failed');
-          console.error('[StructuredIndexCoordinator] Failed to finalize structured catalog backup:', cleanupError);
+          await this.options.metadataStore.setStructuredRebuildState({
+            rebuildState: 'merkle-activated',
+            lastErrorCode: 'structured_backup_cleanup_failed',
+          });
+        } catch (stateError) {
+          console.error('[StructuredIndexCoordinator] Failed to record pending catalog cleanup:', stateError);
         }
-      });
-      await this.options.metadataStore.setStructuredRebuildState({ rebuildState: 'idle', lastErrorCode: null });
-      await runRuntimeDiagnosticStage('S08_storage_write', () => markRuntimeDiagnosticStateIntegrity('verified'));
+        console.error('[StructuredIndexCoordinator] Failed to finalize structured catalog backup:', cleanupError);
+      }
+      let cleanupFailed = false;
+      if (!catalogCleanupFailed && shadowTable !== undefined) {
+        try {
+          await this.options.vectorStore.finalizeStructuredShadowTable(shadowTable);
+        } catch (cleanupError) {
+          cleanupFailed = true;
+          await this.markStateIntegrity('backup_cleanup_failed');
+          console.error('[StructuredIndexCoordinator] Failed to finalize structured vector backup:', cleanupError);
+        }
+      }
+      if (catalogCleanupFailed) return;
+      await this.options.metadataStore.setStructuredRebuildState({ rebuildState: 'idle', lastErrorCode: cleanupFailed ? 'structured_backup_cleanup_failed' : null });
+      if (!cleanupFailed) {
+        await runRuntimeDiagnosticStage('S08_storage_write', () => markRuntimeDiagnosticStateIntegrity('verified'));
+      }
     });
   }
 
