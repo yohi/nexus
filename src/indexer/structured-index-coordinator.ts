@@ -52,7 +52,7 @@ export class StructuredIndexCoordinator {
     const stateIsQuiescent = state.rebuildState === null
       || state.rebuildState === 'idle'
       || state.rebuildState === 'failed';
-    if (recovery != null || !stateIsQuiescent) {
+    if ((recovery !== null && recovery !== undefined) || !stateIsQuiescent) {
       throw new Error('StructuredIndexCoordinator: unresolved full-rebuild recovery');
     }
   }
