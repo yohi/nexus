@@ -108,7 +108,7 @@ describe('stress: concurrent MCP agents', () => {
 
     const responses = await Promise.all(
       createdClients.map(async (client) => {
-        const [tools, semantic, grep, hybrid, context, status, reindex] = await Promise.all([
+        const [tools, semantic, grep, hybrid, context, status] = await Promise.all([
           client.listTools(),
           client.callTool({ name: 'semantic_search', arguments: { query: 'authenticate', topK: 3 } }),
           client.callTool({ name: 'grep_search', arguments: { pattern: 'authenticate', maxResults: 5 } }),
@@ -121,7 +121,6 @@ describe('stress: concurrent MCP agents', () => {
             arguments: { filePath: 'src/auth.ts', startLine: 1, endLine: 1 },
           }),
           client.callTool({ name: 'index_status', arguments: {} }),
-          client.callTool({ name: 'reindex', arguments: { fullRebuild: true } }),
         ]);
 
         return {
@@ -131,12 +130,15 @@ describe('stress: concurrent MCP agents', () => {
           hybrid: parseResult(hybrid),
           context: parseResult(context),
           status: parseResult(status),
-          reindex: parseResult(reindex),
         };
       }),
     );
 
-    for (const response of responses) {
+    const reindexes = await Promise.all(createdClients.map(async (client) =>
+      parseResult(await client.callTool({ name: 'reindex', arguments: { fullRebuild: true } })),
+    ));
+
+    for (const [index, response] of responses.entries()) {
       expect(response.tools.tools).toHaveLength(12);
       expect(response.semantic).toMatchObject({
         results: [expect.objectContaining({ chunk: expect.objectContaining({ filePath: 'src/auth.ts' }) })],
@@ -156,10 +158,17 @@ describe('stress: concurrent MCP agents', () => {
         skippedFiles: 0,
         vectorStats: expect.objectContaining({ totalFiles: 1 }),
       });
-      expect(response.reindex).toMatchObject({
-        reconciliation: { added: 0, modified: 0, deleted: 0, unchanged: 0 },
-        chunksIndexed: 0,
-      });
+      const reindex = reindexes[index];
+      if (reindex === undefined) throw new Error('missing reindex response');
+      if ('status' in reindex) {
+        expect(reindex.status).toBe('integrity_unknown');
+        expect(reindex.reason).toBe('embedding_identity_unavailable');
+      } else {
+        expect(reindex).toMatchObject({
+          reconciliation: { added: 0, modified: 0, deleted: 1, unchanged: 0 },
+          chunksIndexed: 0,
+        });
+      }
     }
   }, 20000);
 

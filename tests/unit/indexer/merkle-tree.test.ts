@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import { MerkleTree } from '../../../src/indexer/merkle-tree.js';
+import { computeStringHash } from '../../../src/indexer/hash.js';
 import { InMemoryMetadataStore } from '../storage/in-memory-metadata-store.js';
 
 describe('MerkleTree', () => {
@@ -29,6 +30,23 @@ describe('MerkleTree', () => {
 
     expect(await tree.getNode('src/index.ts')).toBeUndefined();
     expect(tree.getRootHash()).not.toBe(rootHashWithTwoFiles);
+  });
+
+  it('recomputes every ancestor from the updated descendant hash', async () => {
+    const tree = new MerkleTree(new InMemoryMetadataStore());
+    await tree.load();
+    await tree.update('packages/pkg/src/a.ts', 'hash-a');
+    await tree.update('packages/pkg/src/b.ts', 'hash-b');
+
+    const expectedSourceDirectoryHash = await computeStringHash([
+      'packages/pkg/src/a.ts',
+      'packages/pkg/src/b.ts',
+    ].map((filePath, index) => `${filePath.length}:${filePath}:${index === 0 ? 'hash-a' : 'hash-b'}`).join(''));
+    const expectedPackageDirectoryHash = await computeStringHash(
+      `${'packages/pkg/src'.length}:packages/pkg/src:${expectedSourceDirectoryHash}`,
+    );
+
+    expect((await tree.getNode('packages/pkg'))?.hash).toBe(expectedPackageDirectoryHash);
   });
 
   it('throws error when diff is called (deprecated)', async () => {

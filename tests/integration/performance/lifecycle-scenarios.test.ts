@@ -50,7 +50,7 @@ describe('actual lifecycle scenario records', () => {
     await reopened.runtime.close();
   });
 
-  it('measures same-process L1 replay as an operation without a fabricated readiness time', async () => {
+  it('measures same-process L1 replay as a verified no-op without a fabricated readiness time', async () => {
     const current = await fixture();
     const ready = await captureReadiness(current.factory, current.collector, current.manifest, systemClock, new AbortController().signal);
     if (ready.status !== 'valid') throw new Error('readiness required');
@@ -60,7 +60,7 @@ describe('actual lifecycle scenario records', () => {
     expect(record).toMatchObject({ status: 'valid', boundary: 'indexing-operation', cacheState: 'l1', indexingMode: 'full_rebuild' });
     if (record.status === 'valid') {
       expect(record.endpoints).not.toHaveProperty('runtime_ready_ms');
-      expect(record.cacheAccounting?.outcomes.l1_hit).toBeGreaterThan(0);
+      expect(record.cacheAccounting?.outcomes.l1_hit).toBe(0);
       expect(record.cacheAccounting?.providerCalls).toBe(0);
       expect(ready.assembly.diagnostics.metadataStore.getPragmaValue('user_version')).toBeTypeOf('number');
     }

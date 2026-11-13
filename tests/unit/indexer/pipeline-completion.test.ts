@@ -5,6 +5,7 @@ import { IndexPipeline } from '../../../src/indexer/pipeline.js';
 import type {
   CompactionResult,
   DeadLetterEntry,
+  EmbeddingConfig,
   IndexEvent,
   ReindexOptions,
 } from '../../../src/types/index.js';
@@ -18,7 +19,10 @@ class CompactionFailingVectorStore extends InMemoryVectorStore {
   }
 }
 
-const makePipeline = async (onProgress?: (message: string) => void) => {
+const makePipeline = async (
+  onProgress?: (message: string) => void,
+  embeddingConfig?: EmbeddingConfig,
+) => {
   const { metadataStore, vectorStore, chunker, registry } = await createPipeline();
   const pipeline = new IndexPipeline({
     metadataStore,
@@ -27,6 +31,7 @@ const makePipeline = async (onProgress?: (message: string) => void) => {
     embeddingProvider: new TestEmbeddingProvider(),
     pluginRegistry: registry,
     onProgress,
+    ...(embeddingConfig === undefined ? {} : { embeddingConfig }),
   });
   return { pipeline, metadataStore, vectorStore };
 };
@@ -47,6 +52,18 @@ const scanNoFiles = async (_options?: { fullScan?: boolean; reason?: ReindexOpti
 const loadContent = async (_filePath: string): Promise<string> => '';
 
 describe('IndexPipeline completion recording', () => {
+  it('initializes an empty structured catalog as idle before auditing a reindex', async () => {
+    const { metadataStore } = await makePipeline();
+
+    await metadataStore.bootstrapStructuredSchema();
+
+    await expect(metadataStore.getStructuredIndexState()).resolves.toMatchObject({
+      schemaVersion: 1,
+      rebuildState: 'idle',
+      reindexRequired: false,
+    });
+  });
+
   it('records both index timestamps after a successful full reindex', async () => {
     const { pipeline, metadataStore } = await makePipeline();
 
@@ -127,13 +144,17 @@ describe('IndexPipeline completion recording', () => {
     });
   });
 
-  it('runs reindex cleanup when clearing a persisted error fails', async () => {
-    const { pipeline, metadataStore } = await makePipeline();
+  it('keeps the full-scan queue gated when clearing a persisted error fails', async () => {
+    const { pipeline, metadataStore } = await makePipeline(undefined, {
+      provider: 'test', model: 'test-model', dimensions: 64, maxConcurrency: 1,
+      batchSize: 1, retryCount: 0, retryBaseDelayMs: 0,
+    });
+    await metadataStore.bootstrapStructuredSchema();
     await metadataStore.setIndexStats({
       id: 'primary',
       totalFiles: 0,
       totalChunks: 0,
-      lastIndexedAt: null,
+      lastIndexedAt: '2026-01-01T00:00:00.000Z',
       lastFullScanAt: null,
       overflowCount: 0,
       lastError: 'previous failure',
@@ -151,7 +172,7 @@ describe('IndexPipeline completion recording', () => {
     await expect(pipeline.reindex(scanNoFiles, loadContent, true, 'manual')).rejects.toThrow('clear failed');
 
     expect(pipeline.getProgress().status).toBe('idle');
-    expect(markFullScanComplete).toHaveBeenCalledOnce();
+    expect(markFullScanComplete).not.toHaveBeenCalled();
   });
 
   it('clears a persisted failure state when a retry starts', async () => {

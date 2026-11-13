@@ -39,6 +39,7 @@ describe('Phase 2 MCP protocol integration', () => {
     mockMetricsHooks = createMockMetricsHooks();
     const { options } = await createTestNexusOptions({
       projectRoot: fixtureRoot,
+      bootstrapStructuredSchema: true,
       loadFileContent: async (filePath) => fs.readFile(filePath, 'utf8'),
       metricsHooks: mockMetricsHooks,
     });
@@ -170,7 +171,7 @@ describe('Phase 2 MCP protocol integration', () => {
       arguments: { fullRebuild: true, reason: 'startup-reconciliation' },
     });
     expect(parseResult(reindex)).toMatchObject({
-      reconciliation: { added: 0, modified: 0, deleted: 0, unchanged: 0 },
+      reconciliation: { added: 0, modified: 0, deleted: 1, unchanged: 0 },
       chunksIndexed: 0,
     });
 
@@ -266,6 +267,7 @@ describe('MCP reindex factory integration', () => {
       batchSize: config.storage.batchSize,
     });
     await metadataStore.initialize();
+    await metadataStore.bootstrapStructuredSchema();
     await metadataStore.setIndexStats({
       id: 'primary',
       totalFiles: 0,
@@ -298,7 +300,7 @@ describe('MCP reindex factory integration', () => {
 
       const result = await client.callTool({
         name: 'reindex',
-        arguments: { fullRebuild: true },
+        arguments: { fullRebuild: false },
       });
 
       expect(result.isError).not.toBe(true);

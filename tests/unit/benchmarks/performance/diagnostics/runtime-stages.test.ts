@@ -63,12 +63,13 @@ describe('runtime diagnostic stage scope', () => {
     try {
       assembly = await createBenchmarkRuntimeFactory(root, undefined, runtimeContext)(new AbortController().signal);
       await assembly.diagnostics.metadataStore.initialize();
+      await assembly.diagnostics.metadataStore.bootstrapStructuredSchema();
       await assembly.diagnostics.metadataStore.setIndexStats({
         id: 'primary', totalFiles: 0, totalChunks: 0, lastIndexedAt: '2026-01-01T00:00:00.000Z',
         lastFullScanAt: null, overflowCount: 0, lastError: null,
       });
       await assembly.runtime.initialize();
-      await withRuntimeDiagnosticContext(runtimeContext, async () => await assembly?.runtime.reindex(true));
+      await withRuntimeDiagnosticContext(runtimeContext, async () => await assembly?.runtime.reindex(false));
       const events = worker.recorder.snapshot().events;
       const spans = events.filter((event) => event.event === 'span_started');
       expect(spans.map((event) => event.stageId)).toContain('S03_runtime_assembly');

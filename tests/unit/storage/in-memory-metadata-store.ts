@@ -63,6 +63,7 @@ export class InMemoryMetadataStore implements IMetadataStore, IStructuredCatalog
 
   async bootstrapStructuredSchema(): Promise<void> {
     this.schemaVersion = 1;
+    this.rebuildState = 'idle';
   }
 
   async getStructuredIndexState(): Promise<StructuredIndexState> {
