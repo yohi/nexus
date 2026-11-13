@@ -103,9 +103,11 @@ export async function catalogMatches(
     evidence.push(JSON.stringify([
       filePath,
       generation,
-      declarations.map(declarationKey).sort(),
-      imports.map(importAuditKey).sort(),
-      bindings.map((binding) => [binding.symbolId, binding.rows.map(importKey).sort()]).sort(),
+      declarations.map(declarationKey).sort((left, right) => left.localeCompare(right)),
+      imports.map(importAuditKey).sort((left, right) => left.localeCompare(right)),
+      bindings.map((binding) => [binding.symbolId, binding.rows.map(importKey)
+        .sort((left, right) => left.localeCompare(right))])
+        .sort((left, right) => JSON.stringify(left).localeCompare(JSON.stringify(right))),
     ]));
     if (generation.parserId !== structured.generation.parserId
       || generation.parserVersion !== structured.generation.parserVersion) {

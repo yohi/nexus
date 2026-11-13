@@ -13,7 +13,7 @@ const vectorIterable = z.custom<Iterable<unknown>>(
   (value) => typeof value === 'object' && value !== null && Symbol.iterator in value,
 );
 const physicalVector = z.preprocess((value) => {
-  if (Array.isArray(value)) return value;
+  if (Array.isArray(value)) return value.map((item: unknown) => item);
   const parsed = vectorIterable.safeParse(value);
   return parsed.success ? Array.from(parsed.data) : value;
 }, z.array(z.number().or(z.nan())).readonly());

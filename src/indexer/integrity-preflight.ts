@@ -20,13 +20,13 @@ function recoveryFingerprint(
 ): string {
   const payload = JSON.stringify({
     epoch,
-    nodes: nodes.map(merkleNodeKey).sort(),
+    nodes: nodes.map(merkleNodeKey).sort((left, right) => left.localeCompare(right)),
     source: input.files.map((file) => [file.event.filePath, file.sourceHash, file.merkleHash])
       .sort(([left], [right]) => String(left).localeCompare(String(right))),
     stats,
     catalogEvidence,
-    expectedRows: expectedRows.map(rowKey).sort(),
-    rows: rows.map(rowKey).sort(),
+    expectedRows: expectedRows.map(rowKey).sort((left, right) => left.localeCompare(right)),
+    rows: rows.map(rowKey).sort((left, right) => left.localeCompare(right)),
   });
   return createHash('sha256').update(payload).digest('hex');
 }
