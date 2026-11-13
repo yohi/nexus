@@ -17,6 +17,7 @@ import type {
   StructuredGenerationActivation,
   StructuredGenerationStage,
   StructuredImportRecord,
+  StructuredImportAuditRecord,
   StructuredIndexCounts,
   StructuredIndexState,
   StructuredPendingClear,
@@ -180,6 +181,21 @@ export class InMemoryMetadataStore implements IMetadataStore, IStructuredCatalog
     return [];
   }
 
+  async getFileImports(filePath: string, generationId: string): Promise<readonly StructuredImportAuditRecord[]> {
+    const active = this.active.get(filePath);
+    if (active?.generation.generationId !== generationId) return [];
+    return active.imports.map((imported) => ({
+      id: imported.id,
+      moduleSpecifier: imported.moduleSpecifier,
+      bindingName: imported.bindingName,
+      startByte: imported.startByte,
+      endByte: imported.endByte,
+      sourceHash: imported.sourceHash,
+      completeness: imported.completeness,
+      position: imported.position,
+    }));
+  }
+
   async getFileDeclarations(filePath: string): Promise<readonly StructuredDeclaration[]> {
     const active = this.active.get(filePath);
     if (active === undefined) return [];
@@ -198,11 +214,11 @@ export class InMemoryMetadataStore implements IMetadataStore, IStructuredCatalog
   async getGeneration(filePath: string, generationId: string): Promise<StructuredGeneration | null> {
     const active = this.active.get(filePath);
     if (active !== undefined && active.generation.generationId === generationId) {
-      return active.generation;
+      return { ...active.generation, rebuildEpoch: active.rebuildEpoch };
     }
     const pending = this.pending.get(filePath);
     if (pending !== undefined && pending.generation.generationId === generationId) {
-      return pending.generation;
+      return { ...pending.generation, rebuildEpoch: pending.rebuildEpoch };
     }
     return null;
   }

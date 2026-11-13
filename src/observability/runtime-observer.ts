@@ -20,6 +20,8 @@ export type ReindexTerminalOutcome =
   | { readonly status: 'fulfilled'; readonly result: Readonly<ReindexResult> }
   | { readonly status: 'rejected'; readonly code: 'reindex_rejected' }
   | { readonly status: 'incomplete' }
+  | { readonly status: 'integrity_unknown' }
+  | { readonly status: 'rebuild_required' }
   | { readonly status: 'already_running'; readonly ownerWorkId?: string };
 export type GrepChildOutcome =
   | { readonly status: 'exited'; readonly exitCode: 0 | 1 }

@@ -52,12 +52,23 @@ export class EventProcessingManager {
     for (let attempt = 0; attempt < retryCount; attempt += 1) {
       if (this.abortController.signal.aborted) return;
       try {
-        const result = await this.pipeline.reindex(
-          () => DirectoryScanner.scan(this.projectRoot, this.projectRoot, this.ignorePaths, this.onLog),
-          this.loadFileContent, true, reason,
-        );
+        const runFullScan = () => DirectoryScanner.scan(this.projectRoot, this.projectRoot, this.ignorePaths, this.onLog);
+        let result = await this.pipeline.reindex(runFullScan, this.loadFileContent, true, reason);
+        if ('status' in result && result.status === 'rebuild_required') {
+          result = await this.pipeline.reindex(
+            runFullScan, this.loadFileContent, true, 'integrity-recovery', result.request,
+          );
+        }
         if ('status' in result) {
           if (result.status === 'already_running') throw new Error('already_running');
+          if (result.status === 'integrity_unknown') {
+            this.onLog?.(`[Nexus] Background full scan refused to repair unknown integrity: ${result.reason}`);
+            return;
+          }
+          if (result.status === 'rebuild_required') {
+            this.onLog?.('[Nexus] Background full scan recovery request expired; storage was not changed.');
+            return;
+          }
           this.onLog?.('[Nexus] Background full scan incomplete; dead-letter queue entries remain.');
           return;
         }

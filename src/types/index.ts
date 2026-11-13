@@ -101,6 +101,8 @@ export type {
   CompactionConfig,
   CompactionMutex,
   CompactionResult,
+  PhysicalVectorRow,
+  VectorAuditOptions,
   GenerationChunkBatch,
   IVectorStore,
   LegacyShadowDeletion,
@@ -326,8 +328,20 @@ export interface RuntimeInitializationResult {
 export interface ReindexOptions {
   fullScan?: boolean;
   pathPrefix?: string;
-  reason?: 'manual' | 'overflow-recovery' | 'startup-reconciliation';
+  reason?: 'manual' | 'overflow-recovery' | 'startup-reconciliation' | 'integrity-recovery';
 }
+
+export interface IntegrityRecoveryRequest {
+  readonly rebuildEpoch: number;
+  readonly fingerprint: string;
+}
+
+export type ReindexOperationResult =
+  | ReindexResult
+  | { readonly status: 'already_running' }
+  | { readonly status: 'incomplete' }
+  | { readonly status: 'integrity_unknown'; readonly reason: string }
+  | { readonly status: 'rebuild_required'; readonly request: IntegrityRecoveryRequest };
 
 export interface ReindexQueueEvent {
   type: 'reindex';
@@ -360,7 +374,8 @@ export interface IIndexPipeline {
     loadContent: (filePath: string) => Promise<string>,
     fullRebuild?: boolean,
     reason?: ReindexOptions['reason'],
-  ): Promise<ReindexResult | { status: 'already_running' } | { status: 'incomplete' }>;
+    integrityRecovery?: IntegrityRecoveryRequest,
+  ): Promise<ReindexOperationResult>;
   waitForActiveReindex(): Promise<void>;
   getSkippedFiles(): ReadonlyMap<string, string>;
   reconcileOnStartup(): Promise<RuntimeInitializationResult>;

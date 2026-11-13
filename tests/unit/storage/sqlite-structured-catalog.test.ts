@@ -394,6 +394,31 @@ describe('SQLite structured catalog', () => {
     ]);
   });
 
+  it('retrieves every import row for an active file generation', async () => {
+    await store.initialize();
+    const input = {
+      ...stage('src/a.ts', 'g1', 'unused'),
+      declarations: [],
+      imports: [{
+        id: 'binding-1', moduleSpecifier: 'pkg', bindingName: 'name', startByte: 0, endByte: 3,
+        sourceHash: '', completeness: 'complete' as const,
+        position: { startLine: 1, startColumn: 0, endLine: 1, endColumn: 3 },
+      }],
+    };
+    await store.stageGeneration(input);
+    await store.activateGeneration({
+      filePath: 'src/a.ts', generationId: 'g1', expectedActiveGeneration: null, expectedRebuildEpoch: 1,
+    });
+
+    await expect(store.getFileImports('src/a.ts', 'g1')).resolves.toEqual([
+      expect.objectContaining({
+        id: 'binding-1', moduleSpecifier: 'pkg', bindingName: 'name',
+        position: { startLine: 1, startColumn: 0, endLine: 1, endColumn: 3 },
+      }),
+    ]);
+    await expect(store.getFileImports('src/a.ts', 'old-generation')).resolves.toEqual([]);
+  });
+
   it('creates lookup indexes for structured symbol and import queries', async () => {
     await store.initialize();
     const databasePath = path.join(dir, 'metadata.db');

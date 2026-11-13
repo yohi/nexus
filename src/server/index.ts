@@ -219,12 +219,17 @@ export const buildNexusRuntime = (
       }
 
       if (needsPostScan) {
-        const startReindex = () => options.pipeline.reindex(
-            options.runReindex,
-            options.loadFileContent,
-            true,
-            'startup-reconciliation',
+        const startReindex = async () => {
+          const result = await options.pipeline.reindex(
+            options.runReindex, options.loadFileContent, true, 'startup-reconciliation',
           );
+          if ('status' in result && result.status === 'rebuild_required') {
+            return await options.pipeline.reindex(
+              options.runReindex, options.loadFileContent, true, 'integrity-recovery', result.request,
+            );
+          }
+          return result;
+        };
         const diagnosticContext = currentRuntimeDiagnosticContext();
         const startupReindexPromise = diagnosticContext === undefined
           ? startReindex()
@@ -233,6 +238,10 @@ export const buildNexusRuntime = (
           .then(async (result) => {
             if ('status' in result && result.status === 'already_running') {
               await options.pipeline.waitForActiveReindex();
+            }
+            if ('status' in result && result.status === 'integrity_unknown') {
+              console.error(`[Nexus] Startup Full Index stopped without writes: integrity unknown (${result.reason}).`);
+              return result;
             }
             if (!isShuttingDown) {
               withoutRuntimeDiagnosticContext(() => options.eventQueue?.drainPostScanQueue());
@@ -338,15 +347,23 @@ export const buildNexusRuntime = (
   const performReindex = async (fullRebuild?: boolean) => {
     await initialize();
     if (isShuttingDown) throw new Error('Reindex cancelled because the runtime is shutting down');
-    const result = await options.pipeline.reindex(
+    let result = await options.pipeline.reindex(
       options.runReindex,
       options.loadFileContent,
       fullRebuild,
     );
+    if ('status' in result && result.status === 'rebuild_required') {
+      result = await options.pipeline.reindex(
+        options.runReindex, options.loadFileContent, true, 'integrity-recovery', result.request,
+      );
+    }
     if (isShuttingDown) throw new Error('Reindex cancelled because the runtime is shutting down');
     if ("status" in result) {
       if (result.status === 'already_running' && autoReindexPromise) {
         const startupResult = await autoReindexPromise;
+        if (startupResult !== undefined && 'status' in startupResult && startupResult.status === 'integrity_unknown') {
+          throw new Error(`Reindex integrity unknown; refusing repair: ${startupResult.reason}`);
+        }
         if (startupResult !== undefined && 'status' in startupResult && startupResult.status === 'incomplete') {
           throw new Error('Reindex incomplete: dead-letter queue entries remain');
         }
@@ -359,7 +376,11 @@ export const buildNexusRuntime = (
       }
       const message = result.status === 'already_running'
         ? `Reindex already running: ${result.status}`
-        : 'Reindex incomplete: dead-letter queue entries remain';
+        : result.status === 'integrity_unknown'
+          ? `Reindex integrity unknown; refusing repair: ${result.reason}`
+          : result.status === 'rebuild_required'
+            ? 'Reindex corruption confirmation expired; refusing repair'
+            : 'Reindex incomplete: dead-letter queue entries remain';
       throw new Error(message);
     }
   };

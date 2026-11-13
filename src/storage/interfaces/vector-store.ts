@@ -1,6 +1,8 @@
 /** Storage interfaces (design doc §7.3). Canonical home since the Phase 1b relocation; re-exported from src/types/index.ts for backward compatibility. */
 import type { CodeChunk, SymbolKind } from '../../types/index.js';
 import type { FullRebuildRecovery } from './structured-catalog.js';
+import type { PhysicalVectorRow, VectorAuditOptions } from './vector-audit.js';
+export type { PhysicalVectorRow, VectorAuditOptions } from './vector-audit.js';
 
 export interface VectorFilter {
   filePathPrefix?: string;
@@ -106,6 +108,8 @@ export interface IVectorStore {
   finalizeStructuredShadowTable(shadowTable: StructuredShadowTable): Promise<void>;
   abortStructuredShadowTable(shadowTable: StructuredShadowTable): Promise<void>;
   reconcileStructuredRows(activeGenerations: readonly ActiveGeneration[]): Promise<void>;
+  /** Reads every physical row from fresh latest-version table handles, including pending rows. */
+  iteratePhysicalRows(options: Readonly<VectorAuditOptions>): AsyncIterable<PhysicalVectorRow>;
 
   /** Legacy-vector shadow lifecycle methods (atomic full rebuild). */
   beginLegacyShadowTable(): Promise<LegacyShadowTable>;

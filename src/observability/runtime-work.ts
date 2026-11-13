@@ -1,4 +1,4 @@
-import type { GrepMatch, ReindexResult } from '../types/index.js';
+import type { GrepMatch, ReindexOperationResult } from '../types/index.js';
 import { emitRuntimeEvent, getObservationContext, markRuntimeMutation, safelyNotify,
   withObservationContext } from './runtime-observer.js';
 import type { EventIdentity, GrepEvidenceRef, RuntimeEventPayload, RuntimeObserver, RuntimeWorkKind } from './runtime-observer.js';
@@ -42,7 +42,7 @@ export async function observeRuntimeWork<T>(observer: RuntimeObserver | undefine
   });
 }
 
-type RawReindexResult = ReindexResult | { status: 'already_running' } | { status: 'incomplete' };
+type RawReindexResult = ReindexOperationResult;
 export async function observeReindex(observer: RuntimeObserver | undefined, owner: object,
   work: () => Promise<RawReindexResult>): Promise<RawReindexResult> {
   if (observer === undefined) return work();
@@ -57,6 +57,8 @@ export async function observeReindex(observer: RuntimeObserver | undefined, owne
           case 'already_running': emitRuntimeEvent(observer, { kind: 'reindex_finished',
             outcome: { status: 'already_running', ownerWorkId: previousOwner } }); break;
           case 'incomplete': emitRuntimeEvent(observer, { kind: 'reindex_finished', outcome: { status: 'incomplete' } }); break;
+          case 'integrity_unknown': emitRuntimeEvent(observer, { kind: 'reindex_finished', outcome: { status: 'integrity_unknown' } }); break;
+          case 'rebuild_required': emitRuntimeEvent(observer, { kind: 'reindex_finished', outcome: { status: 'rebuild_required' } }); break;
         }
       } else {
         emitRuntimeEvent(observer, { kind: 'reindex_finished', outcome: { status: 'fulfilled',

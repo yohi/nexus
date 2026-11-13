@@ -4,9 +4,9 @@ import { mkdir, readFile, writeFile, rename } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { iterateVectorAuditRows } from './vector-audit-reader.js';
+import { iteratePhysicalVectorRows, iterateVectorAuditRows } from './vector-audit-reader.js';
 import { VectorAuditReadError } from './interfaces/vector-audit.js';
-import type { VectorAuditOptions, VectorAuditRow } from './interfaces/vector-audit.js';
+import type { PhysicalVectorRow, VectorAuditOptions, VectorAuditRow } from './interfaces/vector-audit.js';
 import type {
   ActiveGeneration,
   ChunkWithEmbedding,
@@ -1426,6 +1426,34 @@ export class LanceVectorStore implements IVectorStore {
     if (this.isClosed || this.db === undefined) throw new VectorAuditReadError('audit_reader_unavailable');
     return iterateVectorAuditRows({ legacy: this.table, structured: this.structuredTable }, options,
       (operation) => this.trackOp(operation));
+  }
+
+  async *iteratePhysicalRows(options: Readonly<VectorAuditOptions>): AsyncGenerator<PhysicalVectorRow> {
+    if (this.isClosed) throw new VectorAuditReadError('audit_reader_unavailable');
+    let freshDb: lancedb.Connection | undefined;
+    const freshTables: Table[] = [];
+    try {
+      freshDb = await lancedb.connect(this.dbPath);
+      const names = await freshDb.tableNames();
+      const tables: { legacy?: Table; structured?: Table } = {};
+      if (names.includes('chunks')) {
+        const table = await freshDb.openTable('chunks');
+        freshTables.push(table);
+        tables.legacy = table;
+      }
+      if (names.includes(STRUCTURED_TABLE_NAME)) {
+        const table = await freshDb.openTable(STRUCTURED_TABLE_NAME);
+        freshTables.push(table);
+        tables.structured = table;
+      }
+      yield* iteratePhysicalVectorRows(tables, options, (operation) => this.trackOp(operation));
+    } catch (error) {
+      if (error instanceof VectorAuditReadError) throw error;
+      throw new VectorAuditReadError('audit_reader_unavailable');
+    } finally {
+      for (const table of freshTables) table.close();
+      freshDb?.close();
+    }
   }
 
   async getStats(): Promise<VectorStoreStats> {

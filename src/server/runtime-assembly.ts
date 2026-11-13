@@ -150,6 +150,8 @@ async function createRuntimeAssemblyCore(config: Config,
       chunkConcurrency: config.indexing.chunkConcurrency, embedBatchWindowSize: config.indexing.embedBatchWindowSize,
       onProgress: (msg) => onLog(msg), metricsHooks: metricsCollector,
       observer: dependencies.observer,
+      assertWriterLease: assertWriterLeaseHeld,
+      isWriterLeaseHeld: () => writerLease.isHeld(),
     });
     const ignorePaths = config.watcher.ignorePaths ?? [];
     const eventManager = new EventProcessingManager(config, projectRoot, ignorePaths, pipeline,

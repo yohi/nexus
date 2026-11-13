@@ -4,7 +4,7 @@ import pLimit from 'p-limit';
 
 import { DeadLetterQueue } from './dead-letter-queue.js';
 import { MerkleTree } from './merkle-tree.js';
-import { computeFileHashStreaming } from './hash.js';
+import { computeFileHashStreaming, computeStringHash } from './hash.js';
 import type { Chunker, ChunkFallbackReason, ParserOutcome } from './chunker.js';
 import type { PluginRegistry } from '../plugins/registry.js';
 import type { EventQueue } from './event-queue.js';
@@ -28,12 +28,16 @@ import {
   type EmbeddingCacheEntry,
   type IndexStatsRow,
   type ReindexOptions,
+  type IntegrityRecoveryRequest,
+  type ReindexOperationResult,
   supportsStructuredCatalog,
 } from '../types/index.js';
 import type { StructuredSource, StructuredDeclaration, StructuredImport } from '../structured/contracts.js';
 import type { FullRebuildFile, StructuredIndexCoordinator } from './structured-index-coordinator.js';
 import { decodeUtf8, sha256Hex } from '../structured/hash.js';
 import { createEmbeddingCacheIdentity, type EmbeddingCacheIdentity } from './embedding-cache-identity.js';
+import { IntegrityPreflightService } from './integrity-preflight-service.js';
+import { IntegrityRecoveryAbortedError } from './integrity-preflight-types.js';
 import type { EmbeddingConfig } from '../types/index.js';
 import type { EmbeddingChunkOrigin, RuntimeObserver } from '../observability/runtime-observer.js';
 import type { EmbeddingCacheOutcome } from '../observability/types.js';
@@ -83,12 +87,26 @@ interface IndexPipelineOptions {
     | 'onEmbeddingCacheLookup'
   >;
   completionLock?: Mutex;
+  assertWriterLease?: (() => void) | undefined;
+  isWriterLeaseHeld?: (() => boolean) | undefined;
 }
 
 interface ProcessEventsResult {
   chunksIndexed: number;
   structuredParseFailures: readonly string[];
   embeddingFailures: readonly string[];
+}
+
+interface IntegrityRecoveryProcessing {
+  readonly request: IntegrityRecoveryRequest;
+  readonly scannedEvents: readonly IndexEvent[];
+  readonly run: (options?: { fullScan?: boolean; reason?: ReindexOptions['reason'] }) => Promise<IndexEvent[]>;
+}
+
+interface ProcessEventsOptions {
+  readonly trackProgress?: boolean;
+  readonly fullRebuild?: boolean;
+  readonly integrityRecovery?: IntegrityRecoveryProcessing;
 }
 
 interface ProcessEventWindowResult {
@@ -123,6 +141,8 @@ type DeferredMerkleOp =
 
 interface FileWork {
   event: IndexEvent;
+  sourceHash: string;
+  sourceIdentityHash: string;
   chunks: CodeChunk[];
   structured?: StructuredFileWork;
   structuredRetirement: boolean;
@@ -135,12 +155,14 @@ export class IndexPipeline implements IIndexPipeline {
   private readonly merkleTree: MerkleTree;
 
   private readonly mutex = new Mutex();
+  private pendingExternalProcessEvents = 0;
 
   private readonly skippedFiles = new Map<string, string>();
 
   private readonly deadLetterQueue: DeadLetterQueue;
 
   private readonly completionLock: Mutex;
+  private readonly integrityPreflight: IntegrityPreflightService;
 
   private eventQueue: EventQueue | undefined;
 
@@ -156,6 +178,7 @@ export class IndexPipeline implements IIndexPipeline {
   private readonly embeddingCache: Map<string, number[]>;
   private readonly embeddingCacheSize: number;
   private readonly embeddingCacheIdentity: EmbeddingCacheIdentity | undefined;
+  private suppressPersistentEmbeddingWrites = false;
 
   private progress: PipelineProgress = {
     totalFiles: 0,
@@ -175,6 +198,52 @@ export class IndexPipeline implements IIndexPipeline {
       : undefined;
     this.completionLock = options.completionLock ?? new Mutex();
     this.eventQueue = options.eventQueue;
+    this.integrityPreflight = new IntegrityPreflightService({
+      metadataStore: options.metadataStore,
+      vectorStore: options.vectorStore,
+      dimensions: options.embeddingProvider.dimensions,
+      concurrency: this.chunkConcurrency,
+      embeddingKeyFor: this.embeddingCacheIdentity?.keyFor,
+      l1Embeddings: this.embeddingCache,
+      loadEmbeddingSource: (hashes) => options.metadataStore.getEmbeddings([...hashes]),
+      prepareFile: async (event, loadContent) => {
+        const work = await this.readAndChunkFile(event, loadContent);
+        return {
+          event: work.event,
+          sourceHash: work.sourceIdentityHash,
+          merkleHash: work.sourceHash,
+          chunks: work.chunks,
+          structured: work.structured === undefined ? undefined : {
+            generation: {
+              generationId: work.structured.generationId,
+              schemaVersion: 1,
+              parserId: work.structured.parserId,
+              parserVersion: work.structured.parserVersion,
+              fileHash: work.structured.contentHash,
+              fileCompleteness: work.structured.fileCompleteness,
+            },
+            fileCompleteness: work.structured.fileCompleteness,
+            declarations: work.structured.declarations,
+            imports: work.structured.imports,
+            chunks: work.structured.chunks,
+          },
+          structuredRetirement: work.structuredRetirement,
+          structuredParseFailed: work.structuredParseFailed,
+          skipped: work.skipped,
+        };
+      },
+      readSourceHash: async (filePath, loadContent) => {
+        const bytes = await options.loadFileBytes?.(filePath);
+        const content = bytes === undefined ? await loadContent(filePath) : decodeUtf8(bytes);
+        return sha256Hex(bytes ?? new Uint8Array(Buffer.from(content, 'utf8')));
+      },
+      assertWriterLease: options.assertWriterLease ?? (() => {}),
+      queueIsQuiet: () => this.pendingExternalProcessEvents === 0
+        && (this.eventQueue === undefined
+          || (this.eventQueue.size() === 0 && this.eventQueue.getPostScanQueueSize() === 0)),
+      signal: this.abortController.signal,
+      catalogEnabled: options.structuredIndexCoordinator !== undefined,
+    });
     this.deadLetterQueue = new DeadLetterQueue({
       metadataStore: options.metadataStore,
       embeddingHealthy: () => this.embeddingHealthy(),
@@ -288,15 +357,34 @@ export class IndexPipeline implements IIndexPipeline {
   async processEvents(
     events: IndexEvent[],
     loadContent?: ContentLoader,
-    options: { trackProgress?: boolean; fullRebuild?: boolean } = {},
+    options: ProcessEventsOptions = {},
   ): Promise<ProcessEventsResult> {
-    return observeRuntimeWork(this.options.observer, 'process_events', () =>
-      this.processEventsUnobserved(events, loadContent, options));
+    this.pendingExternalProcessEvents += 1;
+    try {
+      return await this.mutex.runExclusive(() => this.processEventsObserved(events, loadContent, options));
+    } finally {
+      this.pendingExternalProcessEvents -= 1;
+    }
+  }
+
+  private async processEventsObserved(
+    events: IndexEvent[],
+    loadContent: ContentLoader | undefined,
+    options: ProcessEventsOptions,
+  ): Promise<ProcessEventsResult> {
+    const previousSuppression = this.suppressPersistentEmbeddingWrites;
+    this.suppressPersistentEmbeddingWrites = previousSuppression || options.integrityRecovery !== undefined;
+    try {
+      return await observeRuntimeWork(this.options.observer, 'process_events', () =>
+        this.processEventsUnobserved(events, loadContent, options));
+    } finally {
+      this.suppressPersistentEmbeddingWrites = previousSuppression;
+    }
   }
 
   private async processEventsUnobserved(
     events: IndexEvent[], loadContent?: ContentLoader,
-    options: { trackProgress?: boolean; fullRebuild?: boolean } = {},
+    options: ProcessEventsOptions = {},
   ): Promise<ProcessEventsResult> {
     const structuredIndexCoordinator = this.options.structuredIndexCoordinator;
     const metadataStore = this.options.metadataStore;
@@ -476,6 +564,22 @@ export class IndexPipeline implements IIndexPipeline {
         if (unaccounted.length > 0) {
           throw new Error(`Structured full rebuild aborted: active files missing from complete scan: ${unaccounted.join(', ')}`);
         }
+        if (options.integrityRecovery !== undefined) {
+          this.options.assertWriterLease?.();
+          const verified = await this.integrityPreflight.assess(
+            options.integrityRecovery.scannedEvents,
+            options.integrityRecovery.run,
+            loadContent as ContentLoader,
+            'integrity-recovery',
+          );
+          if (verified.kind !== 'CORRUPTION_CONFIRMED'
+            || verified.request.rebuildEpoch !== options.integrityRecovery.request.rebuildEpoch
+            || verified.request.fingerprint !== options.integrityRecovery.request.fingerprint) {
+            throw new IntegrityRecoveryAbortedError(
+              verified.kind === 'INTEGRITY_UNKNOWN' ? 'input_incomplete' : 'state_changed_before_commit',
+            );
+          }
+        }
         await this.commitStructuredFullRebuild(
           structuredIndexCoordinator,
           structuredRebuildFiles,
@@ -505,7 +609,9 @@ export class IndexPipeline implements IIndexPipeline {
             console.error('[IndexPipeline] Could not establish Legacy rollback safety; preserving its backup:', error);
           }
         }
-        if (!preserveCommittedLegacy) {
+        if (!preserveCommittedLegacy
+          && this.options.isWriterLeaseHeld?.() !== false
+          && !(options.integrityRecovery !== undefined && this.abortController.signal.aborted)) {
           await this.options.vectorStore.abortLegacyShadowTable(legacyShadow).catch(() => {});
         }
       }
@@ -544,6 +650,8 @@ export class IndexPipeline implements IIndexPipeline {
     if (fileSize !== undefined && this.options.maxFileBytes !== undefined && fileSize > this.options.maxFileBytes) {
       return {
         event,
+        sourceHash: '',
+        sourceIdentityHash: '',
         chunks: [],
         structuredRetirement: false,
         structuredParseFailed: false,
@@ -558,10 +666,15 @@ export class IndexPipeline implements IIndexPipeline {
     const content = sourceBytes === undefined
       ? await loadContent(event.filePath)
       : decodeUtf8(sourceBytes);
+    const sourceHash = await computeStringHash(content);
+    const sourceIdentityHash = sha256Hex(sourceBytes ?? new Uint8Array(Buffer.from(content, 'utf8')));
+    const indexedEvent = { ...event, contentHash: event.contentHash ?? sourceHash };
     const byteLength = sourceBytes?.byteLength ?? Buffer.byteLength(content, 'utf8');
     if (this.options.maxFileBytes !== undefined && byteLength > this.options.maxFileBytes) {
       return {
-        event,
+        event: indexedEvent,
+        sourceHash,
+        sourceIdentityHash,
         chunks: [],
         structuredRetirement: false,
         structuredParseFailed: false,
@@ -610,7 +723,10 @@ export class IndexPipeline implements IIndexPipeline {
       structuredParseFailed = structuredResult?.kind === 'parse-failed';
     }
 
-    return { event, chunks, structured, structuredRetirement, structuredParseFailed, skipped: false };
+    return {
+      event: indexedEvent, sourceHash, sourceIdentityHash, chunks, structured,
+      structuredRetirement, structuredParseFailed, skipped: false,
+    };
   }
 
   private diagnosticCounter(
@@ -906,7 +1022,8 @@ export class IndexPipeline implements IIndexPipeline {
             l2Entries.push({ hash: miss.hash, vector: vec });
           }
         }
-        if (l2Entries.length > 0) {
+        if (l2Entries.length > 0 && !this.suppressPersistentEmbeddingWrites) {
+          this.options.assertWriterLease?.();
           await this.options.metadataStore.setEmbeddings(l2Entries);
         }
       } catch (error) {
@@ -938,6 +1055,7 @@ export class IndexPipeline implements IIndexPipeline {
       if (this.abortController.signal.aborted) {
         break;
       }
+      this.options.assertWriterLease?.();
       if (trackProgress) {
         this.progress.currentFile = work.event.filePath;
       }
@@ -1198,7 +1316,10 @@ export class IndexPipeline implements IIndexPipeline {
         await coordinator.runFullRebuild({
           files: [...files],
           merkleSnapshot,
+          assertWriterLease: () => this.options.assertWriterLease?.(),
+          isWriterLeaseHeld: () => this.options.isWriterLeaseHeld?.() ?? true,
           beforeCommit: async (rebuildEpoch) => {
+            this.options.assertWriterLease?.();
             await runRuntimeDiagnosticStage('S08_storage_write', async () => {
               try {
                 await this.options.vectorStore.swapLegacyShadowTable(legacyShadow, rebuildEpoch);
@@ -1209,6 +1330,7 @@ export class IndexPipeline implements IIndexPipeline {
             });
           },
           afterCommit: async () => {
+            this.options.assertWriterLease?.();
             await this.applyDeferredMerkleOps(deferredMerkleOps);
           },
           beforeRollback: async () => {
@@ -1240,6 +1362,7 @@ export class IndexPipeline implements IIndexPipeline {
         ? 'backup_cleanup_failed' : 'verified';
       await runRuntimeDiagnosticStage('S08_storage_write', () => markRuntimeDiagnosticStateIntegrity(integrity));
     } catch (error) {
+      if (this.options.isWriterLeaseHeld?.() === false) throw error;
       // The catalog commit already completed; aborting here would undo only Legacy.
       // Leave its journal and vector backups for startup finalization.
       const state = await metadataStore.getStructuredIndexState();
@@ -1275,24 +1398,59 @@ export class IndexPipeline implements IIndexPipeline {
     await this.merkleTree.update(filePath, contentHash);
   }
 
+  private finishNoOp(
+    startedAt: string,
+    startTime: number,
+    eventCount: number,
+    fullRebuild: boolean | undefined,
+  ): ReindexResult {
+    const finishedAt = new Date().toISOString();
+    const durationMs = Date.now() - startTime;
+    this.progress.processedFiles = eventCount;
+    this.progress.totalFiles = eventCount;
+    this.progress.status = 'idle';
+    this.safeNotifyMetrics((hooks) => {
+      hooks.onIndexingProgress(eventCount, eventCount, false);
+      hooks.onChunksIndexed(0);
+      hooks.onReindexComplete(durationMs, !!fullRebuild);
+    });
+    return {
+      startedAt,
+      finishedAt,
+      durationMs,
+      reconciliation: { added: 0, modified: 0, deleted: 0, unchanged: eventCount },
+      chunksIndexed: 0,
+    };
+  }
+
   async reindex(
     run: (options?: { fullScan?: boolean; reason?: ReindexOptions['reason'] }) => Promise<IndexEvent[]>,
     loadContent: ContentLoader,
     fullRebuild?: boolean,
     reason: ReindexOptions['reason'] = 'manual',
-  ): Promise<ReindexResult | { status: 'already_running' } | { status: 'incomplete' }> {
-    return observeReindex(this.options.observer, this, () => this.reindexUnobserved(run, loadContent, fullRebuild, reason));
+    integrityRecovery?: IntegrityRecoveryRequest,
+  ): Promise<ReindexOperationResult> {
+    return observeReindex(this.options.observer, this, () =>
+      this.reindexUnobserved(run, loadContent, fullRebuild, reason, integrityRecovery));
   }
 
   private async reindexUnobserved(
     run: (options?: { fullScan?: boolean; reason?: ReindexOptions['reason'] }) => Promise<IndexEvent[]>,
     loadContent: ContentLoader, fullRebuild?: boolean, reason: ReindexOptions['reason'] = 'manual',
-  ): Promise<ReindexResult | { status: 'already_running' } | { status: 'incomplete' }> {
+    integrityRecovery?: IntegrityRecoveryRequest,
+  ): Promise<ReindexOperationResult> {
     const startedAt = new Date().toISOString();
     const startTime = Date.now();
 
     try {
       return await tryAcquire(this.mutex).runExclusive(async () => {
+        let deferFullScanComplete = fullRebuild === true;
+        if (integrityRecovery !== undefined && (fullRebuild !== true || reason !== 'integrity-recovery')) {
+          return { status: 'integrity_unknown', reason: 'invalid_recovery_request_context' };
+        }
+        if (integrityRecovery !== undefined && this.options.structuredIndexCoordinator === undefined) {
+          return { status: 'integrity_unknown', reason: 'safe_full_rebuild_unavailable' };
+        }
         this.progress.status = 'running';
         this.progress.processedFiles = 0;
         this.progress.totalFiles = 0;
@@ -1301,18 +1459,89 @@ export class IndexPipeline implements IIndexPipeline {
         await this.recordSettlementSnapshot();
 
         try {
-          await this.clearPersistedError();
-          const events = await run({ fullScan: fullRebuild, reason });
+          const scannedEvents = await run({ fullScan: fullRebuild, reason });
+          let events = scannedEvents;
+          const completeScanInput = scannedEvents.every((event) => event.type === 'added')
+            && new Set(scannedEvents.map((event) => event.filePath)).size === scannedEvents.length;
+          if (integrityRecovery !== undefined && !completeScanInput) {
+            deferFullScanComplete = true;
+            this.progress.status = 'idle';
+            return { status: 'integrity_unknown', reason: 'recovery_scan_input_incomplete' };
+          }
+          if (fullRebuild === true && completeScanInput) {
+            const assessment = await this.integrityPreflight.assess(scannedEvents, run, loadContent, reason);
+            if (integrityRecovery !== undefined) {
+              if (assessment.kind === 'MATCH') {
+                deferFullScanComplete = false;
+                return this.finishNoOp(startedAt, startTime, scannedEvents.length, fullRebuild);
+              }
+              if (assessment.kind !== 'CORRUPTION_CONFIRMED'
+                || assessment.request.rebuildEpoch !== integrityRecovery.rebuildEpoch
+                || assessment.request.fingerprint !== integrityRecovery.fingerprint) {
+                this.progress.status = 'idle';
+                this.safeNotifyMetrics((hooks) => {
+                  hooks.onIndexingProgress(this.progress.processedFiles, this.progress.totalFiles, false);
+                });
+                return {
+                  status: 'integrity_unknown',
+                  reason: assessment.kind === 'INTEGRITY_UNKNOWN' ? assessment.reason : 'recovery_state_changed',
+                };
+              }
+            } else {
+              if (assessment.kind === 'MATCH') {
+                deferFullScanComplete = false;
+                return this.finishNoOp(startedAt, startTime, scannedEvents.length, fullRebuild);
+              }
+              if (assessment.kind === 'INTEGRITY_UNKNOWN') {
+                this.progress.status = 'idle';
+                this.safeNotifyMetrics((hooks) => {
+                  hooks.onIndexingProgress(this.progress.processedFiles, this.progress.totalFiles, false);
+                });
+                return { status: 'integrity_unknown', reason: assessment.reason };
+              }
+              if (assessment.kind === 'CORRUPTION_CONFIRMED') {
+                if (this.options.structuredIndexCoordinator === undefined) {
+                  this.progress.status = 'idle';
+                  this.safeNotifyMetrics((hooks) => {
+                    hooks.onIndexingProgress(this.progress.processedFiles, this.progress.totalFiles, false);
+                  });
+                  return { status: 'integrity_unknown', reason: 'safe_full_rebuild_unavailable' };
+                }
+                deferFullScanComplete = true;
+                this.progress.status = 'idle';
+                this.safeNotifyMetrics((hooks) => {
+                  hooks.onIndexingProgress(this.progress.processedFiles, this.progress.totalFiles, false);
+                });
+                return { status: 'rebuild_required', request: assessment.request };
+              }
+            }
+            const completeEvents = await this.integrityPreflight.completeScanEvents(scannedEvents);
+            if (completeEvents === undefined) {
+              deferFullScanComplete = true;
+              this.progress.status = 'idle';
+              this.safeNotifyMetrics((hooks) => {
+                hooks.onIndexingProgress(this.progress.processedFiles, this.progress.totalFiles, false);
+              });
+              return { status: 'integrity_unknown', reason: 'complete_scan_input_unavailable' };
+            }
+            events = completeEvents;
+          }
+          this.options.assertWriterLease?.();
+          if (integrityRecovery === undefined) await this.clearPersistedError();
           this.progress.totalFiles = events.length;
           this.safeNotifyMetrics((h) => { h.onIndexingProgress(0, events.length, true); });
           this.safeLogProgress(
             `Starting reindex of ${events.length} files (fullRebuild: ${!!fullRebuild}, reason: ${reason})`,
           );
 
-          const { chunksIndexed } = await this.processEvents(events, loadContent, {
+          const processOptions: ProcessEventsOptions = {
             trackProgress: true,
             fullRebuild,
-          });
+            ...(integrityRecovery === undefined ? {} : {
+              integrityRecovery: { request: integrityRecovery, scannedEvents, run },
+            }),
+          };
+          const { chunksIndexed } = await this.processEventsObserved(events, loadContent, processOptions);
 
           const finishedAt = new Date().toISOString();
           const durationMs = Date.now() - startTime;
@@ -1343,6 +1572,7 @@ export class IndexPipeline implements IIndexPipeline {
 
           this.safeNotifyMetrics((h) => { h.onReindexComplete(durationMs, !!fullRebuild); });
 
+          deferFullScanComplete = false;
           this.progress.status = 'idle';
           this.safeNotifyMetrics((h) => { h.onIndexingProgress(this.progress.processedFiles, this.progress.totalFiles, false); });
           return {
@@ -1357,11 +1587,20 @@ export class IndexPipeline implements IIndexPipeline {
           this.safeNotifyMetrics((h) => { h.onIndexingProgress(this.progress.processedFiles, this.progress.totalFiles, false); });
           const message = error instanceof Error ? error.message : String(error);
           this.progress.lastError = message;
-          await this.persistFailure(message);
+          if (integrityRecovery !== undefined) {
+            const recoveryReason = error instanceof IntegrityRecoveryAbortedError
+              ? error.code
+              : this.abortController.signal.aborted || this.options.isWriterLeaseHeld?.() === false
+                ? 'writer_lease_lost' : 'recovery_rebuild_failed';
+            return { status: 'integrity_unknown', reason: recoveryReason };
+          }
+          if (!this.abortController.signal.aborted && this.options.isWriterLeaseHeld?.() !== false) {
+            await this.persistFailure(message);
+          }
           this.safeLogProgress(`Reindex failed (${reason}): ${message}`);
           throw error;
         } finally {
-          if (fullRebuild && this.eventQueue) {
+          if (fullRebuild && this.eventQueue && !deferFullScanComplete) {
             this.eventQueue.markFullScanComplete();
           }
           await this.recordSettlementSnapshot();

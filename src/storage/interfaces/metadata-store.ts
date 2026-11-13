@@ -90,6 +90,7 @@ const structuredCatalogMethods = [
   'getPendingSymbol',
   'getTombstone',
   'getStructuredCounts',
+  'getFileImports',
   'reconcileStructuredState',
 ] as const satisfies readonly (keyof IStructuredCatalog)[];
 
