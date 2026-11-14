@@ -206,6 +206,7 @@ describe('Nexus #360 same-generation no-op', () => {
       metadataStore: metadata, vectorStore: vectors, chunker, pluginRegistry: registry,
       embeddingProvider: new TestEmbeddingProvider(), embeddingConfig,
       structuredIndexCoordinator: coordinator,
+      maxFileBytes: 1024,
       metricsHooks: {
         onIndexingProgress: (_processed, _total, active) => progressStates.push(active),
         onChunksIndexed: () => {},
@@ -280,6 +281,19 @@ describe('Nexus #360 same-generation no-op', () => {
     expect(stagedMismatch).toMatchObject({ status: 'integrity_unknown', reason: 'staged_input_changed' });
     expect(sqliteLogicalSnapshot(databasePath)).toBe(beforeStagedMismatch);
     expect(await lanceVersions(vectorPath)).toEqual(versionsBeforeStagedMismatch);
+
+    const beforeSkippedStage = sqliteLogicalSnapshot(databasePath);
+    const versionsBeforeSkippedStage = await lanceVersions(vectorPath);
+    const stageLegacyDeletions = vi.spyOn(vectors, 'stageLegacyShadowDeletions');
+    stagedBytesOverrideDelay = 2;
+    stagedBytesOverride = new TextEncoder().encode('export const recover = 43;\n'.repeat(100));
+    const skippedStage = await pipeline.reindex(
+      runFullScan, loadContent, true, 'integrity-recovery', requested.request,
+    );
+    expect(stageLegacyDeletions).not.toHaveBeenCalled();
+    expect(skippedStage).toMatchObject({ status: 'integrity_unknown', reason: 'input_incomplete' });
+    expect(sqliteLogicalSnapshot(databasePath)).toBe(beforeSkippedStage);
+    expect(await lanceVersions(vectorPath)).toEqual(versionsBeforeSkippedStage);
 
     const progressCountBeforeIncomplete = progressStates.length;
     const incomplete = await pipeline.reindex(

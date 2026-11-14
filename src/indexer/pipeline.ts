@@ -879,6 +879,9 @@ export class IndexPipeline implements IIndexPipeline {
       });
     })));
     for (const work of works) {
+      if (stagedSourceIdentities !== undefined && work.skipped) {
+        throw new IntegrityRecoveryAbortedError('input_incomplete');
+      }
       if (!work.skipped) stagedSourceIdentities?.set(work.event.filePath, work.sourceIdentityHash);
     }
 
@@ -1347,7 +1350,8 @@ export class IndexPipeline implements IIndexPipeline {
           },
           beforeRollback: async () => {
             await this.options.vectorStore.abortLegacyShadowTable(legacyShadow);
-            await this.merkleTree.restore(merkleSnapshot);
+            this.options.assertWriterLease?.();
+            await this.merkleTree.restore(merkleSnapshot, () => this.options.assertWriterLease?.());
           },
         });
       });
@@ -1459,11 +1463,11 @@ export class IndexPipeline implements IIndexPipeline {
         let deferFullScanComplete = fullRebuild === true;
         let releaseFullScanAfterUnknown = false;
         if (integrityRecovery !== undefined && (fullRebuild !== true || reason !== 'integrity-recovery')) {
-          releaseFullScanAfterUnknown = true;
+          if (fullRebuild) this.eventQueue?.releaseFullScan();
           return { status: 'integrity_unknown', reason: 'invalid_recovery_request_context' };
         }
         if (integrityRecovery !== undefined && this.options.structuredIndexCoordinator === undefined) {
-          releaseFullScanAfterUnknown = true;
+          if (fullRebuild) this.eventQueue?.releaseFullScan();
           return { status: 'integrity_unknown', reason: 'safe_full_rebuild_unavailable' };
         }
         this.progress.status = 'running';
@@ -1595,6 +1599,7 @@ export class IndexPipeline implements IIndexPipeline {
             this.recordCompletion(fullRebuild, reason, finishedAt));
 
           if (!completionRecorded) {
+            releaseFullScanAfterUnknown = true;
             this.progress.status = 'idle';
             this.safeNotifyMetrics((h) => { h.onIndexingProgress(this.progress.processedFiles, this.progress.totalFiles, false); });
             return { status: 'incomplete' as const };
@@ -1625,6 +1630,7 @@ export class IndexPipeline implements IIndexPipeline {
                 ? 'writer_lease_lost' : 'recovery_rebuild_failed';
             return { status: 'integrity_unknown', reason: recoveryReason };
           }
+          releaseFullScanAfterUnknown = fullRebuild === true;
           if (!this.abortController.signal.aborted && this.options.isWriterLeaseHeld?.() !== false) {
             await this.persistFailure(message);
           }

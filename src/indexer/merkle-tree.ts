@@ -56,7 +56,8 @@ export class MerkleTree {
     this.rootHash = await this.computeRootHashFromStore();
   }
 
-  async restore(nodes: readonly MerkleNodeRow[]): Promise<void> {
+  async restore(nodes: readonly MerkleNodeRow[], assertWriterLease?: () => void): Promise<void> {
+    assertWriterLease?.();
     await this.metadataStore.replaceAllMerkleNodes([...nodes]);
     await this.load();
   }

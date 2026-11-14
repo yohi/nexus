@@ -42,6 +42,8 @@ export class EventQueue {
 
   private postScanOverflowed = false;
 
+  private releasePostScanQueueAfterFullScan = false;
+
   constructor(private readonly options: EventQueueOptions) {
     if (this.options.fullScanThreshold > this.options.maxQueueSize) {
       throw new Error('fullScanThreshold must be less than or equal to maxQueueSize');
@@ -62,7 +64,9 @@ export class EventQueue {
 
   enqueue(event: IndexEvent): boolean {
     if (this.options.observer !== undefined) rememberQueuedObservation(event);
-    if (this.postScanActive) {
+    if (this.postScanActive || this.state !== 'normal') {
+      if (this.state !== 'normal' && !this.postScanActive) this.releasePostScanQueueAfterFullScan = true;
+      this.postScanActive = true;
       if (this.postScanQueue.length + this.size() >= this.options.maxQueueSize) {
         // Keep the post-scan buffer bounded. The dropped event is recovered by
         // the full-scan path once the accepted post-scan events are drained.
@@ -72,10 +76,6 @@ export class EventQueue {
       this.postScanQueue.push(event);
       this.safeNotifyMetrics();
       return true;
-    }
-
-    if (this.state !== 'normal') {
-      return this.recordDroppedEvent();
     }
 
     const existingEvent = this.debouncedEvents.get(event.filePath);
@@ -308,12 +308,18 @@ export class EventQueue {
     this.watcherQueue.length = 0;
     this.reindexQueue.length = 0;
     this.state = 'normal';
+    if (this.releasePostScanQueueAfterFullScan) {
+      this.releasePostScanQueueAfterFullScan = false;
+      this.drainPostScanQueue();
+    }
     this.safeNotifyMetrics();
   }
 
   releaseFullScan(): void {
     if (this.state !== 'full_scan') return;
     this.state = 'normal';
+    this.releasePostScanQueueAfterFullScan = false;
+    this.drainPostScanQueue();
     this.safeNotifyMetrics();
   }
 
@@ -348,6 +354,7 @@ export class EventQueue {
       this.postScanOverflowed = false;
     }
     this.postScanActive = false;
+    this.releasePostScanQueueAfterFullScan = false;
     this.safeNotifyMetrics();
     return drained;
   }
@@ -355,6 +362,7 @@ export class EventQueue {
   abortPostScanMode(): void {
     this.postScanActive = false;
     this.postScanOverflowed = false;
+    this.releasePostScanQueueAfterFullScan = false;
     this.postScanQueue.length = 0;
     this.safeNotifyMetrics();
   }
@@ -375,6 +383,7 @@ export class EventQueue {
     this.postScanQueue.length = 0;
     this.postScanActive = false;
     this.postScanOverflowed = false;
+    this.releasePostScanQueueAfterFullScan = false;
     this.state = 'normal';
   }
 

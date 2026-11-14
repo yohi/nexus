@@ -64,7 +64,8 @@ describe('stress: branch switch watcher load', () => {
 
       // drain transitions overflow → full_scan; call markFullScanComplete to reset
       queue.markFullScanComplete();
-      expect(queue.isOverflowing()).toBe(false);
+      expect(queue.getState()).toBe('overflow');
+      expect(queue.size()).toBeGreaterThan(0);
       expect(fakeWatcher.closeCalls).toBe(0);
     } finally {
       await watcher.stop();

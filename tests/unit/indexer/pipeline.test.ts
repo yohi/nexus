@@ -30,6 +30,13 @@ class CountingEmbeddingProvider extends TestEmbeddingProvider {
 const fixturePath = path.join(process.cwd(), 'tests/fixtures/sample-project/src/auth.ts');
 const ONE_HOT_64 = new Array(64).fill(0).map((_, i) => (i === 0 ? 1 : 0));
 
+async function createFullScanEventQueue(): Promise<EventQueue> {
+  const eventQueue = new EventQueue({ debounceMs: 0, maxQueueSize: 10, fullScanThreshold: 1, concurrency: 1 });
+  eventQueue.enqueue({ type: 'modified', filePath: 'src/overflow.ts', detectedAt: new Date().toISOString() });
+  await eventQueue.drain(async () => undefined);
+  return eventQueue;
+}
+
 describe('IndexPipeline', () => {
   it('indexes an added file into merkle metadata and vector storage', async () => {
     const { metadataStore, vectorStore, chunker, registry } = await createPipeline();
@@ -644,7 +651,6 @@ describe('IndexPipeline', () => {
     });
     eventQueue.enqueue({ type: 'modified', filePath: 'src/overflow.ts', detectedAt: new Date().toISOString() });
     await eventQueue.drain(async () => undefined);
-    eventQueue.enterPostScanMode();
     eventQueue.enqueue({ type: 'modified', filePath: 'src/queued.ts', detectedAt: new Date().toISOString() });
     const pipeline = new IndexPipeline({
       metadataStore, vectorStore, chunker, embeddingProvider: new TestEmbeddingProvider(), pluginRegistry: registry,
@@ -659,11 +665,70 @@ describe('IndexPipeline', () => {
 
     expect(result).toMatchObject({ status: 'integrity_unknown' });
     expect(eventQueue.getState()).toBe('normal');
-    expect(eventQueue.getPostScanQueueSize()).toBe(1);
-    expect(eventQueue.drainPostScanQueue()).toBe(1);
+    expect(eventQueue.getPostScanQueueSize()).toBe(0);
+    expect(eventQueue.size()).toBe(1);
     await expect(eventQueue.drain(async (event) => event)).resolves.toMatchObject([
       { type: 'modified', filePath: 'src/queued.ts' },
     ]);
+  });
+
+  it('releases full-scan mode for an invalid integrity-recovery context', async () => {
+    const { metadataStore, vectorStore, chunker, registry } = await createPipeline();
+    const eventQueue = await createFullScanEventQueue();
+    const pipeline = new IndexPipeline({
+      metadataStore, vectorStore, chunker, embeddingProvider: new TestEmbeddingProvider(), pluginRegistry: registry,
+      eventQueue,
+    });
+
+    const result = await pipeline.reindex(async () => [], async () => '', true, 'manual', {
+      rebuildEpoch: 0,
+      fingerprint: 'invalid-context',
+    });
+
+    expect(result).toMatchObject({ status: 'integrity_unknown', reason: 'invalid_recovery_request_context' });
+    expect(eventQueue.getState()).toBe('normal');
+  });
+
+  it('releases full-scan mode when full rebuild completion is incomplete', async () => {
+    const { metadataStore, vectorStore, chunker, registry } = await createPipeline();
+    const eventQueue = await createFullScanEventQueue();
+    const pipeline = new IndexPipeline({
+      metadataStore, vectorStore, chunker, embeddingProvider: new FailingEmbeddingProvider(),
+      embeddingConfig: {
+        provider: 'test', model: 'deterministic-test', dimensions: 64,
+        maxConcurrency: 1, batchSize: 16, retryCount: 0, retryBaseDelayMs: 0,
+      },
+      pluginRegistry: registry, eventQueue,
+    });
+    const result = await pipeline.reindex(
+      async () => [{ type: 'added', filePath: fixturePath, detectedAt: new Date().toISOString() }],
+      async () => await readFile(fixturePath, 'utf8'),
+      true,
+    );
+
+    expect(result).toMatchObject({ status: 'incomplete' });
+    expect(eventQueue.getState()).toBe('normal');
+  });
+
+  it('releases full-scan mode when a non-recovery full rebuild throws', async () => {
+    const { metadataStore, vectorStore, chunker, registry } = await createPipeline();
+    const eventQueue = await createFullScanEventQueue();
+    vi.spyOn(metadataStore, 'atomicCompletionCheck').mockRejectedValue(new Error('test completion failure'));
+    const pipeline = new IndexPipeline({
+      metadataStore, vectorStore, chunker, embeddingProvider: new TestEmbeddingProvider(),
+      embeddingConfig: {
+        provider: 'test', model: 'deterministic-test', dimensions: 64,
+        maxConcurrency: 1, batchSize: 16, retryCount: 0, retryBaseDelayMs: 0,
+      },
+      pluginRegistry: registry, eventQueue,
+    });
+
+    await expect(pipeline.reindex(
+      async () => [{ type: 'added', filePath: fixturePath, detectedAt: new Date().toISOString() }],
+      async () => await readFile(fixturePath, 'utf8'),
+      true,
+    )).rejects.toThrow('test completion failure');
+    expect(eventQueue.getState()).toBe('normal');
   });
 
   it('skips a file whose UTF-8 byte length exceeds maxFileBytes', async () => {

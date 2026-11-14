@@ -41,7 +41,7 @@ describe('EventQueue backpressure state machine', () => {
     expect(queue.isOverflowing()).toBe(true);
   });
 
-  it('clears queues before and after full scan to avoid death spirals', async () => {
+  it('buffers events that arrive during a full scan and drains them afterward', async () => {
     vi.useFakeTimers();
     const queue = new EventQueue({ debounceMs: 10, maxQueueSize: 10, fullScanThreshold: 1, concurrency: 1 });
 
@@ -52,13 +52,19 @@ describe('EventQueue backpressure state machine', () => {
     await queue.drain(async () => undefined);
     expect(queue.getState()).toBe('full_scan');
 
-    expect(queue.enqueue(makeEvent('src/c.ts'))).toBe(false);
+    expect(queue.enqueue(makeEvent('src/c.ts'))).toBe(true);
     expect(queue.size()).toBe(0);
+    expect(queue.getPostScanQueueSize()).toBe(2);
 
     queue.markFullScanComplete();
 
     expect(queue.getState()).toBe('normal');
     expect(queue.isOverflowing()).toBe(false);
-    expect(queue.size()).toBe(0);
+    expect(queue.getPostScanQueueSize()).toBe(0);
+    expect(queue.size()).toBe(2);
+    await expect(queue.drain(async (event) => event)).resolves.toMatchObject([
+      { type: 'modified', filePath: 'src/b.ts' },
+      { type: 'modified', filePath: 'src/c.ts' },
+    ]);
   });
 });

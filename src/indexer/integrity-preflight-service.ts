@@ -34,8 +34,13 @@ export class IntegrityPreflightService {
   ): Promise<IntegrityPreflightResult> {
     const signal = this.options.getSignal();
     const limit = pLimit(this.options.concurrency);
-    const files = await Promise.all(events.map((event) =>
-      limit(async () => await this.options.prepareFile(event, loadContent))));
+    let files: IntegrityPreparedFile[];
+    try {
+      files = await Promise.all(events.map((event) =>
+        limit(async () => await this.options.prepareFile(event, loadContent))));
+    } catch {
+      return { kind: 'INTEGRITY_UNKNOWN', reason: 'audit_incomplete' };
+    }
     return await runIntegrityPreflight({
       events, files,
       metadataStore: this.options.metadataStore,
