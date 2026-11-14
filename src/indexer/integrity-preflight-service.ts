@@ -85,9 +85,11 @@ export class IntegrityPreflightService {
       for await (const row of physicalRows) knownPaths.add(row.filePath);
       const scannedPaths = new Set(events.map((event) => event.filePath));
       const detectedAt = events[0]?.detectedAt ?? new Date().toISOString();
+      const deletedDirectoryRoots = orphanedDirectoryRoots.filter((directoryPath) =>
+        !scannedPaths.has(directoryPath) && knownPaths.has(directoryPath));
       const deletedEvents = [...knownPaths]
         .filter((filePath) => !scannedPaths.has(filePath)
-          && !orphanedDirectoryRoots.some((directoryPath) =>
+          && !deletedDirectoryRoots.some((directoryPath) =>
             filePath !== directoryPath && filePath.startsWith(`${directoryPath}/`)))
         .sort((left, right) => left.localeCompare(right))
         .map((filePath): IndexEvent => ({ type: 'deleted', filePath, detectedAt }));

@@ -409,6 +409,23 @@ export class IndexPipeline implements IIndexPipeline {
         if (active.size > 0) {
           throw new Error('Structured full rebuild: empty scan cannot retire existing active files');
         }
+        if (options.integrityRecovery === undefined) {
+          return { chunksIndexed: 0, structuredParseFailures: [], embeddingFailures: [] };
+        }
+        this.options.assertWriterLease?.();
+        const verified = await this.integrityPreflight.assess(
+          options.integrityRecovery.scannedEvents,
+          options.integrityRecovery.run,
+          loadContent as ContentLoader,
+          'integrity-recovery',
+        );
+        if (verified.kind !== 'CORRUPTION_CONFIRMED'
+          || verified.request.rebuildEpoch !== options.integrityRecovery.request.rebuildEpoch
+          || verified.request.fingerprint !== options.integrityRecovery.request.fingerprint) {
+          throw new IntegrityRecoveryAbortedError(
+            verified.kind === 'INTEGRITY_UNKNOWN' ? 'input_incomplete' : 'state_changed_before_commit',
+          );
+        }
         const legacyShadow = await this.options.vectorStore.beginLegacyShadowTable();
         await this.commitStructuredFullRebuild(
           structuredIndexCoordinator,
@@ -1672,6 +1689,7 @@ export class IndexPipeline implements IIndexPipeline {
         lastError: null,
       };
 
+      this.options.assertWriterLease?.();
       const { dlqEmpty, dlqEntries } =
         await this.options.metadataStore.atomicCompletionCheck(stats);
 

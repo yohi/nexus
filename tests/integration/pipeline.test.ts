@@ -313,12 +313,17 @@ describe('IndexPipeline integration', () => {
 
     try {
       await mkdir(projectRoot, { recursive: true });
-      for (let index = 0; index < 11; index += 1) {
+      const files = await Promise.all(Array.from({ length: 11 }, async (_, index) => {
         const filePath = index === 10 ? lostFilePath : `file-${index}.ts`;
         const content = index === 10
           ? `export function ${marker}(): string { return 'indexed'; }\n`
           : `export const value${index} = ${index};\n`;
         await writeFile(path.join(projectRoot, filePath), content);
+        return filePath;
+      }));
+      for (let index = 0; index < files.length; index += 1) {
+        const filePath = files[index];
+        if (filePath === undefined) throw new Error(`Missing test file at index ${index}`);
         const accepted = eventQueue.enqueue({
           type: 'added',
           filePath,

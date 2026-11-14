@@ -4,6 +4,7 @@ import path from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 
 import type { DeadLetterQueue } from '../../../src/indexer/dead-letter-queue.js';
+import { Chunker } from '../../../src/indexer/chunker.js';
 import { EventQueue } from '../../../src/indexer/event-queue.js';
 import { computeFileHashStreaming } from '../../../src/indexer/hash.js';
 import { IndexPipeline } from '../../../src/indexer/pipeline.js';
@@ -11,6 +12,7 @@ import { RetryExhaustedError, type EmbeddingConfig } from '../../../src/types/in
 import { createPipeline } from '../../shared/test-helpers.js';
 import { TestEmbeddingProvider } from '../plugins/embeddings/test-embedding-provider.js';
 import { InMemoryVectorStore } from '../storage/in-memory-vector-store.js';
+import { createStructuredCoordinatorFixture } from '../../shared/structured-test-helpers.js';
 
 class FailingEmbeddingProvider extends TestEmbeddingProvider {
   override async embed(): Promise<number[][]> {
@@ -644,14 +646,78 @@ describe('IndexPipeline', () => {
     expect(remove).not.toHaveBeenCalled();
   });
 
+  it('checks the writer lease immediately before atomic completion', async () => {
+    const { metadataStore, vectorStore, chunker, registry } = await createPipeline();
+    let leaseChecks = 0;
+    const pipeline = new IndexPipeline({
+      metadataStore, vectorStore, chunker, embeddingProvider: new TestEmbeddingProvider(), pluginRegistry: registry,
+      assertWriterLease: () => { leaseChecks += 1; },
+    });
+    const atomicCompletionCheck = metadataStore.atomicCompletionCheck.bind(metadataStore);
+    const completionCheck = vi.spyOn(metadataStore, 'atomicCompletionCheck').mockImplementation(async (stats) => {
+      expect(leaseChecks).toBe(2);
+      return await atomicCompletionCheck(stats);
+    });
+
+    await pipeline.reindex(async () => [], async () => '');
+
+    expect(completionCheck).toHaveBeenCalledOnce();
+  });
+
+  it('releases the completion lock when the writer lease is lost at completion', async () => {
+    const { metadataStore, vectorStore, chunker, registry } = await createPipeline();
+    let leaseChecks = 0;
+    let loseLease = true;
+    const pipeline = new IndexPipeline({
+      metadataStore, vectorStore, chunker, embeddingProvider: new TestEmbeddingProvider(), pluginRegistry: registry,
+      assertWriterLease: () => {
+        leaseChecks += 1;
+        if (loseLease && leaseChecks === 2) throw new Error('test writer lease lost');
+      },
+    });
+    const completionCheck = vi.spyOn(metadataStore, 'atomicCompletionCheck');
+
+    await expect(pipeline.reindex(async () => [], async () => '')).rejects.toThrow('test writer lease lost');
+    expect(completionCheck).not.toHaveBeenCalled();
+
+    loseLease = false;
+    leaseChecks = 0;
+    await expect(pipeline.reindex(async () => [], async () => '')).resolves.not.toHaveProperty('status');
+    expect(completionCheck).toHaveBeenCalledOnce();
+  });
+
+  it('does not commit an empty integrity rebuild without a matching fresh assessment', async () => {
+    const { metadataStore, vectorStore, pluginRegistry, coordinator } = await createStructuredCoordinatorFixture();
+    const eventQueue = await createFullScanEventQueue();
+    const pipeline = new IndexPipeline({
+      metadataStore, vectorStore, chunker: new Chunker(pluginRegistry),
+      embeddingProvider: new TestEmbeddingProvider(), pluginRegistry, structuredIndexCoordinator: coordinator,
+      eventQueue,
+    });
+    const request = { rebuildEpoch: 7, fingerprint: 'expected-fingerprint' };
+    const corruption = {
+      kind: 'CORRUPTION_CONFIRMED' as const, request, sourceIdentities: new Map<string, string>(),
+    };
+    const assessment = vi.spyOn(pipeline['integrityPreflight'], 'assess')
+      .mockResolvedValueOnce(corruption)
+      .mockResolvedValueOnce(corruption)
+      .mockResolvedValueOnce({ kind: 'INTEGRITY_UNKNOWN', reason: 'audit_incomplete' });
+    const commit = vi.spyOn(coordinator, 'runFullRebuild');
+
+    const first = await pipeline.reindex(async () => [], async () => '', true);
+    expect(first).toMatchObject({ status: 'rebuild_required', request });
+    const result = await pipeline.reindex(async () => [], async () => '', true, 'integrity-recovery', request);
+
+    expect(result).toMatchObject({ status: 'integrity_unknown' });
+    expect(assessment).toHaveBeenCalledTimes(3);
+    expect(commit).not.toHaveBeenCalled();
+  });
+
   it('releases full-scan mode on unknown integrity while preserving post-scan events', async () => {
     const { metadataStore, vectorStore, chunker, registry } = await createPipeline();
     const eventQueue = new EventQueue({
       debounceMs: 0, maxQueueSize: 10, fullScanThreshold: 1, concurrency: 1,
     });
-    eventQueue.enqueue({ type: 'modified', filePath: 'src/overflow.ts', detectedAt: new Date().toISOString() });
-    await eventQueue.drain(async () => undefined);
-    eventQueue.enqueue({ type: 'modified', filePath: 'src/queued.ts', detectedAt: new Date().toISOString() });
     const pipeline = new IndexPipeline({
       metadataStore, vectorStore, chunker, embeddingProvider: new TestEmbeddingProvider(), pluginRegistry: registry,
       eventQueue,
@@ -661,6 +727,12 @@ describe('IndexPipeline', () => {
     const loadContent = async () => await readFile(fixturePath, 'utf8');
 
     await pipeline.reindex(runFullScan, loadContent, true);
+    eventQueue.enqueue({ type: 'modified', filePath: 'src/overflow.ts', detectedAt: new Date().toISOString() });
+    await eventQueue.drain(async () => undefined);
+    eventQueue.enqueue({ type: 'modified', filePath: 'src/queued.ts', detectedAt: new Date().toISOString() });
+    expect(eventQueue.getState()).toBe('full_scan');
+    expect(eventQueue.getPostScanQueueSize()).toBe(1);
+
     const result = await pipeline.reindex(runFullScan, loadContent, true, 'startup-reconciliation');
 
     expect(result).toMatchObject({ status: 'integrity_unknown' });

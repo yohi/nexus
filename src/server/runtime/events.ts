@@ -99,6 +99,9 @@ export class EventProcessingManager {
       }
     }
     if (reason === 'overflow-recovery' && !this.abortController.signal.aborted) {
+      if (this.eventQueue?.getState() === 'full_scan' && this.pipeline.getProgress().status !== 'running') {
+        this.eventQueue.releaseFullScan();
+      }
       this.eventQueue?.requestFullScan();
     }
   }

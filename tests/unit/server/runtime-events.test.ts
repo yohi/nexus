@@ -15,6 +15,7 @@ const config = {
 const makePipeline = (reindex: IndexPipeline['reindex']): IndexPipeline => ({
   reindex,
   processEvents: vi.fn(async () => undefined),
+  getProgress: vi.fn(() => ({ status: 'idle' })),
   setEventQueue: vi.fn(),
 } as unknown as IndexPipeline);
 
@@ -78,9 +79,7 @@ describe('EventProcessingManager overflow recovery', () => {
   });
 
   it('queues another overflow scan when all bounded retries remain integrity-unknown', async () => {
-    let eventQueue: EventQueue | undefined;
     const reindex = vi.fn(async () => {
-      eventQueue?.releaseFullScan();
       return { status: 'integrity_unknown' as const, reason: 'audit_incomplete' };
     });
     const manager = new EventProcessingManager(
@@ -91,12 +90,67 @@ describe('EventProcessingManager overflow recovery', () => {
       async () => '',
     );
     const setup = manager.setup();
-    eventQueue = setup.eventQueue;
 
-    eventQueue.requestFullScan();
+    setup.eventQueue.requestFullScan();
     await vi.waitFor(() => expect(reindex).toHaveBeenCalledTimes(4), { timeout: 10000 });
 
     expect(reindex).toHaveBeenCalledTimes(4);
+    await setup.onClose();
+  });
+
+  it('does not release a full-scan queue owned by a competing reindex', async () => {
+    let eventQueue: EventQueue | undefined;
+    let calls = 0;
+    const reindex = vi.fn(async () => {
+      calls += 1;
+      return { status: 'integrity_unknown' as const, reason: 'audit_incomplete' };
+    });
+    const pipeline = makePipeline(reindex);
+    const idleProgress = pipeline.getProgress();
+    vi.mocked(pipeline.getProgress).mockImplementation(() => ({
+      ...idleProgress, status: 'running',
+    }));
+    const manager = new EventProcessingManager(
+      config, process.cwd(), [], pipeline, async () => '',
+    );
+    const setup = manager.setup();
+    eventQueue = setup.eventQueue;
+    eventQueue.requestFullScan();
+
+    await vi.waitFor(() => expect(calls).toBe(3), { timeout: 10000 });
+    expect(eventQueue.getState()).toBe('full_scan');
+
+    eventQueue.releaseFullScan();
+    await vi.waitFor(() => expect(calls).toBeGreaterThan(3), { timeout: 5000 });
+    await setup.onClose();
+  });
+
+  it('processes post-scan watcher events after a DLQ-held mutex abandons recovery', async () => {
+    let eventQueue: EventQueue | undefined;
+    let reindexCalls = 0;
+    const request = { rebuildEpoch: 2, fingerprint: 'recovery-fingerprint' };
+    const reindex = vi.fn<IndexPipeline['reindex']>(async () => {
+      reindexCalls += 1;
+      if (reindexCalls === 1) {
+        eventQueue?.enqueue({ type: 'modified', filePath: 'src/queued.ts', detectedAt: 'now' });
+        return { status: 'rebuild_required', request };
+      }
+      return { status: 'already_running' };
+    });
+    const pipeline = makePipeline(reindex);
+    const processEvents = vi.mocked(pipeline.processEvents);
+    const manager = new EventProcessingManager(config, process.cwd(), [], pipeline, async () => '');
+    const setup = manager.setup();
+    eventQueue = setup.eventQueue;
+    eventQueue.requestFullScan();
+
+    await vi.waitFor(() => expect(processEvents).toHaveBeenCalledWith(
+      [{ type: 'modified', filePath: 'src/queued.ts', detectedAt: 'now' }],
+      expect.any(Function),
+      { trackProgress: false },
+    ), { timeout: 10000 });
+
+    expect(eventQueue.getPostScanQueueSize()).toBe(0);
     await setup.onClose();
   });
 
