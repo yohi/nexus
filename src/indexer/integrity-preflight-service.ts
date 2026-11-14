@@ -2,6 +2,7 @@ import pLimit from 'p-limit';
 import type { IndexEvent, IMetadataStore, IVectorStore } from '../types/index.js';
 import { supportsStructuredCatalog } from '../storage/interfaces/metadata-store.js';
 import { runIntegrityPreflight } from './integrity-preflight.js';
+import { collectExpectedDirectoryPaths } from './integrity-preflight-merkle.js';
 import type { IntegrityPreparedFile, IntegrityPreflightResult } from './integrity-preflight-types.js';
 
 type ContentLoader = (filePath: string) => Promise<string>;
@@ -56,7 +57,16 @@ export class IntegrityPreflightService {
       if (events.some((event) => event.type !== 'added')
         || new Set(events.map((event) => event.filePath)).size !== events.length) return undefined;
       this.options.assertWriterLease();
-      const knownPaths = new Set((await this.options.metadataStore.getAllFileNodes()).map((node) => node.path));
+      const merkleNodes = await this.options.metadataStore.getAllNodes();
+      const expectedDirectories = collectExpectedDirectoryPaths(events.map((event) => event.filePath));
+      const orphanedDirectoryPaths = merkleNodes
+        .filter((node) => node.isDirectory && !expectedDirectories.has(node.path))
+        .map((node) => node.path);
+      const orphanedDirectoryRoots = orphanedDirectoryPaths.filter((directoryPath) =>
+        !orphanedDirectoryPaths.some((candidate) =>
+          directoryPath !== candidate && directoryPath.startsWith(`${candidate}/`)));
+      const knownPaths = new Set(merkleNodes.filter((node) => !node.isDirectory).map((node) => node.path));
+      for (const directoryPath of orphanedDirectoryRoots) knownPaths.add(directoryPath);
       const metadataStore = this.options.metadataStore;
       if (supportsStructuredCatalog(metadataStore)) {
         const state = await metadataStore.getStructuredIndexState();
@@ -69,7 +79,9 @@ export class IntegrityPreflightService {
       const scannedPaths = new Set(events.map((event) => event.filePath));
       const detectedAt = events[0]?.detectedAt ?? new Date().toISOString();
       const deletedEvents = [...knownPaths]
-        .filter((filePath) => !scannedPaths.has(filePath))
+        .filter((filePath) => !scannedPaths.has(filePath)
+          && !orphanedDirectoryRoots.some((directoryPath) =>
+            filePath !== directoryPath && filePath.startsWith(`${directoryPath}/`)))
         .sort((left, right) => left.localeCompare(right))
         .map((filePath): IndexEvent => ({ type: 'deleted', filePath, detectedAt }));
       this.options.assertWriterLease();

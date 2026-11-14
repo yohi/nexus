@@ -199,16 +199,38 @@ describe('Nexus #360 same-generation no-op', () => {
       projectWriteCoordinator: new ProjectWriteCoordinator(),
       config: { embedding: { dimensions: 64 } },
     });
+    const progressStates: boolean[] = [];
     pipeline = new IndexPipeline({
       metadataStore: metadata, vectorStore: vectors, chunker, pluginRegistry: registry,
       embeddingProvider: new TestEmbeddingProvider(), embeddingConfig,
       structuredIndexCoordinator: coordinator,
+      metricsHooks: {
+        onIndexingProgress: (_processed, _total, active) => progressStates.push(active),
+        onChunksIndexed: () => {},
+        onReindexComplete: () => {},
+        onDlqSnapshot: () => {},
+        onRecoverySweepComplete: () => {},
+      },
       loadFileBytes: async (path) => await readFile(join(projectRoot, path)),
     });
     const runFullScan = async () => await DirectoryScanner.scan(projectRoot, projectRoot, []);
     const loadContent = async (path: string) => await readFile(join(projectRoot, path), 'utf8');
     const seeded = await pipeline.reindex(runFullScan, loadContent, true);
     expect('status' in seeded).toBe(false);
+
+    await metadata.bulkUpsertMerkleNodes([
+      { path: 'orphan', hash: 'orphan-hash', parentPath: null, isDirectory: true },
+      { path: 'orphan/nested', hash: 'nested-hash', parentPath: 'orphan', isDirectory: true },
+    ]);
+    const orphanedDirectory = await pipeline.reindex(runFullScan, loadContent, true);
+    expect(orphanedDirectory).toMatchObject({ status: 'rebuild_required' });
+    if (!('status' in orphanedDirectory) || orphanedDirectory.status !== 'rebuild_required') {
+      throw new Error('integrity recovery request required for orphaned directory');
+    }
+    const recoveredOrphan = await pipeline.reindex(
+      runFullScan, loadContent, true, 'integrity-recovery', orphanedDirectory.request,
+    );
+    expect('status' in recoveredOrphan).toBe(false);
 
     const beforeDamage = sqliteLogicalSnapshot(databasePath);
     const legacy = [];
@@ -235,8 +257,15 @@ describe('Nexus #360 same-generation no-op', () => {
       throw new Error('integrity recovery request required');
     }
 
-    const incomplete = await pipeline.reindex(async () => [], loadContent, true, 'integrity-recovery', requested.request);
-    expect(incomplete).toMatchObject({ status: 'integrity_unknown' });
+    const progressCountBeforeIncomplete = progressStates.length;
+    const incomplete = await pipeline.reindex(
+      async () => [{ type: 'modified', filePath, detectedAt: new Date().toISOString() }],
+      loadContent, true, 'integrity-recovery', requested.request,
+    );
+    expect(incomplete).toMatchObject({ status: 'integrity_unknown', reason: 'recovery_scan_input_incomplete' });
+    expect(progressStates.slice(progressCountBeforeIncomplete)).toContain(false);
+    await expect(metadata.getMerkleNode('orphan')).resolves.toBeNull();
+    await expect(metadata.getMerkleNode('orphan/nested')).resolves.toBeNull();
     expect(sqliteLogicalSnapshot(databasePath)).toBe(beforeDamage);
     expect(await lanceVersions(vectorPath)).toEqual(damagedVersions);
 

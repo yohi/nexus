@@ -1466,6 +1466,9 @@ export class IndexPipeline implements IIndexPipeline {
           if (integrityRecovery !== undefined && !completeScanInput) {
             deferFullScanComplete = true;
             this.progress.status = 'idle';
+            this.safeNotifyMetrics((hooks) => {
+              hooks.onIndexingProgress(this.progress.processedFiles, this.progress.totalFiles, false);
+            });
             return { status: 'integrity_unknown', reason: 'recovery_scan_input_incomplete' };
           }
           if (fullRebuild === true && completeScanInput) {
