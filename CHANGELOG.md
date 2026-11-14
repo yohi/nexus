@@ -1,5 +1,35 @@
 # Changelog
 
+## [2.10.0](https://github.com/yohi/nexus/compare/v2.9.0...v2.10.0) (2026-11-14)
+
+
+### Features
+
+* implement same-generation verified no-op and safe rebuild handoff ([1fdb222](https://github.com/yohi/nexus/commit/1fdb2229867d93c1af798deeaa8ce0a07ba996ce))
+* Nexus [#360](https://github.com/yohi/nexus/issues/360)方式BのPreflightと復旧を実装 ([2d37221](https://github.com/yohi/nexus/commit/2d3722186161f209f0fb6a77d1f789c623797d0b))
+
+
+### Bug Fixes
+
+* integrity recovery edge casesを修正 ([549cb5f](https://github.com/yohi/nexus/commit/549cb5f44b5e3ba00dfbd8bc612680e22f691534))
+* integrity復旧とイベント再試行を堅牢化 ([b761927](https://github.com/yohi/nexus/commit/b7619271ad9060700ca789bbead510ab5a467de5))
+* integrity復旧時のキューとリース検証を強化 ([68735df](https://github.com/yohi/nexus/commit/68735df730f39372785540832d5d28a92f4fc7e2))
+* integrity監査と再構築時の安全性を強化 ([176db3e](https://github.com/yohi/nexus/commit/176db3ee1965f702e0f6ac3ccdd31e3abbf0f847))
+* loose null比較を厳密比較に変更 ([79f00f6](https://github.com/yohi/nexus/commit/79f00f66cce8a7076c3bb1a629d439fedc44a3c9))
+* Merkle祖先ハッシュとno-op検証を修正 ([6ec41ad](https://github.com/yohi/nexus/commit/6ec41ad481be1891bfe9ea3b69f6b068d39a4eb0))
+* PR [#363](https://github.com/yohi/nexus/issues/363) Recovery指摘に対応 ([0b3c70a](https://github.com/yohi/nexus/commit/0b3c70a1e59691dceaa8bf9949318e5787b5c527))
+* PreflightのlintとSonar指摘を修正 ([4ba4d95](https://github.com/yohi/nexus/commit/4ba4d951cb40839009da59b336dde66db274c5b5))
+* Recovery cleanup失敗時の証跡を維持 ([50b5bc7](https://github.com/yohi/nexus/commit/50b5bc7fcbf2e505d05acfbef192f98db690306e))
+* Recovery中の復旧証跡を保持 ([f7c2851](https://github.com/yohi/nexus/commit/f7c2851ffd6685e81e715ca59b0bbe13a1f3ae4d))
+* Recovery中の復旧証跡を保持 ([40ccd95](https://github.com/yohi/nexus/commit/40ccd951e96eee126b94c43a03f0926a130adb83))
+* Structured Catalogの利用可否を確認 ([3925a80](https://github.com/yohi/nexus/commit/3925a80e22db489ec9e826e84c5ad44647886bfd))
+* **structured:** preserve vectors on same-generation activation (C, refs [#360](https://github.com/yohi/nexus/issues/360)) ([223376c](https://github.com/yohi/nexus/commit/223376cb2100ba2b4f1bd91788309a00d50e8c39))
+* **structured:** preserve vectors on same-generation activation (refs [#360](https://github.com/yohi/nexus/issues/360)) ([00f3c29](https://github.com/yohi/nexus/commit/00f3c29eefec07f4d72e26bf7b7047b10c994061))
+* オーバーフロー時の完全スキャンを再試行 ([082c2a0](https://github.com/yohi/nexus/commit/082c2a0599b868f88e66ec2e9ca29047fc885c8b))
+* ロールバック時のリースと再スキャンを検証 ([0d0f9e4](https://github.com/yohi/nexus/commit/0d0f9e4a349062ec2897b1c9621d3bd1bbd5e358))
+* 再スキャン要求をキューに保持 ([5311587](https://github.com/yohi/nexus/commit/5311587ebcf3d237c0e4094ed135bd4e24075135))
+* 手動reindexでembeddingモデル変更を許可 ([9e92dbc](https://github.com/yohi/nexus/commit/9e92dbc07400cf62ea641f8ef7dfc90d433b1534))
+
 ## [2.9.0](https://github.com/yohi/nexus/compare/v2.8.0...v2.9.0) (2026-11-12)
 
 
