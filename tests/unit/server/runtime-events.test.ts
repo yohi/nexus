@@ -187,9 +187,12 @@ describe('EventProcessingManager overflow recovery', () => {
     const target = 'lost-change.ts';
 
     try {
-      for (let index = 0; index < 11; index += 1) {
+      const files = await Promise.all(Array.from({ length: 11 }, async (_, index) => {
         const filePath = join(projectRoot, index === 10 ? target : `file-${index}.ts`);
         await writeFile(filePath, `export const value${index} = ${index};\n`);
+        return filePath;
+      }));
+      for (const [index, filePath] of files.entries()) {
         const accepted = eventQueue.enqueue({
           type: 'added',
           filePath,
