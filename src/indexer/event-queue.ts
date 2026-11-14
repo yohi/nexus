@@ -28,6 +28,8 @@ export class EventQueue {
 
   private readonly reindexQueue: ReindexQueueEvent[] = [];
 
+  private fullScanRequested = false;
+
   private readonly timers = new Map<string, ReturnType<typeof setTimeout>>();
 
   private state: BackpressureState = 'normal';
@@ -175,6 +177,11 @@ export class EventQueue {
     return true;
   }
 
+  requestFullScan(): void {
+    this.fullScanRequested = true;
+    this.safeNotifyMetrics();
+  }
+
   async drain<T>(handler: (event: QueueEvent) => Promise<T>): Promise<T[]> {
     try {
       this.flushAllDebounced();
@@ -263,10 +270,16 @@ export class EventQueue {
         }
       }
 
-      if (this.state === 'overflow' && this.watcherQueue.length === 0 && this.reindexQueue.length === 0) {
+      if (this.fullScanRequested && this.state === 'normal' && this.size() === 0 && !this.postScanActive) {
+        this.flushTimers();
+        this.state = 'full_scan';
+        this.fullScanRequested = false;
+        await this.options.onFullScanRequired?.();
+      } else if (this.state === 'overflow' && this.watcherQueue.length === 0 && this.reindexQueue.length === 0) {
         this.flushTimers();
         this.debouncedEvents.clear();
         this.state = 'full_scan';
+        this.fullScanRequested = false;
         await this.options.onFullScanRequired?.();
       }
 
@@ -384,6 +397,7 @@ export class EventQueue {
     this.postScanActive = false;
     this.postScanOverflowed = false;
     this.releasePostScanQueueAfterFullScan = false;
+    this.fullScanRequested = false;
     this.state = 'normal';
   }
 

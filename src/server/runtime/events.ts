@@ -99,7 +99,7 @@ export class EventProcessingManager {
       }
     }
     if (reason === 'overflow-recovery' && !this.abortController.signal.aborted) {
-      this.eventQueue?.enqueueReindex({ fullScan: true, reason });
+      this.eventQueue?.requestFullScan();
     }
   }
 
