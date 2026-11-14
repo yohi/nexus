@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 
@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { Chunker } from '../../src/indexer/chunker.js';
 import { IndexPipeline } from '../../src/indexer/pipeline.js';
+import { loadConfig } from '../../src/config/index.js';
 import { PluginRegistry } from '../../src/plugins/registry.js';
 import { TypeScriptLanguagePlugin } from '../../src/plugins/languages/typescript.js';
 import { TestEmbeddingProvider } from '../unit/plugins/embeddings/test-embedding-provider.js';
@@ -13,6 +14,7 @@ import { SqliteMetadataStore } from '../../src/storage/metadata-store.js';
 import { LanceVectorStore } from '../../src/storage/vector-store.js';
 import { StructuredIndexCoordinator } from '../../src/indexer/structured-index-coordinator.js';
 import { ProjectWriteCoordinator } from '../../src/indexer/project-write-coordinator.js';
+import { EventProcessingManager } from '../../src/server/runtime/events.js';
 import { createStructuredStage } from '../shared/structured-test-helpers.js';
 
 const fixturePath = path.join(process.cwd(), 'tests/fixtures/sample-project/src/auth.ts');
@@ -261,6 +263,88 @@ describe('IndexPipeline integration', () => {
 
     expect(first).not.toEqual({ status: 'already_running' });
     expect(second).toEqual({ status: 'already_running' });
+  });
+
+  it('indexes a watcher change dropped before overflow recovery after integrity-unknown retries', async () => {
+    const projectRoot = path.join(tempDir, 'overflow-project');
+    const config = await loadConfig({ projectRoot, env: { NEXUS_EMBEDDING_PROVIDER: 'test' } });
+    const metadataPath = path.join(tempDir, 'overflow-metadata.db');
+    const vectorPath = path.join(tempDir, 'overflow-vectors');
+    metadataStore = new SqliteMetadataStore({ databasePath: metadataPath });
+    vectorStore = new LanceVectorStore({ dbPath: vectorPath, dimensions: 64 });
+    const registry = new PluginRegistry();
+    registry.registerLanguage(new TypeScriptLanguagePlugin());
+    const embeddingProvider = new TestEmbeddingProvider();
+    const pipeline = new IndexPipeline({
+      metadataStore,
+      vectorStore,
+      chunker: new Chunker(registry),
+      embeddingProvider,
+      pluginRegistry: registry,
+    });
+    const manager = new EventProcessingManager(
+      {
+        ...config,
+        watcher: { ...config.watcher, debounceMs: 0, maxQueueSize: 10, fullScanThreshold: 8 },
+      },
+      projectRoot,
+      [],
+      pipeline,
+      async (filePath) => await readFile(path.join(projectRoot, filePath), 'utf8'),
+    );
+
+    await metadataStore.initialize();
+    await vectorStore.initialize();
+    const { eventQueue, onClose } = manager.setup();
+    const lostFilePath = 'lost-change.ts';
+    const marker = 'overflowRecoveryPersistedMarker';
+    let integrityUnknownRetries = 0;
+    let actualReindexRuns = 0;
+    const reindex = pipeline.reindex.bind(pipeline);
+    vi.spyOn(pipeline, 'reindex').mockImplementation(async (...args) => {
+      if (args[3] === 'overflow-recovery' && integrityUnknownRetries < 3) {
+        integrityUnknownRetries += 1;
+        eventQueue.releaseFullScan();
+        return { status: 'integrity_unknown', reason: 'audit_incomplete' };
+      }
+      actualReindexRuns += 1;
+      return await reindex(...args);
+    });
+
+    try {
+      await mkdir(projectRoot, { recursive: true });
+      for (let index = 0; index < 11; index += 1) {
+        const filePath = index === 10 ? lostFilePath : `file-${index}.ts`;
+        const content = index === 10
+          ? `export function ${marker}(): string { return 'indexed'; }\n`
+          : `export const value${index} = ${index};\n`;
+        await writeFile(path.join(projectRoot, filePath), content);
+        const accepted = eventQueue.enqueue({
+          type: 'added',
+          filePath,
+          detectedAt: new Date().toISOString(),
+        });
+        if (index === 10) expect(accepted).toBe(false);
+      }
+
+      expect(eventQueue.getDroppedEventCount()).toBeGreaterThan(0);
+      await vi.waitFor(async () => {
+        const merkleNode = await metadataStore.getMerkleNode(lostFilePath);
+        expect(merkleNode).toEqual(expect.objectContaining({ isDirectory: false }));
+      }, { timeout: 30000 });
+
+      const queryVector = (await embeddingProvider.embed([marker]))[0];
+      if (queryVector === undefined) throw new Error('test embedding was not produced');
+      await expect(vectorStore.search(queryVector, 10, { filePathPrefix: lostFilePath })).resolves.toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ chunk: expect.objectContaining({ filePath: lostFilePath }) }),
+        ]),
+      );
+      expect(integrityUnknownRetries).toBe(3);
+      expect(actualReindexRuns).toBeGreaterThan(0);
+    } finally {
+      await onClose();
+    }
   });
 
   it('rolls back a mixed full-rebuild state after reopening all stores', async () => {
