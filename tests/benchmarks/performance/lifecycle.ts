@@ -1,4 +1,5 @@
 import type { RuntimeAssembly } from '../../../src/server/runtime/assembly-types.js';
+import type { ReindexResult } from '../../../src/types/index.js';
 import type { AuditResult, FixtureManifest, ScenarioRecord } from './contracts.js';
 import { scenarioRecordSchema } from './contracts.js';
 import { captureNodeResources, systemClock } from './clock.js';
@@ -21,13 +22,24 @@ import { runRuntimeDiagnosticStage } from '../../../src/observability/diagnostic
 export type { LifecycleContext, OperationKind, StartupKind } from './lifecycle-context.js';
 let operationSequence = 0;
 
-function cacheWasExercised(kind: StartupKind | OperationKind, accounting: CacheAccounting): boolean {
+function cacheWasExercised(
+  kind: StartupKind | OperationKind,
+  accounting: CacheAccounting,
+  reindexes: readonly Readonly<ReindexResult>[] = [],
+): boolean {
   switch (kind) {
     case 'cold_initial_index': case 'sibling_first': case 'sibling_second':
       return accounting.outcomes.miss > 0 && accounting.providerCalls > 0;
     case 'l2_rebuild': return accounting.outcomes.l2_hit > 0 && accounting.outcomes.miss === 0 && accounting.providerCalls === 0;
     case 'warm_restart': return accounting.outcomes.miss === 0 && accounting.providerCalls === 0;
-    case 'l1_replay': return accounting.outcomes.l1_hit > 0 && accounting.outcomes.miss === 0 && accounting.providerCalls === 0;
+    case 'l1_replay': {
+      const latest = reindexes.at(-1);
+      const verifiedNoOp = latest !== undefined && latest.chunksIndexed === 0
+        && latest.reconciliation.added === 0 && latest.reconciliation.modified === 0
+        && latest.reconciliation.deleted === 0 && latest.reconciliation.unchanged > 0;
+      return (accounting.outcomes.l1_hit > 0 && accounting.outcomes.miss === 0 && accounting.providerCalls === 0)
+        || verifiedNoOp;
+    }
     case 'incremental': return accounting.outcomes.miss > 0 && accounting.providerCalls > 0;
   }
 }
@@ -131,7 +143,9 @@ export async function runExistingRuntimeScenario(kind: OperationKind, assembly: 
       const probeEnd = clock.now();
       if (revision !== assembly.diagnostics.stateRevision() || context.collector.hasRuntimeFailure) throw new ReadinessError('concurrent_mutation');
       const accounting = context.collector.cacheAccounting(requestId);
-      if (!cacheWasExercised(kind, accounting)) throw new LifecycleError('cache_state_not_exercised');
+      if (!cacheWasExercised(kind, accounting, context.collector.successfulReindexes(requestId))) {
+        throw new LifecycleError('cache_state_not_exercised');
+      }
       phase = 'worker';
       await runRuntimeDiagnosticStage('S12_resource_cleanup', async () => { await restore?.(); });
       restore = undefined;

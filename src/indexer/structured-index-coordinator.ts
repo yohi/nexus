@@ -28,6 +28,8 @@ export interface FullRebuildFile {
 export interface FullRebuildCommitHooks {
   readonly beforeCommit?: (rebuildEpoch: number) => Promise<void>;
   readonly afterCommit?: () => Promise<void>;
+  readonly assertWriterLease?: () => void;
+  readonly isWriterLeaseHeld?: () => boolean;
   /** Restore Legacy vectors and Merkle before retiring SQLite recovery evidence. */
   readonly beforeRollback?: () => Promise<void>;
   readonly merkleSnapshot: readonly MerkleNodeRow[];
@@ -234,8 +236,11 @@ export class StructuredIndexCoordinator {
   }
   async runFullRebuild(input: { files: FullRebuildFile[] } & FullRebuildCommitHooks): Promise<void> {
     return this.options.projectWriteCoordinator.run(async () => {
+      input.assertWriterLease?.();
       await this.options.metadataStore.bootstrapStructuredSchema();
+      input.assertWriterLease?.();
       const epoch = await this.options.metadataStore.incrementRebuildEpoch();
+      input.assertWriterLease?.();
       await this.options.metadataStore.setStructuredRebuildState({ rebuildState: 'building' });
 
       const stateBefore = await this.options.metadataStore.getStructuredIndexState();
@@ -260,12 +265,15 @@ export class StructuredIndexCoordinator {
       let structuredRowsStaged = 0;
 
       try {
+        input.assertWriterLease?.();
         await this.options.metadataStore.prepareFullRebuild(activation, input.merkleSnapshot);
         metadataPrepared = true;
+        input.assertWriterLease?.();
         shadowTable = await this.options.vectorStore.beginStructuredShadowTable();
 
         // Stage new files into metadata and the vector shadow table.
         for (const file of input.files) {
+          input.assertWriterLease?.();
           const chunks = file.chunks ?? await this.options.chunker.chunkStructuredFile(
             {
               filePath: file.source.filePath,
@@ -298,6 +306,7 @@ export class StructuredIndexCoordinator {
             fileCompleteness: file.fileCompleteness,
           };
           await runRuntimeDiagnosticStage('S08_storage_write', async () => {
+            input.assertWriterLease?.();
             this.diagnosticCounter('index.sqlite_generation_stage_attempted', 1, 'calls', 'attempted');
             this.diagnosticCounter('index.sqlite_declaration_rows_attempted', file.declarations.length, 'rows', 'attempted');
             this.diagnosticCounter('index.sqlite_import_rows_attempted', file.imports.length, 'rows', 'attempted');
@@ -308,6 +317,7 @@ export class StructuredIndexCoordinator {
           });
           stagedFiles.add(file.source.filePath);
           await runRuntimeDiagnosticStage('S08_storage_write', async () => {
+            input.assertWriterLease?.();
             this.diagnosticCounter('index.structured_vector_rows_attempted', chunks.length, 'rows', 'attempted');
             try {
               await this.options.vectorStore.stageGenerationChunks({
@@ -326,12 +336,14 @@ export class StructuredIndexCoordinator {
         }
 
         await input.beforeCommit?.(epoch);
+        input.assertWriterLease?.();
         await this.options.metadataStore.setStructuredRebuildState({ rebuildState: 'legacy-swapped' });
         const activeShadowTable = shadowTable;
         if (activeShadowTable === undefined) {
           throw new Error('Structured shadow table was not created');
         }
         await runRuntimeDiagnosticStage('S08_storage_write', async () => {
+          input.assertWriterLease?.();
           try {
             await this.options.vectorStore.swapStructuredShadowTable(activeShadowTable, epoch);
           } catch (error) {
@@ -340,17 +352,23 @@ export class StructuredIndexCoordinator {
           }
           this.diagnosticCounter('index.structured_vector_rows_activated', structuredRowsStaged, 'rows', 'succeeded');
         });
+        input.assertWriterLease?.();
         await this.options.metadataStore.setStructuredRebuildState({ rebuildState: 'structured-swapped' });
+        input.assertWriterLease?.();
         await this.options.metadataStore.activateFullRebuild(activation);
+        input.assertWriterLease?.();
         await this.options.metadataStore.setStructuredRebuildState({ rebuildState: 'catalog-activated' });
         await input.afterCommit?.();
+        input.assertWriterLease?.();
         await this.options.metadataStore.setStructuredRebuildState({ rebuildState: 'merkle-activated' });
       } catch (error) {
+        if (input.isWriterLeaseHeld?.() === false) throw error;
         // Restore both vector tables and Merkle before deleting the SQLite journal.
         // If any restore fails, preserve the journal and backups for startup retry.
         let physicalRollbackCompleted = true;
         if (shadowTable !== undefined) {
           try {
+            input.assertWriterLease?.();
             await this.options.vectorStore.abortStructuredShadowTable(shadowTable);
           } catch (abortError) {
             physicalRollbackCompleted = false;
@@ -360,6 +378,7 @@ export class StructuredIndexCoordinator {
         }
         if (metadataPrepared && input.beforeRollback !== undefined) {
           try {
+            input.assertWriterLease?.();
             await input.beforeRollback();
           } catch (rollbackError) {
             physicalRollbackCompleted = false;
@@ -370,6 +389,7 @@ export class StructuredIndexCoordinator {
         if (metadataPrepared) {
           if (physicalRollbackCompleted) {
             try {
+              input.assertWriterLease?.();
               await this.options.metadataStore.rollbackFullRebuild(activation);
               metadataRollbackCompleted = true;
             } catch (rollbackError) {
@@ -383,6 +403,7 @@ export class StructuredIndexCoordinator {
             if (file === undefined) continue;
             await runRuntimeDiagnosticStage('S08_storage_write', async () => {
               try {
+                input.assertWriterLease?.();
                 await this.options.metadataStore.clearPendingGeneration({
                   filePath,
                   expectedActiveGeneration: previousActiveGenerations.get(filePath) ?? null,
@@ -398,6 +419,7 @@ export class StructuredIndexCoordinator {
         }
         if (metadataRollbackCompleted) {
           try {
+            input.assertWriterLease?.();
             await this.options.vectorStore.cleanupOrphanedRebuildTables?.();
           } catch (cleanupError) {
             await this.markStateIntegrity('backup_cleanup_failed');
@@ -405,6 +427,7 @@ export class StructuredIndexCoordinator {
           }
         }
         if (!metadataPrepared || metadataRollbackCompleted) {
+          input.assertWriterLease?.();
           await this.options.metadataStore.setStructuredRebuildState({
             rebuildState: 'failed',
             lastErrorCode: error instanceof Error ? error.message : 'unknown',
@@ -416,9 +439,11 @@ export class StructuredIndexCoordinator {
       // Finalize SQLite (retire the journal) only after the Commit phase is durable.
       // If this fails, leave phase merkle-activated and preserve both vector backups.
       let catalogCleanupFailed = false;
+      input.assertWriterLease?.();
       try {
         await this.options.metadataStore.finalizeFullRebuild(activation);
       } catch (cleanupError) {
+        if (input.isWriterLeaseHeld?.() === false) throw cleanupError;
         catalogCleanupFailed = true;
         await this.markStateIntegrity('backup_cleanup_failed');
         try {
@@ -433,6 +458,7 @@ export class StructuredIndexCoordinator {
       }
       let cleanupFailed = false;
       if (!catalogCleanupFailed && shadowTable !== undefined) {
+        input.assertWriterLease?.();
         try {
           await this.options.vectorStore.finalizeStructuredShadowTable(shadowTable);
         } catch (cleanupError) {
@@ -442,6 +468,7 @@ export class StructuredIndexCoordinator {
         }
       }
       if (catalogCleanupFailed) return;
+      input.assertWriterLease?.();
       await this.options.metadataStore.setStructuredRebuildState({ rebuildState: 'idle', lastErrorCode: cleanupFailed ? 'structured_backup_cleanup_failed' : null });
       if (!cleanupFailed) {
         await runRuntimeDiagnosticStage('S08_storage_write', () => markRuntimeDiagnosticStateIntegrity('verified'));

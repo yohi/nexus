@@ -94,18 +94,18 @@ describe('EventQueue', () => {
     expect(queue.isOverflowing()).toBe(true);
   });
 
-  it('rejects new watcher events while overflowing', async () => {
+  it('buffers new watcher events while overflowing', async () => {
     vi.useFakeTimers();
     const queue = new EventQueue({ debounceMs: 10, maxQueueSize: 10, fullScanThreshold: 1, concurrency: 1 });
 
     queue.enqueue(makeEvent({ filePath: 'src/a.ts' }));
-    queue.enqueue(makeEvent({ filePath: 'src/b.ts' }));
     vi.runAllTimers();
 
     const accepted = queue.enqueue(makeEvent({ filePath: 'src/c.ts' }));
 
-    expect(accepted).toBe(false);
+    expect(accepted).toBe(true);
     expect(queue.size()).toBe(1);
+    expect(queue.getPostScanQueueSize()).toBe(1);
   });
 
   it('clears queued events and resets overflow state', async () => {
@@ -120,6 +120,86 @@ describe('EventQueue', () => {
 
     expect(queue.size()).toBe(0);
     expect(queue.isOverflowing()).toBe(false);
+  });
+
+  it('buffers events received during full-scan mode and drains them when the scan is released', async () => {
+    const queue = new EventQueue({ debounceMs: 0, maxQueueSize: 10, fullScanThreshold: 1, concurrency: 1 });
+    queue.enqueue(makeEvent({ filePath: 'src/overflow.ts' }));
+    await queue.drain(async () => undefined);
+    expect(queue.getState()).toBe('full_scan');
+
+    expect(queue.enqueue(makeEvent({ filePath: 'src/during-scan.ts' }))).toBe(true);
+    expect(queue.getPostScanQueueSize()).toBe(1);
+    queue.releaseFullScan();
+
+    expect(queue.getState()).toBe('normal');
+    expect(queue.getPostScanQueueSize()).toBe(0);
+    await expect(queue.drain(async (event) => event)).resolves.toMatchObject([
+      { type: 'modified', filePath: 'src/during-scan.ts' },
+    ]);
+  });
+
+  it('requests another full scan after releasing a full scan that dropped post-scan events', async () => {
+    const onFullScanRequired = vi.fn(async () => undefined);
+    const queue = new EventQueue({
+      debounceMs: 0,
+      maxQueueSize: 1,
+      fullScanThreshold: 1,
+      concurrency: 1,
+      onFullScanRequired,
+    });
+
+    queue.enqueue(makeEvent({ filePath: 'src/overflow.ts' }));
+    await queue.drain(async () => undefined);
+    expect(queue.getState()).toBe('full_scan');
+    onFullScanRequired.mockClear();
+
+    queue.enqueue(makeEvent({ filePath: 'src/retained.ts' }));
+    expect(queue.enqueue(makeEvent({ filePath: 'src/dropped.ts' }))).toBe(false);
+    queue.releaseFullScan();
+    await queue.drain(async () => undefined);
+
+    expect(queue.getDroppedEventCount()).toBe(1);
+    expect(queue.getState()).toBe('full_scan');
+    expect(onFullScanRequired).toHaveBeenCalledOnce();
+  });
+
+  it('retains a full-scan request made while another full scan is active', async () => {
+    const onFullScanRequired = vi.fn(async () => undefined);
+    const queue = new EventQueue({
+      debounceMs: 0,
+      maxQueueSize: 10,
+      fullScanThreshold: 1,
+      concurrency: 1,
+      onFullScanRequired,
+    });
+    queue.enqueue(makeEvent({ filePath: 'src/overflow.ts' }));
+    await queue.drain(async () => undefined);
+    expect(queue.getState()).toBe('full_scan');
+    onFullScanRequired.mockClear();
+
+    queue.requestFullScan();
+    queue.releaseFullScan();
+    await queue.drain(async () => undefined);
+
+    expect(onFullScanRequired).toHaveBeenCalledOnce();
+    expect(queue.getState()).toBe('full_scan');
+  });
+
+  it('drains events received during full-scan mode when the scan completes', async () => {
+    const queue = new EventQueue({ debounceMs: 0, maxQueueSize: 10, fullScanThreshold: 1, concurrency: 1 });
+    queue.enqueue(makeEvent({ filePath: 'src/overflow.ts' }));
+    await queue.drain(async () => undefined);
+    expect(queue.getState()).toBe('full_scan');
+
+    queue.enqueue(makeEvent({ filePath: 'src/during-scan.ts' }));
+    queue.markFullScanComplete();
+
+    expect(queue.getState()).toBe('normal');
+    expect(queue.getPostScanQueueSize()).toBe(0);
+    await expect(queue.drain(async (event) => event)).resolves.toMatchObject([
+      { type: 'modified', filePath: 'src/during-scan.ts' },
+    ]);
   });
 
   describe('Event Merging', () => {
@@ -181,17 +261,11 @@ describe('EventQueue', () => {
 
   it('exposes droppedEventCount via getter', async () => {
     vi.useFakeTimers();
-    const queue = new EventQueue({ debounceMs: 0, maxQueueSize: 10, fullScanThreshold: 1, concurrency: 1 });
+    const queue = new EventQueue({ debounceMs: 0, maxQueueSize: 1, fullScanThreshold: 1, concurrency: 1 });
 
-    // Fill the queue (watcherQueue)
     queue.enqueue(makeEvent({ filePath: 'src/a.ts' }));
-    vi.runAllTimers();
-    expect(queue.size()).toBe(1);
-
-    // This event should be dropped when flushed
     queue.enqueue(makeEvent({ filePath: 'src/b.ts' }));
     vi.runAllTimers();
-
     expect(queue.getDroppedEventCount()).toBe(1);
   });
 

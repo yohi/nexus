@@ -56,7 +56,8 @@ export class MerkleTree {
     this.rootHash = await this.computeRootHashFromStore();
   }
 
-  async restore(nodes: readonly MerkleNodeRow[]): Promise<void> {
+  async restore(nodes: readonly MerkleNodeRow[], assertWriterLease?: () => void): Promise<void> {
+    assertWriterLease?.();
     await this.metadataStore.replaceAllMerkleNodes([...nodes]);
     await this.load();
   }
@@ -158,6 +159,7 @@ export class MerkleTree {
     let current: string | null = startDirPath;
     const visited = new Set<string>();
     const nodesToUpsert: MerkleNodeRow[] = [];
+    const updatedNodes = new Map<string, MerkleNodeRow>();
 
     while (current !== null && current !== '.' && current !== path.sep) {
       if (visited.has(current)) {
@@ -165,7 +167,17 @@ export class MerkleTree {
       }
       visited.add(current);
 
-      const children: MerkleNodeRow[] = await this.metadataStore.getChildren(current);
+      const storedChildren = await this.metadataStore.getChildren(current);
+      const childrenByPath = new Map(storedChildren.map((child) => [
+        child.path,
+        updatedNodes.get(child.path) ?? child,
+      ]));
+      for (const node of updatedNodes.values()) {
+        if (node.parentPath === current && !childrenByPath.has(node.path)) {
+          childrenByPath.set(node.path, node);
+        }
+      }
+      const children = [...childrenByPath.values()].sort((left, right) => left.path.localeCompare(right.path));
       const hash = await this.calculateDirectoryHash(children);
       
       const parentPath: string | null = path.dirname(current) === '.' ? null : path.dirname(current);
@@ -177,6 +189,7 @@ export class MerkleTree {
       };
 
       nodesToUpsert.push(dirNode);
+      updatedNodes.set(current, dirNode);
       this.addToCache(current, dirNode);
 
       // Important: prevent getting stuck if dirname doesn't change anything

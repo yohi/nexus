@@ -16,6 +16,7 @@ import type {
   FullRebuildVectorArtifact,
   MerkleSnapshotNode,
   StructuredImportRecord,
+  StructuredImportAuditRecord,
   StructuredIndexCounts,
   StructuredIndexState,
   StructuredPendingClear,
@@ -518,6 +519,48 @@ export class SqliteMetadataStore implements IMetadataStore, IStructuredCatalog {
     }));
   }
 
+  async getFileImports(filePath: string, generationId: string): Promise<readonly StructuredImportAuditRecord[]> {
+    await this.asyncBoundary();
+    const rows = this.db.prepare(`
+      SELECT i.id, i.source AS moduleSpecifier, i.imported_names AS bindingName,
+             i.start_byte AS startByte, i.end_byte AS endByte,
+             i.source_hash AS sourceHash, i.is_complete AS isComplete,
+             i.start_line AS startLine, i.start_column AS startColumn,
+             i.end_line AS endLine, i.end_column AS endColumn
+      FROM imports i
+      JOIN structured_files f ON f.file_path = i.file_path AND f.active_generation = i.generation
+      WHERE i.file_path = ? AND i.generation = ?
+      ORDER BY i.start_byte, i.id
+    `).all(filePath, generationId) as Array<{
+      id: string;
+      moduleSpecifier: string;
+      bindingName: string;
+      startByte: number;
+      endByte: number;
+      sourceHash: string;
+      isComplete: number;
+      startLine: number;
+      startColumn: number;
+      endLine: number;
+      endColumn: number;
+    }>;
+    return rows.map((row) => ({
+      id: row.id,
+      moduleSpecifier: row.moduleSpecifier || undefined,
+      bindingName: row.bindingName || undefined,
+      startByte: row.startByte,
+      endByte: row.endByte,
+      sourceHash: row.sourceHash,
+      completeness: row.isComplete === 1 ? 'complete' : 'partial',
+      position: {
+        startLine: row.startLine,
+        startColumn: row.startColumn,
+        endLine: row.endLine,
+        endColumn: row.endColumn,
+      },
+    }));
+  }
+
   async getFileDeclarations(filePath: string): Promise<readonly StructuredDeclaration[]> {
     await this.asyncBoundary();
     const rows = this.db.prepare(`
@@ -533,14 +576,15 @@ export class SqliteMetadataStore implements IMetadataStore, IStructuredCatalog {
   async getGeneration(filePath: string, generationId: string): Promise<StructuredGeneration | null> {
     await this.asyncBoundary();
     const row = this.db.prepare(`
-      SELECT file_path, generation, schema_version, parser_id, parser_version, content_hash, file_completeness
+      SELECT file_path, generation, schema_version, parser_id, parser_version, content_hash, file_completeness, rebuild_epoch
       FROM symbol_generations
       WHERE file_path = ? AND generation = ?
-    `).get(filePath, generationId) as { file_path: string; generation: string; schema_version: number; parser_id: string; parser_version: string; content_hash: string; file_completeness: string } | undefined;
+    `).get(filePath, generationId) as { file_path: string; generation: string; schema_version: number; parser_id: string; parser_version: string; content_hash: string; file_completeness: string; rebuild_epoch: number } | undefined;
     if (row === undefined) return null;
     return {
       generationId: row.generation,
       schemaVersion: row.schema_version as 1,
+      rebuildEpoch: row.rebuild_epoch,
       parserId: row.parser_id,
       parserVersion: row.parser_version,
       fileHash: row.content_hash,

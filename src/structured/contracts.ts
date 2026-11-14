@@ -53,6 +53,7 @@ export interface StructuredImport {
 export interface StructuredGeneration {
   readonly generationId: string;
   readonly schemaVersion: 1;
+  readonly rebuildEpoch?: number | undefined;
   readonly parserId: string;
   readonly parserVersion: string;
   readonly fileHash: string;

@@ -2,6 +2,7 @@ import type {
   StructuredDeclaration,
   StructuredGeneration,
   StructuredImport,
+  SymbolPosition,
 } from '../../structured/contracts.js';
 
 export interface StructuredImportRecord {
@@ -12,6 +13,10 @@ export interface StructuredImportRecord {
   readonly endByte: number;
   readonly sourceHash: string;
   readonly completeness: 'complete' | 'partial';
+}
+
+export interface StructuredImportAuditRecord extends StructuredImportRecord {
+  readonly position: SymbolPosition;
 }
 
 export interface StructuredPendingClear {
@@ -169,6 +174,7 @@ export interface IStructuredCatalog extends FullRebuildVectorJournal {
   getTombstone(symbolId: string): Promise<StructuredTombstone | null>;
   getStructuredCounts(): Promise<StructuredIndexCounts>;
   getImportsForSymbol(symbolId: string): Promise<readonly StructuredImportRecord[]>;
+  getFileImports(filePath: string, generationId: string): Promise<readonly StructuredImportAuditRecord[]>;
   getFileDeclarations(filePath: string): Promise<readonly StructuredDeclaration[]>;
   getGeneration(filePath: string, generationId: string): Promise<StructuredGeneration | null>;
   prepareFullRebuild(input: StructuredFullRebuildActivation, merkleSnapshot: readonly MerkleSnapshotNode[]): Promise<void>;

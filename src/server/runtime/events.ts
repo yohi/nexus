@@ -13,6 +13,7 @@ export class EventProcessingManager {
   private abortController = new AbortController();
   private drainTask?: Promise<void>;
   private readonly fullScanPromises = new Set<Promise<void>>();
+  private eventQueue?: EventQueue;
 
   constructor(private config: Config, private projectRoot: string, private ignorePaths: string[],
     private pipeline: IndexPipeline, private loadFileContent: (path: string) => Promise<string>,
@@ -33,6 +34,7 @@ export class EventProcessingManager {
         return Promise.resolve();
       },
     });
+    this.eventQueue = eventQueue;
     this.pipeline.setEventQueue(eventQueue);
     const watcher = new FileWatcher({ projectRoot: this.projectRoot, ignorePaths: this.ignorePaths }, eventQueue);
     this.drainTask = this.startDrainLoop(eventQueue);
@@ -52,12 +54,32 @@ export class EventProcessingManager {
     for (let attempt = 0; attempt < retryCount; attempt += 1) {
       if (this.abortController.signal.aborted) return;
       try {
-        const result = await this.pipeline.reindex(
-          () => DirectoryScanner.scan(this.projectRoot, this.projectRoot, this.ignorePaths, this.onLog),
-          this.loadFileContent, true, reason,
-        );
+        const runFullScan = () => DirectoryScanner.scan(this.projectRoot, this.projectRoot, this.ignorePaths, this.onLog);
+        let result = await this.pipeline.reindex(runFullScan, this.loadFileContent, true, reason);
+        if ('status' in result && result.status === 'rebuild_required') {
+          result = await this.pipeline.reindex(
+            runFullScan, this.loadFileContent, true, 'integrity-recovery', result.request,
+          );
+        }
         if ('status' in result) {
           if (result.status === 'already_running') throw new Error('already_running');
+          if (result.status === 'integrity_unknown') {
+            this.onLog?.(`[Nexus] Background full scan refused to repair unknown integrity: ${result.reason}`);
+            if (reason === 'overflow-recovery') {
+              const shouldRetry = attempt < retryCount - 1;
+              if (shouldRetry && !this.abortController.signal.aborted) {
+                const delay = baseDelayMs * Math.pow(2, attempt);
+                try { await sleep(delay, undefined, { signal: this.abortController.signal }); }
+                catch { /* AbortError is expected. */ }
+              }
+              continue;
+            }
+            return;
+          }
+          if (result.status === 'rebuild_required') {
+            this.onLog?.('[Nexus] Background full scan recovery request expired; storage was not changed.');
+            return;
+          }
           this.onLog?.('[Nexus] Background full scan incomplete; dead-letter queue entries remain.');
           return;
         }
@@ -75,6 +97,12 @@ export class EventProcessingManager {
           catch { /* AbortError is expected. */ }
         }
       }
+    }
+    if (reason === 'overflow-recovery' && !this.abortController.signal.aborted) {
+      if (this.eventQueue?.getState() === 'full_scan' && this.pipeline.getProgress().status !== 'running') {
+        this.eventQueue.releaseFullScan();
+      }
+      this.eventQueue?.requestFullScan();
     }
   }
 

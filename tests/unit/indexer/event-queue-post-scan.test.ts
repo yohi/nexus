@@ -86,7 +86,7 @@ describe('EventQueue post-scan queue', () => {
     expect(queue.drainPostScanQueue()).toBe(0);
   });
 
-  it('preserves post-scan events when normal full-scan state completes', async () => {
+  it('drains post-scan events and requests another scan when buffered events overflow', async () => {
     let fullScanTriggered = false;
     const queue = makeQueue({
       maxQueueSize: 2,
@@ -118,9 +118,12 @@ describe('EventQueue post-scan queue', () => {
     queue.enterPostScanMode();
     queue.enqueue(makeEvent('post-4.ts'));
     queue.markFullScanComplete();
-    expect(queue.getState()).toBe('normal');
-    expect(queue.getPostScanQueueSize()).toBe(1);
-    expect(queue.isPostScanActive()).toBe(true);
+    expect(queue.getState()).toBe('overflow');
+    expect(queue.getPostScanQueueSize()).toBe(0);
+    expect(queue.size()).toBe(1);
+    await expect(queue.drain(async (event) => event)).resolves.toMatchObject([
+      { type: 'added', filePath: 'post-4.ts' },
+    ]);
   });
 
   it('keeps post-scan mode active when transferring events fails', () => {

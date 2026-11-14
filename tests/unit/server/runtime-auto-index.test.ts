@@ -146,6 +146,47 @@ describe('NexusRuntime automatic initial full index', () => {
     await runtime.close();
   });
 
+  it('drains post-scan events after startup integrity becomes unknown without changing the result', async () => {
+    const options = makeOptions();
+    const eventQueue = options.eventQueue;
+    if (eventQueue === undefined) throw new Error('event queue fixture required');
+    options.pipeline.reindex = vi.fn(async () => ({ status: 'integrity_unknown' as const, reason: 'audit_incomplete' }));
+    const drain = vi.spyOn(eventQueue, 'drainPostScanQueue');
+    const runtime = await initializeNexusRuntime(options);
+    eventQueue.enqueue({ type: 'modified', filePath: 'src/queued.ts', detectedAt: new Date().toISOString() });
+
+    await tick();
+
+    expect(drain).toHaveBeenCalledOnce();
+    expect(eventQueue.isPostScanActive()).toBe(false);
+    expect(eventQueue.size()).toBe(1);
+    await expect(eventQueue.drain(async (event) => event)).resolves.toMatchObject([
+      { type: 'modified', filePath: 'src/queued.ts' },
+    ]);
+    await runtime.close();
+  });
+
+  it('does not drain post-scan events after shutdown starts', async () => {
+    let finishReindex: ((result: { status: 'integrity_unknown'; reason: string }) => void) | undefined;
+    const pendingReindex = new Promise<{ status: 'integrity_unknown'; reason: string }>((resolve) => {
+      finishReindex = resolve;
+    });
+    const options = makeOptions();
+    const eventQueue = options.eventQueue;
+    if (eventQueue === undefined) throw new Error('event queue fixture required');
+    options.pipeline.reindex = vi.fn(async () => await pendingReindex);
+    const drain = vi.spyOn(eventQueue, 'drainPostScanQueue');
+    const runtime = await initializeNexusRuntime(options);
+    eventQueue.enqueue({ type: 'modified', filePath: 'src/queued.ts', detectedAt: new Date().toISOString() });
+    runtime.terminate?.();
+    finishReindex?.({ status: 'integrity_unknown', reason: 'audit_incomplete' });
+
+    await tick();
+
+    expect(drain).not.toHaveBeenCalled();
+    await runtime.close();
+  });
+
   it('waits for the startup auto-index before completing a manual reindex request', async () => {
     let releaseAutoReindex: (() => void) | undefined;
     const autoReindexDone = new Promise<void>((resolve) => {

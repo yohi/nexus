@@ -16,7 +16,9 @@ import type {
   VectorFilter,
   VectorSearchResult,
   VectorStoreStats,
+  PhysicalVectorRow,
 } from '../../../src/types/index.js';
+import type { VectorAuditOptions } from '../../../src/storage/interfaces/vector-audit.js';
 import type { FullRebuildRecovery } from '../../../src/storage/interfaces/structured-catalog.js';
 
 interface InMemoryVectorStoreOptions {
@@ -466,6 +468,30 @@ export class InMemoryVectorStore implements IVectorStore {
       if (!activeKeys.has(rowFileGenKey)) {
         this.structuredRecords.delete(key);
       }
+    }
+  }
+
+  async *iteratePhysicalRows(_options: Readonly<VectorAuditOptions>): AsyncGenerator<PhysicalVectorRow> {
+    for (const record of this.records.values()) {
+      if (record.deleted) continue;
+      yield {
+        view: 'legacy', id: record.chunk.id, filePath: record.chunk.filePath,
+        name: record.chunk.symbolName ?? '', kind: record.chunk.symbolKind,
+        contentHash: record.chunk.hash, startLine: record.chunk.startLine,
+        endLine: record.chunk.endLine, vector: record.vector,
+        ...(record.chunk.generationId === undefined || record.chunk.generationId === ''
+          ? {} : { generationId: record.chunk.generationId }),
+      };
+    }
+    for (const record of this.structuredRecords.values()) {
+      yield {
+        view: 'structured', id: record.chunk.id, filePath: record.chunk.filePath,
+        name: record.chunk.symbolName ?? '', kind: record.chunk.symbolKind,
+        contentHash: record.chunk.hash, startLine: record.chunk.startLine,
+        endLine: record.chunk.endLine, vector: record.vector,
+        generationId: record.generationId, symbolId: record.chunk.symbolId ?? null,
+        visibility: record.visibility,
+      };
     }
   }
 

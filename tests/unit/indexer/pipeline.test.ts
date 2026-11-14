@@ -4,12 +4,15 @@ import path from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 
 import type { DeadLetterQueue } from '../../../src/indexer/dead-letter-queue.js';
+import { Chunker } from '../../../src/indexer/chunker.js';
+import { EventQueue } from '../../../src/indexer/event-queue.js';
 import { computeFileHashStreaming } from '../../../src/indexer/hash.js';
 import { IndexPipeline } from '../../../src/indexer/pipeline.js';
 import { RetryExhaustedError, type EmbeddingConfig } from '../../../src/types/index.js';
 import { createPipeline } from '../../shared/test-helpers.js';
 import { TestEmbeddingProvider } from '../plugins/embeddings/test-embedding-provider.js';
 import { InMemoryVectorStore } from '../storage/in-memory-vector-store.js';
+import { createStructuredCoordinatorFixture } from '../../shared/structured-test-helpers.js';
 
 class FailingEmbeddingProvider extends TestEmbeddingProvider {
   override async embed(): Promise<number[][]> {
@@ -28,6 +31,13 @@ class CountingEmbeddingProvider extends TestEmbeddingProvider {
 
 const fixturePath = path.join(process.cwd(), 'tests/fixtures/sample-project/src/auth.ts');
 const ONE_HOT_64 = new Array(64).fill(0).map((_, i) => (i === 0 ? 1 : 0));
+
+async function createFullScanEventQueue(): Promise<EventQueue> {
+  const eventQueue = new EventQueue({ debounceMs: 0, maxQueueSize: 10, fullScanThreshold: 1, concurrency: 1 });
+  eventQueue.enqueue({ type: 'modified', filePath: 'src/overflow.ts', detectedAt: new Date().toISOString() });
+  await eventQueue.drain(async () => undefined);
+  return eventQueue;
+}
 
 describe('IndexPipeline', () => {
   it('indexes an added file into merkle metadata and vector storage', async () => {
@@ -578,6 +588,219 @@ describe('IndexPipeline', () => {
     pipeline.start();
     await expect(pipeline.stop()).resolves.toBeUndefined();
     await expect(pipeline.stop()).resolves.toBeUndefined();
+  });
+
+  it('re-audits with the replacement AbortSignal after stop() and start()', async () => {
+    const { metadataStore, vectorStore, chunker, registry } = await createPipeline();
+    const embeddingConfig: EmbeddingConfig = {
+      provider: 'test', model: 'deterministic-test', dimensions: 64,
+      maxConcurrency: 1, batchSize: 16, retryCount: 0, retryBaseDelayMs: 0,
+    };
+    vi.spyOn(vectorStore, 'scheduleIdleCompaction').mockReturnValue({ unref: vi.fn() } as unknown as NodeJS.Timeout);
+    vi.spyOn(vectorStore, 'close').mockResolvedValue(undefined);
+    const pipeline = new IndexPipeline({
+      metadataStore, vectorStore, chunker, embeddingProvider: new TestEmbeddingProvider(), embeddingConfig,
+      pluginRegistry: registry,
+    });
+    const content = await readFile(fixturePath, 'utf8');
+    const events = [{ type: 'added' as const, filePath: fixturePath, detectedAt: new Date().toISOString() }];
+    const runFullScan = async () => events;
+    const loadContent = async () => content;
+
+    const firstResult = await pipeline.reindex(runFullScan, loadContent, true);
+    expect(firstResult).not.toHaveProperty('status');
+    await pipeline.stop();
+    pipeline.start();
+
+    const iteratePhysicalRows = vectorStore.iteratePhysicalRows.bind(vectorStore);
+    const iteratedSignals: AbortSignal[] = [];
+    vi.spyOn(vectorStore, 'iteratePhysicalRows').mockImplementation(async function* (options) {
+      iteratedSignals.push(options.signal);
+      yield* iteratePhysicalRows(options);
+    });
+    const result = await pipeline.reindex(runFullScan, loadContent, true);
+
+    expect(iteratedSignals).toHaveLength(1);
+    expect(iteratedSignals[0]?.aborted).toBe(false);
+    expect(result).not.toHaveProperty('status');
+    await pipeline.stop();
+  });
+
+  it('checks the writer lease again before each deferred Merkle operation', async () => {
+    const { metadataStore, vectorStore, chunker, registry } = await createPipeline();
+    let leaseHeld = true;
+    const pipeline = new IndexPipeline({
+      metadataStore, vectorStore, chunker, embeddingProvider: new TestEmbeddingProvider(), pluginRegistry: registry,
+      assertWriterLease: () => { if (!leaseHeld) throw new Error('test writer lease lost'); },
+    });
+    const merkleTree = pipeline['merkleTree'];
+    const update = vi.spyOn(merkleTree, 'update').mockImplementation(async () => { leaseHeld = false; });
+    const remove = vi.spyOn(merkleTree, 'remove').mockResolvedValue(undefined);
+    const ops = [
+      { kind: 'update' as const, filePath: 'src/first.ts', contentHash: 'first' },
+      { kind: 'remove' as const, filePath: 'src/second.ts' },
+    ];
+
+    await expect(pipeline['applyDeferredMerkleOps'](ops)).rejects.toThrow('test writer lease lost');
+    expect(update).toHaveBeenCalledOnce();
+    expect(remove).not.toHaveBeenCalled();
+  });
+
+  it('checks the writer lease immediately before atomic completion', async () => {
+    const { metadataStore, vectorStore, chunker, registry } = await createPipeline();
+    let leaseChecks = 0;
+    const pipeline = new IndexPipeline({
+      metadataStore, vectorStore, chunker, embeddingProvider: new TestEmbeddingProvider(), pluginRegistry: registry,
+      assertWriterLease: () => { leaseChecks += 1; },
+    });
+    const atomicCompletionCheck = metadataStore.atomicCompletionCheck.bind(metadataStore);
+    const completionCheck = vi.spyOn(metadataStore, 'atomicCompletionCheck').mockImplementation(async (stats) => {
+      expect(leaseChecks).toBe(2);
+      return await atomicCompletionCheck(stats);
+    });
+
+    await pipeline.reindex(async () => [], async () => '');
+
+    expect(completionCheck).toHaveBeenCalledOnce();
+  });
+
+  it('releases the completion lock when the writer lease is lost at completion', async () => {
+    const { metadataStore, vectorStore, chunker, registry } = await createPipeline();
+    let leaseChecks = 0;
+    let loseLease = true;
+    const pipeline = new IndexPipeline({
+      metadataStore, vectorStore, chunker, embeddingProvider: new TestEmbeddingProvider(), pluginRegistry: registry,
+      assertWriterLease: () => {
+        leaseChecks += 1;
+        if (loseLease && leaseChecks === 2) throw new Error('test writer lease lost');
+      },
+    });
+    const completionCheck = vi.spyOn(metadataStore, 'atomicCompletionCheck');
+
+    await expect(pipeline.reindex(async () => [], async () => '')).rejects.toThrow('test writer lease lost');
+    expect(completionCheck).not.toHaveBeenCalled();
+
+    loseLease = false;
+    leaseChecks = 0;
+    await expect(pipeline.reindex(async () => [], async () => '')).resolves.not.toHaveProperty('status');
+    expect(completionCheck).toHaveBeenCalledOnce();
+  });
+
+  it('does not commit an empty integrity rebuild without a matching fresh assessment', async () => {
+    const { metadataStore, vectorStore, pluginRegistry, coordinator } = await createStructuredCoordinatorFixture();
+    const eventQueue = await createFullScanEventQueue();
+    const pipeline = new IndexPipeline({
+      metadataStore, vectorStore, chunker: new Chunker(pluginRegistry),
+      embeddingProvider: new TestEmbeddingProvider(), pluginRegistry, structuredIndexCoordinator: coordinator,
+      eventQueue,
+    });
+    const request = { rebuildEpoch: 7, fingerprint: 'expected-fingerprint' };
+    const corruption = {
+      kind: 'CORRUPTION_CONFIRMED' as const, request, sourceIdentities: new Map<string, string>(),
+    };
+    const assessment = vi.spyOn(pipeline['integrityPreflight'], 'assess')
+      .mockResolvedValueOnce(corruption)
+      .mockResolvedValueOnce(corruption)
+      .mockResolvedValueOnce({ kind: 'INTEGRITY_UNKNOWN', reason: 'audit_incomplete' });
+    const commit = vi.spyOn(coordinator, 'runFullRebuild');
+
+    const first = await pipeline.reindex(async () => [], async () => '', true);
+    expect(first).toMatchObject({ status: 'rebuild_required', request });
+    const result = await pipeline.reindex(async () => [], async () => '', true, 'integrity-recovery', request);
+
+    expect(result).toMatchObject({ status: 'integrity_unknown' });
+    expect(assessment).toHaveBeenCalledTimes(3);
+    expect(commit).not.toHaveBeenCalled();
+  });
+
+  it('releases full-scan mode on unknown integrity while preserving post-scan events', async () => {
+    const { metadataStore, vectorStore, chunker, registry } = await createPipeline();
+    const eventQueue = new EventQueue({
+      debounceMs: 0, maxQueueSize: 10, fullScanThreshold: 1, concurrency: 1,
+    });
+    const pipeline = new IndexPipeline({
+      metadataStore, vectorStore, chunker, embeddingProvider: new TestEmbeddingProvider(), pluginRegistry: registry,
+      eventQueue,
+    });
+    const events = [{ type: 'added' as const, filePath: fixturePath, detectedAt: new Date().toISOString() }];
+    const runFullScan = async () => events;
+    const loadContent = async () => await readFile(fixturePath, 'utf8');
+
+    await pipeline.reindex(runFullScan, loadContent, true);
+    eventQueue.enqueue({ type: 'modified', filePath: 'src/overflow.ts', detectedAt: new Date().toISOString() });
+    await eventQueue.drain(async () => undefined);
+    eventQueue.enqueue({ type: 'modified', filePath: 'src/queued.ts', detectedAt: new Date().toISOString() });
+    expect(eventQueue.getState()).toBe('full_scan');
+    expect(eventQueue.getPostScanQueueSize()).toBe(1);
+
+    const result = await pipeline.reindex(runFullScan, loadContent, true, 'startup-reconciliation');
+
+    expect(result).toMatchObject({ status: 'integrity_unknown' });
+    expect(eventQueue.getState()).toBe('normal');
+    expect(eventQueue.getPostScanQueueSize()).toBe(0);
+    expect(eventQueue.size()).toBe(1);
+    await expect(eventQueue.drain(async (event) => event)).resolves.toMatchObject([
+      { type: 'modified', filePath: 'src/queued.ts' },
+    ]);
+  });
+
+  it('releases full-scan mode for an invalid integrity-recovery context', async () => {
+    const { metadataStore, vectorStore, chunker, registry } = await createPipeline();
+    const eventQueue = await createFullScanEventQueue();
+    const pipeline = new IndexPipeline({
+      metadataStore, vectorStore, chunker, embeddingProvider: new TestEmbeddingProvider(), pluginRegistry: registry,
+      eventQueue,
+    });
+
+    const result = await pipeline.reindex(async () => [], async () => '', true, 'manual', {
+      rebuildEpoch: 0,
+      fingerprint: 'invalid-context',
+    });
+
+    expect(result).toMatchObject({ status: 'integrity_unknown', reason: 'invalid_recovery_request_context' });
+    expect(eventQueue.getState()).toBe('normal');
+  });
+
+  it('releases full-scan mode when full rebuild completion is incomplete', async () => {
+    const { metadataStore, vectorStore, chunker, registry } = await createPipeline();
+    const eventQueue = await createFullScanEventQueue();
+    const pipeline = new IndexPipeline({
+      metadataStore, vectorStore, chunker, embeddingProvider: new FailingEmbeddingProvider(),
+      embeddingConfig: {
+        provider: 'test', model: 'deterministic-test', dimensions: 64,
+        maxConcurrency: 1, batchSize: 16, retryCount: 0, retryBaseDelayMs: 0,
+      },
+      pluginRegistry: registry, eventQueue,
+    });
+    const result = await pipeline.reindex(
+      async () => [{ type: 'added', filePath: fixturePath, detectedAt: new Date().toISOString() }],
+      async () => await readFile(fixturePath, 'utf8'),
+      true,
+    );
+
+    expect(result).toMatchObject({ status: 'incomplete' });
+    expect(eventQueue.getState()).toBe('normal');
+  });
+
+  it('releases full-scan mode when a non-recovery full rebuild throws', async () => {
+    const { metadataStore, vectorStore, chunker, registry } = await createPipeline();
+    const eventQueue = await createFullScanEventQueue();
+    vi.spyOn(metadataStore, 'atomicCompletionCheck').mockRejectedValue(new Error('test completion failure'));
+    const pipeline = new IndexPipeline({
+      metadataStore, vectorStore, chunker, embeddingProvider: new TestEmbeddingProvider(),
+      embeddingConfig: {
+        provider: 'test', model: 'deterministic-test', dimensions: 64,
+        maxConcurrency: 1, batchSize: 16, retryCount: 0, retryBaseDelayMs: 0,
+      },
+      pluginRegistry: registry, eventQueue,
+    });
+
+    await expect(pipeline.reindex(
+      async () => [{ type: 'added', filePath: fixturePath, detectedAt: new Date().toISOString() }],
+      async () => await readFile(fixturePath, 'utf8'),
+      true,
+    )).rejects.toThrow('test completion failure');
+    expect(eventQueue.getState()).toBe('normal');
   });
 
   it('skips a file whose UTF-8 byte length exceeds maxFileBytes', async () => {

@@ -93,7 +93,8 @@ export class OutcomeCollector implements RuntimeObserver {
           case 'already_running':
             if (!event.outcome.ownerWorkId) { this.runtimeFailed = true; this.fail(requestId, 'unowned_reindex'); }
             break;
-          case 'rejected': case 'incomplete': this.runtimeFailed = true; this.fail(requestId, 'reindex_failed'); break;
+          case 'rejected': case 'incomplete': case 'integrity_unknown': case 'rebuild_required':
+            this.runtimeFailed = true; this.fail(requestId, 'reindex_failed'); break;
           default: assertNever(event.outcome);
         }
         break;

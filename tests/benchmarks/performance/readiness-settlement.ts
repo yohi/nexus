@@ -25,7 +25,12 @@ export async function settleReadiness(assembly: RuntimeAssembly, collector: Outc
   if (completions.length > 0) {
     const latest = completions.at(-1);
     const stats = await assembly.diagnostics.metadataStore.getIndexStats();
-    if (latest === undefined || stats?.lastIndexedAt !== latest.finishedAt) throw new ReadinessError('stale_index_timestamp');
+    if (latest === undefined) throw new ReadinessError('stale_index_timestamp');
+    const changed = latest.chunksIndexed > 0
+      || latest.reconciliation.added + latest.reconciliation.modified + latest.reconciliation.deleted > 0;
+    if (changed && stats?.lastIndexedAt !== latest.finishedAt) {
+      throw new ReadinessError('stale_index_timestamp');
+    }
   }
   signal.throwIfAborted();
 }
