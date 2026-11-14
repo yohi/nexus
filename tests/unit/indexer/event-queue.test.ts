@@ -139,6 +139,31 @@ describe('EventQueue', () => {
     ]);
   });
 
+  it('requests another full scan after releasing a full scan that dropped post-scan events', async () => {
+    const onFullScanRequired = vi.fn(async () => undefined);
+    const queue = new EventQueue({
+      debounceMs: 0,
+      maxQueueSize: 1,
+      fullScanThreshold: 1,
+      concurrency: 1,
+      onFullScanRequired,
+    });
+
+    queue.enqueue(makeEvent({ filePath: 'src/overflow.ts' }));
+    await queue.drain(async () => undefined);
+    expect(queue.getState()).toBe('full_scan');
+    onFullScanRequired.mockClear();
+
+    queue.enqueue(makeEvent({ filePath: 'src/retained.ts' }));
+    expect(queue.enqueue(makeEvent({ filePath: 'src/dropped.ts' }))).toBe(false);
+    queue.releaseFullScan();
+    await queue.drain(async () => undefined);
+
+    expect(queue.getDroppedEventCount()).toBe(1);
+    expect(queue.getState()).toBe('full_scan');
+    expect(onFullScanRequired).toHaveBeenCalledOnce();
+  });
+
   it('drains events received during full-scan mode when the scan completes', async () => {
     const queue = new EventQueue({ debounceMs: 0, maxQueueSize: 10, fullScanThreshold: 1, concurrency: 1 });
     queue.enqueue(makeEvent({ filePath: 'src/overflow.ts' }));

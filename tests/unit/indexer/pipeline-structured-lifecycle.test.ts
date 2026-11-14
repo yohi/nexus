@@ -473,6 +473,47 @@ describe('IndexPipeline structured lifecycle', () => {
     });
   });
 
+  it('does not restore Merkle metadata when the lease is lost during outer rollback', async () => {
+    const fixture = await createStructuredCoordinatorFixture({ bootstrapStructuredSchema: true });
+    let leaseHeld = true;
+    const pipeline = new IndexPipeline({
+      metadataStore: fixture.metadataStore,
+      vectorStore: fixture.vectorStore,
+      chunker: new Chunker(fixture.pluginRegistry),
+      embeddingProvider: new TestEmbeddingProvider(),
+      pluginRegistry: fixture.pluginRegistry,
+      structuredIndexCoordinator: fixture.coordinator,
+      assertWriterLease: () => { if (!leaseHeld) throw new Error('test writer lease lost'); },
+      isWriterLeaseHeld: () => leaseHeld,
+    });
+    const filePath = 'src/outer-lease-rollback.ts';
+    const initialContent = 'export function stable(): number { return 1; }\n';
+    const replacementContent = 'export function replacement(): number { return 2; }\n';
+    await indexContent(pipeline, 'added', filePath, initialContent);
+
+    const originalAbortLegacy = fixture.vectorStore.abortLegacyShadowTable.bind(fixture.vectorStore);
+    let abortCalls = 0;
+    vi.spyOn(fixture.vectorStore, 'abortLegacyShadowTable').mockImplementation(async (shadowTable) => {
+      abortCalls += 1;
+      await originalAbortLegacy(shadowTable);
+      if (abortCalls === 2) leaseHeld = false;
+    });
+    vi.spyOn(fixture.metadataStore, 'rollbackFullRebuild').mockRejectedValueOnce(new Error('catalog rollback failed'));
+    const merkleRestore = vi.spyOn(fixture.metadataStore, 'replaceAllMerkleNodes');
+    vi.spyOn(fixture.vectorStore, 'swapLegacyShadowTable').mockRejectedValueOnce(new Error('legacy commit failed'));
+
+    await expect(pipeline.reindex(
+      () => Promise.resolve([createEvent('modified', filePath, replacementContent)]),
+      () => Promise.resolve(replacementContent),
+      true,
+    )).rejects.toThrow('legacy commit failed');
+
+    expect(merkleRestore).toHaveBeenCalledOnce();
+    await expect(fixture.metadataStore.getStructuredIndexState()).resolves.toMatchObject({
+      rebuildState: 'building',
+    });
+  });
+
   it('rolls back every index when deferred Merkle commit fails', async () => {
     await expectFullRebuildCommitFailureToRollback(
       'src/merkle-commit-failure.ts',

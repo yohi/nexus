@@ -1392,7 +1392,7 @@ export class IndexPipeline implements IIndexPipeline {
         }
       });
       try {
-        await this.merkleTree.restore(merkleSnapshot);
+        await this.merkleTree.restore(merkleSnapshot, () => this.options.assertWriterLease?.());
       } catch (restoreError) {
         await runRuntimeDiagnosticStage('S08_storage_write', () =>
           markRuntimeDiagnosticStateIntegrity('rollback_incomplete'));
