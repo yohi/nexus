@@ -307,7 +307,7 @@ describe('Nexus #360 same-generation no-op', () => {
     });
     const stateBeforeUnknown = sqliteLogicalSnapshot(databasePath);
     const versionsBeforeUnknown = await lanceVersions(vectorPath);
-    const unknown = await pipeline.reindex(runFullScan, loadContent, true);
+    const unknown = await pipeline.reindex(runFullScan, loadContent, true, 'startup-reconciliation');
     expect(unknown).toMatchObject({ status: 'integrity_unknown' });
     expect(sqliteLogicalSnapshot(databasePath)).toBe(stateBeforeUnknown);
     expect(await lanceVersions(vectorPath)).toEqual(versionsBeforeUnknown);

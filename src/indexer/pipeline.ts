@@ -1493,11 +1493,16 @@ export class IndexPipeline implements IIndexPipeline {
                 return this.finishNoOp(startedAt, startTime, scannedEvents.length, fullRebuild);
               }
               if (assessment.kind === 'INTEGRITY_UNKNOWN') {
-                this.progress.status = 'idle';
-                this.safeNotifyMetrics((hooks) => {
-                  hooks.onIndexingProgress(this.progress.processedFiles, this.progress.totalFiles, false);
-                });
-                return { status: 'integrity_unknown', reason: assessment.reason };
+                // A manually requested rebuild may need embeddings for a newly selected model.
+                // The preflight still refuses to call this a no-op; continue through the normal
+                // transactional rebuild rather than treating the cache miss as corruption.
+                if (reason !== 'manual' || assessment.reason !== 'expected_embedding_unavailable') {
+                  this.progress.status = 'idle';
+                  this.safeNotifyMetrics((hooks) => {
+                    hooks.onIndexingProgress(this.progress.processedFiles, this.progress.totalFiles, false);
+                  });
+                  return { status: 'integrity_unknown', reason: assessment.reason };
+                }
               }
               if (assessment.kind === 'CORRUPTION_CONFIRMED') {
                 if (this.options.structuredIndexCoordinator === undefined) {
