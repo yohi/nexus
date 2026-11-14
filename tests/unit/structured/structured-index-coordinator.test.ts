@@ -21,6 +21,26 @@ describe('StructuredIndexCoordinator', () => {
     coordinator = fixture.coordinator;
   });
 
+  it.each([1, 2, 3])('checks the writer lease before initial rebuild write %i', async (leaseCheckToFail) => {
+    const bootstrap = vi.spyOn(metadataStore, 'bootstrapStructuredSchema');
+    const incrementEpoch = vi.spyOn(metadataStore, 'incrementRebuildEpoch');
+    const setRebuildState = vi.spyOn(metadataStore, 'setStructuredRebuildState');
+    let leaseChecks = 0;
+
+    await expect(coordinator.runFullRebuild({
+      files: [],
+      merkleSnapshot: [],
+      assertWriterLease: () => {
+        leaseChecks += 1;
+        if (leaseChecks === leaseCheckToFail) throw new Error('test writer lease lost');
+      },
+    })).rejects.toThrow('test writer lease lost');
+
+    expect(bootstrap).toHaveBeenCalledTimes(Math.min(1, leaseCheckToFail - 1));
+    expect(incrementEpoch).toHaveBeenCalledTimes(Math.max(0, leaseCheckToFail - 2));
+    expect(setRebuildState).not.toHaveBeenCalled();
+  });
+
   it('preserves the catalog rebuild epoch while staging a file', async () => {
     const stage = createStructuredStage('src/a.ts', 'export function a() { return 1; }', 'a');
 

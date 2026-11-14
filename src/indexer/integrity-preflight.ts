@@ -142,7 +142,10 @@ export async function runIntegrityPreflight(input: IntegrityPreflightInput): Pro
         catalog?.epoch ?? 0, initialNodes, input, stats, catalogEvidence, expectedRows, actualRows,
       ),
     };
-    return corruptionConfirmed ? { kind: 'CORRUPTION_CONFIRMED', request } : { kind: 'MATCH', request };
+    const sourceIdentities = new Map(input.files.map((file) => [file.event.filePath, file.sourceHash]));
+    return corruptionConfirmed
+      ? { kind: 'CORRUPTION_CONFIRMED', request, sourceIdentities }
+      : { kind: 'MATCH', request, sourceIdentities };
   } catch {
     return unknown('audit_incomplete');
   }

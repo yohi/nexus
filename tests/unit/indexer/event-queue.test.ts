@@ -122,6 +122,24 @@ describe('EventQueue', () => {
     expect(queue.isOverflowing()).toBe(false);
   });
 
+  it('releases full-scan mode without dropping events held for post-scan processing', async () => {
+    const queue = new EventQueue({ debounceMs: 0, maxQueueSize: 10, fullScanThreshold: 1, concurrency: 1 });
+    queue.enqueue(makeEvent({ filePath: 'src/overflow.ts' }));
+    await queue.drain(async () => undefined);
+    expect(queue.getState()).toBe('full_scan');
+
+    queue.enterPostScanMode();
+    queue.enqueue(makeEvent({ filePath: 'src/during-scan.ts' }));
+    queue.releaseFullScan();
+
+    expect(queue.getState()).toBe('normal');
+    expect(queue.getPostScanQueueSize()).toBe(1);
+    expect(queue.drainPostScanQueue()).toBe(1);
+    await expect(queue.drain(async (event) => event)).resolves.toMatchObject([
+      { type: 'modified', filePath: 'src/during-scan.ts' },
+    ]);
+  });
+
   describe('Event Merging', () => {
     it('cancels added followed by deleted', async () => {
       vi.useFakeTimers();

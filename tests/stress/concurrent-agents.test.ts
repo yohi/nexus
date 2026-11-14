@@ -138,6 +138,10 @@ describe('stress: concurrent MCP agents', () => {
       parseResult(await client.callTool({ name: 'reindex', arguments: { fullRebuild: true } })),
     ));
 
+    const processingReindexes = reindexes.filter((reindex) =>
+      !('status' in reindex) || reindex.status !== 'already_running');
+    expect(processingReindexes.length).toBeGreaterThan(0);
+
     for (const [index, response] of responses.entries()) {
       expect(response.tools.tools).toHaveLength(12);
       expect(response.semantic).toMatchObject({
@@ -161,6 +165,7 @@ describe('stress: concurrent MCP agents', () => {
       const reindex = reindexes[index];
       if (reindex === undefined) throw new Error('missing reindex response');
       if ('status' in reindex) {
+        if (reindex.status === 'already_running') continue;
         expect(reindex.status).toBe('integrity_unknown');
         expect(reindex.reason).toBe('embedding_identity_unavailable');
       } else {

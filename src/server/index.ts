@@ -241,6 +241,9 @@ export const buildNexusRuntime = (
             }
             if ('status' in result && result.status === 'integrity_unknown') {
               console.error(`[Nexus] Startup Full Index stopped without writes: integrity unknown (${result.reason}).`);
+              if (!isShuttingDown) {
+                withoutRuntimeDiagnosticContext(() => options.eventQueue?.drainPostScanQueue());
+              }
               return result;
             }
             if (!isShuttingDown) {

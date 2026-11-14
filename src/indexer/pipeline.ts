@@ -101,6 +101,7 @@ interface IntegrityRecoveryProcessing {
   readonly request: IntegrityRecoveryRequest;
   readonly scannedEvents: readonly IndexEvent[];
   readonly run: (options?: { fullScan?: boolean; reason?: ReindexOptions['reason'] }) => Promise<IndexEvent[]>;
+  readonly stagedSourceIdentities: Map<string, string>;
 }
 
 interface ProcessEventsOptions {
@@ -241,7 +242,7 @@ export class IndexPipeline implements IIndexPipeline {
       queueIsQuiet: () => this.pendingExternalProcessEvents === 0
         && (this.eventQueue === undefined
           || (this.eventQueue.size() === 0 && this.eventQueue.getPostScanQueueSize() === 0)),
-      signal: this.abortController.signal,
+      getSignal: () => this.abortController.signal,
       catalogEnabled: options.structuredIndexCoordinator !== undefined,
     });
     this.deadLetterQueue = new DeadLetterQueue({
@@ -514,6 +515,7 @@ export class IndexPipeline implements IIndexPipeline {
           structuredParseFailures,
           useStructuredFullRebuild ? legacyShadow : undefined,
           useStructuredFullRebuild ? deferredMerkleOps : undefined,
+          options.integrityRecovery?.stagedSourceIdentities,
         );
         if (
           !this.abortController.signal.aborted &&
@@ -578,6 +580,11 @@ export class IndexPipeline implements IIndexPipeline {
             throw new IntegrityRecoveryAbortedError(
               verified.kind === 'INTEGRITY_UNKNOWN' ? 'input_incomplete' : 'state_changed_before_commit',
             );
+          }
+          for (const [filePath, sourceHash] of options.integrityRecovery.stagedSourceIdentities) {
+            if (verified.sourceIdentities.get(filePath) !== sourceHash) {
+              throw new IntegrityRecoveryAbortedError('staged_input_changed');
+            }
           }
         }
         await this.commitStructuredFullRebuild(
@@ -858,6 +865,7 @@ export class IndexPipeline implements IIndexPipeline {
     structuredParseFailures?: string[],
     legacyShadow?: LegacyShadowTable,
     deferredMerkleOps?: DeferredMerkleOp[],
+    stagedSourceIdentities?: Map<string, string>,
   ): Promise<ProcessEventWindowResult> {
     // Stage 1: bounded-concurrency read + chunk (no Merkle/vector writes here).
     const limit = pLimit(this.chunkConcurrency);
@@ -868,8 +876,11 @@ export class IndexPipeline implements IIndexPipeline {
         : await runRuntimeDiagnosticStage('S06_parse_chunk', async () => {
           this.diagnosticCounter('S06_parse_chunk', 'index.window_files', 1, 'files', 'attempted');
           return await readAndChunk();
-        });
+      });
     })));
+    for (const work of works) {
+      if (!work.skipped) stagedSourceIdentities?.set(work.event.filePath, work.sourceIdentityHash);
+    }
 
     const windowParseFailures: string[] = [];
     for (const work of works) {
@@ -1287,6 +1298,7 @@ export class IndexPipeline implements IIndexPipeline {
 
   private async applyDeferredMerkleOps(ops: readonly DeferredMerkleOp[]): Promise<void> {
     for (const op of ops) {
+      this.options.assertWriterLease?.();
       if (op.kind === 'update') {
         await this.merkleTree.update(op.filePath, op.contentHash);
       } else {
@@ -1445,10 +1457,13 @@ export class IndexPipeline implements IIndexPipeline {
     try {
       return await tryAcquire(this.mutex).runExclusive(async () => {
         let deferFullScanComplete = fullRebuild === true;
+        let releaseFullScanAfterUnknown = false;
         if (integrityRecovery !== undefined && (fullRebuild !== true || reason !== 'integrity-recovery')) {
+          releaseFullScanAfterUnknown = true;
           return { status: 'integrity_unknown', reason: 'invalid_recovery_request_context' };
         }
         if (integrityRecovery !== undefined && this.options.structuredIndexCoordinator === undefined) {
+          releaseFullScanAfterUnknown = true;
           return { status: 'integrity_unknown', reason: 'safe_full_rebuild_unavailable' };
         }
         this.progress.status = 'running';
@@ -1465,6 +1480,7 @@ export class IndexPipeline implements IIndexPipeline {
             && new Set(scannedEvents.map((event) => event.filePath)).size === scannedEvents.length;
           if (integrityRecovery !== undefined && !completeScanInput) {
             deferFullScanComplete = true;
+            releaseFullScanAfterUnknown = true;
             this.progress.status = 'idle';
             this.safeNotifyMetrics((hooks) => {
               hooks.onIndexingProgress(this.progress.processedFiles, this.progress.totalFiles, false);
@@ -1481,6 +1497,7 @@ export class IndexPipeline implements IIndexPipeline {
               if (assessment.kind !== 'CORRUPTION_CONFIRMED'
                 || assessment.request.rebuildEpoch !== integrityRecovery.rebuildEpoch
                 || assessment.request.fingerprint !== integrityRecovery.fingerprint) {
+                releaseFullScanAfterUnknown = true;
                 this.progress.status = 'idle';
                 this.safeNotifyMetrics((hooks) => {
                   hooks.onIndexingProgress(this.progress.processedFiles, this.progress.totalFiles, false);
@@ -1500,6 +1517,7 @@ export class IndexPipeline implements IIndexPipeline {
                 // The preflight still refuses to call this a no-op; continue through the normal
                 // transactional rebuild rather than treating the cache miss as corruption.
                 if (reason !== 'manual' || assessment.reason !== 'expected_embedding_unavailable') {
+                  releaseFullScanAfterUnknown = true;
                   this.progress.status = 'idle';
                   this.safeNotifyMetrics((hooks) => {
                     hooks.onIndexingProgress(this.progress.processedFiles, this.progress.totalFiles, false);
@@ -1509,6 +1527,7 @@ export class IndexPipeline implements IIndexPipeline {
               }
               if (assessment.kind === 'CORRUPTION_CONFIRMED') {
                 if (this.options.structuredIndexCoordinator === undefined) {
+                  releaseFullScanAfterUnknown = true;
                   this.progress.status = 'idle';
                   this.safeNotifyMetrics((hooks) => {
                     hooks.onIndexingProgress(this.progress.processedFiles, this.progress.totalFiles, false);
@@ -1526,6 +1545,7 @@ export class IndexPipeline implements IIndexPipeline {
             const completeEvents = await this.integrityPreflight.completeScanEvents(scannedEvents);
             if (completeEvents === undefined) {
               deferFullScanComplete = true;
+              releaseFullScanAfterUnknown = true;
               this.progress.status = 'idle';
               this.safeNotifyMetrics((hooks) => {
                 hooks.onIndexingProgress(this.progress.processedFiles, this.progress.totalFiles, false);
@@ -1546,7 +1566,9 @@ export class IndexPipeline implements IIndexPipeline {
             trackProgress: true,
             fullRebuild,
             ...(integrityRecovery === undefined ? {} : {
-              integrityRecovery: { request: integrityRecovery, scannedEvents, run },
+              integrityRecovery: {
+                request: integrityRecovery, scannedEvents, run, stagedSourceIdentities: new Map<string, string>(),
+              },
             }),
           };
           const { chunksIndexed } = await this.processEventsObserved(events, loadContent, processOptions);
@@ -1596,6 +1618,7 @@ export class IndexPipeline implements IIndexPipeline {
           const message = error instanceof Error ? error.message : String(error);
           this.progress.lastError = message;
           if (integrityRecovery !== undefined) {
+            releaseFullScanAfterUnknown = true;
             const recoveryReason = error instanceof IntegrityRecoveryAbortedError
               ? error.code
               : this.abortController.signal.aborted || this.options.isWriterLeaseHeld?.() === false
@@ -1608,8 +1631,9 @@ export class IndexPipeline implements IIndexPipeline {
           this.safeLogProgress(`Reindex failed (${reason}): ${message}`);
           throw error;
         } finally {
-          if (fullRebuild && this.eventQueue && !deferFullScanComplete) {
-            this.eventQueue.markFullScanComplete();
+          if (fullRebuild && this.eventQueue) {
+            if (!deferFullScanComplete) this.eventQueue.markFullScanComplete();
+            else if (releaseFullScanAfterUnknown) this.eventQueue.releaseFullScan();
           }
           await this.recordSettlementSnapshot();
         }

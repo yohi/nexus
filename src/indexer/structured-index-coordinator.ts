@@ -236,8 +236,11 @@ export class StructuredIndexCoordinator {
   }
   async runFullRebuild(input: { files: FullRebuildFile[] } & FullRebuildCommitHooks): Promise<void> {
     return this.options.projectWriteCoordinator.run(async () => {
+      input.assertWriterLease?.();
       await this.options.metadataStore.bootstrapStructuredSchema();
+      input.assertWriterLease?.();
       const epoch = await this.options.metadataStore.incrementRebuildEpoch();
+      input.assertWriterLease?.();
       await this.options.metadataStore.setStructuredRebuildState({ rebuildState: 'building' });
 
       const stateBefore = await this.options.metadataStore.getStructuredIndexState();

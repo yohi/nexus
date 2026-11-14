@@ -19,7 +19,7 @@ interface IntegrityPreflightServiceOptions {
   readonly readSourceHash: (filePath: string, loadContent: ContentLoader) => Promise<string>;
   readonly assertWriterLease: () => void;
   readonly queueIsQuiet: () => boolean;
-  readonly signal: AbortSignal;
+  readonly getSignal: () => AbortSignal;
   readonly catalogEnabled: boolean;
 }
 
@@ -32,6 +32,7 @@ export class IntegrityPreflightService {
     loadContent: ContentLoader,
     reason: 'manual' | 'overflow-recovery' | 'startup-reconciliation' | 'integrity-recovery' | undefined,
   ): Promise<IntegrityPreflightResult> {
+    const signal = this.options.getSignal();
     const limit = pLimit(this.options.concurrency);
     const files = await Promise.all(events.map((event) =>
       limit(async () => await this.options.prepareFile(event, loadContent))));
@@ -47,13 +48,14 @@ export class IntegrityPreflightService {
       readSourceHash: async (filePath) => await this.options.readSourceHash(filePath, loadContent),
       assertWriterLease: this.options.assertWriterLease,
       queueIsQuiet: this.options.queueIsQuiet,
-      signal: this.options.signal,
+      signal,
       catalogEnabled: this.options.catalogEnabled,
     });
   }
 
   async completeScanEvents(events: readonly IndexEvent[]): Promise<IndexEvent[] | undefined> {
     try {
+      const signal = this.options.getSignal();
       if (events.some((event) => event.type !== 'added')
         || new Set(events.map((event) => event.filePath)).size !== events.length) return undefined;
       this.options.assertWriterLease();
@@ -73,7 +75,7 @@ export class IntegrityPreflightService {
         for (const filePath of state.activeGenerations.keys()) knownPaths.add(filePath);
       }
       const physicalRows = this.options.vectorStore.iteratePhysicalRows({
-        pageSize: 256, signal: this.options.signal,
+        pageSize: 256, signal,
       });
       for await (const row of physicalRows) knownPaths.add(row.filePath);
       const scannedPaths = new Set(events.map((event) => event.filePath));

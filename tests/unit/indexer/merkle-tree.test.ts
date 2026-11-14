@@ -49,6 +49,23 @@ describe('MerkleTree', () => {
     expect((await tree.getNode('packages/pkg'))?.hash).toBe(expectedPackageDirectoryHash);
   });
 
+  it('includes newly created intermediate directories in existing ancestor hashes', async () => {
+    const tree = new MerkleTree(new InMemoryMetadataStore());
+    await tree.load();
+    await tree.update('packages/pkg/existing.ts', 'hash-existing');
+    await tree.update('packages/pkg/new/deep.ts', 'hash-deep');
+
+    const expectedDirectoryHash = await computeStringHash(
+      `${'packages/pkg/new/deep.ts'.length}:packages/pkg/new/deep.ts:hash-deep`,
+    );
+    const expectedPackageHash = await computeStringHash([
+      `${'packages/pkg/existing.ts'.length}:packages/pkg/existing.ts:hash-existing`,
+      `${'packages/pkg/new'.length}:packages/pkg/new:${expectedDirectoryHash}`,
+    ].join(''));
+
+    expect((await tree.getNode('packages/pkg'))?.hash).toBe(expectedPackageHash);
+  });
+
   it('throws error when diff is called (deprecated)', async () => {
     await expect(MerkleTree.diff()).rejects.toThrow('MerkleTree.diff() is deprecated');
   });

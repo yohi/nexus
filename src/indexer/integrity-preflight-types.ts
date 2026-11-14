@@ -24,9 +24,9 @@ export interface IntegrityPreparedFile {
 }
 
 export type IntegrityPreflightResult =
-  | { readonly kind: 'MATCH'; readonly request: IntegrityRecoveryRequest }
+  | { readonly kind: 'MATCH'; readonly request: IntegrityRecoveryRequest; readonly sourceIdentities: ReadonlyMap<string, string> }
   | { readonly kind: 'GENERATION_CHANGED' }
-  | { readonly kind: 'CORRUPTION_CONFIRMED'; readonly request: IntegrityRecoveryRequest }
+  | { readonly kind: 'CORRUPTION_CONFIRMED'; readonly request: IntegrityRecoveryRequest; readonly sourceIdentities: ReadonlyMap<string, string> }
   | { readonly kind: 'INTEGRITY_UNKNOWN'; readonly reason: string };
 
 export interface IntegrityPreflightInput {
@@ -47,7 +47,7 @@ export interface IntegrityPreflightInput {
 }
 
 export interface IntegrityRecoveryAbortedErrorCode {
-  readonly code: 'state_changed_before_commit' | 'writer_lease_lost' | 'input_incomplete';
+  readonly code: 'state_changed_before_commit' | 'writer_lease_lost' | 'input_incomplete' | 'staged_input_changed';
 }
 
 export class IntegrityRecoveryAbortedError extends Error implements IntegrityRecoveryAbortedErrorCode {

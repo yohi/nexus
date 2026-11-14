@@ -183,6 +183,8 @@ describe('Nexus #360 same-generation no-op', () => {
     const databasePath = join(root, 'metadata.db');
     const vectorPath = join(root, 'vectors');
     const filePath = 'src/recover.ts';
+    let stagedBytesOverride: Uint8Array | undefined;
+    let stagedBytesOverrideDelay = 0;
     await mkdir(join(projectRoot, 'src'), { recursive: true });
     await writeFile(join(projectRoot, filePath), 'export const recover = 42;\n');
 
@@ -211,7 +213,18 @@ describe('Nexus #360 same-generation no-op', () => {
         onDlqSnapshot: () => {},
         onRecoverySweepComplete: () => {},
       },
-      loadFileBytes: async (path) => await readFile(join(projectRoot, path)),
+      loadFileBytes: async (path) => {
+        if (stagedBytesOverride !== undefined) {
+          if (stagedBytesOverrideDelay > 0) {
+            stagedBytesOverrideDelay -= 1;
+            return await readFile(join(projectRoot, path));
+          }
+          const stagedBytes = stagedBytesOverride;
+          stagedBytesOverride = undefined;
+          return stagedBytes;
+        }
+        return await readFile(join(projectRoot, path));
+      },
     });
     const runFullScan = async () => await DirectoryScanner.scan(projectRoot, projectRoot, []);
     const loadContent = async (path: string) => await readFile(join(projectRoot, path), 'utf8');
@@ -256,6 +269,17 @@ describe('Nexus #360 same-generation no-op', () => {
     if (!('status' in requested) || requested.status !== 'rebuild_required') {
       throw new Error('integrity recovery request required');
     }
+
+    const beforeStagedMismatch = sqliteLogicalSnapshot(databasePath);
+    const versionsBeforeStagedMismatch = await lanceVersions(vectorPath);
+    stagedBytesOverrideDelay = 2;
+    stagedBytesOverride = new TextEncoder().encode('export const recover = 43;\n');
+    const stagedMismatch = await pipeline.reindex(
+      runFullScan, loadContent, true, 'integrity-recovery', requested.request,
+    );
+    expect(stagedMismatch).toMatchObject({ status: 'integrity_unknown', reason: 'staged_input_changed' });
+    expect(sqliteLogicalSnapshot(databasePath)).toBe(beforeStagedMismatch);
+    expect(await lanceVersions(vectorPath)).toEqual(versionsBeforeStagedMismatch);
 
     const progressCountBeforeIncomplete = progressStates.length;
     const incomplete = await pipeline.reindex(

@@ -100,6 +100,7 @@ export async function* iteratePhysicalVectorRows(
     }
   }
   for (const [table, snapshotVersion] of snapshotVersions) {
+    await read(() => table.checkoutLatest());
     if (await read(() => table.version()) !== snapshotVersion) {
       throw new VectorAuditReadError('audit_snapshot_changed');
     }

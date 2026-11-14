@@ -311,6 +311,12 @@ export class EventQueue {
     this.safeNotifyMetrics();
   }
 
+  releaseFullScan(): void {
+    if (this.state !== 'full_scan') return;
+    this.state = 'normal';
+    this.safeNotifyMetrics();
+  }
+
   enterPostScanMode(): void {
     this.postScanActive = true;
     this.observeQueueState();
