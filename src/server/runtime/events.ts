@@ -13,6 +13,7 @@ export class EventProcessingManager {
   private abortController = new AbortController();
   private drainTask?: Promise<void>;
   private readonly fullScanPromises = new Set<Promise<void>>();
+  private eventQueue?: EventQueue;
 
   constructor(private config: Config, private projectRoot: string, private ignorePaths: string[],
     private pipeline: IndexPipeline, private loadFileContent: (path: string) => Promise<string>,
@@ -33,6 +34,7 @@ export class EventProcessingManager {
         return Promise.resolve();
       },
     });
+    this.eventQueue = eventQueue;
     this.pipeline.setEventQueue(eventQueue);
     const watcher = new FileWatcher({ projectRoot: this.projectRoot, ignorePaths: this.ignorePaths }, eventQueue);
     this.drainTask = this.startDrainLoop(eventQueue);
@@ -63,6 +65,15 @@ export class EventProcessingManager {
           if (result.status === 'already_running') throw new Error('already_running');
           if (result.status === 'integrity_unknown') {
             this.onLog?.(`[Nexus] Background full scan refused to repair unknown integrity: ${result.reason}`);
+            if (reason === 'overflow-recovery') {
+              const shouldRetry = attempt < retryCount - 1;
+              if (shouldRetry && !this.abortController.signal.aborted) {
+                const delay = baseDelayMs * Math.pow(2, attempt);
+                try { await sleep(delay, undefined, { signal: this.abortController.signal }); }
+                catch { /* AbortError is expected. */ }
+              }
+              continue;
+            }
             return;
           }
           if (result.status === 'rebuild_required') {
@@ -86,6 +97,9 @@ export class EventProcessingManager {
           catch { /* AbortError is expected. */ }
         }
       }
+    }
+    if (reason === 'overflow-recovery' && !this.abortController.signal.aborted) {
+      this.eventQueue?.enqueueReindex({ fullScan: true, reason });
     }
   }
 
