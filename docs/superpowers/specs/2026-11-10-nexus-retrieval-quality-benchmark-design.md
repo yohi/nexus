@@ -109,6 +109,8 @@ Expected File Discovery Rateは、正解ファイルが定義された評価可�
 
 3指標はJSONに必須フィールドとして記録し、評価可能な場合は0〜1の数値、Golden/候補母数などの不足で評価不能な場合は`null`と理由を記録する。評価不能を0とみなさず、分母と適格Task数を併記する。
 
+**正常な候補0件と証拠不足を区別する。** 公開Discoveryが正常終了し、独立Golden Relevance Set（正解Targetが1件以上）と検索実行の空候補Evidenceが揃う場合は、候補0件でも評価適格である。該当TaskをRecall@K・MRR・Expected File/Symbol Discovery Rateの分母に含め、Hit数、Reciprocal Rank、発見数を実測`0`とする。空候補のResult Status/Reason、`resultCount=0`、空集合のEvidence Digestを記録する。`NOT_ESTABLISHED`/`INCOMPLETE`はGolden未定義、実行未完了、Trace/Digest欠落など証拠の不成立に限定し、正常な空候補だけを理由に付与しない。一方、Irrelevant Candidate Rateは候補を母数とするため、ラベル付き候補0件の場合は`0/0`を`0`にせず、`null`と`NO_LABELED_CANDIDATES`を記録する。個別指標の`null`のみを理由に、測定済みの他指標を未確立へ格下げしない。
+
 Gate 1に問題があっても診断用のDiscovery測定は可能とするが、安全性を満たさない構成の優位性は認定しない。
 
 ### Gate 3 — Agent-loop Efficiency
@@ -480,6 +482,8 @@ Gateごとに以下を独立して報告する。
 - Per-scenario Results
 - Known Limitations
 - Evidence References
+
+**Reproducibility Metadataの成果物契約（F003-A）：** `buildQualityReport(expected, pairs, routeCoverage, metadata)`はRunnerから受け取った検証済み`QualityReportMetadata`を**必須の`QualityReport.metadata`**として保持する。Suiteの`quality-issue320-v1.json`はProfile別`reports[profile].metadata`まで同じ公開可能な設定・Version・Digestを保存する。既存のTop-level `profile`/`policyVersion`/`rgVersion`等の重複フィールドは`metadata`の対応値と一致することを検証する。公開SchemaからPrivate Physical/Canonical Root、秘密情報、Source本文、絶対Executable Path、秘密を含む設定値を除外する。`rgExecutableIdentity`は公開可能な名称・Version・Digest、`rgFlags`/`rgExclusions`は機密情報を除去した固定・正規化済み引数・Root-relative Patternとし、`nexusConfigDigest`等は秘密の原値ではなくDigestだけを保持する。必須Metadata欠落・不一致やRedaction失敗は成功Reportとして公開せず`INCOMPLETE`/出力失敗とする。
 
 ### Agent-loop Comparison
 
