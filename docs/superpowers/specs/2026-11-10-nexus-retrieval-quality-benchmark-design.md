@@ -200,6 +200,8 @@ LSPの位置情報は、対象ファイルと位置を検証する。位置検�
 
 Mutation Scenarioでは、要求開始時点と結果公開時点のSnapshotを区別する。独立OracleはAdoption Sequenceごとにその公開時点で取得されたRoot対応付きSnapshotで採点する。別Rootから取得されたソース、または取得元Rootの証明がないソースを、Hash一致だけでCurrentとして採点しない。
 
+**Source freshness と Task correctness は別契約とする。** `checkSourceFreshness(snapshot, adoption)` は公開時点の同一Root上で取得バイトがSnapshotと一致するかだけを `FRESH_BYTES` / `STALE_BYTES` / `UNKNOWN` で表す。これだけで `CORRECT_CURRENT` を返してはならない。最終的な `gradeTaskSource(task, snapshot, adoption, provenance)` はRunner/Grader専用であり、独立Golden Target (`expectedFiles` / `expectedSymbols` / `expectedLocations` / `expectedSourceHashes`)、`task.worktreeIdentity.rootKey`、実際のSource取得元に対する検証済みProvenance、Adoption公開時点の独立Snapshot、Source範囲・Locationの整合をすべて検証する。Sourceの取得元Rootが未証明・別Root・不明なら、同一Hashや同名Symbolでも `CORRECT_CURRENT` にしない。無関係なCurrent Sourceも不正解とする。Provenanceと物理Canonical RootはRunner/Grader内のみで保持し、Policy、Public Task、公開Reportへ渡さない。Source Snapshotは要求開始時点のものと採用公開時点のものを混同しない。判定不能は `INCONCLUSIVE` としてCoverageを `INCOMPLETE` とする。観測済みの安全なものとして採用された誤Source/False-freshは `SAFETY_FAIL` を優先する。
+
 ### Outcome Integrity
 
 - `not_found`と`unavailable`を混同しない。
@@ -384,11 +386,14 @@ Q13はDefinition、References、Implementationsを個別の評価タスクとし
 | Q13 | Stub/Real LSPのEvidence Class固定 | `get_definition`, `get_references`, `get_implementations`を個別実行 | 全Locationの行・UTF-16文字位置、部分結果の区別 |
 | Q14 | LSP未構成のSetup固定 | `get_definition` | `unavailable/LSP_NOT_CONFIGURED`の明示 |
 
+**Frozen Probe Identity（期待動作単位）:** 必須Coverageの最小単位はTool名ではなく、`(profile, taskId, rootKey, probeId)`で識別する期待動作である。少なくとも次のProbe IDを固定し、Tool・公開引数Digest・独立Oracle期待動作をそれぞれ分離する。`Q01-source`, `Q02-dirty-source`, `Q03-old-identity-refusal`, `Q03-new-identity-source`, `Q04-moved-source`, `Q05-retired-refusal`, `Q06-recreated-source`, `Q07-stale-hybrid`, `Q08-generation-race`, `Q09-parser-capability`, `Q10-outline`, `Q10-scoped-source`, `Q11-declaration-source`, `Q12-primary-source`, `Q12-linked-source`, `Q13-definition`, `Q13-references`, `Q13-implementations`, `Q14-lsp-unavailable`。Q03では同じ`get_symbol_source`でも旧Identity拒否と新Source取得を別実行・別Oracle採点する。Q10はOutlineとSourceの両方、Q13はNavigation種別別の**完全な**Location集合を個別採点する。Q12はRoot別に採点する。各Probeは`probeId`, `tool`, `rootKey`, `publicArgsDigest`, `traceSequence`, `observedStatus`, `reasonCode`, `oracleVerdict`, `setupProofDigest`, `status`を対応付ける。単一のTool名集合・単一集約Verdictは代替証拠にならない。
+
 **Coverage成立条件（4条件のAND）：** ①Setupが証拠で成立、②上記の必須Tool経路を実際に呼出し、③Tool名・Root-relative引数・Status・Reason・Result Digestを保持したTraceで実行を証明、④独立Oracleによる期待動作の採点が完了。④は取得型ではそのRootの公開時点Source/Locationを採点し、**拒否・Capability型（Q05の削除済みIdentity、Q14のLSP未構成など）ではSource/Locationの存在を要求せず、公開Status/Reasonと期待拒否条件を独立採点する**。Q03など取得と拒否の両方を期待する場合は双方を採点する。正しい拒否はCoverageを満たし得るがSource取得成功には数えない。必須項目が1つでも欠ければCoverageは`INCOMPLETE`。観測済み`FALSE_FRESH`・安全なものとして採用した誤Sourceは他のCoverage不足があっても`SAFETY_FAIL`を優先する。未実行・Setup未成立・実際の失敗を混同しない。
 
 Core Q01–Q11・Q14、Worktree拡張Q12、LSP拡張Q13（Stub=`CONTRACT_ONLY`、実Server=別途Owner承認）を別Profileで集計し、必須Scenario集合を実行後に縮小しない。Q12のPrimaryとLinkedはRoot別Taskとして独立採点する。#297実証証拠不足ならQ12を`blocked_dependency`とし、Coreの無関係な評価まで自動停止しない。
 
-**Coverage EvidenceのProducer / Consumer:** Task 5のRunnerに付随する独立Contract Probeが、固定Matrixに沿ってSetup、必須Tool呼出し、`CONTRACT_PROBE` Trace、独立Oracle採点を収集し、`QualityRouteCoverage[]`を生成する。Task 6のQ12/Q13拡張も同じ生成契約を利用する。Task 7のReport Builderは生成済みEvidenceを**明示引数**として受け取るだけで、Policy TraceやPaired成功結果から欠落したCoverageを推測・補完しない。ProbeはAgent-loopと分離し、探索コストに混入させない。
+**Coverage EvidenceのProducer / Consumer:** Task 5のRunnerに付随する独立Contract Probeが、固定Matrixに沿ってSetup、必須Tool呼出し、`CONTRACT_PROBE` Trace、独立Oracle採点を収集し、`QualityRouteCoverage[]`を生成する。Task 6のQ12/Q13拡張も同じ生成契約を利用する。Task 7のReport Builderは生成済みEvidenceを**明示引数**として受け取るだけで、Policy TraceやPaired成功結果から欠落したCoverageを推測・補完しない。ProbeはAgent-loopと分離し、探索コストに混入させない。 各`QualityRouteCoverage`の`COVERED`判定は、そのScenario/Rootに対応する**全**Required Probe IDの各証拠についてSetup ∧ 実Tool呼出し ∧ Probe Trace ∧ 独立Oracle採点が揃ったときに限る。片方だけのQ03、Q10の片経路のみ、Q13の一部Navigationのみ、Q12の一方Rootのみでは、該当Profileは`INCOMPLETE`とし、全Scopeの`SAFETY_PASS`を許さない。
+
 
 ### Race / Stale Scenario
 
@@ -494,6 +499,8 @@ Gateごとに以下を独立して報告する。
 
 任意の改善率をPASS条件に設定しない。
 
+**Machine-readable Gate指標の母数契約:** 各Rateは`numerator`, `denominator`, `value`, `reasonCode`を保持する。適格なSource取得タスク全体を母数とするCurrent-source correctness rate、Symbol Identityの正解判定可能タスクを母数とするIdentity resolution success rate、期待Refusalの正拒否率、取得可能なタスクでのFalse refusal率を分ける。False-fresh、Wrong-source、Missing、UnavailableはOutcome件数・適格母数を別々に記録し、相互に合算しない。必須Taskの未実行やOracle不足があるときは評価不能Rateを`null`＋理由とし、0%の実測と混同しない。Gate 3はR/N別に、全TaskのCompletion/Failure・Wrong-source Adoption・Fallback Task Frequency、初回正解到達までのTool Calls/Logical Operations/Context Bytes/Estimated Tokensを母数付きで記録する。Both-success限定のコスト差と全Task成功率を分離し、未到達をコスト標本から除外しても全Task母数から除外しない。実行メタデータにはNexus Commit/Config Digest、Manifest/Oracle/Fixture/PolicyのVersion・Digest、`rg` Version/Flags/Exclusions、Tokenizer名・Version、Node/Platform、Embedding/LSP Evidence Class、開始終了時刻を記録する。
+
 ### Architecture Decision
 
 | 観測結果 | 判断候補 |
@@ -507,6 +514,12 @@ Gateごとに以下を独立して報告する。
 簡素化はベンチマークによって自動実行しない。
 
 Human Ownerが実用価値、保守コスト、運用負担を比較して判断する。
+
+### Initial #320 Baseline Suite（固定実行入口・成果物）
+
+Task 7は新Frameworkを作らず、Task 5/6の`runQualityPair()`と`collectQualityRouteCoverage()`を全必須Taskに適用する`runQualitySuite()`を提供する。`quality-issue320-v1`の必須TaskはCore `Q01`–`Q11` / `Q14`（12件）、Worktree `Q12-primary` / `Q12-linked`（2件）、Stub `Q13-definition` / `Q13-references` / `Q13-implementations`（3件）、計17件を固定する。各Taskで同一公開Clue・公平なArm順序・隔離したSnapshotを用い、Pair、独立Probe、Oracle Evidenceを明示的にReport Builderへ渡す。`not_run`・`blocked`・`setup_incomplete`は期待集合から除去せず、欠測付きJSON/Markdownに必ず載せる。
+
+最小CLIは既存のVitestを再利用し、独立した`tests/integration/quality/suite.test.ts`を既存Task 7で追加する。Owner承認を得た実行者だけが、例えば`OUT=$(mktemp -d "${TMPDIR:-/tmp}/nexus-quality-320.XXXXXXXX")`で権限0700の所有済み一時領域を確保し、`NEXUS_QUALITY_SUITE=quality-issue320-v1 NEXUS_QUALITY_OUTPUT_ROOT="$OUT" npx vitest run tests/integration/quality/suite.test.ts --coverage.enabled=false`を実行する。Runnerは実行前に出力Rootの所有権・Canonical Path・Symlink不在を検証し、外部Path、既存成果物、開発者Worktreeを変更しない。成果物は`quality-issue320-v1.json`（Per-task/Per-Probe・Gate 1–3・Reproducibility Metadata）、`quality-issue320-v1.md`（Owner向け判定要約）、`SHA256SUMS`（両者のDigest）とする。出力不能・必須Coverage不足は`INCOMPLETE`として記録し、PASSやIssue Closeを自動実行しない。これは**将来の別途承認後に実装・実行する仕様**であり、本DOCUMENT_ONLY作業でこのコマンドは実行しない。
 
 ## 12. Reproducibility / Safety
 
