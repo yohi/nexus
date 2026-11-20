@@ -99,7 +99,7 @@ False-freshは独立した安全性違反として記録する。
 - Expected Symbol Discovery Rate
 - Irrelevant Candidate Rate
 
-候補は、正解Oracleのファイルパス・論理シンボルIDに正規化して比較する。
+候補は、正解Oracleのファイルパス・論理シンボルIDに正規化して比較する。Gate 2の分子・分母・MRR/Recall@Kは**各Armで実際に公開された重複排除済み候補**と独立Oracleの関連性ラベルから算出する。候補のないTrace DigestやPolicyの最終採用だけから発見率を推測しない。ラベル付き候補集計（または独立採点済みの分子・分母）とEvidence DigestをRunnerからReport Builderに渡し、Baseline/Nexus別に算出する。
 
 ChunkとLogical Symbolは同一視しない。1つのシンボルが複数Chunkに分かれた場合も、その事実を保持し、正解の重複として水増ししない。
 
@@ -242,7 +242,9 @@ Policyが採用した結果を、実行後に独立したOracleが採点する�
 | `position:<path>@<line>:<character>` | Root-relative File、1-based Line、0-based UTF-16 Character | N: 指定のLSP Navigation、R: 同一位置を起点とする限定File Read |
 | `nav:<kind>` | `definition` / `references` / `implementations` | N: `get_definition` / `get_references` / `get_implementations` |
 
-`nav:`は`position:`または`symbol:`と組み合わせる。公開Clueの選択順位は、妥当な`nav+position/nav+symbol`、`symbol`、`file`、`id`、`concept`の順とする。`symbol:`を用いるPaired TaskにはBaselineが使えるテキスト`id:`または`file:`も必ず公開する。非対応ToolをBaseline側で模倣しない。候補は公開Score降順、Root-relative Path昇順、Line/Character昇順、元Rank昇順で安定ソートする。
+`nav:`は`position:`または`symbol:`と組み合わせる。公開Clueの選択順位は、妥当な`nav+position/nav+symbol`、`symbol`、`file`、`id`、`concept`の順とする。`symbol:`を用いるPaired TaskにはBaselineが使えるテキスト`id:`または`file:`も必ず公開する。非対応ToolをBaseline側で模倣しない。候補は有限な公開Scoreを持つものを先にScore降順、Score欠落候補を後に置き、Root-relative Path昇順、Line/Character昇順、元Rank昇順で安定ソートする。非有限Scoreは不正な応答として扱う。
+
+**VERIFY/採用の境界:** Policyは公開Status、Capability、Source Validation、Root-relative Path、公開Clueと取得したSource/Locationのみを利用する。`verified`でないSource、Root外・不明Root、公開Clueと不整合なSource、`truncated`または`partial`なLSP結果は完全検証済みとして`COMPLETE`にしない。`id:`の一致候補が複数残り、公開File/Scope/Symbol情報でも一意に決まらなければ最初の候補を任意採用せず、残候補の確認後に`EXHAUSTED/AMBIGUOUS_PUBLIC_TARGET`とする。`concept:`は公開順位と公開Source検証に基づく候補採用にとどまり、意味的正解をPolicy自身が判定したとは扱わない。いずれの採用も最終正誤は独立Oracleのみが採点する。
 
 **固定遷移:** `INITIAL→DISCOVER`（Clue検証・経路選択）、`DISCOVER→RANK`（候補あり）、`DISCOVER→FALLBACK`（空・不足・拒否・Retry終了）、`RANK→READ`（上記順位）、`READ→VERIFY`（公開Sourceを取得）、`VERIFY→COMPLETE`（公開証拠のみで採用条件を満たす）、`VERIFY→FALLBACK`（不十分・不整合）、`FALLBACK→DISCOVER/READ`（固定代替経路かつ予算内）、任意の非終端状態から`EXHAUSTED`（予算超過・経路枯渇）。`COMPLETE` / `EXHAUSTED`は終端である。既存のFallbackマッピングと12操作・20候補・64KiB・2回Retry上限を両方式に適用し、実行後のPolicy変更は禁止する。
 ### Policy Rules
@@ -359,7 +361,7 @@ Fixtureを3系列とする。
 
 Q13はDefinition、References、Implementationsを個別の評価タスクとして保持する。
 
-各Scenarioは独立して再現可能とし、Mutation前後のSnapshotをManifestに保持する。
+各Scenarioは独立して再現可能とし、Mutation前後のSnapshotをManifestに保持する。 **#320のCloseに必要な固定範囲**はCore Q01–Q11・Q14の全必須実測、Primary/Linked各RootのQ12実測、Q13のDefinition/References/ImplementationsそれぞれのStub実行・`CONTRACT_ONLY`採点、およびGate 1 `SAFETY_PASS`とGate 2/3の適格な実測比較である。Q12の依存証拠不足はCloseを自動的にPASSにしない。実LSPサーバー（#354）と実EmbeddingモデルのLive評価はClose必須条件ではない。Semantic Relevanceが立証できない場合は`NOT_ESTABLISHED`とし、Nexusの優位性はClose条件にしない。実測結果・残余リスクのHuman Owner受入をClose前提とする。
 
 ### Frozen Required Route / Coverage Matrix（quality-policy-v1）
 
@@ -382,7 +384,7 @@ Q13はDefinition、References、Implementationsを個別の評価タスクとし
 | Q13 | Stub/Real LSPのEvidence Class固定 | `get_definition`, `get_references`, `get_implementations`を個別実行 | 全Locationの行・UTF-16文字位置、部分結果の区別 |
 | Q14 | LSP未構成のSetup固定 | `get_definition` | `unavailable/LSP_NOT_CONFIGURED`の明示 |
 
-**Coverage成立条件（4条件のAND）：** ①Setupが証拠で成立、②上記の必須Tool経路を実際に呼出し、③Tool名・Root-relative引数・Status・Reason・Result Digestを保持したTraceで実行を証明、④独立OracleによるそのRootの公開時点Source / Location採点が完了。必須項目が1つでも欠ければCoverageは`INCOMPLETE`。観測済み`FALSE_FRESH`・安全なものとして採用した誤Sourceは他のCoverage不足があっても`SAFETY_FAIL`を優先する。未実行・Setup未成立・実際の失敗を混同しない。
+**Coverage成立条件（4条件のAND）：** ①Setupが証拠で成立、②上記の必須Tool経路を実際に呼出し、③Tool名・Root-relative引数・Status・Reason・Result Digestを保持したTraceで実行を証明、④独立Oracleによる期待動作の採点が完了。④は取得型ではそのRootの公開時点Source/Locationを採点し、**拒否・Capability型（Q05の削除済みIdentity、Q14のLSP未構成など）ではSource/Locationの存在を要求せず、公開Status/Reasonと期待拒否条件を独立採点する**。Q03など取得と拒否の両方を期待する場合は双方を採点する。正しい拒否はCoverageを満たし得るがSource取得成功には数えない。必須項目が1つでも欠ければCoverageは`INCOMPLETE`。観測済み`FALSE_FRESH`・安全なものとして採用した誤Sourceは他のCoverage不足があっても`SAFETY_FAIL`を優先する。未実行・Setup未成立・実際の失敗を混同しない。
 
 Core Q01–Q11・Q14、Worktree拡張Q12、LSP拡張Q13（Stub=`CONTRACT_ONLY`、実Server=別途Owner承認）を別Profileで集計し、必須Scenario集合を実行後に縮小しない。Q12のPrimaryとLinkedはRoot別Taskとして独立採点する。#297実証証拠不足ならQ12を`blocked_dependency`とし、Coreの無関係な評価まで自動停止しない。
 
@@ -563,3 +565,5 @@ Findingの存在だけを理由に、設計・レビュー工程を反復しな�
 **Design Status: APPROVED — Human Owner accepted Design R0.1 (DOCUMENT_ONLY; implementation NOT AUTHORIZED)**
 
 **Implementation Authorization: NONE**
+
+**2026-11-21 Owner Decision — limited documentation amendment:** #320 Completion ScopeはCore・Worktree・LSP StubとGate 1–3で固定。PR #357のDesign/Planを再構築せず、Oracle独立性・Policy決定性・公開情報保護・指標とCoverageの信頼性に関わる箇所だけを限定補強する。**今回の承認は上記Markdown 2ファイルの訂正・Commit・Pushのみ**。実装、ベンチマーク実行、PR Merge、Issue Close、独立再レビュー・後続Task自動開始は未承認。
