@@ -101,6 +101,8 @@ False-freshは独立した安全性違反として記録する。
 
 候補は、正解Oracleのファイルパス・論理シンボルIDに正規化して比較する。Gate 2の分子・分母・MRR/Recall@Kは**各Armで実際に公開された重複排除済み候補**と独立Oracleの関連性ラベルから算出する。候補のないTrace DigestやPolicyの最終採用だけから発見率を推測しない。ラベル付き候補集計（または独立採点済みの分子・分母）とEvidence DigestをRunnerからReport Builderに渡し、Baseline/Nexus別に算出する。
 
+**RG-NEW-001 — 固定Recall@10契約（`quality-policy-v1` / `quality-issue320-v1`）：** `K=10`とし、両Armで同じ値を使う。各Armの公開候補を、既存Policyの固定順位（有限公開Score降順、Scoreなし後置、正規化Root-relative Path、Line/UTF-16 Character、元Rank昇順の安定順）で**先に並べ**、その順序の最初の出現を残して重複排除し、**その後に上位10個**を取る。重複キーは型付きの公開File PathまたはLogical Symbol ID（同一RootのChunkは同一Logical Symbolに統合）で、FileとSymbolを誤って同一視しない。Oracleの関連性ラベルは順位・重複排除に使用せず、独立採点にのみ使う。`Recall@10 = 上位10個の関連する相異なるTarget数 / Golden Relevance SetのTarget数`（非空Goldenで評価可能なQuery）。MRRは同じ**重複排除済みの順位**における最初の関連候補の逆順位（20候補の既存探索上限内、未発見なら0）であり、RecallのKで切り詰めない。実行条件を変更する場合はPolicy/SuiteのVersionを変更し、事後にKや並べ替え方式を選択しない。Reportの`metadata.recallK=10`と`gate2[arm].recallK=10`をJSON必須値とし、両者および実行時の固定設定の一致を検証する。
+
 ChunkとLogical Symbolは同一視しない。1つのシンボルが複数Chunkに分かれた場合も、その事実を保持し、正解の重複として水増ししない。
 
 Golden Relevance Setが定義できないQueryには、Recall@KやMRRを無理に適用しない。
@@ -121,6 +123,7 @@ Gate 1に問題があっても診断用のDiscovery測定は可能とするが�
 - Tool Calls to First Correct Source
 - Logical Operations to First Correct Source
 - Context Bytes / Tokens to First Correct Source
+- Elapsed Milliseconds from Exploration Start to First Correct Source
 - Broad File-read Fallback Frequency
 - Wrong-source Adoption Rate
 - Task Failure Rate
@@ -131,7 +134,7 @@ Gate 1に問題があっても診断用のDiscovery測定は可能とするが�
 
 途中で誤ったソースを採用したタスクは、後で正解に到達しても、その危険な経過を消去しない。
 
-時間に関する測定値は補助的に記録してよいが、ハードウェア依存の性能評価は#299の責務とする。
+**RG-NEW-002 — 初回正解Source到達時間：** 各ArmでFixture初期化・Index準備が終わり探索Policyの`INITIAL`開始直前に単調時計を起動する。各`QualityAdoptionEvent`のSourceがPolicy/Observerから公開された瞬間の経過時間を、開始時点との差で`elapsedMs`（有限・非負のミリ秒）として採用順序とともに記録する。独立Oracleは探索**終了後**に全採用イベントを公開時点Snapshotで採点し、最初に`CORRECT_CURRENT`となった採用イベントの`elapsedMs`を`firstCorrectSourceElapsedMs`として確定する。Oracle採点処理、Fixtureセットアップ、独立Contract Probeは経過時間に含めない。未到達・未実行・Setup不成立・採点不能・時計証拠欠落は実測0とせず`null`と理由を保持する。Gate 3はR/Nそれぞれの全Task到達率と並記して、正解到達タスクのelapsedMs分布（適格数、実測数、min/median/p95/max）およびBoth-success限定の時間比較を出力する。この値は探索Policy全体のAgent-loop Time-to-First-Correct-Sourceであり、#299のRaw Service Latency（Tool単体のウォームアップ・反復測定）とは独立した指標である。ハードウェア・負荷依存性をMetadataとLimitationsに残し、時間の優位だけでGate 1を代替しない。
 
 ## 4. Existing Infrastructure Reuse
 
@@ -295,9 +298,9 @@ Toolの機能差は比較の対象とするが、Policyから一方にだけ正�
 - 必要範囲の追加読取り
 - 同一Policyによる候補の選択・Fallback
 
-`rg`のVersion、引数、対象パス、除外条件を記録する。
+**RG-NEW-001 — `quality-policy-v1`の固定Baseline R実行条件：** `rg`はOwned Fixtureの当該Rootを検証済みCWDとして、毎回 `rg --no-config --no-ignore --hidden --json --sort path --fixed-strings --glob '!.git/**' --glob '!**/.git/**' --glob '!node_modules/**' --glob '!**/node_modules/**' --glob '!.nexus/**' --glob '!**/.nexus/**' -- <public-query> .` の引数配列で起動する（`<public-query>`はPolicyが公開Clueから固定規則で選ぶリテラル1個、Shell補間・追加オプション禁止）。検索対象は**選択したRoot内の通常ファイルのみ**であり、Symlinkは辿らず、上記6つの除外Globを明示する。Ignore設定は読み込まない。`rg --json`の`match`イベントからFile/Lineを取って公開候補を正規化し、`--sort path`の実行時順序を証拠として保持する。Exit 0は正常結果、Exit 1かつ診断エラーなしは正常な候補0件、Exit 2・Signal/Timeout・JSON不正は失敗として区別する。正規化後の共通Policyが最大20候補を評価する。
 
-検索結果の表示件数・読取り範囲などは、Nexusとの比較に適した同等の予算へ正規化する。
+Baselineの`read_file`は**1操作あたり最大4096 bytes**を、検証済みRoot-relative Fileと明示的なバイトOffsetで読取り、必要な追加Windowは別の論理操作として既存最大12操作に計上する。両Arm共通のSource/Context公開上限は既存**65536 bytes/Task**、Retry上限2回を維持する。読取りのRoot外・Symlink Escape、Window上限超過はFail-Closedし、勝手に範囲を拡大しない。`rg`実行Version/識別子、固定Flags・除外Glob、Root-relative対象`'.'`、読取りWindow4096、および実際の各検索/読取り引数・結果DigestはRunnerで記録し`QualityReport.metadata`と照合する。Rootの物理パス・Source本文は公開JSONへ記録しない。
 
 ### Nexus N — Full Retrieval
 
@@ -455,7 +458,7 @@ LSPの有効化・Host設定・実際のプロセス起動は本Designの承認�
 - Context Bytes
 - Fixed TokenizerによるToken Count
 - Fallback Count
-- Source Adoption Event
+- Source Adoption Event（`sequence`・単調時計による探索開始からの`elapsedMs`）
 - Oracle Verdict
 - Refusal / Error Reason
 - Completion Status
@@ -483,6 +486,8 @@ Gateごとに以下を独立して報告する。
 - Known Limitations
 - Evidence References
 
+**RG-NEW-001/002追加Metadata:** 固定`recallK=10`、`rgSearchScope='.'`、`rgReadMaxBytesPerCall=4096`、固定`rgFlags`/`rgExclusions`、実行時検証済みの`rgExecutionContractDigest`を既存`QualityReportMetadata`の必須契約とする。各Armの`GateDiscoveryReport.recallK`、実際の`rg`起動引数・検索Scope・読取りWindow、およびRunnerが記録した実行条件はこの契約と一致しなければならず、相違・不明は`INCOMPLETE`（成功Report禁止）とする。到達時間は`QualityAdoptionEvent.elapsedMs`、独立採点後の`QualityArmResult.firstCorrectSourceElapsedMs`、Gate 3の`firstCorrectSource.elapsedMs`と`bothSuccessOnlyCost.elapsedMs`で追跡可能にし、単調時計の測定失敗を0へ置換しない。
+
 **Reproducibility Metadataの成果物契約（F003-A）：** `buildQualityReport(expected, pairs, routeCoverage, metadata)`はRunnerから受け取った検証済み`QualityReportMetadata`を**必須の`QualityReport.metadata`**として保持する。Suiteの`quality-issue320-v1.json`はProfile別`reports[profile].metadata`まで同じ公開可能な設定・Version・Digestを保存する。既存のTop-level `profile`/`policyVersion`/`rgVersion`等の重複フィールドは`metadata`の対応値と一致することを検証する。公開SchemaからPrivate Physical/Canonical Root、秘密情報、Source本文、絶対Executable Path、秘密を含む設定値を除外する。`rgExecutableIdentity`は公開可能な名称・Version・Digest、`rgFlags`/`rgExclusions`は機密情報を除去した固定・正規化済み引数・Root-relative Patternとし、`nexusConfigDigest`等は秘密の原値ではなくDigestだけを保持する。必須Metadata欠落・不一致やRedaction失敗は成功Reportとして公開せず`INCOMPLETE`/出力失敗とする。
 
 ### Agent-loop Comparison
@@ -503,7 +508,7 @@ Gateごとに以下を独立して報告する。
 
 任意の改善率をPASS条件に設定しない。
 
-**Machine-readable Gate指標の母数契約:** 各Rateは`numerator`, `denominator`, `value`, `reasonCode`を保持する。適格なSource取得タスク全体を母数とするCurrent-source correctness rate、Symbol Identityの正解判定可能タスクを母数とするIdentity resolution success rate、期待Refusalの正拒否率、取得可能なタスクでのFalse refusal率を分ける。False-fresh、Wrong-source、Missing、UnavailableはOutcome件数・適格母数を別々に記録し、相互に合算しない。必須Taskの未実行やOracle不足があるときは評価不能Rateを`null`＋理由とし、0%の実測と混同しない。Gate 3はR/N別に、全TaskのCompletion/Failure・Wrong-source Adoption・Fallback Task Frequency、初回正解到達までのTool Calls/Logical Operations/Context Bytes/Estimated Tokensを母数付きで記録する。Both-success限定のコスト差と全Task成功率を分離し、未到達をコスト標本から除外しても全Task母数から除外しない。実行メタデータにはNexus Commit/Config Digest、Manifest/Oracle/Fixture/PolicyのVersion・Digest、`rg` Version/Flags/Exclusions、Tokenizer名・Version、Node/Platform、Embedding/LSP Evidence Class、開始終了時刻を記録する。
+**Machine-readable Gate指標の母数契約:** 各Rateは`numerator`, `denominator`, `value`, `reasonCode`を保持する。適格なSource取得タスク全体を母数とするCurrent-source correctness rate、Symbol Identityの正解判定可能タスクを母数とするIdentity resolution success rate、期待Refusalの正拒否率、取得可能なタスクでのFalse refusal率を分ける。False-fresh、Wrong-source、Missing、UnavailableはOutcome件数・適格母数を別々に記録し、相互に合算しない。必須Taskの未実行やOracle不足があるときは評価不能Rateを`null`＋理由とし、0%の実測と混同しない。Gate 3はR/N別に、全TaskのCompletion/Failure・Wrong-source Adoption・Fallback Task Frequency、初回正解到達までのTool Calls/Logical Operations/Context Bytes/Estimated Tokens/**探索開始から初回正解Source採用までのElapsed Milliseconds**を母数付きで記録する。Both-success限定のコスト差と全Task成功率を分離し、未到達をコスト標本から除外しても全Task母数から除外しない。実行メタデータにはNexus Commit/Config Digest、Manifest/Oracle/Fixture/PolicyのVersion・Digest、`rg` Version/Flags/Exclusions、Tokenizer名・Version、Node/Platform、Embedding/LSP Evidence Class、開始終了時刻を記録する。
 
 ### Architecture Decision
 
