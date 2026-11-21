@@ -484,6 +484,7 @@ await expect(readProjectEndpoint(storageDir)).resolves.toBeUndefined();
     await sendRequest(oldBridge, initializeRequest, 1);
     const old = await endpointOf(join(set.linkedA, '.nexus'));
     detachedManagedPids.push(old.pid);
+    await waitFor(() => initialIndexSettled(oldBridge).then((settled) => settled ? true : undefined), 90_000);
     await stopBridge(oldBridge);
     const moved = join(dirname(set.linkedA), 'linkedA-recreated');
     await recreateWorktree(set, set.linkedA, moved);
