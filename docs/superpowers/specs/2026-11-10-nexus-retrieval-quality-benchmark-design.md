@@ -302,6 +302,8 @@ Toolの機能差は比較の対象とするが、Policyから一方にだけ正�
 
 Baselineの`read_file`は**1操作あたり最大4096 bytes**を、検証済みRoot-relative Fileと明示的なバイトOffsetで読取り、必要な追加Windowは別の論理操作として既存最大12操作に計上する。両Arm共通のSource/Context公開上限は既存**65536 bytes/Task**、Retry上限2回を維持する。読取りのRoot外・Symlink Escape、Window上限超過はFail-Closedし、勝手に範囲を拡大しない。`rg`実行Version/識別子、固定Flags・除外Glob、Root-relative対象`'.'`、読取りWindow4096、および実際の各検索/読取り引数・結果DigestはRunnerで記録し`QualityReport.metadata`と照合する。Rootの物理パス・Source本文は公開JSONへ記録しない。
 
+**RG-NEW-001最終限定補正 — `rg`を起動しない正当なBaseline R経路：** 固定`rg`実行テンプレート（Executable Identity/Version、argvのFlags・6除外Glob・Scope `'.'`、Owned Root、4096-byte `read_file` Window上限）は、検索実行の有無と無関係に**Task 3 Adapter初期化時**に検証し、公開可能な正規化済み固定契約の`rgExecutionContractDigest`を導出する。`rg_search`を実際に起動したときだけ、各Spawnの観測argv・CWDに紐付くRoot-relative Scope・Exclusions・Window制約を固定契約に照合し、観測値由来の`baselineExecutionContractDigest`を記録する。複数起動した場合は**全起動**を照合する。正常完了したPolicy/Tool Traceが`rg_search`呼出し0件であると証明する`read_file`専用Pairは、`baselineRgExecution.status='NOT_INVOKED'`、`invocationCount=0`、`baselineExecutionContractDigest=null`と明示し、**その不在だけで`INCOMPLETE`にしない**。`NOT_INVOKED`はTrace欠落から推測してはならない。`rg`を起動したのに起動証拠が欠落・不一致の場合、または呼出し有無自体が確定できない場合は`EVIDENCE_INCOMPLETE`としてFail-Closedし、実行していないことを装って採点しない。固定Recall@10とRG-NEW-002の時間計測契約は変更しない。
+
 ### Nexus N — Full Retrieval
 
 利用可能な経路：
@@ -486,7 +488,7 @@ Gateごとに以下を独立して報告する。
 - Known Limitations
 - Evidence References
 
-**RG-NEW-001/002追加Metadata:** 固定`recallK=10`、`rgSearchScope='.'`、`rgReadMaxBytesPerCall=4096`、固定`rgFlags`/`rgExclusions`、実行時検証済みの`rgExecutionContractDigest`を既存`QualityReportMetadata`の必須契約とする。各Armの`GateDiscoveryReport.recallK`、実際の`rg`起動引数・検索Scope・読取りWindow、およびRunnerが記録した実行条件はこの契約と一致しなければならず、相違・不明は`INCOMPLETE`（成功Report禁止）とする。到達時間は`QualityAdoptionEvent.elapsedMs`、独立採点後の`QualityArmResult.firstCorrectSourceElapsedMs`、Gate 3の`firstCorrectSource.elapsedMs`と`bothSuccessOnlyCost.elapsedMs`で追跡可能にし、単調時計の測定失敗を0へ置換しない。
+**RG-NEW-001/002追加Metadata:** 固定`recallK=10`、`rgSearchScope='.'`、`rgReadMaxBytesPerCall=4096`、固定`rgFlags`/`rgExclusions`、Adapter初期化時に検証した固定契約の`rgExecutionContractDigest`を既存`QualityReportMetadata`の必須値とする。`GateDiscoveryReport.recallK=10`は両ArmでMetadataと一致させる。各Pairの`baselineRgExecution`は`NOT_INVOKED` / `INVOKED_VERIFIED` / `EVIDENCE_INCOMPLETE`を保持する。`NOT_INVOKED`は完全なPolicy/Tool Traceによる検索呼出し0件の証明があるときのみ有効で、実行由来Digestは`null`だが初期化時Metadataは必須のままとする。`INVOKED_VERIFIED`では**各**`rg`起動の観測引数・Scope・Exclusions・読取り上限から導出したDigestをMetadataと照合する。実行済み`rg`の観測証拠欠落・不一致、または呼出し有無の未確定は`EVIDENCE_INCOMPLETE`（成功Report禁止）であり、正常な`read_file`専用Pairを一律に`INCOMPLETE`にしない。到達時間は`QualityAdoptionEvent.elapsedMs`、独立採点後の`QualityArmResult.firstCorrectSourceElapsedMs`、Gate 3の`firstCorrectSource.elapsedMs`と`bothSuccessOnlyCost.elapsedMs`で追跡可能にし、単調時計の測定失敗を0へ置換しない。
 
 **Reproducibility Metadataの成果物契約（F003-A）：** `buildQualityReport(expected, pairs, routeCoverage, metadata)`はRunnerから受け取った検証済み`QualityReportMetadata`を**必須の`QualityReport.metadata`**として保持する。Suiteの`quality-issue320-v1.json`はProfile別`reports[profile].metadata`まで同じ公開可能な設定・Version・Digestを保存する。既存のTop-level `profile`/`policyVersion`/`rgVersion`等の重複フィールドは`metadata`の対応値と一致することを検証する。公開SchemaからPrivate Physical/Canonical Root、秘密情報、Source本文、絶対Executable Path、秘密を含む設定値を除外する。`rgExecutableIdentity`は公開可能な名称・Version・Digest、`rgFlags`/`rgExclusions`は機密情報を除去した固定・正規化済み引数・Root-relative Patternとし、`nexusConfigDigest`等は秘密の原値ではなくDigestだけを保持する。必須Metadata欠落・不一致やRedaction失敗は成功Reportとして公開せず`INCOMPLETE`/出力失敗とする。
 
