@@ -300,13 +300,13 @@ Toolの機能差は比較の対象とするが、Policyから一方にだけ正�
 
 **RG-NEW-001 — `quality-policy-v1`の固定Baseline R実行条件：** `rg`はOwned Fixtureの当該Rootを検証済みCWDとして、毎回 `rg --no-config --no-ignore --hidden --json --sort path --fixed-strings --glob '!.git/**' --glob '!**/.git/**' --glob '!node_modules/**' --glob '!**/node_modules/**' --glob '!.nexus/**' --glob '!**/.nexus/**' -- <public-query> .` の引数配列で起動する（`<public-query>`はPolicyが公開Clueから固定規則で選ぶリテラル1個、Shell補間・追加オプション禁止）。検索対象は**選択したRoot内の通常ファイルのみ**であり、Symlinkは辿らず、上記6つの除外Globを明示する。Ignore設定は読み込まない。`rg --json`の`match`イベントからFile/Lineを取って公開候補を正規化し、`--sort path`の実行時順序を証拠として保持する。Exit 0は正常結果、Exit 1かつ診断エラーなしは正常な候補0件、Exit 2・Signal/Timeout・JSON不正は失敗として区別する。正規化後の共通Policyが最大20候補を評価する。
 
-Baselineの`read_file`は**1操作あたり最大4096 bytes**を、検証済みRoot-relative Fileと明示的なバイトOffsetで読取り、必要な追加Windowは別の論理操作として既存最大12操作に計上する。両Arm共通のSource/Context公開上限は既存**65536 bytes/Task**、Retry上限2回を維持する。読取りのRoot外・Symlink Escape、Window上限超過はFail-Closedし、勝手に範囲を拡大しない。`rg`実行Version/識別子、固定Flags・除外Glob、Root-relative対象`'.'`、読取りWindow4096、および実際の各検索/読取り引数・結果DigestはRunnerで記録し`QualityReport.metadata`と照合する。Rootの物理パス・Source本文は公開JSONへ記録しない。
+Baselineの`read_file`は**1操作あたり最大4096 bytes**を、検証済みRoot-relative Fileと明示的なバイトOffsetで読取り、必要な追加Windowは別の論理操作として既存最大12操作に計上する。両Arm共通のSource/Context公開上限は既存**65536 bytes/Task**、Retry上限2回を維持する。読取りのRoot外・Symlink Escape、Window上限超過はFail-Closedし、勝手に範囲を拡大しない。`rg`実行Version/識別子、固定Flags・除外Glob、Root-relative対象`'.'`、読取りWindow4096、および実際の各検索/読取り引数・結果DigestはRunnerで記録し`QualityReport.metadata`と照合する。検索Queryの生文字列はTrace/Reportに含めず、Rootの物理パス・Source本文も公開JSONへ記録しない。
 
 **RG-NEW-001最終限定補正 — `rg`を起動しない正当なBaseline R経路：** 固定`rg`実行テンプレート（Executable Identity/Version、argvのFlags・6除外Glob・Scope `'.'`、Owned Root、4096-byte `read_file` Window上限）は、検索実行の有無と無関係に**Task 3 Adapter初期化時**に検証し、公開可能な正規化済み固定契約の`rgExecutionContractDigest`を導出する。`rg_search`を実際に起動したときだけ、各Spawnの観測argv・CWDに紐付くRoot-relative Scope・Exclusions・Window制約を固定契約に照合し、観測値由来の`baselineExecutionContractDigest`を記録する。複数起動した場合は**全起動**を照合する。正常完了したPolicy/Tool Traceが`rg_search`呼出し0件であると証明する`read_file`専用Pairは、`baselineRgExecution.status='NOT_INVOKED'`、`invocationCount=0`、`baselineExecutionContractDigest=null`と明示し、**その不在だけで`INCOMPLETE`にしない**。`NOT_INVOKED`はTrace欠落から推測してはならない。`rg`を起動したのに起動証拠が欠落・不一致の場合、または呼出し有無自体が確定できない場合は`EVIDENCE_INCOMPLETE`としてFail-Closedし、実行していないことを装って採点しない。固定Recall@10とRG-NEW-002の時間計測契約は変更しない。
 
-**RG-NEW-001 — Adapter→RunnerのSpawn証拠契約：** Task 3の`RipgrepQualityAdapter.snapshotRgExecution()`はPair専用の不変`RgExecutionSnapshot`をTask 5 Runnerへ返す。Adapterは`rg_search`受付回数をTool引数の検証より前に記録し、実Spawnを試みる直前に単調増加のSpawn番号・対応するPolicy Trace Sequence・実際のargvを検証済み公開Queryだけ`<public-query>`へ置換した正規化argv・検証済み`rootKey`/Scope `'.'`・6除外Glob・読取り上限4096・観測値由来Contract Digestを追記専用で保持する。`rgExecutionContractDigest`はAdapter初期化時の**固定設定Digest**であり、Spawn観測証拠の代用ではない。RunnerはPair完了後にSnapshotの受付回数・Spawn試行回数・全Spawn証拠を完全なPolicy/Tool Traceと照合し、`NOT_INVOKED`は双方が0件でTrace/Snapshotが完全な場合だけ、`INVOKED_VERIFIED`は全Spawnが固定契約と一致する場合だけ認める。証拠欠落・孤立Spawn・件数/Trace不一致・初期化Digest不一致は`EVIDENCE_INCOMPLETE`とし、Report Builderに理由付きで伝える。公開するのは正規化済みの安全な証拠のみで、Private Root、Executable絶対パス、Query原文、Source本文、秘密情報を含めない。
+**RG-NEW-001 — Adapter→RunnerのSpawn証拠契約：** Task 3の`RipgrepQualityAdapter.snapshotRgExecution()`はPair専用の不変`RgExecutionSnapshot`をTask 5 Runnerへ返す。Adapterは`rg_search`受付回数をTool引数の検証より前に記録し、実Spawnを試みる直前に単調増加のSpawn番号・対応するPolicy Trace Sequence・実際のargvを検証済み公開Queryだけ`<public-query>`へ置換した正規化argv・検証済み`rootKey`/Scope `'.'`・6除外Glob・読取り上限4096・観測値由来Contract Digestを追記専用で保持する。`queryDigest`は検証済みQueryの正確なUTF-8列に`quality-query-v1\0`を前置した値のSHA-256とし、argvの置換前に計算する。`rgExecutionContractDigest`はAdapter初期化時の**固定設定Digest**であり、Spawn観測証拠の代用ではない。RunnerはPair完了後にSnapshotの受付回数・Spawn試行回数・全Spawn証拠を完全なPolicy/Tool Traceと照合し、`NOT_INVOKED`は双方が0件でTrace/Snapshotが完全な場合だけ、`INVOKED_VERIFIED`は全Spawnが固定契約と一致する場合だけ認める。証拠欠落・孤立Spawn・件数/Trace不一致・初期化Digest不一致は`EVIDENCE_INCOMPLETE`とし、Report Builderに理由付きで伝える。公開するのは正規化済みの安全な証拠のみで、Private Root、Executable絶対パス、Query原文、Source本文、秘密情報を含めない。
 
-**RG-NEW-001 — Policy→Adapter Trace Sequence境界：** Task 4 Policyは各Tool呼出し（Retry/Fallbackと失敗した受付も含む）の**前**にArm内で一意な単調増加`QualityTraceEvent.sequence`を採番し、Task 3 Adapterの`invoke(tool, args, signal, context)`に非公開`QualityInvocationContext.traceSequence`として渡す。`context`は公開Tool Args、`NormalizedPublicArgs`、`argsDigest`の対象に含めず、Policyの観測・採点・Oracle情報も混入させない。Adapterは受付時のSequenceを保持し、実際に`rg` Spawnを試みた場合は同じSequenceを`RgSpawnObservation.policyTraceSequence`に記録する。Task 5 RunnerはSnapshotと完全なPolicy TraceのSequenceを1対1で照合し、欠落・重複・異Arm・孤立Spawnを`EVIDENCE_INCOMPLETE`とする。独立Contract Probeは自身の`CONTRACT_PROBE` Trace Sequenceを別領域で割当て、Agent-loop探索コストやPolicy Spawn証拠には混ぜない。
+**RG-NEW-001 — Policy→Adapter Trace Sequence境界：** Task 4 Policyは各Tool呼出し（Retry/Fallbackと失敗した受付も含む）の**前**にArm内で一意な単調増加`QualityTraceEvent.sequence`を採番し、Task 3 Adapterの`invoke(tool, args, signal, context)`に非公開`QualityInvocationContext.traceSequence`として渡す。`context`は公開Tool Args、`NormalizedPublicArgs`、`argsDigest`の対象に含めず、Policyの観測・採点・Oracle情報も混入させない。`normalizedPublicArgs`からすべての生Queryフィールドを除外し、`argsDigest`はQuery除外後の正規化JSONだけを対象にする。Queryを持つTrace eventだけに上記と同じ`queryDigest`を保持し、Queryがなければ`null`とする。Adapterは受付時のSequenceを保持し、実際に`rg` Spawnを試みた場合は同じSequenceを`RgSpawnObservation.policyTraceSequence`に記録する。Task 5 RunnerはSnapshotと完全なPolicy TraceのSequenceを1対1で照合し、各Spawnの`queryDigest`が対応Trace eventのDigestと一致することを検証する。欠落・重複・異Arm・孤立Spawnを`EVIDENCE_INCOMPLETE`とする。独立Contract Probeは自身の`CONTRACT_PROBE` Trace Sequenceを別領域で割当て、Agent-loop探索コストやPolicy Spawn証拠には混ぜない。
 
 ### Nexus N — Full Retrieval
 
@@ -450,6 +450,8 @@ LSPの有効化・Host設定・実際のプロセス起動は本Designの承認�
 
 各タスクについて、実行経過をMachine-readable Traceに残す。
 
+必須情報（Query公開契約の補足）：`normalizedPublicArgs`は受理済み引数からQueryを除外したroot-relative JSON projectionとし、`argsDigest`はそのQuery-free projectionの正規化JSON digestとする。Trace/Reportに保持できるQuery由来の値は`queryDigest`のみ（Queryなしは`null`）であり、これは検証済みQueryの正確なUTF-8列に`quality-query-v1\0`を前置した値のSHA-256である。Spawnの`queryDigest`は対応するTrace eventのDigestと`policyTraceSequence`で1対1照合する。JSON/Markdownを含むいかなる公開出力にもQuery原文を含めない。
+
 必須情報：
 
 - Benchmark / Fixture / Policy Version
@@ -457,7 +459,7 @@ LSPの有効化・Host設定・実際のプロセス起動は本Designの承認�
 - Baseline `rg` Version
 - Worktree Identity（PrivateなCanonical Rootは公開Traceに含めない）、Snapshot Digest
 - Task / Scenario ID
-- Tool Name、Root-relativeの`normalizedPublicArgs`（実際の公開引数、JSON-compatible）と`argsDigest`
+- Tool Name、Query-freeかつRoot-relativeの`normalizedPublicArgs`（実際の公開引数、JSON-compatible）、その引数だけの`argsDigest`、Queryがある場合の`queryDigest`のみ
 - `resultStatus`、`reasonCode: string | null`、`resultCount`、`resultDigest`（呼出し単位）
 - Logical Operation Count
 - Tool Invocation Count
