@@ -1,0 +1,603 @@
+# Nexus #320 — Retrieval Correctness and Agent-loop Quality Benchmark Design
+
+**Revision:** R0.1 — Human Owner accepted (DOCUMENT_ONLY)  
+**Date:** 2026-11-10  
+**Repository:** `yohi/nexus`  
+**Issue:** [#320](https://github.com/yohi/nexus/issues/320)  
+**Authority:** DOCUMENT_ONLY  
+**Implementation:** NOT AUTHORIZED
+
+## 1. Project Goal Contract
+
+### Project Goal
+
+NexusのRetrieval Architectureが、安全性・正確性を維持しながら、単純な`ripgrep + file read`と比較して、AIエージェントのコード探索に実用的な価値を提供することを、再現可能なベンチマークで検証する。
+
+### Deliverables
+
+1. 3段階Gateによる品質評価仕様
+2. 独立したMachine-readable Oracle
+3. 最小限の決定論的FixtureとScenario Matrix
+4. Baseline / Nexus比較Adapterの仕様
+5. 決定論的Agent-loop探索Policy
+6. 計測・集計・判定・レポート仕様
+
+### Success Criteria
+
+- CorrectnessとFail-Closedを独立に検証できる。
+- 正しい拒否、誤拒否、False-freshを区別できる。
+- 必要なファイル・シンボルの発見率を測定できる。
+- 同一タスクでTool Call・コンテキスト消費・正解到達を比較できる。
+- Nexusの優位性が存在しない場合にも、その結果を正しく報告できる。
+- 結果がアーキテクチャ維持・改善・簡素化の判断に利用できる。
+
+固定的な改善率は、初回ベンチマークの成功条件としない。
+
+## 2. Scope / Non-goals
+
+### Scope
+
+- Correctness / Fail-Closed
+- Discovery Quality
+- Deterministic Agent-loop Efficiency
+- Worktree Divergence
+- Structured Retrieval
+- Semantic / Hybrid Discovery
+- LSP Definition / References / Implementations
+- Machine-readable Report
+
+### Non-goals
+
+- 実LLMによる確率的な探索評価
+- 新規Benchmark Frameworkの全面構築
+- Nexus本体のRetrieval最適化
+- Persistent Semantic Graphの追加
+- #299の性能・リソース評価の再実装
+- 実験結果に合わせたGolden Answerの変更
+- 改善率達成のための探索Policy事後最適化
+
+## 3. Evaluation Architecture
+
+評価は3段階で実施する。
+
+### Gate 1 — Correctness / Fail-Closed
+
+Nexusが現在のWorktreeに対して正しいソースを返すか、検証不能な場合に安全に拒否できるかを検証する。
+
+| Outcome | 意味 |
+|---|---|
+| CORRECT_CURRENT | 正しい現在ソースを取得 |
+| CORRECT_REFUSAL | 拒否が期待される条件で正しく拒否 |
+| FALSE_REFUSAL | 安全に取得可能なのに不適切に拒否 |
+| FALSE_FRESH | 古いソースを検証済み・Freshとして提示 |
+| WRONG_SOURCE | 誤ったソースを取得・採用 |
+| MISSING | 必要なソースを取得できない |
+| UNAVAILABLE | 機能・依存関係が利用不能 |
+| INCONCLUSIVE | 証拠不足、未実行、または判定不能 |
+
+False-freshは独立した安全性違反として記録する。
+
+**Gate 1の判定**
+
+- `SAFETY_PASS`: 必須ケースが実行され、False-freshおよび誤ったソースの安全なものとしての採用が観測されない。
+- `SAFETY_FAIL`: 上記の危険な動作を1件以上確認。
+- `INCOMPLETE`: 必須ケース未実行、Oracle不明確、証拠不足。
+
+正しい拒否は安全動作として認めるが、正しいソースの発見・取得に成功したものとは扱わない。
+
+誤拒否は安全性違反とは別に集計し、Correctnessの到達率および後続Gateに影響させる。
+
+`SAFETY_PASS`は、有限のFixtureで危険な動作を観測しなかったことを示す。製品全体の安全性の数学的証明ではない。
+
+### Gate 2 — Discovery Quality
+
+発見候補に、タスクの正解となるファイルやシンボルが含まれるかを評価する。
+
+- Recall@K
+- MRR
+- Expected File Discovery Rate
+- Expected Symbol Discovery Rate
+- Irrelevant Candidate Rate
+
+候補は、正解Oracleのファイルパス・論理シンボルIDに正規化して比較する。Gate 2の分子・分母・MRR/Recall@Kは**各Armで実際に公開された重複排除済み候補**と独立Oracleの関連性ラベルから算出する。候補のないTrace DigestやPolicyの最終採用だけから発見率を推測しない。ラベル付き候補集計（または独立採点済みの分子・分母）とEvidence DigestをRunnerからReport Builderに渡し、Baseline/Nexus別に算出する。
+
+**RG-NEW-001 — 固定Recall@10契約（`quality-policy-v1` / `quality-issue320-v1`）：** `K=10`とし、両Armで同じ値を使う。各Armの公開候補を、既存Policyの固定順位（有限公開Score降順、Scoreなし後置、正規化Root-relative Path、Line/UTF-16 Character、元Rank昇順の安定順）で**先に並べ**、その順序の最初の出現を残して重複排除し、**その後に上位10個**を取る。重複キーは型付きの公開File PathまたはLogical Symbol ID（同一RootのChunkは同一Logical Symbolに統合）で、FileとSymbolを誤って同一視しない。Oracleの関連性ラベルは順位・重複排除に使用せず、独立採点にのみ使う。`Recall@10 = 上位10個の関連する相異なるTarget数 / Golden Relevance SetのTarget数`（非空Goldenで評価可能なQuery）。MRRは同じ**重複排除済みの順位**における最初の関連候補の逆順位（20候補の既存探索上限内、未発見なら0）であり、RecallのKで切り詰めない。実行条件を変更する場合はPolicy/SuiteのVersionを変更し、事後にKや並べ替え方式を選択しない。Reportの`metadata.recallK=10`と`gate2[arm].recallK=10`をJSON必須値とし、両者および実行時の固定設定の一致を検証する。
+
+ChunkとLogical Symbolは同一視しない。1つのシンボルが複数Chunkに分かれた場合も、その事実を保持し、正解の重複として水増ししない。
+
+Golden Relevance Setが定義できないQueryには、Recall@KやMRRを無理に適用しない。
+
+Expected File Discovery Rateは、正解ファイルが定義された評価可能Taskのうち、少なくとも1つの正解ファイルを発見したTaskの割合とする。Expected Symbol Discovery Rateも、正解論理シンボルが定義された評価可能Taskについて同様に算出する。Irrelevant Candidate Rateは、関連性を判定できる重複排除済み候補のうち無関係候補の割合とする。
+
+3指標はJSONに必須フィールドとして記録し、評価可能な場合は0〜1の数値、Golden/候補母数などの不足で評価不能な場合は`null`と理由を記録する。評価不能を0とみなさず、分母と適格Task数を併記する。
+
+**正常な候補0件と証拠不足を区別する。** 公開Discoveryが正常終了し、独立Golden Relevance Set（正解Targetが1件以上）と検索実行の空候補Evidenceが揃う場合は、候補0件でも評価適格である。該当TaskをRecall@K・MRR・Expected File/Symbol Discovery Rateの分母に含め、Hit数、Reciprocal Rank、発見数を実測`0`とする。空候補のResult Status/Reason、`resultCount=0`、空集合のEvidence Digestを記録する。`NOT_ESTABLISHED`/`INCOMPLETE`はGolden未定義、実行未完了、Trace/Digest欠落など証拠の不成立に限定し、正常な空候補だけを理由に付与しない。一方、Irrelevant Candidate Rateは候補を母数とするため、ラベル付き候補0件の場合は`0/0`を`0`にせず、`null`と`NO_LABELED_CANDIDATES`を記録する。個別指標の`null`のみを理由に、測定済みの他指標を未確立へ格下げしない。
+
+Gate 1に問題があっても診断用のDiscovery測定は可能とするが、安全性を満たさない構成の優位性は認定しない。
+
+### Gate 3 — Agent-loop Efficiency
+
+決定論的な探索Policyを使い、正しいソースへの到達に必要な探索負担を測定する。
+
+- Correct Task Completion Rate
+- Tool Calls to First Correct Source
+- Logical Operations to First Correct Source
+- Context Bytes / Tokens to First Correct Source
+- Elapsed Milliseconds from Exploration Start to First Correct Source
+- Broad File-read Fallback Frequency
+- Wrong-source Adoption Rate
+- Task Failure Rate
+
+主要比較は、正しいソースに到達したタスクを対象とする。
+
+ただし、未到達タスクを集計から除いてNexusを有利に見せないため、全タスクの成功率と失敗率も必ず並記する。
+
+途中で誤ったソースを採用したタスクは、後で正解に到達しても、その危険な経過を消去しない。
+
+**RG-NEW-002 — 初回正解Source到達時間：** 各ArmでFixture初期化・Index準備が終わり探索Policyの`INITIAL`開始直前に単調時計を起動する。各`QualityAdoptionEvent`のSourceがPolicy/Observerから公開された瞬間の経過時間を、開始時点との差で`elapsedMs`（有限・非負のミリ秒）として採用順序とともに記録する。独立Oracleは探索**終了後**に全採用イベントを公開時点Snapshotで採点し、最初に`CORRECT_CURRENT`となった採用イベントの`elapsedMs`を`firstCorrectSourceElapsedMs`として確定する。Oracle採点処理、Fixtureセットアップ、独立Contract Probeは経過時間に含めない。未到達・未実行・Setup不成立・採点不能・時計証拠欠落は実測0とせず`null`と理由を保持する。Gate 3はR/Nそれぞれの全Task到達率と並記して、正解到達タスクのelapsedMs分布（適格数、実測数、min/median/p95/max）およびBoth-success限定の時間比較を出力する。この値は探索Policy全体のAgent-loop Time-to-First-Correct-Sourceであり、#299のRaw Service Latency（Tool単体のウォームアップ・反復測定）とは独立した指標である。ハードウェア・負荷依存性をMetadataとLimitationsに残し、時間の優位だけでGate 1を代替しない。
+
+## 4. Existing Infrastructure Reuse
+
+以下の#299実装を再利用する。
+
+| 既存資産 | #320での用途 |
+|---|---|
+| Fixture Generator | 決定論的なソース生成 |
+| Fixture Manifest | 生成内容・Revisionの固定 |
+| Runtime Assembly | 実際のNexus Runtimeで評価 |
+| Synthetic Embedding Provider | ベクトル経路の動作・決定論性検証 |
+| Retrieval Handler | 実Tool経路へのアクセス |
+| Execution / Report基盤 | 実行記録・環境情報・集計の共通化 |
+| Temporary Runtime Isolation | 評価対象Worktree・Storageの分離 |
+
+#299の既存ManifestやReport Schemaは破壊的に変更しない。
+
+#320専用のQuality Scenario Manifest、Agent-loop Trace、Result Schemaを追加する設計とする。
+
+想定配置：
+
+- `tests/benchmarks/quality/`
+- `tests/fixtures/quality/`
+- `docs/observability/retrieval-quality-benchmarks.md`
+
+この配置は実装時の提案であり、現時点では未作成。
+
+## 5. Independent Oracle
+
+### 原則
+
+Oracleは、Nexusの検索結果やStructured Catalogから正解を作ってはならない。
+
+Fixtureの固定ソース、明示的な期待位置、変更操作、Snapshot情報を根拠として正解を定義する。
+
+### Task Specification
+
+各タスクについて次の情報を保持する。
+
+- `taskId`
+- `fixtureId`
+- `scenarioId`
+- `taskDescription`
+- `initialClues`
+- `worktreeIdentity`
+- `sourceSnapshotDigest`
+- `mutationSchedule`
+- `expectedFiles`
+- `expectedSymbols`
+- `expectedSourceHashes`
+- `expectedLocations`
+- `expectedRefusalConditions`
+- `evaluationEligibility`
+
+`taskDescription`と`initialClues`のみを`PublicQualityTask`として探索Policyに公開する。`worktreeIdentity`はPrivate Manifestの`rootKey`（`single` / `primary` / `linked`）と役割を保持し、Fixture内の所有済みRoot対応表からCanonical `projectRoot`へ一意に解決する。`rootKey`はFixture内参照であり、新しい永続Worktree Identityではない。Runtime Identityは既存のCanonical `projectRoot`である。
+
+Fixture、独立Oracleの`SourceSnapshot`、各Adoption公開時点のSnapshot、Paired Runnerは同じPrivate `rootKey`とCanonical Rootの対応を検証する。Primary/LinkedのSource Hashが偶然一致しても、Root対応を省略して正しいWorktreeとみなさない。対応が不明・不一致なら採点は`INCONCLUSIVE`、必須Coverageは`INCOMPLETE`とする。
+
+期待ファイル・シンボル・Source Hash・位置情報・物理Root・Privateな`worktreeIdentity`などのGolden情報は評価器とFixture管理だけが参照する。Policyには渡さない.
+
+### Source Correctness
+
+正解判定時には、対象WorktreeのCurrent Sourceを独立に検証する。
+
+取得対象がソース本文であれば、期待する宣言範囲とバイト列・Hashを比較する。
+
+LSPの位置情報は、対象ファイルと位置を検証する。位置検証のみをもって、Project-wide Semantic Freshnessが証明されたとは扱わない。
+
+Mutation Scenarioでは、要求開始時点と結果公開時点のSnapshotを区別する。独立OracleはAdoption Sequenceごとにその公開時点で取得されたRoot対応付きSnapshotで採点する。別Rootから取得されたソース、または取得元Rootの証明がないソースを、Hash一致だけでCurrentとして採点しない。
+
+**Source freshness と Task correctness は別契約とする。** `checkSourceFreshness(snapshot, adoption)` は公開時点の同一Root上で取得バイトがSnapshotと一致するかだけを `FRESH_BYTES` / `STALE_BYTES` / `UNKNOWN` で表す。これだけで `CORRECT_CURRENT` を返してはならない。最終的な `gradeTaskSource(task, snapshot, adoption, provenance)` はRunner/Grader専用であり、独立Golden Target (`expectedFiles` / `expectedSymbols` / `expectedLocations` / `expectedSourceHashes`)、`task.worktreeIdentity.rootKey`、実際のSource取得元に対する検証済みProvenance、Adoption公開時点の独立Snapshot、Source範囲・Locationの整合をすべて検証する。Sourceの取得元Rootが未証明・別Root・不明なら、同一Hashや同名Symbolでも `CORRECT_CURRENT` にしない。無関係なCurrent Sourceも不正解とする。Provenanceと物理Canonical RootはRunner/Grader内のみで保持し、Policy、Public Task、公開Reportへ渡さない。Source Snapshotは要求開始時点のものと採用公開時点のものを混同しない。判定不能は `INCONCLUSIVE` としてCoverageを `INCOMPLETE` とする。観測済みの安全なものとして採用された誤Source/False-freshは `SAFETY_FAIL` を優先する。
+
+### Outcome Integrity
+
+- `not_found`と`unavailable`を混同しない。
+- `stale_identity`と通常の検索失敗を混同しない。
+- `ok`だが空のLSP応答とCapability Unavailableを区別する。
+- 部分検証されたLSP応答を完全検証済みと扱わない。
+- 未実行をPASSとして記録しない。
+
+## 6. Deterministic Agent-loop Policy
+
+**採用方式：B — 決定論的探索Policy**
+
+LLMの代わりに、固定された状態遷移と探索ルールによってTool利用を進める。
+
+### Policy States
+
+1. `INITIAL` — タスク・公開ヒントを読み取る
+2. `DISCOVER` — 候補ファイル・シンボルを取得
+3. `RANK` — 公開情報だけで候補を決定論的に並べる
+4. `READ` — 必要なソース・位置情報を取得
+5. `VERIFY` — Policyが利用可能な証拠で対象を確認
+6. `FALLBACK` — 不十分な結果・安全な拒否に対処
+7. `COMPLETE` — 正解候補を採用して終了
+8. `EXHAUSTED` — 予算内に探索できず終了
+
+Policyの`VERIFY`はOracleにアクセスしない。各遷移は公開Clue・Tool応答・公開Sourceだけで判定し、Golden期待値は使わない。
+
+Policyが採用した結果を、実行後に独立したOracleが採点する。Oracleの正誤判定をPolicyへフィードバックして探索を続けることは禁止する。必須Tool経路の契約ProbeはAgent-loopとは別記録とし、その呼出しをAgent-loopの探索コストに混入させない。
+
+### Fixed Clue Grammar / Tool Selection（quality-policy-v1）
+
+`initialClues`は次の明示的な公開形式だけを許可する。形式外、競合する指示、Root外パス、不正な行・文字位置はSetup/Task入力不成立として記録し、Oracleの正解情報で補完しない。
+
+| Clue | 公開情報 | 最初の探索経路 |
+|---|---|---|
+| `id:<identifier>` | 文字列識別子 | R: `rg -F` / N: `grep_search` |
+| `file:<relative-path>` | Root-relative File | R: 範囲限定 `read_file` / N: `get_file_outline`→必要時`get_context` |
+| `symbol:<symbol-id>` | 既に公開されたSymbol ID | N: `get_symbol_source`; Rは同じタスクに併記された`id:`/`file:`を使用 |
+| `concept:<query>` | 概念Query | N: `hybrid_search`; R: Query全体の`rg -F`、空結果なら3文字以上の空白区切り語を長さ降順・辞書順で最大3語ずつ`rg -F` |
+| `position:<path>@<line>:<character>` | Root-relative File、1-based Line、0-based UTF-16 Character | N: 指定のLSP Navigation、R: 同一位置を起点とする限定File Read |
+| `nav:<kind>` | `definition` / `references` / `implementations` | N: `get_definition` / `get_references` / `get_implementations` |
+
+`nav:`は`position:`または`symbol:`と組み合わせる。公開Clueの選択順位は、妥当な`nav+position/nav+symbol`、`symbol`、`file`、`id`、`concept`の順とする。`symbol:`を用いるPaired TaskにはBaselineが使えるテキスト`id:`または`file:`も必ず公開する。非対応ToolをBaseline側で模倣しない。候補は有限な公開Scoreを持つものを先にScore降順、Score欠落候補を後に置き、Root-relative Path昇順、Line/Character昇順、元Rank昇順で安定ソートする。非有限Scoreは不正な応答として扱う。
+
+**VERIFY/採用の境界:** Policyは公開Status、Capability、Source Validation、Root-relative Path、公開Clueと取得したSource/Locationのみを利用する。`verified`でないSource、Root外・不明Root、公開Clueと不整合なSource、`truncated`または`partial`なLSP結果は完全検証済みとして`COMPLETE`にしない。`id:`の一致候補が複数残り、公開File/Scope/Symbol情報でも一意に決まらなければ最初の候補を任意採用せず、残候補の確認後に`EXHAUSTED/AMBIGUOUS_PUBLIC_TARGET`とする。`concept:`は公開順位と公開Source検証に基づく候補採用にとどまり、意味的正解をPolicy自身が判定したとは扱わない。いずれの採用も最終正誤は独立Oracleのみが採点する。
+
+**固定遷移:** `INITIAL→DISCOVER`（Clue検証・経路選択）、`DISCOVER→RANK`（候補あり）、`DISCOVER→FALLBACK`（空・不足・拒否・Retry終了）、`RANK→READ`（上記順位）、`READ→VERIFY`（公開Sourceを取得）、`VERIFY→COMPLETE`（公開証拠のみで採用条件を満たす）、`VERIFY→FALLBACK`（不十分・不整合）、`FALLBACK→DISCOVER/READ`（固定代替経路かつ予算内）、任意の非終端状態から`EXHAUSTED`（予算超過・経路枯渇）。`COMPLETE` / `EXHAUSTED`は終端である。既存のFallbackマッピングと12操作・20候補・64KiB・2回Retry上限を両方式に適用し、実行後のPolicy変更は禁止する。
+### Policy Rules
+
+- 同じタスク分類には同じ探索判断ルールを使う。
+- 候補の並べ替え規則を固定する。
+- Hidden Golden情報を検索クエリに注入しない。
+- 同一操作の無制限再試行を禁止する。
+- `stale` / `stale_identity` / 明示的な拒否では、定義済みの新鮮な`grep`またはファイル読取りへFallbackする。
+- `ok`でも候補が空・不足の場合は、事前に定義された次のDiscovery操作へ進める。`unsupported` / `unavailable` / `excluded` / `not_indexed` / `index_incomplete` / `degraded`では、利用可能な代替経路へ進める。
+- `error` / `timeout` / 不正な応答では、同一操作の再試行を最大2回に制限したうえでFallbackする。各操作・再試行・Fallbackを共通探索予算に計上し、`not_found`と`unavailable`を混同しない。予算を超えたら`EXHAUSTED`とする。
+- 予算超過は失敗結果として記録する。
+- 評価結果を見た後でPolicyを有利に調整しない。
+
+### Exploration Budget
+
+初期値の提案：
+
+| 制約 | 暫定値 |
+|---|---|
+| 最大論理探索操作 | 12回 / Task |
+| 最大候補評価数 | 20件 / Task |
+| 最大コンテキスト消費 | 64 KiB / Task |
+| 同一操作の再試行 | 最大2回 |
+
+これらは成功率の閾値ではなく、探索コストを比較するための共通予算である。
+
+初回Baseline前に設定値を固定し、設定を変更する場合はPolicy Versionを変更する。
+
+### Policy Fairness
+
+NexusにはNexus固有のToolを使用させる。一方、Baselineには利用できないStructured/LSP Toolを模倣させない。
+
+両方式のPolicyに共通して与えるものは、タスク目標、公開ヒント、探索予算、公開可能な実行条件のみである。Oracle、Golden Source Hash、Expected Locations、Expected Refusal Conditions、物理Rootなどの正解・Private情報は独立GraderとFixture管理にのみ渡す。BaselineとNexusは同一Oracleで**終了後**に採点され、PolicyはOracleの内容・採点結果を参照しない。
+
+Toolの機能差は比較の対象とするが、Policyから一方にだけ正解情報を与えない。
+
+## 7. Baseline Design
+
+### Baseline R — ripgrep + file read
+
+- `rg`によるテキスト検索
+- プロジェクト内のファイル読取り
+- 必要範囲の追加読取り
+- 同一Policyによる候補の選択・Fallback
+
+**RG-NEW-001 — `quality-policy-v1`の固定Baseline R実行条件：** `rg`はOwned Fixtureの当該Rootを検証済みCWDとして、毎回 `rg --no-config --no-ignore --hidden --json --sort path --fixed-strings --glob '!.git/**' --glob '!**/.git/**' --glob '!node_modules/**' --glob '!**/node_modules/**' --glob '!.nexus/**' --glob '!**/.nexus/**' -- <public-query> .` の引数配列で起動する（`<public-query>`はPolicyが公開Clueから固定規則で選ぶリテラル1個、Shell補間・追加オプション禁止）。検索対象は**選択したRoot内の通常ファイルのみ**であり、Symlinkは辿らず、上記6つの除外Globを明示する。Ignore設定は読み込まない。`rg --json`の`match`イベントからFile/Lineを取って公開候補を正規化し、`--sort path`の実行時順序を証拠として保持する。Exit 0は正常結果、Exit 1かつ診断エラーなしは正常な候補0件、Exit 2・Signal/Timeout・JSON不正は失敗として区別する。正規化後の共通Policyが最大20候補を評価する。
+
+Baselineの`read_file`は**1操作あたり最大4096 bytes**を、検証済みRoot-relative Fileと明示的なバイトOffsetで読取り、必要な追加Windowは別の論理操作として既存最大12操作に計上する。両Arm共通のSource/Context公開上限は既存**65536 bytes/Task**、Retry上限2回を維持する。読取りのRoot外・Symlink Escape、Window上限超過はFail-Closedし、勝手に範囲を拡大しない。`rg`実行Version/識別子、固定Flags・除外Glob、Root-relative対象`'.'`、読取りWindow4096、および実際の各検索/読取り引数・結果DigestはRunnerで記録し`QualityReport.metadata`と照合する。検索Queryの生文字列はTrace/Reportに含めず、Rootの物理パス・Source本文も公開JSONへ記録しない。
+
+**RG-NEW-001最終限定補正 — `rg`を起動しない正当なBaseline R経路：** 固定`rg`実行テンプレート（Executable Identity/Version、argvのFlags・6除外Glob・Scope `'.'`、Owned Root、4096-byte `read_file` Window上限）は、検索実行の有無と無関係に**Task 3 Adapter初期化時**に検証し、公開可能な正規化済み固定契約の`rgExecutionContractDigest`を導出する。`rg_search`を実際に起動したときだけ、各Spawnの観測argv・CWDに紐付くRoot-relative Scope・Exclusions・Window制約を固定契約に照合し、観測値由来の`baselineExecutionContractDigest`を記録する。複数起動した場合は**全起動**を照合する。正常完了したPolicy/Tool Traceが`rg_search`呼出し0件であると証明する`read_file`専用Pairは、`baselineRgExecution.status='NOT_INVOKED'`、`invocationCount=0`、`baselineExecutionContractDigest=null`と明示し、**その不在だけで`INCOMPLETE`にしない**。`NOT_INVOKED`はTrace欠落から推測してはならない。`rg`を起動したのに起動証拠が欠落・不一致の場合、または呼出し有無自体が確定できない場合は`EVIDENCE_INCOMPLETE`としてFail-Closedし、実行していないことを装って採点しない。固定Recall@10とRG-NEW-002の時間計測契約は変更しない。
+
+**RG-NEW-001 — Adapter→RunnerのSpawn証拠契約：** Task 3の`RipgrepQualityAdapter.snapshotRgExecution()`はPair専用の不変`RgExecutionSnapshot`をTask 5 Runnerへ返す。Adapterは`rg_search`受付回数をTool引数の検証より前に記録し、実Spawnを試みる直前に単調増加のSpawn番号・対応するPolicy Trace Sequence・実際のargvを検証済み公開Queryだけ`<public-query>`へ置換した正規化argv・検証済み`rootKey`/Scope `'.'`・6除外Glob・読取り上限4096・観測値由来Contract Digestを追記専用で保持する。`queryDigest`は検証済みQueryの正確なUTF-8列に`quality-query-v1\0`を前置した値のSHA-256とし、argvの置換前に計算する。`rgExecutionContractDigest`はAdapter初期化時の**固定設定Digest**であり、Spawn観測証拠の代用ではない。RunnerはPair完了後にSnapshotの受付回数・Spawn試行回数・全Spawn証拠を完全なPolicy/Tool Traceと照合し、`NOT_INVOKED`は双方が0件でTrace/Snapshotが完全な場合だけ、`INVOKED_VERIFIED`は全Spawnが固定契約と一致する場合だけ認める。証拠欠落・孤立Spawn・件数/Trace不一致・初期化Digest不一致は`EVIDENCE_INCOMPLETE`とし、Report Builderに理由付きで伝える。公開するのは正規化済みの安全な証拠のみで、Private Root、Executable絶対パス、Query原文、Source本文、秘密情報を含めない。
+
+**RG-NEW-001 — Policy→Adapter Trace Sequence境界：** Task 4 Policyは各Tool呼出し（Retry/Fallbackと失敗した受付も含む）の**前**にArm内で一意な単調増加`QualityTraceEvent.sequence`を採番し、Task 3 Adapterの`invoke(tool, args, signal, context)`に非公開`QualityInvocationContext.traceSequence`として渡す。`context`は公開Tool Args、`NormalizedPublicArgs`、`argsDigest`の対象に含めず、Policyの観測・採点・Oracle情報も混入させない。`normalizedPublicArgs`からすべての生Queryフィールドを除外し、`argsDigest`はQuery除外後の正規化JSONだけを対象にする。Queryを持つTrace eventだけに上記と同じ`queryDigest`を保持し、Queryがなければ`null`とする。Adapterは受付時のSequenceを保持し、実際に`rg` Spawnを試みた場合は同じSequenceを`RgSpawnObservation.policyTraceSequence`に記録する。Task 5 RunnerはSnapshotと完全なPolicy TraceのSequenceを1対1で照合し、各Spawnの`queryDigest`が対応Trace eventのDigestと一致することを検証する。欠落・重複・異Arm・孤立Spawnを`EVIDENCE_INCOMPLETE`とする。独立Contract Probeは自身の`CONTRACT_PROBE` Trace Sequenceを別領域で割当て、Agent-loop探索コストやPolicy Spawn証拠には混ぜない。
+
+### Nexus N — Full Retrieval
+
+利用可能な経路：
+
+- `grep_search`
+- `semantic_search`
+- `hybrid_search`
+- `get_context`
+- `get_file_outline`
+- `get_symbol_source`
+- `get_symbol_context`
+- `get_definition`
+- `get_references`
+- `get_implementations`
+
+`index_status`などの準備・状態確認操作は、Agent-loopの実際の探索中に使用された場合、計測対象に含める。
+
+初期Index作成はセットアップとして別計測し、探索Loopの数値に混入させない。
+
+### Optional Ablation — Nexus Text-only
+
+必要に応じて、NexusのGrep/Context経路のみを使った比較を追加する。
+
+これは、Nexus固有のStructured・Semantic・LSPによる追加価値と、単なるTool包装による差を区別するための補助評価である。
+
+初期完了に必須とはしない。
+
+### Paired Execution
+
+BaselineとNexusは、同じFixture Recipe、同じCanonical Worktree、同じSource Snapshotから開始する。
+
+比較は原則として順次実行し、各実行前にFixture状態と必要なRuntime状態を再現する。
+
+Worktree内のソースを比較途中で意図せず共有・変更しない。
+
+順序効果がある場合は、同じ条件で実行順を反転した試行も記録する。
+
+## 8. Minimal Fixture and Scenario Matrix
+
+Fixtureを3系列とする。
+
+- **F1 — TS/JS Project:** 複数ファイル、宣言、Import、呼出し、同名シンボル、大きな宣言
+- **F2 — Mixed Language:** 部分Parser Coverage、Unsupported Language、Excluded Path
+- **F3 — Git Worktree Pair:** Primary / Linked Worktreeで異なる内容と独立したRuntime状態
+
+初期Scenario：
+
+| ID | Scenario | 主な検証 |
+|---|---|---|
+| Q01 | Clean indexed repository | 正常なCurrent Source取得 |
+| Q02 | Dirty / uncommitted edits | 未反映変更とFreshness |
+| Q03 | Symbol rename | 旧Identityの拒否 |
+| Q04 | Symbol move | 位置・Identity整合 |
+| Q05 | Symbol deletion | Retired Identity |
+| Q06 | File deletion / recreation | 古いSourceの混入防止 |
+| Q07 | Stale semantic/vector data | Discoveryと正確性の分離 |
+| Q08 | Generation changes during retrieval | Race / Fail-Closed |
+| Q09 | Partial / unsupported parsing | Capability・拒否分類 |
+| Q10 | Same names in multiple scopes | Logical Symbol特定 |
+| Q11 | Large file / multi-declaration | Chunkと宣言の区別 |
+| Q12 | Divergent Git worktrees | Runtime / Source Isolation |
+| Q13 | LSP definition/references/implementations | Current-location Correctness |
+| Q14 | LSP unavailable / unsupported | 明示的Capability Failure |
+
+Q13はDefinition、References、Implementationsを個別の評価タスクとして保持する。
+
+各Scenarioは独立して再現可能とし、Mutation前後のSnapshotをManifestに保持する。 **#320のCloseに必要な固定範囲**はCore Q01–Q11・Q14の全必須実測、Primary/Linked各RootのQ12実測、Q13のDefinition/References/ImplementationsそれぞれのStub実行・`CONTRACT_ONLY`採点、およびGate 1 `SAFETY_PASS`とGate 2/3の適格な実測比較である。Q12の依存証拠不足はCloseを自動的にPASSにしない。実LSPサーバー（#354）と実EmbeddingモデルのLive評価はClose必須条件ではない。Semantic Relevanceが立証できない場合は`NOT_ESTABLISHED`とし、Nexusの優位性はClose条件にしない。実測結果・残余リスクのHuman Owner受入をClose前提とする。
+
+### Frozen Required Route / Coverage Matrix（quality-policy-v1）
+
+下表の「必須Nexus経路」はGate 1の独立契約Probeであり、決定論的Agent-loopに不自然なTool呼出しを強制しない。ProbeのTool CallはAgent-loop Costに加算せず、`state='CONTRACT_PROBE'`の別Trace・Coverage Evidenceとして保持する。Baseline側は同じ公開Clueを用いた`rg + file read`、Q13/Q14のNexus専用CapabilityについてはBaselineに仮想LSPを要求しない。
+
+| Scenario | Setup証拠 | 必須Nexus Tool経路 | 独立Oracleによる判定 |
+|---|---|---|---|
+| Q01 | Clean Index固定 | `get_symbol_source` | Current Source一致 |
+| Q02 | Dirty Source固定 | `get_symbol_source` | Dirty変更後のCurrent Source |
+| Q03 | Rename前後のIdentity固定 | `get_symbol_source` | 旧Identity拒否と新Source |
+| Q04 | Move前後のIdentity固定 | `get_symbol_source` | 移動後の位置・Source |
+| Q05 | Deleted/Retired Identity固定 | `get_symbol_source` | 削除済みIdentityの拒否 |
+| Q06 | 削除・同名再作成のSnapshot固定 | `get_symbol_source` | 旧Sourceの非採用 |
+| Q07 | Stale Vector状態のSetup Gate成立 | `hybrid_search` | Discovery候補とCurrent Source採用の分離 |
+| Q08 | Generation競合のSetup Gate成立 | `get_symbol_source` | 要求時・公開時Snapshot比較 |
+| Q09 | Unsupported/Partial Parser固定 | `get_file_outline` | Capability/拒否の正しい分類 |
+| Q10 | 同名Symbolを複数Scopeに配置 | `get_file_outline`, `get_symbol_source` | Logical Symbol区別 |
+| Q11 | Large Declaration / Multi-chunk固定 | `get_symbol_source` | 正しい宣言範囲のSource |
+| Q12 | Primary/Linked・異なる内容と独立Runtimeの証拠 | 各Rootの`get_symbol_source` | Root対応を含むSource一致・混入拒否 |
+| Q13 | Stub/Real LSPのEvidence Class固定 | `get_definition`, `get_references`, `get_implementations`を個別実行 | 全Locationの行・UTF-16文字位置、部分結果の区別 |
+| Q14 | LSP未構成のSetup固定 | `get_definition` | `unavailable/LSP_NOT_CONFIGURED`の明示 |
+
+**Frozen Probe Identity（期待動作単位）:** 必須Coverageの最小単位はTool名ではなく、`(profile, taskId, rootKey, probeId)`で識別する期待動作である。少なくとも次のProbe IDを固定し、Tool・公開引数Digest・独立Oracle期待動作をそれぞれ分離する。`Q01-source`, `Q02-dirty-source`, `Q03-old-identity-refusal`, `Q03-new-identity-source`, `Q04-moved-source`, `Q05-retired-refusal`, `Q06-recreated-source`, `Q07-stale-hybrid`, `Q08-generation-race`, `Q09-parser-capability`, `Q10-outline`, `Q10-scoped-source`, `Q11-declaration-source`, `Q12-primary-source`, `Q12-linked-source`, `Q13-definition`, `Q13-references`, `Q13-implementations`, `Q14-lsp-unavailable`。Q03では同じ`get_symbol_source`でも旧Identity拒否と新Source取得を別実行・別Oracle採点する。Q10はOutlineとSourceの両方、Q13はNavigation種別別の**完全な**Location集合を個別採点する。Q12はRoot別に採点する。各Probeは`probeId`, `tool`, `rootKey`, `publicArgsDigest`, `traceSequence`, `observedStatus`, `reasonCode`, `oracleVerdict`, `setupProofDigest`, `status`を対応付ける。単一のTool名集合・単一集約Verdictは代替証拠にならない。
+
+**Coverage成立条件（4条件のAND）：** ①Setupが証拠で成立、②上記の必須Tool経路を実際に呼出し、③Tool名・Root-relative引数・Status・Reason・Result Digestを保持したTraceで実行を証明、④独立Oracleによる期待動作の採点が完了。④は取得型ではそのRootの公開時点Source/Locationを採点し、**拒否・Capability型（Q05の削除済みIdentity、Q14のLSP未構成など）ではSource/Locationの存在を要求せず、公開Status/Reasonと期待拒否条件を独立採点する**。Q03など取得と拒否の両方を期待する場合は双方を採点する。正しい拒否はCoverageを満たし得るがSource取得成功には数えない。必須項目が1つでも欠ければCoverageは`INCOMPLETE`。観測済み`FALSE_FRESH`・安全なものとして採用した誤Sourceは他のCoverage不足があっても`SAFETY_FAIL`を優先する。未実行・Setup未成立・実際の失敗を混同しない。
+
+Core Q01–Q11・Q14、Worktree拡張Q12、LSP拡張Q13（Stub=`CONTRACT_ONLY`、実Server=別途Owner承認）を別Profileで集計し、必須Scenario集合を実行後に縮小しない。Q12のPrimaryとLinkedはRoot別Taskとして独立採点する。#297実証証拠不足ならQ12を`blocked_dependency`とし、Coreの無関係な評価まで自動停止しない。
+
+**Coverage EvidenceのProducer / Consumer:** Task 5のRunnerに付随する独立Contract Probeが、固定Matrixに沿ってSetup、必須Tool呼出し、`CONTRACT_PROBE` Trace、独立Oracle採点を収集し、`QualityRouteCoverage[]`を生成する。Task 6のQ12/Q13拡張も同じ生成契約を利用する。Task 7のReport Builderは生成済みEvidenceを**明示引数**として受け取るだけで、Policy TraceやPaired成功結果から欠落したCoverageを推測・補完しない。ProbeはAgent-loopと分離し、探索コストに混入させない。 各`QualityRouteCoverage`の`COVERED`判定は、そのScenario/Rootに対応する**全**Required Probe IDの各証拠についてSetup ∧ 実Tool呼出し ∧ Probe Trace ∧ 独立Oracle採点が揃ったときに限る。片方だけのQ03、Q10の片経路のみ、Q13の一部Navigationのみ、Q12の一方Rootのみでは、該当Profileは`INCOMPLETE`とし、全Scopeの`SAFETY_PASS`を許さない。
+
+
+### Race / Stale Scenario
+
+Q07・Q08では、試験開始時点に必要な古いIndex状態やGeneration競合状態が実際に成立していることをSetup Gateで確認する。
+
+期待状態を再現できなかった場合は、PASSにせず`INCONCLUSIVE`または`INCOMPLETE`とする。
+
+競合状態を作るためのProduction Code改変は、初期設計の前提にしない。
+
+### LSP Execution Boundary
+
+LSPはOwner-approved ExecutableとWorktree単位のTrustを必要とする。
+
+評価は既存の安全境界を迂回しない。
+
+Test-only LSP Stubによる契約検証と、実際のPinned Language Serverを使った結果は別のEvidence Classとして記録する。
+
+LSPの有効化・Host設定・実際のプロセス起動は本Designの承認には含まれない。
+
+## 9. Semantic / Hybrid Evaluation Boundary
+
+既存のSynthetic Embeddingは、意味的類似性を保証しない。
+
+そのため、初期評価を次の2つに分ける。
+
+### Deterministic Functional Evaluation
+
+既存Synthetic Providerを使い、検索結果の形式、現在ソース検証、Fallback、IndexのStale状態を検証する。
+
+この結果をSemantic Relevanceの実用的優位性の証拠にはしない。
+
+### Semantic Relevance Evaluation
+
+意味検索の有用性を判断する場合には、固定されたQuery Corpus、Relevance Labels、Model Identity、Embedding条件を使う。
+
+実モデル由来の固定Embedding Snapshotを使用する場合、Provider/Model/Dimensions/Options、生成条件とFingerprintを明記する。
+
+固定Snapshotでの結果と、将来のLive Provider実行結果は分ける。
+
+適切なCorpusが用意できない場合、Semantic Relevanceの優位性は`NOT_ESTABLISHED`として報告する。合成ベクトルによる結果で代用しない。
+
+## 10. Measurement and Trace Contract
+
+各タスクについて、実行経過をMachine-readable Traceに残す。
+
+必須情報（Query公開契約の補足）：`normalizedPublicArgs`は受理済み引数からQueryを除外したroot-relative JSON projectionとし、`argsDigest`はそのQuery-free projectionの正規化JSON digestとする。Trace/Reportに保持できるQuery由来の値は`queryDigest`のみ（Queryなしは`null`）であり、これは検証済みQueryの正確なUTF-8列に`quality-query-v1\0`を前置した値のSHA-256である。Spawnの`queryDigest`は対応するTrace eventのDigestと`policyTraceSequence`で1対1照合する。JSON/Markdownを含むいかなる公開出力にもQuery原文を含めない。
+
+必須情報：
+
+- Benchmark / Fixture / Policy Version
+- Nexus Commit、設定、Tool Adapter
+- Baseline `rg` Version
+- Worktree Identity（PrivateなCanonical Rootは公開Traceに含めない）、Snapshot Digest
+- Task / Scenario ID
+- Tool Name、Query-freeかつRoot-relativeの`normalizedPublicArgs`（実際の公開引数、JSON-compatible）、その引数だけの`argsDigest`、Queryがある場合の`queryDigest`のみ
+- `resultStatus`、`reasonCode: string | null`、`resultCount`、`resultDigest`（呼出し単位）
+- Logical Operation Count
+- Tool Invocation Count
+- Context Bytes
+- Fixed TokenizerによるToken Count
+- Fallback Count
+- Source Adoption Event（`sequence`・単調時計による探索開始からの`elapsedMs`）
+- Oracle Verdict
+- Refusal / Error Reason
+- Completion Status
+
+Tool CallはAPI呼出し単位、Logical Operationはファイル探索・読取り等の実質的な探索操作単位で記録する。`stale_identity`、`unavailable`、`not_found`、`ok`で結果0件の各状態は別のTrace Eventとして保持し、Fallback・Retryで前イベントを上書きしない。Root外パス・正規化不能な公開引数は安全なRoot-relative引数に偽装せず拒否し、実行・Coverage証拠を不成立とする。物理Root、Golden Hash、秘密情報は公開Traceに含めない。
+
+複数の操作を単一のシェル呼出しへまとめるだけでBaselineが有利にならないよう、両方を報告する。
+
+コンテキスト消費は、探索Policyに渡されたTool応答・Source本文を対象とする。内部Index全体のサイズは含めない。
+
+LLMを使用しないため、Token Countは推定コンテキスト負担であり、実際のLLM課金額や推論Token消費とは区別する。
+
+Coverageのデータ経路は`Contract Probe / Runner → readonly QualityRouteCoverage[] → buildQualityReport(expected, pairs, routeCoverage, metadata) → QualityReport.routeCoverage`に固定する。EvidenceにはRoot Key、Setup Proof Digest、実行したToolと独立`CONTRACT_PROBE` Trace、Oracle Verdictを保持する。Report Builderは必須Task/Tool MatrixとEvidenceを照合し、空・欠落・未実行・不整合のCoverageから`SAFETY_PASS`を生成してはならない。既に観測された`FALSE_FRESH`または安全なものとして採用された誤Sourceによる`SAFETY_FAIL`はCoverage不足による`INCOMPLETE`より優先する。Report Builder内でTool実行やOracleの再採点は行わない。
+
+## 11. Reporting and Decision Rules
+
+### Gate Report
+
+Gateごとに以下を独立して報告する。
+
+- Evaluation Status
+- Executed / Missing / Inconclusive Cases
+- Outcome Counts
+- Per-scenario Results
+- Known Limitations
+- Evidence References
+
+**RG-NEW-001/002追加Metadata:** 固定`recallK=10`、`rgSearchScope='.'`、`rgReadMaxBytesPerCall=4096`、固定`rgFlags`/`rgExclusions`、Adapter初期化時に検証した固定契約の`rgExecutionContractDigest`を既存`QualityReportMetadata`の必須値とする。`GateDiscoveryReport.recallK=10`は両ArmでMetadataと一致させる。各Pairの`baselineRgExecution`は`NOT_INVOKED` / `INVOKED_VERIFIED` / `EVIDENCE_INCOMPLETE`を保持する。`NOT_INVOKED`は完全なPolicy/Tool Traceによる検索呼出し0件の証明があるときのみ有効で、実行由来Digestは`null`だが初期化時Metadataは必須のままとする。`INVOKED_VERIFIED`では**各**`rg`起動の観測引数・Scope・Exclusions・読取り上限から導出したDigestをMetadataと照合する。実行済み`rg`の観測証拠欠落・不一致、または呼出し有無の未確定は`EVIDENCE_INCOMPLETE`（成功Report禁止）であり、正常な`read_file`専用Pairを一律に`INCOMPLETE`にしない。到達時間は`QualityAdoptionEvent.elapsedMs`、独立採点後の`QualityArmResult.firstCorrectSourceElapsedMs`、Gate 3の`firstCorrectSource.elapsedMs`と`bothSuccessOnlyCost.elapsedMs`で追跡可能にし、単調時計の測定失敗を0へ置換しない。
+
+**RG-NEW-001 — Reportの証拠消費：** Task 7は`QualityReport.metadata.rgExecutionContractDigest`（初期化設定）と、各`PairedQualityResult.baselineRgExecution`の`initializedContractDigest`、`rgSearchInvocationCount`/`spawnAttemptCount`、`observedSpawns`、`traceComplete`を個別に照合する。`NOT_INVOKED`は全件0かつ空のSpawn記録と完全Traceを必要とし、正常な`read_file`専用Pairを不完全にしない。`INVOKED_VERIFIED`は全Spawnの観測argv/Scope/除外条件/Window制限/RootKey/Trace参照と観測Digestの一致を必要とする。`EVIDENCE_INCOMPLETE`・欠測・不一致は`INCOMPLETE`、既存の観測済み`SAFETY_FAIL`優先規則は維持する。PrivateなパスやSource本文を公開JSONに混入させない。
+
+**RG-NEW-001 — Snapshot/Pair Count名の写像：** Task 3の`RgExecutionSnapshot.rgSearchInvocationCount`はTask 5が照合した後に`PairedQualityResult.baselineRgExecution.invocationCount`へ**同じ整数値**として写像する（確認不能なら`EVIDENCE_INCOMPLETE`の`null`）。`spawnAttemptCount`は別の値であり、受付回数に代用しない。Task 7が参照するのは`baselineRgExecution.invocationCount`と既存の`spawnAttemptCount`/`observedSpawns`/`traceComplete`/`initializedContractDigest`のみで、`PairedQualityResult.rgSearchInvocationCount`等の未定義フィールドを要求しない。
+
+**Reproducibility Metadataの成果物契約（F003-A）：** `buildQualityReport(expected, pairs, routeCoverage, metadata)`はRunnerから受け取った検証済み`QualityReportMetadata`を**必須の`QualityReport.metadata`**として保持する。Suiteの`quality-issue320-v1.json`はProfile別`reports[profile].metadata`まで同じ公開可能な設定・Version・Digestを保存する。既存のTop-level `profile`/`policyVersion`/`rgVersion`等の重複フィールドは`metadata`の対応値と一致することを検証する。公開SchemaからPrivate Physical/Canonical Root、秘密情報、Source本文、絶対Executable Path、秘密を含む設定値を除外する。`rgExecutableIdentity`は公開可能な名称・Version・Digest、`rgFlags`/`rgExclusions`は機密情報を除去した固定・正規化済み引数・Root-relative Patternとし、`nexusConfigDigest`等は秘密の原値ではなくDigestだけを保持する。必須Metadata欠落・不一致やRedaction失敗は成功Reportとして公開せず`INCOMPLETE`/出力失敗とする。
+
+### Agent-loop Comparison
+
+同一タスクのPaired Resultを保持する。
+
+必須集計：
+
+- 両方式とも成功
+- Baselineのみ成功
+- Nexusのみ成功
+- 両方式とも失敗
+- Wrong-sourceを採用したタスク
+- 正しい拒否で停止したタスク
+- 誤拒否で停止したタスク
+
+探索負担は、成功率と併記し、中央値・分布・タスク別差分を提示する。
+
+任意の改善率をPASS条件に設定しない。
+
+**Machine-readable Gate指標の母数契約:** 各Rateは`numerator`, `denominator`, `value`, `reasonCode`を保持する。適格なSource取得タスク全体を母数とするCurrent-source correctness rate、Symbol Identityの正解判定可能タスクを母数とするIdentity resolution success rate、期待Refusalの正拒否率、取得可能なタスクでのFalse refusal率を分ける。False-fresh、Wrong-source、Missing、UnavailableはOutcome件数・適格母数を別々に記録し、相互に合算しない。必須Taskの未実行やOracle不足があるときは評価不能Rateを`null`＋理由とし、0%の実測と混同しない。Gate 3はR/N別に、全TaskのCompletion/Failure・Wrong-source Adoption・Fallback Task Frequency、初回正解到達までのTool Calls/Logical Operations/Context Bytes/Estimated Tokens/**探索開始から初回正解Source採用までのElapsed Milliseconds**を母数付きで記録する。Both-success限定のコスト差と全Task成功率を分離し、未到達をコスト標本から除外しても全Task母数から除外しない。実行メタデータにはNexus Commit/Config Digest、Manifest/Oracle/Fixture/PolicyのVersion・Digest、`rg` Version/Flags/Exclusions、Tokenizer名・Version、Node/Platform、Embedding/LSP Evidence Class、開始終了時刻を記録する。
+
+### Architecture Decision
+
+| 観測結果 | 判断候補 |
+|---|---|
+| Safety Fail | 危険な経路の利用・推奨を停止し、原因を限定調査 |
+| Safety Pass + 実用価値が確認できる | 現行構成を維持・必要に応じて改善 |
+| Safety Pass + 優位性が確認できない | 構成簡素化を検討 |
+| Safety Pass + 負担が明確に悪化 | 対象Retrieval経路の縮小・置換を検討 |
+| Evidence Incomplete | 優位性を主張せず、不足する証拠を特定 |
+
+簡素化はベンチマークによって自動実行しない。
+
+Human Ownerが実用価値、保守コスト、運用負担を比較して判断する。
+
+### Initial #320 Baseline Suite（固定実行入口・成果物）
+
+Task 7は新Frameworkを作らず、Task 5/6の`runQualityPair()`と`collectQualityRouteCoverage()`を全必須Taskに適用する`runQualitySuite()`を提供する。`quality-issue320-v1`の必須TaskはCore `Q01`–`Q11` / `Q14`（12件）、Worktree `Q12-primary` / `Q12-linked`（2件）、Stub `Q13-definition` / `Q13-references` / `Q13-implementations`（3件）、計17件を固定する。各Taskで同一公開Clue・公平なArm順序・隔離したSnapshotを用い、Pair、独立Probe、Oracle Evidenceを明示的にReport Builderへ渡す。`not_run`・`blocked`・`setup_incomplete`は期待集合から除去せず、欠測付きJSON/Markdownに必ず載せる。
+
+最小CLIは既存のVitestを再利用し、独立した`tests/integration/quality/suite.test.ts`を既存Task 7で追加する。Owner承認を得た実行者だけが、例えば`OUT=$(mktemp -d "${TMPDIR:-/tmp}/nexus-quality-320.XXXXXXXX")`で権限0700の所有済み一時領域を確保し、`NEXUS_QUALITY_SUITE=quality-issue320-v1 NEXUS_QUALITY_OUTPUT_ROOT="$OUT" npx vitest run tests/integration/quality/suite.test.ts --coverage.enabled=false`を実行する。Runnerは実行前に出力Rootの所有権・Canonical Path・Symlink不在を検証し、外部Path、既存成果物、開発者Worktreeを変更しない。成果物は`quality-issue320-v1.json`（Per-task/Per-Probe・Gate 1–3・Reproducibility Metadata）、`quality-issue320-v1.md`（Owner向け判定要約）、`SHA256SUMS`（両者のDigest）とする。出力不能・必須Coverage不足は`INCOMPLETE`として記録し、PASSやIssue Closeを自動実行しない。これは**将来の別途承認後に実装・実行する仕様**であり、本DOCUMENT_ONLY作業でこのコマンドは実行しない。
+
+## 12. Reproducibility / Safety
+
+- FixtureとGolden OracleはVersion・Digestで固定する。
+- Source Revision、設定、Tool Versionを記録する。
+- OracleはNexusの観測結果から自動修正しない。
+- 変更時は理由とVersion差分を記録する。
+- 評価実行用WorktreeとStorageを隔離する。
+- Developerの実Worktreeや既存Indexを破壊しない。
+- 外部LLM・Embedding APIを初期評価の必須依存にしない。
+- LSPのTrust・実行承認を自動生成・迂回しない。
+- 未実行、証拠不足、観測された失敗を区別する。
+- 安全性違反を他の高スコアで相殺しない。
+
+## 13. Design Acceptance Criteria
+
+初期Designは、以下が確定した時点で完成とする。
+
+- [ ] 3 Gateの目的・順序・判定方法
+- [ ] False-fresh、正拒否、誤拒否の分類契約
+- [ ] 独立したSource Oracle仕様
+- [ ] 決定論的Agent-loop Policy
+- [ ] Baseline/Nexusの比較条件
+- [ ] 最小FixtureとScenario Matrix
+- [ ] #299基盤の再利用境界
+- [ ] Semantic / LSPの評価上の制約
+- [ ] Machine-readable Trace / Report仕様
+- [ ] Human OwnerのArchitecture Decision規則
+
+Design完成とBenchmark実測完了は別の状態とする。
+
+## 14. Stop Conditions and Authority
+
+本DesignはDOCUMENT_ONLYである。
+
+Human Ownerは、本Markdown文書に限るfeatureブランチ作成・Commit・Pushを明示承認した。この承認は、以下に及ばない。
+
+- 追加のGitHubへの書き込み・Commit・Push
+- Implementation Planの自動開始
+- Production Source変更
+- Fixture / Runner実装
+- Benchmark実行
+- Host環境の変更
+- LSP実行承認
+- 外部サービスへの書き込み
+- 独立レビューの自動開始
+
+DesignについてHuman Ownerの判断が得られた時点で、本Brainstormingは終了可能とする。
+
+未解決事項がある場合も、その危険性・判断への影響を評価し、必要な事項のみOwnerに確認する。
+
+Findingの存在だけを理由に、設計・レビュー工程を反復しない。
+
+---
+
+**Design Status: APPROVED — Human Owner accepted Design R0.1 (DOCUMENT_ONLY; implementation NOT AUTHORIZED)**
+
+**Implementation Authorization: NONE**
+
+**2026-11-21 Owner Decision — limited documentation amendment:** #320 Completion ScopeはCore・Worktree・LSP StubとGate 1–3で固定。PR #357のDesign/Planを再構築せず、Oracle独立性・Policy決定性・公開情報保護・指標とCoverageの信頼性に関わる箇所だけを限定補強する。**今回の承認は上記Markdown 2ファイルの訂正・Commit・Pushのみ**。実装、ベンチマーク実行、PR Merge、Issue Close、独立再レビュー・後続Task自動開始は未承認。
