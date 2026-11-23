@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { spawn } from 'node:child_process';
-import { lstat, readFile, realpath } from 'node:fs/promises';
+import { lstat, open, realpath } from 'node:fs/promises';
 import { isAbsolute, relative, resolve, sep } from 'node:path';
 import type { QualityArm, QualityRootKey } from './contracts.js';
 import type { SourceAdoption } from './oracle.js';
@@ -190,8 +190,8 @@ const clampInt = (value: unknown, fallback: number): number => {
   return Number.isNaN(parsed) ? fallback : parsed;
 };
 
-const buildFixedRgArgv = (publicQuery: string): readonly string[] =>
-  Object.freeze([
+const RG_ARGV_POLICY = Object.freeze({
+  fixedArguments: Object.freeze([
     '--no-config',
     '--no-ignore',
     '--hidden',
@@ -199,57 +199,34 @@ const buildFixedRgArgv = (publicQuery: string): readonly string[] =>
     '--sort',
     'path',
     '--fixed-strings',
-    '--glob',
+  ]),
+  exclusions: Object.freeze([
     '!.git/**',
-    '--glob',
     '!**/.git/**',
-    '--glob',
     '!node_modules/**',
-    '--glob',
     '!**/node_modules/**',
-    '--glob',
     '!.nexus/**',
-    '--glob',
     '!**/.nexus/**',
-    '--',
-    publicQuery,
-    SEARCH_SCOPE,
-  ]);
+  ]),
+});
+
+const FIXED_ARGV_PREFIX = Object.freeze([
+  ...RG_ARGV_POLICY.fixedArguments,
+  ...RG_ARGV_POLICY.exclusions.flatMap((exclusion) => ['--glob', exclusion]),
+]);
+
+const rgExclusions = RG_ARGV_POLICY.exclusions;
+
+const buildFixedRgArgv = (publicQuery: string): readonly string[] =>
+  Object.freeze([...FIXED_ARGV_PREFIX, '--', publicQuery, SEARCH_SCOPE]);
 
 const sanitizedRgArgv = (): readonly string[] =>
   Object.freeze([
-    '--no-config',
-    '--no-ignore',
-    '--hidden',
-    '--json',
-    '--sort',
-    'path',
-    '--fixed-strings',
-    '--glob',
-    '!.git/**',
-    '--glob',
-    '!**/.git/**',
-    '--glob',
-    '!node_modules/**',
-    '--glob',
-    '!**/node_modules/**',
-    '--glob',
-    '!.nexus/**',
-    '--glob',
-    '!**/.nexus/**',
+    ...FIXED_ARGV_PREFIX,
     '--',
     RG_ARG_QUERY_PLACEHOLDER,
     SEARCH_SCOPE,
   ]);
-
-const rgExclusions = Object.freeze([
-  '!.git/**',
-  '!**/.git/**',
-  '!node_modules/**',
-  '!**/node_modules/**',
-  '!.nexus/**',
-  '!**/.nexus/**',
-]);
 
 const contractDigest = (
   argv: readonly string[],
@@ -267,28 +244,6 @@ const contractDigest = (
 
 const queryDigest = (publicQuery: string): string =>
   sha256(utf8Bytes(`quality-query-v1\0${publicQuery}`));
-
-const FIXED_ARGV_PREFIX = Object.freeze([
-  '--no-config',
-  '--no-ignore',
-  '--hidden',
-  '--json',
-  '--sort',
-  'path',
-  '--fixed-strings',
-  '--glob',
-  '!.git/**',
-  '--glob',
-  '!**/.git/**',
-  '--glob',
-  '!node_modules/**',
-  '--glob',
-  '!**/node_modules/**',
-  '--glob',
-  '!.nexus/**',
-  '--glob',
-  '!**/.nexus/**',
-]);
 
 const redactArgvQuery = (argv: readonly string[], publicQuery: string): readonly string[] => {
   if (argv.length < 3) return Object.freeze([...argv]);
@@ -365,55 +320,50 @@ const spawnRg = async (
   const stderrChunks: string[] = [];
   child.stdout.setEncoding('utf8');
   child.stderr.setEncoding('utf8');
-  child.stdout.on('data', (chunk: string) => stdoutChunks.push(chunk));
-  child.stderr.on('data', (chunk: string) => stderrChunks.push(chunk));
+  const onStdoutData = (chunk: string): void => {
+    stdoutChunks.push(chunk);
+  };
+  const onStderrData = (chunk: string): void => {
+    stderrChunks.push(chunk);
+  };
+  child.stdout.on('data', onStdoutData);
+  child.stderr.on('data', onStderrData);
 
   return new Promise((resolve) => {
     let settled = false;
 
-    child.on('error', (error: Error) => {
-      if (!settled) {
-        settled = true;
-        resolve({
-          stdout: stdoutChunks.join(''),
-          stderr: stderrChunks.join(''),
-          exitCode: null,
-          signalName: null,
-          launched: true,
-          error: error.message,
-        });
-      }
-    });
+    const settle = (result: {
+      readonly exitCode: number | null;
+      readonly signalName: string | null;
+      readonly error?: string;
+    }): void => {
+      if (settled) return;
+      settled = true;
+      const stdout = stdoutChunks.join('');
+      const stderr = stderrChunks.join('');
+      signal.removeEventListener('abort', onAbort);
+      child.removeListener('error', onError);
+      child.removeListener('close', onClose);
+      child.stdout.removeListener('data', onStdoutData);
+      child.stderr.removeListener('data', onStderrData);
+      stdoutChunks.length = 0;
+      stderrChunks.length = 0;
+      resolve({ stdout, stderr, launched: true, ...result });
+    };
 
-    child.on('close', (code: number | null, signalName: string | null) => {
-      if (!settled) {
-        settled = true;
-        resolve({
-          stdout: stdoutChunks.join(''),
-          stderr: stderrChunks.join(''),
-          exitCode: code,
-          signalName,
-          launched: true,
-        });
-      }
-    });
+    const onError = (error: Error): void => {
+      settle({ exitCode: null, signalName: null, error: error.message });
+    };
+    const onClose = (code: number | null, signalName: string | null): void => {
+      settle({ exitCode: code, signalName });
+    };
+    const onAbort = (): void => {
+      settle({ exitCode: null, signalName: null });
+    };
 
-    signal.addEventListener(
-      'abort',
-      () => {
-        if (!settled) {
-          settled = true;
-          resolve({
-            stdout: stdoutChunks.join(''),
-            stderr: stderrChunks.join(''),
-            exitCode: null,
-            signalName: null,
-            launched: true,
-          });
-        }
-      },
-      { once: true },
-    );
+    child.on('error', onError);
+    child.on('close', onClose);
+    signal.addEventListener('abort', onAbort, { once: true });
   });
 };
 
@@ -421,16 +371,29 @@ type RgParseResult =
   | { readonly kind: 'ok'; readonly candidates: CandidateSeed[] }
   | { readonly kind: 'error'; readonly reason: string };
 
-const byteOffsetToUtf16 = (text: string, byteOffset: number): number => {
+const byteOffsetToUtf16 = (text: string, byteOffset: number): number | undefined => {
+  if (!Number.isInteger(byteOffset) || byteOffset < 0) return undefined;
   let utf16Index = 0;
   let byteIndex = 0;
   for (const codePoint of text) {
-    if (byteIndex >= byteOffset) break;
-    const codePointBytes = new TextEncoder().encode(codePoint).length;
+    if (byteIndex === byteOffset) return utf16Index;
+    const codePointBytes = Buffer.byteLength(codePoint, 'utf8');
+    if (byteIndex + codePointBytes > byteOffset) return undefined;
     byteIndex += codePointBytes;
     utf16Index += codePoint.length;
   }
-  return utf16Index;
+  return byteIndex === byteOffset ? utf16Index : undefined;
+};
+
+const decodeRgBytes = (encoded: string): string | null => {
+  if (!/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/u.test(encoded)) {
+    return null;
+  }
+  try {
+    return new TextDecoder('utf-8', { fatal: true }).decode(Buffer.from(encoded, 'base64'));
+  } catch {
+    return null;
+  }
 };
 
 const parseRgMatches = (stdout: string): RgParseResult => {
@@ -455,7 +418,7 @@ const parseRgMatches = (stdout: string): RgParseResult => {
     }
     const typedData = data as {
       path?: { text?: string } | string;
-      lines?: { text?: string } | string;
+      lines?: { text?: string; bytes?: string } | string;
       line_number?: number;
       submatches?: Array<{ match?: { text?: string } | string; start?: number; end?: number }>;
     };
@@ -466,12 +429,22 @@ const parseRgMatches = (stdout: string): RgParseResult => {
         : typeof typedData.path === 'object' && typedData.path !== null
           ? typedData.path.text
           : undefined;
-    const lineText =
-      typeof typedData.lines === 'string'
-        ? typedData.lines
-        : typeof typedData.lines === 'object' && typedData.lines !== null
-          ? typedData.lines.text ?? ''
-          : '';
+    let lineText: string;
+    if (typeof typedData.lines === 'string') {
+      lineText = typedData.lines;
+    } else if (typeof typedData.lines === 'object' && typedData.lines !== null) {
+      if (typeof typedData.lines.text === 'string') {
+        lineText = typedData.lines.text;
+      } else if (typeof typedData.lines.bytes === 'string') {
+        const decoded = decodeRgBytes(typedData.lines.bytes);
+        if (decoded === null) return { kind: 'error', reason: 'RG_INVALID_UTF8' };
+        lineText = decoded;
+      } else {
+        lineText = '';
+      }
+    } else {
+      lineText = '';
+    }
     const lineNumber =
       typeof typedData.line_number === 'number' && Number.isFinite(typedData.line_number)
         ? Math.trunc(typedData.line_number)
@@ -513,6 +486,9 @@ const parseRgMatches = (stdout: string): RgParseResult => {
           : startByte;
       const startChar = byteOffsetToUtf16(lineText, startByte);
       const endChar = byteOffsetToUtf16(lineText, endByte);
+      if (startChar === undefined || endChar === undefined || endChar < startChar) {
+        return { kind: 'error', reason: 'RG_INVALID_BYTE_OFFSET' };
+      }
       candidates.push({
         filePath,
         line: lineNumber,
@@ -876,13 +852,86 @@ export const createRipgrepAdapter = (
       );
     }
 
-    const startByte = Math.max(0, clampInt(args.startByte, 0));
+    let startByte = Math.max(0, clampInt(args.startByte, 0));
     const rawEndByte = typeof args.endByte === 'number' && Number.isFinite(args.endByte) ? Math.trunc(args.endByte) : null;
 
-    let fileBuffer: Buffer;
+    let fileHandle: Awaited<ReturnType<typeof open>> | undefined;
     try {
-      fileBuffer = await readFile(realResolved);
-    } catch (error) {
+      fileHandle = await open(realResolved, 'r');
+      const fileLength = (await fileHandle.stat()).size;
+      startByte = Math.min(startByte, fileLength);
+      const requestedEndByte =
+        rawEndByte === null ? Math.min(startByte + READ_MAX_BYTES, fileLength) : rawEndByte;
+      const endByte = Math.max(startByte, Math.min(requestedEndByte, fileLength));
+
+      if (endByte - startByte > READ_MAX_BYTES) {
+        return makeObservation(
+          'error',
+          [],
+          sha256(''),
+          Object.freeze({ filePath: toForwardSlashes(relativePath), startByte, endByte: requestedEndByte }),
+          [],
+          'READ_WINDOW_EXCEEDS_LIMIT',
+        );
+      }
+
+      if (signal.aborted) {
+        return makeObservation(
+          isTimeoutSignal(signal) ? 'timeout' : 'cancelled',
+          [],
+          sha256(''),
+          Object.freeze({ filePath: toForwardSlashes(relativePath), startByte, endByte }),
+          [],
+          isTimeoutSignal(signal) ? 'TIMEOUT' : 'REQUEST_CANCELLED',
+        );
+      }
+
+      const buffer = Buffer.alloc(endByte - startByte);
+      const { bytesRead } = await fileHandle.read(buffer, 0, buffer.length, startByte);
+      if (signal.aborted) {
+        const timedOut = isTimeoutSignal(signal);
+        return makeObservation(
+          timedOut ? 'timeout' : 'cancelled',
+          [],
+          sha256(''),
+          Object.freeze({ filePath: toForwardSlashes(relativePath), startByte, endByte }),
+          [],
+          timedOut ? 'TIMEOUT' : 'REQUEST_CANCELLED',
+        );
+      }
+
+      const slice = buffer.subarray(0, bytesRead);
+      const actualEndByte = startByte + bytesRead;
+      const content = slice.toString('utf8');
+      const normalizedArgs = Object.freeze({
+        filePath: toForwardSlashes(relativePath),
+        startByte,
+        endByte: actualEndByte,
+      });
+
+      const candidates: CandidateSeed[] = [
+        {
+          filePath: toForwardSlashes(relativePath),
+          preview: content,
+        },
+      ];
+
+      const adoption: SourceAdoption = {
+        filePath: toForwardSlashes(relativePath),
+        startByte,
+        endByte: actualEndByte,
+        content,
+        sourceValidation: 'partial',
+      };
+
+      return makeObservation(
+        'ok',
+        rankCandidates(candidates),
+        sha256(slice),
+        normalizedArgs,
+        [Object.freeze(adoption)],
+      );
+    } catch {
       return makeObservation(
         'error',
         [],
@@ -891,64 +940,9 @@ export const createRipgrepAdapter = (
         [],
         'READ_FAILED',
       );
+    } finally {
+      await fileHandle?.close().catch(() => undefined);
     }
-
-    const fileLength = fileBuffer.length;
-    const requestedEndByte = rawEndByte === null ? Math.min(startByte + READ_MAX_BYTES, fileLength) : rawEndByte;
-    const endByte = Math.max(startByte, Math.min(requestedEndByte, fileLength));
-
-    if (endByte - startByte > READ_MAX_BYTES) {
-      return makeObservation(
-        'error',
-        [],
-        sha256(''),
-        Object.freeze({ filePath: toForwardSlashes(relativePath), startByte, endByte: requestedEndByte }),
-        [],
-        'READ_WINDOW_EXCEEDS_LIMIT',
-      );
-    }
-
-    if (signal.aborted) {
-      return makeObservation(
-        isTimeoutSignal(signal) ? 'timeout' : 'cancelled',
-        [],
-        sha256(''),
-        Object.freeze({ filePath: toForwardSlashes(relativePath), startByte, endByte }),
-        [],
-        isTimeoutSignal(signal) ? 'TIMEOUT' : 'REQUEST_CANCELLED',
-      );
-    }
-
-    const slice = fileBuffer.subarray(startByte, endByte);
-    const content = slice.toString('utf8');
-    const normalizedArgs = Object.freeze({
-      filePath: toForwardSlashes(relativePath),
-      startByte,
-      endByte,
-    });
-
-    const candidates: CandidateSeed[] = [
-      {
-        filePath: toForwardSlashes(relativePath),
-        preview: content,
-      },
-    ];
-
-    const adoption: SourceAdoption = {
-      filePath: toForwardSlashes(relativePath),
-      startByte,
-      endByte,
-      content,
-      sourceValidation: 'partial',
-    };
-
-    return makeObservation(
-      'ok',
-      rankCandidates(candidates),
-      sha256(slice),
-      normalizedArgs,
-      [Object.freeze(adoption)],
-    );
   };
 
   const invoke = async (
@@ -961,8 +955,21 @@ export const createRipgrepAdapter = (
       rgSearchInvocationCount += 1;
     }
 
-    await init();
     const policyTraceSequence = validateTraceSequence(context);
+
+    if (signal.aborted) {
+      const timedOut = isTimeoutSignal(signal);
+      return makeObservation(
+        timedOut ? 'timeout' : 'cancelled',
+        [],
+        sha256(''),
+        Object.freeze({}),
+        [],
+        timedOut ? (tool === 'rg_search' ? 'RG_TIMEOUT' : 'TIMEOUT') : 'REQUEST_CANCELLED',
+      );
+    }
+
+    await init();
 
     if (tool === 'rg_search') {
       return invokeRgSearch(args, signal, policyTraceSequence);
@@ -1450,6 +1457,16 @@ export const createNexusAdapter = (handlers: ToolHandlers): QualityAdapter => {
     try {
       rawResult = await handler(args, { signal });
     } catch (error) {
+      if (signal.aborted) {
+        return makeObservation(
+          isTimeoutSignal(signal) ? 'timeout' : 'cancelled',
+          [],
+          sha256(''),
+          normalizedArgsForTool(tool, args),
+          [],
+          isTimeoutSignal(signal) ? 'TIMEOUT' : 'REQUEST_CANCELLED',
+        );
+      }
       const reason = error instanceof Error ? error.message : String(error);
       return makeObservation(
         'error',

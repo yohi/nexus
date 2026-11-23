@@ -1,5 +1,7 @@
 import { createHash } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
+import fsPromises from 'node:fs/promises';
+import { syncBuiltinESMExports } from 'node:module';
 import {
   access,
   chmod,
@@ -10,17 +12,15 @@ import {
   writeFile,
 } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join, relative, resolve, sep } from 'node:path';
-import { describe, expect, it } from 'vitest';
+import { join, resolve } from 'node:path';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   createNexusAdapter,
   createRipgrepAdapter,
-  type PublicCandidate,
   type QualityInvocationContext,
   type QualityTool,
-  type RipgrepQualityAdapter,
 } from '../../../benchmarks/quality/adapters.js';
-import { buildToolHandlers } from '../../../../src/server/tools/tool-support.js';
+import type { buildToolHandlers } from '../../../../src/server/tools/tool-support.js';
 import type { NexusToolCallResult, ToolHandler } from '../../../../src/server/tools/types.js';
 
 type ToolHandlers = ReturnType<typeof buildToolHandlers>;
@@ -37,6 +37,8 @@ const sha256 = (bytes: Uint8Array): string => createHash('sha256').update(bytes)
 
 const queryDigest = (publicQuery: string): string =>
   sha256(new TextEncoder().encode(`quality-query-v1\0${publicQuery}`));
+
+const temporaryRoots = new Set<string>();
 
 const fixedRgArgv = (query: string): readonly string[] =>
   Object.freeze([
@@ -64,7 +66,11 @@ const fixedRgArgv = (query: string): readonly string[] =>
     '.',
   ]);
 
-const makeRoot = async (): Promise<string> => mkdtemp(join(tmpdir(), 'nexus-quality-'));
+const makeRoot = async (prefix = 'nexus-quality-'): Promise<string> => {
+  const root = await mkdtemp(join(tmpdir(), prefix));
+  temporaryRoots.add(root);
+  return root;
+};
 
 const createBlockingRg = async (root: string): Promise<{ executable: string; startedMarker: string }> => {
   const executable = join(root, 'blocking-rg');
@@ -99,8 +105,15 @@ const waitForFile = async (filePath: string): Promise<void> => {
 };
 
 const cleanup = async (root: string): Promise<void> => {
+  temporaryRoots.delete(root);
   await rm(root, { recursive: true, force: true });
 };
+
+afterEach(async () => {
+  vi.restoreAllMocks();
+  syncBuiltinESMExports();
+  await Promise.all([...temporaryRoots].map(cleanup));
+});
 
 const writeFiles = async (root: string, files: Record<string, string>): Promise<void> => {
   for (const [relativePath, content] of Object.entries(files)) {
@@ -114,8 +127,8 @@ const ctx = (traceSequence: number): QualityInvocationContext => ({ traceSequenc
 
 const handler =
   (result: NexusToolCallResult): ToolHandler =>
-  async () =>
-    result;
+  () =>
+    Promise.resolve(result);
 
 const handlersFor = (overrides: Partial<ToolHandlers> = {}): ToolHandlers => {
   const base: Record<string, ToolHandler> = {
@@ -140,11 +153,24 @@ describe('createRipgrepAdapter', () => {
     const root = await makeRoot();
     await writeFiles(root, { 'a.ts': 'hello world\n' });
     const adapter = createRipgrepAdapter(root, rgExecutable);
-    await expect(adapter.invoke('rg_search', { query: 'hello' }, new AbortController().signal, ctx(1))).resolves.toMatchObject({
-      status: 'ok',
-      results: expect.arrayContaining([expect.objectContaining({ filePath: expect.stringMatching(/a\.ts$/) })]),
-    });
+    const observation = await adapter.invoke('rg_search', { query: 'hello' }, new AbortController().signal, ctx(1));
+    expect(observation.status).toBe('ok');
+    expect(observation.results.some((result) => result.filePath.endsWith('a.ts'))).toBe(true);
     await cleanup(root);
+  });
+
+  it('validates the trace sequence and classifies an aborted first call before lazy initialization', async () => {
+    const adapter = createRipgrepAdapter('/does/not/exist', rgExecutable);
+    const controller = new AbortController();
+    controller.abort(new DOMException('timeout', 'TimeoutError'));
+
+    await expect(adapter.invoke('rg_search', { query: 'x' }, controller.signal, ctx(0))).rejects.toThrow(
+      'quality_trace_sequence_invalid_or_duplicate',
+    );
+    await expect(adapter.invoke('rg_search', { query: 'x' }, controller.signal, ctx(1))).resolves.toMatchObject({
+      status: 'timeout',
+      reasonCode: 'RG_TIMEOUT',
+    });
   });
 
   it('rejects an invalid root directory at initialization', async () => {
@@ -327,6 +353,68 @@ describe('createRipgrepAdapter', () => {
     }
   });
 
+  it('removes its abort listener when ripgrep closes normally', async () => {
+    const root = await makeRoot();
+    await writeFiles(root, { 'a.ts': 'needle\n' });
+    const controller = new AbortController();
+    const activeAbortListeners = new Set<unknown>();
+    const originalAdd = controller.signal.addEventListener.bind(controller.signal);
+    const originalRemove = controller.signal.removeEventListener.bind(controller.signal);
+    controller.signal.addEventListener = ((type: string, listener: unknown, options: unknown) => {
+      if (type === 'abort' && listener !== null) activeAbortListeners.add(listener);
+      Reflect.apply(originalAdd, controller.signal, [type, listener, options]);
+    }) as typeof controller.signal.addEventListener;
+    controller.signal.removeEventListener = ((type: string, listener: unknown, options: unknown) => {
+      if (type === 'abort' && listener !== null) activeAbortListeners.delete(listener);
+      Reflect.apply(originalRemove, controller.signal, [type, listener, options]);
+    }) as typeof controller.signal.removeEventListener;
+
+    const observation = await createRipgrepAdapter(root, rgExecutable).invoke(
+      'rg_search',
+      { query: 'needle' },
+      controller.signal,
+      ctx(1),
+    );
+
+    expect(observation.status).toBe('ok');
+    expect(activeAbortListeners.size).toBe(0);
+  });
+
+  it('removes its abort listener when ripgrep emits an error', async () => {
+    const root = await makeRoot();
+    const executable = join(root, 'vanishing-rg');
+    await writeFile(
+      executable,
+      '#!/bin/sh\nif [ "$1" = "--version" ]; then rm "$0"; echo "ripgrep 0.0.0"; exit 0; fi\n',
+      'utf8',
+    );
+    await chmod(executable, 0o755);
+    const controller = new AbortController();
+    const addedAbortListeners: unknown[] = [];
+    const removedAbortListeners = new Set<unknown>();
+    const originalAdd = controller.signal.addEventListener.bind(controller.signal);
+    const originalRemove = controller.signal.removeEventListener.bind(controller.signal);
+    controller.signal.addEventListener = ((type: string, listener: unknown, options: unknown) => {
+      if (type === 'abort' && listener !== null) addedAbortListeners.push(listener);
+      Reflect.apply(originalAdd, controller.signal, [type, listener, options]);
+    }) as typeof controller.signal.addEventListener;
+    controller.signal.removeEventListener = ((type: string, listener: unknown, options: unknown) => {
+      if (type === 'abort' && listener !== null) removedAbortListeners.add(listener);
+      Reflect.apply(originalRemove, controller.signal, [type, listener, options]);
+    }) as typeof controller.signal.removeEventListener;
+
+    const observation = await createRipgrepAdapter(root, executable).invoke(
+      'rg_search',
+      { query: 'needle' },
+      controller.signal,
+      ctx(1),
+    );
+
+    expect(observation.status).toBe('error');
+    expect(addedAbortListeners.at(-1)).toBeDefined();
+    expect(removedAbortListeners.has(addedAbortListeners.at(-1))).toBe(true);
+  });
+
   it('returns an incomplete immutable zero-call snapshot without poisoning later evidence', async () => {
     const root = await makeRoot();
     const adapter = createRipgrepAdapter(root, rgExecutable);
@@ -409,10 +497,138 @@ describe('createRipgrepAdapter', () => {
     await cleanup(root);
   });
 
+  it.each([
+    { requestedStart: 5, expectedStart: 3 },
+    { requestedStart: 3, expectedStart: 3 },
+  ])('clamps read_file startByte $requestedStart to EOF', async ({ requestedStart, expectedStart }) => {
+    const root = await makeRoot();
+    await writeFiles(root, { 'small.bin': 'abc' });
+    const adapter = createRipgrepAdapter(root, rgExecutable);
+
+    const observation = await adapter.invoke(
+      'read_file',
+      { filePath: 'small.bin', startByte: requestedStart },
+      new AbortController().signal,
+      ctx(1),
+    );
+
+    expect(observation.status).toBe('ok');
+    expect(observation.normalizedPublicArgs).toEqual({
+      filePath: 'small.bin',
+      startByte: expectedStart,
+      endByte: 3,
+    });
+    expect(observation.sourceAdoptions[0]).toMatchObject({
+      startByte: expectedStart,
+      endByte: 3,
+      content: '',
+    });
+  });
+
+  it('does not expose bytes when cancelled during a bounded read', async () => {
+    const root = await makeRoot();
+    const filePath = join(root, 'cancelled.bin');
+    await writeFile(filePath, 'content', 'utf8');
+    const controller = new AbortController();
+    let handleClosed = false;
+    const originalOpen = fsPromises.open.bind(fsPromises);
+    vi.spyOn(fsPromises, 'open').mockImplementation(async (...args) => {
+      const handle = await originalOpen(...args);
+      if (args[0] === filePath) {
+        const originalRead = handle.read.bind(handle);
+        Object.defineProperty(handle, 'read', {
+          configurable: true,
+          value: async (buffer: Buffer, offset: number, length: number, position: number) => {
+            controller.abort(new DOMException('cancelled', 'AbortError'));
+            return originalRead(buffer, offset, length, position);
+          },
+        });
+        const originalClose = handle.close.bind(handle);
+        Object.defineProperty(handle, 'close', {
+          configurable: true,
+          value: async () => {
+            handleClosed = true;
+            return originalClose();
+          },
+        });
+      }
+      return handle;
+    });
+    syncBuiltinESMExports();
+    const adapter = createRipgrepAdapter(root, rgExecutable);
+
+    const observation = await adapter.invoke(
+      'read_file',
+      { filePath: 'cancelled.bin' },
+      controller.signal,
+      ctx(1),
+    );
+
+    expect(observation).toMatchObject({
+      status: 'cancelled',
+      reasonCode: 'REQUEST_CANCELLED',
+      exposedBytes: 0,
+      sourceAdoptions: [],
+    });
+    expect(handleClosed).toBe(true);
+  });
+
+  it('reads at most 4096 bytes and reports only bytes actually read', async () => {
+    const root = await makeRoot();
+    const filePath = join(root, 'large.bin');
+    await writeFile(filePath, 'x'.repeat(5000), 'utf8');
+    const readLengths: number[] = [];
+    const originalOpen = fsPromises.open.bind(fsPromises);
+    const openSpy = vi.spyOn(fsPromises, 'open').mockImplementation(async (...args) => {
+      const handle = await originalOpen(...args);
+      if (args[0] === filePath) {
+        const originalStat = handle.stat.bind(handle);
+        Object.defineProperty(handle, 'stat', {
+          configurable: true,
+          value: async () => {
+            const stats = await originalStat();
+            await fsPromises.truncate(filePath, 3);
+            return stats;
+          },
+        });
+        const originalRead = handle.read.bind(handle);
+        Object.defineProperty(handle, 'read', {
+          configurable: true,
+          value: (buffer: Buffer, offset: number, length: number, position: number) => {
+            readLengths.push(length);
+            return originalRead(buffer, offset, length, position);
+          },
+        });
+      }
+      return handle;
+    });
+    const readFileSpy = vi.spyOn(fsPromises, 'readFile');
+    syncBuiltinESMExports();
+    const adapter = createRipgrepAdapter(root, rgExecutable);
+
+    const observation = await adapter.invoke(
+      'read_file',
+      { filePath: 'large.bin', startByte: 0, endByte: 4096 },
+      new AbortController().signal,
+      ctx(1),
+    );
+
+    expect(observation.status).toBe('ok');
+    expect(readFileSpy).not.toHaveBeenCalled();
+    expect(openSpy).toHaveBeenCalledWith(filePath, 'r');
+    expect(readLengths).toEqual([4096]);
+    expect(observation.normalizedPublicArgs).toEqual({
+      filePath: 'large.bin',
+      startByte: 0,
+      endByte: 3,
+    });
+    expect(observation.sourceAdoptions[0]).toMatchObject({ content: 'xxx', endByte: 3 });
+  });
+
   it('rejects path traversal and symlink escape', async () => {
     const root = await makeRoot();
     await writeFiles(root, { 'src/inside.ts': 'inside\n' });
-    const outside = await mkdtemp(join(tmpdir(), 'nexus-quality-outside-'));
+    const outside = await makeRoot('nexus-quality-outside-');
     await writeFiles(outside, { 'secret.txt': 'secret\n' });
     const linkName = join(root, 'escape');
     await symlink(outside, linkName);
@@ -543,6 +759,70 @@ describe('createRipgrepAdapter', () => {
     const hit = observation.results[0]!;
     expect(hit.character).toBe(2); // α + space = 2 UTF-16 code units before 'needle'
     await cleanup(root);
+  });
+
+  it('converts UTF-8 ripgrep lines.bytes offsets to UTF-16 coordinates', async () => {
+    const root = await makeRoot();
+    const line = 'α needle\n';
+    const matchEvent = {
+      type: 'match',
+      data: {
+        path: { text: 'a.ts' },
+        lines: { bytes: Buffer.from(line).toString('base64') },
+        line_number: 1,
+        submatches: [{ match: { text: 'needle' }, start: 3, end: 9 }],
+      },
+    };
+    const executable = join(root, 'bytes-rg');
+    await writeFile(
+      executable,
+      `#!/usr/bin/env node\nif (process.argv[2] === '--version') { process.stdout.write('ripgrep 0.0.0\\n'); process.exit(0); }\nprocess.stdout.write(${JSON.stringify(`${JSON.stringify(matchEvent)}\n`)});\n`,
+      'utf8',
+    );
+    await chmod(executable, 0o755);
+    const observation = await createRipgrepAdapter(root, executable).invoke(
+      'rg_search',
+      { query: 'needle' },
+      new AbortController().signal,
+      ctx(1),
+    );
+
+    expect(observation.status).toBe('ok');
+    expect(observation.results[0]).toMatchObject({
+      character: 2,
+      endCharacter: 8,
+      preview: 'needle',
+    });
+  });
+
+  it('rejects ripgrep lines.bytes that cannot be represented as UTF-8 coordinates', async () => {
+    const root = await makeRoot();
+    const matchEvent = {
+      type: 'match',
+      data: {
+        path: { text: 'a.ts' },
+        lines: { bytes: Buffer.from([0xff, 0x61]).toString('base64') },
+        line_number: 1,
+        submatches: [{ match: { text: 'a' }, start: 1, end: 2 }],
+      },
+    };
+    const executable = join(root, 'invalid-bytes-rg');
+    await writeFile(
+      executable,
+      `#!/usr/bin/env node\nif (process.argv[2] === '--version') { process.stdout.write('ripgrep 0.0.0\\n'); process.exit(0); }\nprocess.stdout.write(${JSON.stringify(`${JSON.stringify(matchEvent)}\n`)});\n`,
+      'utf8',
+    );
+    await chmod(executable, 0o755);
+    const observation = await createRipgrepAdapter(root, executable).invoke(
+      'rg_search',
+      { query: 'a' },
+      new AbortController().signal,
+      ctx(1),
+    );
+
+    expect(observation.status).toBe('error');
+    expect(observation.results).toHaveLength(0);
+    expect(observation.reasonCode).toBe('RG_INVALID_UTF8');
   });
 });
 
@@ -817,6 +1097,35 @@ describe('createNexusAdapter', () => {
     const observation = await adapter.invoke('index_status', {}, controller.signal, ctx(1));
     expect(observation.status).toBe('timeout');
     expect(observation.reasonCode).toBe('TIMEOUT');
+  });
+
+  it.each([
+    {
+      label: 'timeout',
+      reason: new DOMException('timeout', 'TimeoutError'),
+      status: 'timeout',
+      reasonCode: 'TIMEOUT',
+    },
+    {
+      label: 'cancellation',
+      reason: new DOMException('cancelled', 'AbortError'),
+      status: 'cancelled',
+      reasonCode: 'REQUEST_CANCELLED',
+    },
+  ])('classifies a handler rejection after $label as an interruption', async ({ reason, status, reasonCode }) => {
+    const adapter = createNexusAdapter(
+      handlersFor({
+        index_status: async (_args, extras) =>
+          new Promise<NexusToolCallResult>((_resolve, reject) => {
+            extras?.signal?.addEventListener('abort', () => reject(reason), { once: true });
+          }),
+      }),
+    );
+    const controller = new AbortController();
+    const invocation = adapter.invoke('index_status', {}, controller.signal, ctx(1));
+    controller.abort(reason);
+
+    await expect(invocation).resolves.toMatchObject({ status, reasonCode });
   });
 
   it('rejects hybrid_search grepPattern in normalizedPublicArgs', async () => {
