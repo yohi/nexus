@@ -216,7 +216,7 @@ const buildFixedRgArgv = (publicQuery: string): readonly string[] =>
     SEARCH_SCOPE,
   ]);
 
-const sanitizedRgArgv = (publicQuery: string): readonly string[] =>
+const sanitizedRgArgv = (): readonly string[] =>
   Object.freeze([
     '--no-config',
     '--no-ignore',
@@ -600,7 +600,7 @@ export const createRipgrepAdapter = (
     throw new Error('quality_rg_executable_missing');
   }
 
-  const rootKey: QualityRootKey = isValidRootKey(options?.rootKey) ? options.rootKey : 'single';
+  const rootKey: QualityRootKey = isValidRootKey(options?.rootKey) ? options.rootKey : DEFAULT_ROOT_KEY;
 
   let canonicalRoot: string | undefined;
   let rgExecutableIdentity: string | undefined;
@@ -614,10 +614,6 @@ export const createRipgrepAdapter = (
       throw new Error('quality_rg_root_not_directory');
     }
     const resolved = await realpath(root);
-    const rootCheck = relative(resolved, resolved);
-    if (rootCheck !== '') {
-      throw new Error('quality_rg_root_unresolved');
-    }
     canonicalRoot = resolved;
 
     const versionResult = await spawnRg(
@@ -632,7 +628,7 @@ export const createRipgrepAdapter = (
     rgExecutableIdentity = sha256(utf8Bytes(`${rgExecutable}\0${versionResult.stdout.trim()}`));
 
     initializedContractDigest = contractDigest(
-      sanitizedRgArgv(RG_ARG_QUERY_PLACEHOLDER),
+      sanitizedRgArgv(),
       rootKey,
     );
   };

@@ -92,7 +92,7 @@ Expose the digest through a getter that reads `initializedContractDigest`. Keep 
 Run: `npx vitest run tests/unit/benchmarks/quality/adapters.test.ts`
 Expected: PASS, including existing invalid-trace fail-closed and zero-call snapshot assertions.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 Commit the adapter and test changes as `fix: quality adapterの実行証跡を正しく公開`.
 
@@ -108,15 +108,15 @@ Commit the adapter and test changes as `fix: quality adapterの実行証跡を�
 - Consumes: the existing default root key, normalized ripgrep argv, and canonicalized root.
 - Produces: unchanged behavior with no self-relative root check or unused declarations/parameters.
 
-- [ ] **Step 1: Confirm the existing behavior baseline**
+- [x] **Step 1: Confirm the existing behavior baseline**
 
 Run the focused unit test before the cleanup. This task is a behavior-preserving deletion/unused-symbol cleanup, so no new runtime test can distinguish it from the existing implementation.
 
-- [ ] **Step 2: Implement the behavior-preserving cleanup**
+- [x] **Step 2: Implement the behavior-preserving cleanup**
 
 Use `DEFAULT_ROOT_KEY` for the root-key fallback, remove the tautological `relative(resolved, resolved)` guard, and remove the unused `publicQuery` parameter from `sanitizedRgArgv`.
 
-- [ ] **Step 3: Run focused tests and static checks**
+- [x] **Step 3: Run focused tests and static checks**
 
 Run: `npx vitest run tests/unit/benchmarks/quality/adapters.test.ts && npx tsc --noEmit`
 Expected: PASS; existing tests preserve default root and argv behavior.
