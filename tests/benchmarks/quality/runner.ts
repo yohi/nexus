@@ -33,6 +33,7 @@ import {
   type RipgrepQualityAdapter,
   type QualityTool as AdapterQualityTool,
   type PublicJsonValue,
+  type PublicSourceLocation,
 } from './adapters.js';
 import { publicTask, type QualityCaseManifest, type QualityArm, type QualityRootKey } from './contracts.js';
 import { captureOracleSnapshot, type SourceSnapshot, type SourceProvenance } from './oracle.js';
@@ -441,6 +442,13 @@ function requiredProbesForScenario(
         { probeId: `${task.taskId}-outline`, taskId: task.taskId, rootKey: task.worktreeIdentity.rootKey, tool: 'get_file_outline', expectedAction: 'discovery_current' },
         { probeId: `${task.taskId}-scoped-source`, taskId: task.taskId, rootKey: task.worktreeIdentity.rootKey, tool: 'get_context', expectedAction: 'current_source' },
       ];
+    case 'Q13@quality-v1':
+      return [
+        ...base,
+        { probeId: `${task.taskId}-definition`, taskId: task.taskId, rootKey: task.worktreeIdentity.rootKey, tool: 'get_definition', expectedAction: 'navigation_locations' },
+        { probeId: `${task.taskId}-references`, taskId: task.taskId, rootKey: task.worktreeIdentity.rootKey, tool: 'get_references', expectedAction: 'navigation_locations' },
+        { probeId: `${task.taskId}-implementations`, taskId: task.taskId, rootKey: task.worktreeIdentity.rootKey, tool: 'get_implementations', expectedAction: 'navigation_locations' },
+      ];
     case 'Q14@quality-v1':
       return [
         ...base,
@@ -522,7 +530,7 @@ function isProbeCovered(probe: QualityRequiredProbe, observation: QualityObserva
 export async function collectQualityRouteCoverage(
   task: QualityCaseManifest,
   fixture: OwnedQualityFixture,
-  options: Readonly<{ signal: AbortSignal }>,
+  options: Readonly<{ signal: AbortSignal; adapter?: QualityAdapter }>,
 ): Promise<readonly QualityRouteCoverage[]> {
   const rootKey = task.worktreeIdentity.rootKey;
   const root = fixture.roots[rootKey];
@@ -542,7 +550,7 @@ export async function collectQualityRouteCoverage(
     ]);
   }
 
-  const adapter = await createNexusAdapterForRoot(root);
+  const adapter = options.adapter ?? (await createNexusAdapterForRoot(root));
   const requiredProbes = requiredProbesForScenario(task);
   const requiredProbeIds = Object.freeze(requiredProbes.map((p) => p.probeId));
   const probes: QualityProbeEvidence[] = [];
@@ -621,4 +629,77 @@ export async function collectQualityRouteCoverage(
       reasonCode: allCovered ? undefined : 'MISSING_REQUIRED_PROBE',
     }),
   ]);
+}
+
+export type CapabilityEvidenceClass =
+  | 'FUNCTIONAL_ONLY'
+  | 'RELEVANCE_ELIGIBLE'
+  | 'CONTRACT_ONLY'
+  | 'REAL_LSP_ELIGIBLE'
+  | 'NOT_RUN';
+
+export function classifyCapabilityEvidence(value: Readonly<{
+  route: 'synthetic' | 'pinned_embedding' | 'lsp_stub' | 'lsp_real';
+  executed: boolean;
+  ownerApproved: boolean;
+}>): CapabilityEvidenceClass {
+  if (!value.executed) return 'NOT_RUN';
+  switch (value.route) {
+    case 'synthetic':
+      return 'FUNCTIONAL_ONLY';
+    case 'pinned_embedding':
+      return value.ownerApproved ? 'RELEVANCE_ELIGIBLE' : 'FUNCTIONAL_ONLY';
+    case 'lsp_stub':
+      return 'CONTRACT_ONLY';
+    case 'lsp_real':
+      return value.ownerApproved ? 'REAL_LSP_ELIGIBLE' : 'NOT_RUN';
+    default:
+      return 'NOT_RUN';
+  }
+}
+
+export interface LspStubLocations {
+  readonly definition: readonly PublicSourceLocation[];
+  readonly references: readonly PublicSourceLocation[];
+  readonly implementations: readonly PublicSourceLocation[];
+}
+
+export function createLspStubAdapter(
+  locations: LspStubLocations,
+  options: Readonly<{ truncated?: boolean }> = {},
+): QualityAdapter {
+  return {
+    arm: 'N',
+    async invoke(tool): Promise<QualityObservation> {
+      const kind: 'definition' | 'references' | 'implementations' | null = (tool === 'get_definition' || tool === 'get_references' || tool === 'get_implementations')
+        ? tool.slice(4) as 'definition' | 'references' | 'implementations'
+        : null;
+      if (kind === null) {
+        return {
+          status: 'unavailable',
+          results: Object.freeze([]),
+          exposedBytes: 0,
+          sourceAdoptions: Object.freeze([]),
+          rawDigest: digest({ reason: 'lsp_stub_tool_unavailable', tool }),
+          normalizedPublicArgs: Object.freeze({}),
+          reasonCode: 'lsp_stub_tool_unavailable',
+        };
+      }
+      const selected = locations[kind];
+      return {
+        status: 'ok',
+        results: Object.freeze([]),
+        exposedBytes: 0,
+        sourceAdoptions: Object.freeze([]),
+        rawDigest: digest({ kind, locations: selected, truncated: options.truncated ?? false }),
+        normalizedPublicArgs: Object.freeze({}),
+        navigation: Object.freeze({
+          locations: Object.freeze([...selected]),
+          truncated: options.truncated ?? false,
+          sourceValidation: 'verified',
+          capability: 'supported',
+        }),
+      };
+    },
+  };
 }
