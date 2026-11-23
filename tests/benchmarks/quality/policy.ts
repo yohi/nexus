@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { getEncoding } from 'js-tiktoken';
-import type { QualityAdapter, QualityInvocationContext, NormalizedPublicArgs, PublicSourceLocation, QualityObservation, QualityObservationStatus, QualityTool } from './adapters.js';
+import type { QualityAdapter, NormalizedPublicArgs, PublicSourceLocation, QualityObservation, QualityObservationStatus, QualityTool } from './adapters.js';
 import type { PublicQualityTask, QualityArm, QualityBudgets } from './contracts.js';
 import type { SourceAdoption } from './oracle.js';
 
@@ -70,7 +70,18 @@ const sha256 = (content: string | Uint8Array): string =>
 
 const utf8Bytes = (text: string): Uint8Array => new TextEncoder().encode(text);
 
-const canonicalJson = (value: unknown): string => JSON.stringify(value, Object.keys(value as object).sort());
+export const canonicalJson = (value: NormalizedPublicArgs[string]): string => {
+  if (value === null || typeof value !== 'object') {
+    return JSON.stringify(value) ?? 'null';
+  }
+  if (Array.isArray(value)) {
+    return `[${value.map(canonicalJson).join(',')}]`;
+  }
+
+  const entries = Object.entries(value as Readonly<Record<string, NormalizedPublicArgs[string]>>)
+    .sort(([left], [right]) => left.localeCompare(right, 'en'));
+  return `{${entries.map(([key, nestedValue]) => `${JSON.stringify(key)}:${canonicalJson(nestedValue)}`).join(',')}}`;
+};
 
 const countTokens = (text: string): number => {
   try {

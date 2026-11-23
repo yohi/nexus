@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  canonicalJson,
   qualityArmOrder,
   runQualityPolicy,
   type QualityPolicyObserver,
@@ -70,6 +71,18 @@ const fakeAdapter = (
 
 const makeTask = (clues: readonly string[]): PublicQualityTask =>
   Object.freeze({ taskDescription: 'test', initialClues: Object.freeze([...clues]) });
+
+describe('canonicalJson', () => {
+  it('preserves nested values and sorts every object by locale-aware key order', () => {
+    expect(canonicalJson({
+      z: 1,
+      A: 2,
+      a: 3,
+      nested: { zebra: false, Alpha: true },
+      list: [{ value: 1, id: 'first' }],
+    })).toBe('{"a":3,"A":2,"list":[{"id":"first","value":1}],"nested":{"Alpha":true,"zebra":false},"z":1}');
+  });
+});
 
 describe('qualityArmOrder', () => {
   it('orders even indices as R then N', () => {
