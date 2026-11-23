@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import {
+  access,
   chmod,
   mkdir,
   mkdtemp,
@@ -64,6 +65,38 @@ const fixedRgArgv = (query: string): readonly string[] =>
   ]);
 
 const makeRoot = async (): Promise<string> => mkdtemp(join(tmpdir(), 'nexus-quality-'));
+
+const createBlockingRg = async (root: string): Promise<{ executable: string; startedMarker: string }> => {
+  const executable = join(root, 'blocking-rg');
+  const startedMarker = join(root, 'search-started');
+  await writeFile(
+    executable,
+    [
+      '#!/usr/bin/env node',
+      "const fs = require('node:fs');",
+      "if (process.argv[2] === '--version') { process.stdout.write('ripgrep 0.0.0\\n'); process.exit(0); }",
+      `fs.writeFileSync(${JSON.stringify(startedMarker)}, 'started');`,
+      'setInterval(() => {}, 1000);',
+      '',
+    ].join('\n'),
+    'utf8',
+  );
+  await chmod(executable, 0o755);
+  return { executable, startedMarker };
+};
+
+const waitForFile = async (filePath: string): Promise<void> => {
+  const deadline = Date.now() + 5_000;
+  while (Date.now() < deadline) {
+    try {
+      await access(filePath);
+      return;
+    } catch {
+      await new Promise((resolveDelay) => setTimeout(resolveDelay, 10));
+    }
+  }
+  throw new Error(`Timed out waiting for ${filePath}`);
+};
 
 const cleanup = async (root: string): Promise<void> => {
   await rm(root, { recursive: true, force: true });
@@ -269,6 +302,27 @@ describe('createRipgrepAdapter', () => {
     expect(snapshot.spawns).toHaveLength(0);
     expect(snapshot.spawnAttemptCount).toBe(0);
     await cleanup(root);
+  });
+
+  it.each([
+    { label: 'timeout', timeout: true, status: 'timeout', reasonCode: 'RG_TIMEOUT' },
+    { label: 'cancellation', timeout: false, status: 'cancelled', reasonCode: 'REQUEST_CANCELLED' },
+  ])('classifies an in-flight $label signal correctly', async ({ timeout, status, reasonCode }) => {
+    const root = await makeRoot();
+    const { executable, startedMarker } = await createBlockingRg(root);
+    const adapter = createRipgrepAdapter(root, executable);
+    const controller = new AbortController();
+    const invocation = adapter.invoke('rg_search', { query: 'slow' }, controller.signal, ctx(1));
+
+    try {
+      await waitForFile(startedMarker);
+      controller.abort(timeout ? new DOMException('timeout', 'TimeoutError') : undefined);
+      await expect(invocation).resolves.toMatchObject({ status, reasonCode });
+    } finally {
+      if (!controller.signal.aborted) controller.abort();
+      await invocation.catch(() => undefined);
+      await cleanup(root);
+    }
   });
 
   it('produces an immutable, evidence-complete zero-call snapshot', async () => {

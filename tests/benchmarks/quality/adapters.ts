@@ -738,6 +738,18 @@ export const createRipgrepAdapter = (
     recordSpawn(policyTraceSequence, [...argv], publicQuery);
     rawDigestInput.push(result.stdout);
 
+    if (signal.aborted) {
+      const timedOut = isTimeoutSignal(signal);
+      return makeObservation(
+        timedOut ? 'timeout' : 'cancelled',
+        [],
+        sha256(rawDigestInput.join('\n')),
+        Object.freeze({}),
+        [],
+        timedOut ? 'RG_TIMEOUT' : 'REQUEST_CANCELLED',
+      );
+    }
+
     if ('error' in result && result.error !== undefined) {
       return makeObservation(
         'error',
