@@ -987,18 +987,16 @@ export const createRipgrepAdapter = (
   };
 
   const snapshotRgExecution = (): RgExecutionSnapshot => {
-    if (spawnAttemptCount !== spawns.length) {
-      evidenceComplete = false;
-    }
-    if (initializedContractDigest === undefined) {
-      evidenceComplete = false;
-    }
+    const snapshotEvidenceComplete =
+      evidenceComplete &&
+      spawnAttemptCount === spawns.length &&
+      initializedContractDigest !== undefined;
     return Object.freeze({
       initializedContractDigest: initializedContractDigest ?? sha256('uninitialized'),
       rgSearchInvocationCount,
       spawnAttemptCount,
       spawns: Object.freeze([...spawns]),
-      evidenceComplete,
+      evidenceComplete: snapshotEvidenceComplete,
     });
   };
 
@@ -1006,7 +1004,9 @@ export const createRipgrepAdapter = (
     arm: 'R' as QualityArm,
     invoke,
     snapshotRgExecution,
-    rgExecutionContractDigest: initializedContractDigest ?? sha256('uninitialized'),
+    get rgExecutionContractDigest() {
+      return initializedContractDigest ?? sha256('uninitialized');
+    },
   });
 };
 

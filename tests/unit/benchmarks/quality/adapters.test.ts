@@ -171,6 +171,8 @@ describe('createRipgrepAdapter', () => {
     await adapter.invoke('rg_search', { query: 'needle' }, new AbortController().signal, ctx(1));
     const snapshot = adapter.snapshotRgExecution();
 
+    expect(adapter.rgExecutionContractDigest).not.toBe(sha256(new TextEncoder().encode('uninitialized')));
+    expect(adapter.rgExecutionContractDigest).toBe(snapshot.initializedContractDigest);
     expect(snapshot.rgSearchInvocationCount).toBe(1);
     expect(snapshot.spawnAttemptCount).toBe(1);
     expect(snapshot.spawns).toHaveLength(1);
@@ -325,7 +327,7 @@ describe('createRipgrepAdapter', () => {
     }
   });
 
-  it('produces an immutable, evidence-complete zero-call snapshot', async () => {
+  it('returns an incomplete immutable zero-call snapshot without poisoning later evidence', async () => {
     const root = await makeRoot();
     const adapter = createRipgrepAdapter(root, rgExecutable);
     const snapshot = adapter.snapshotRgExecution();
@@ -335,6 +337,8 @@ describe('createRipgrepAdapter', () => {
     expect(snapshot.evidenceComplete).toBe(false);
     expect(Object.isFrozen(snapshot)).toBe(true);
     expect(Object.isFrozen(snapshot.spawns)).toBe(true);
+    await adapter.invoke('rg_search', { query: 'after-initial-snapshot' }, new AbortController().signal, ctx(1));
+    expect(adapter.snapshotRgExecution().evidenceComplete).toBe(true);
     await cleanup(root);
   });
 

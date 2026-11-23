@@ -58,7 +58,7 @@ After recording a launched spawn, check whether the supplied signal is aborted a
 Run: `npx vitest run tests/unit/benchmarks/quality/adapters.test.ts`
 Expected: PASS, including the pre-aborted signal regression test.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 Commit the adapter and test changes as `fix: ripgrep実行中の中断を正しく分類`.
 
@@ -74,20 +74,20 @@ Commit the adapter and test changes as `fix: ripgrep実行中の中断を正し�
 - Consumes: the lazy `init()` state and `RgExecutionSnapshot`.
 - Produces: a live `rgExecutionContractDigest` property and snapshots whose completeness reflects current evidence without mutating persistent evidence state.
 
-- [ ] **Step 1: Add failing regression tests**
+- [x] **Step 1: Add failing regression tests**
 
 Assert that `rgExecutionContractDigest` matches `snapshotRgExecution().initializedContractDigest` after the first successful invoke. Extend the zero-call snapshot test to assert it is incomplete before initialization but complete after a successful invoke.
 
-- [ ] **Step 2: Run the focused tests and confirm failure**
+- [x] **Step 2: Run the focused tests and confirm failure**
 
 Run: `npx vitest run tests/unit/benchmarks/quality/adapters.test.ts`
 Expected: the digest remains the uninitialized value and the post-invoke snapshot remains incomplete.
 
-- [ ] **Step 3: Publish and derive current evidence state**
+- [x] **Step 3: Publish and derive current evidence state**
 
 Expose the digest through a getter that reads `initializedContractDigest`. Keep snapshot-time initialization/count checks local to the returned snapshot instead of latching them into `evidenceComplete`.
 
-- [ ] **Step 4: Run the focused tests**
+- [x] **Step 4: Run the focused tests**
 
 Run: `npx vitest run tests/unit/benchmarks/quality/adapters.test.ts`
 Expected: PASS, including existing invalid-trace fail-closed and zero-call snapshot assertions.
