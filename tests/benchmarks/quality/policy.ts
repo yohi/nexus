@@ -238,14 +238,6 @@ const parseClues = (clues: readonly string[]): { readonly valid: true; readonly 
   return { valid: true, value: parsed };
 };
 
-const nextSequence = ((): () => number => {
-  let counter = 0;
-  return (): number => {
-    counter += 1;
-    return counter;
-  };
-})();
-
 interface RunningCost extends QualityCumulativeCost {
   retries: number;
 }
@@ -271,8 +263,6 @@ const addObservationCost = (cost: RunningCost, observation: QualityObservation):
   retries: cost.retries,
 });
 
-const cloneCost = (cost: RunningCost): RunningCost => ({ ...cost });
-
 const freezeCost = (cost: RunningCost): QualityCumulativeCost =>
   Object.freeze({
     logicalOperations: cost.logicalOperations,
@@ -296,14 +286,6 @@ const isIdentifierInPreview = (identifier: string, preview?: string): boolean =>
   if (!preview) return false;
   const pattern = new RegExp(`\\b${identifier.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`);
   return pattern.test(preview);
-};
-
-const candidateMatchesClue = (candidate: Candidate, clues: ParsedClues): boolean => {
-  if (clues.id !== undefined) return isIdentifierInPreview(clues.id, candidate.preview);
-  if (clues.file !== undefined) return candidate.filePath === clues.file;
-  if (clues.symbol !== undefined) return candidate.symbolId === clues.symbol;
-  if (clues.concept !== undefined) return (candidate.preview?.length ?? 0) > 0;
-  return false;
 };
 
 const isVerifiedAdoption = (adoption: SourceAdoption, clues: ParsedClues): boolean => {
@@ -478,20 +460,6 @@ export async function runQualityPolicy(
         capability: observation.navigation.capability,
       }),
     );
-  };
-
-  const tryAdopt = (candidateObservation: QualityObservation, currentClues: ParsedClues): SourceAdoption | null => {
-    const candidate = candidateObservation.results[0];
-    if (!candidate) return null;
-    const adoptionAttempt: SourceAdoption = {
-      filePath: candidate.filePath,
-      startByte: 0,
-      endByte: candidateObservation.exposedBytes,
-      content: candidate.preview ?? '',
-      sourceValidation: candidateObservation.sourceAdoptions[0]?.sourceValidation ?? 'verified',
-    };
-    if (!isVerifiedAdoption(adoptionAttempt, currentClues)) return null;
-    return adoptionAttempt;
   };
 
   const publishAdoption = async (source: SourceAdoption): Promise<void> => {
