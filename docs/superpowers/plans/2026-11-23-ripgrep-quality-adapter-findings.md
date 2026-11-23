@@ -121,12 +121,14 @@ Use `DEFAULT_ROOT_KEY` for the root-key fallback, remove the tautological `relat
 Run: `npx vitest run tests/unit/benchmarks/quality/adapters.test.ts && npx tsc --noEmit`
 Expected: PASS; existing tests preserve default root and argv behavior.
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 Commit the adapter cleanup as `refactor: ripgrepアダプターの未使用処理を整理`.
 
 ### Final verification
 
-- [ ] Run the complete project test suite with `npm test`.
-- [ ] Run `npm run lint` and inspect the final diff and working-tree state.
+- [x] Run the complete project test suite.
+- [x] Run `npm run lint` and inspect the final diff and working-tree state.
 - [ ] Push the committed changes to the existing branch's configured upstream without force-pushing.
+
+Verification note: Two default-parallelism `npm test` attempts each had one performance/storage fixture failure; each failing test passed when run alone. The full equivalent suite passed with Vitest capped at two workers (237 test files, 2,408 tests; 6 skipped), including the dashboard CLI tests and both plugin shell-test scripts.
