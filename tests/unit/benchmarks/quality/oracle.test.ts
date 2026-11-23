@@ -93,6 +93,33 @@ describe('quality source oracle', () => {
       adoption, { observedSourceRootKey: null, canonicalSourceRoot: null, sourceRootProofDigest: null })).toBe('INCONCLUSIVE');
   });
 
+  it('keeps missing snapshot data and invalid adoption ranges unknown', () => {
+    const root = '/owned/project';
+    const source = 'export function answer(): number { return 42; }';
+    const snapshot = makeSnapshot(root, { 'src/answer.ts': source });
+    const adoption: SourceAdoption = { filePath: 'src/answer.ts', startByte: 0,
+      endByte: new TextEncoder().encode(source).length, content: source, sourceValidation: 'verified' };
+
+    expect(checkSourceFreshness({ ...snapshot, sourceBytes: {} }, adoption)).toBe('UNKNOWN');
+    expect(checkSourceFreshness({ ...snapshot, sourceHashes: {} }, adoption)).toBe('UNKNOWN');
+    expect(checkSourceFreshness(snapshot, { ...adoption, startByte: -1 })).toBe('UNKNOWN');
+    expect(checkSourceFreshness(snapshot, { ...adoption, endByte: adoption.startByte })).toBe('UNKNOWN');
+  });
+
+  it('classifies a valid adoption extending beyond a shrunken file as false fresh', () => {
+    const root = '/owned/project';
+    const oldSource = 'export function answer(): number { return 42; }';
+    const currentSource = 'export function answer(): number {}';
+    const oldEndByte = new TextEncoder().encode(oldSource).length;
+    const task = taskWithGolden('src/answer.ts', oldSource, 'answer', 0, oldEndByte);
+    const snapshot = makeSnapshot(root, { 'src/answer.ts': currentSource });
+    const adoption: SourceAdoption = { filePath: 'src/answer.ts', startByte: 0, endByte: oldEndByte,
+      content: oldSource, sourceValidation: 'verified' };
+
+    expect(checkSourceFreshness(snapshot, adoption)).toBe('STALE_BYTES');
+    expect(gradeTaskSource(task, snapshot, adoption, proof(root))).toBe('FALSE_FRESH');
+  });
+
   it('uses UTF-16 code units for locations while retaining UTF-8 byte offsets', () => {
     // Given
     const root = '/owned/project';

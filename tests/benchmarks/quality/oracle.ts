@@ -79,8 +79,10 @@ export function checkSourceFreshness(snapshot: SourceSnapshot, adoption: SourceA
   if (path === null) return 'UNKNOWN';
   const bytes = snapshot.sourceBytes[path];
   const digest = snapshot.sourceHashes[path];
-  if (bytes === undefined || digest === undefined || adoption.startByte < 0 || adoption.endByte <= adoption.startByte || adoption.endByte > bytes.length) return 'UNKNOWN';
+  if (bytes === undefined || digest === undefined || !Number.isSafeInteger(adoption.startByte) ||
+      !Number.isSafeInteger(adoption.endByte) || adoption.startByte < 0 || adoption.endByte <= adoption.startByte) return 'UNKNOWN';
   if (sha256(bytes) !== digest) return 'UNKNOWN';
+  if (adoption.endByte > bytes.length) return 'STALE_BYTES';
   const adoptedBytes = new TextEncoder().encode(adoption.content);
   const sourceSlice = bytes.slice(adoption.startByte, adoption.endByte);
   if (sha256(adoptedBytes) !== sha256(sourceSlice)) return 'STALE_BYTES';

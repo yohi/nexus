@@ -132,6 +132,12 @@ describe('owned quality fixture integration', () => {
       expect(recreationPublication.sourceHashes[recreationPath]).not.toBe(recreationRequest.sourceHashes[recreationPath]);
       const symbol = recreation.expectedSymbols[0];
       if (symbol === undefined) throw new Error('recreation Golden missing');
+      const currentBytes = recreationPublication.sourceBytes[recreationPath];
+      if (currentBytes === undefined) throw new Error('publication source missing');
+      const currentAdoption: SourceAdoption = { filePath: recreationPath, startByte: symbol.startByte, endByte: symbol.endByte,
+        content: new TextDecoder().decode(currentBytes.slice(symbol.startByte, symbol.endByte)), sourceValidation: 'verified' };
+      expect(gradeTaskSource(recreation, recreationPublication, currentAdoption,
+        proofFor(recreationPublication.canonicalProjectRoot, 'single'))).toBe('CORRECT_CURRENT');
       const oldBytes = recreationRequest.sourceBytes[recreationPath];
       if (oldBytes === undefined) throw new Error('request source missing');
       const oldAdoption: SourceAdoption = { filePath: recreationPath, startByte: symbol.startByte, endByte: symbol.endByte,

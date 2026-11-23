@@ -160,16 +160,21 @@ export async function createQualityFixture(scenarioIds: readonly string[], signa
     if (shape === undefined) throw new QualitySetupError('scenario_unknown');
     const target = shape.files.find(({ path }) => path === shape.targetPath);
     if (target === undefined) throw new Error('quality_fixture_target_missing');
-    const range = declarationRange(shape.targetPath, target.source, shape.targetName);
-    const sourceBytes = new TextEncoder().encode(target.source);
-    const sourceSlice = sourceBytes.slice(range.startByte, range.endByte);
-    const start = new TextDecoder().decode(sourceBytes.slice(0, range.startByte)).length;
-    const location = utf16Location(target.source, start);
     const rootSnapshot = sourceSnapshotByRoot.get(task.worktreeIdentity.rootKey);
     if (rootSnapshot === undefined) throw new Error('quality_fixture_root_missing');
+    let publicationSource = target.source;
     for (const mutation of shape.mutations) {
-      if (mutation.operation === 'recreate') mutationText.set(`${task.taskId}\0${mutation.target}`, target.source.replace('42', '43'));
+      if (mutation.operation === 'recreate') {
+        const source = target.source.replace('42', '43');
+        mutationText.set(`${task.taskId}\0${mutation.target}`, source);
+        if (mutation.target === shape.targetPath) publicationSource = source;
+      }
     }
+    const publicationBytes = new TextEncoder().encode(publicationSource);
+    const range = declarationRange(shape.targetPath, publicationSource, shape.targetName);
+    const start = new TextDecoder().decode(publicationBytes.slice(0, range.startByte)).length;
+    const location = utf16Location(publicationSource, start);
+    const sourceSlice = publicationBytes.slice(range.startByte, range.endByte);
     return {
       ...task,
       mutationSchedule: shape.mutations,
