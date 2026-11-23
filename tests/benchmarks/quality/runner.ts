@@ -50,6 +50,8 @@ import {
   type RequiredProbeAction,
 } from './scoring.js';
 
+import { SymbolRetrievalService } from '../../../src/structured/retrieval-service.js';
+import type { IStructuredCatalog } from '../../../src/storage/interfaces/structured-catalog.js';
 export type {
   QualityPublicationEvidence,
   GradedQualityAdoption,
@@ -239,19 +241,88 @@ async function createNexusAdapterForRoot(root: string): Promise<QualityAdapter> 
     return readFile(resolved, 'utf8');
   };
 
+  const structuredCatalog: IStructuredCatalog = {
+    bootstrapStructuredSchema: async () => {},
+    getStructuredIndexState: async () => ({
+      schemaVersion: 1,
+      rebuildState: 'idle',
+      rebuildEpoch: 1,
+      lastErrorCode: null,
+      counts: { totalFiles: 0, totalSymbols: 0, exactFiles: 0, degradedFiles: 0, pendingFiles: 0 },
+      activeGenerations: new Map(),
+      reindexRequired: true,
+    }),
+    setStructuredRebuildState: async () => {},
+    incrementRebuildEpoch: async () => 1,
+    stageGeneration: async () => ({ activated: false }),
+    activateGeneration: async () => ({ activated: false }),
+    clearPendingGeneration: async () => ({ cleared: false }),
+    retireFile: async () => {},
+    resolveFile: async (filePath: string) => ({ kind: 'missing', filePath }),
+    getActiveGenerationMap: async () => new Map(),
+    resolveSymbol: async () => ({ kind: 'missing', symbolId: '' }),
+    getPendingSymbol: async () => ({ kind: 'missing', symbolId: '' }),
+    getTombstone: async () => null,
+    getStructuredCounts: async () => ({ totalFiles: 0, totalSymbols: 0, exactFiles: 0, degradedFiles: 0, pendingFiles: 0 }),
+    getImportsForSymbol: async () => [],
+    getFileImports: async () => [],
+    getFileDeclarations: async () => [],
+    getGeneration: async () => null,
+    prepareFullRebuild: async () => {},
+    recordFullRebuildVectorArtifact: async () => {},
+    markFullRebuildVectorBackupComplete: async () => {},
+    activateFullRebuild: async () => {},
+    rollbackFullRebuild: async () => {},
+    finalizeFullRebuild: async () => {},
+    getFullRebuildRecovery: async () => null,
+    recoverInterruptedFullRebuild: async () => {},
+    finalizeInterruptedFullRebuild: async () => {},
+    reconcileStructuredState: async () => ({ status: 'ok', filesRetired: 0, filesActivated: 0, filesStaged: 0 }),
+    initialize: async () => {},
+    bulkUpsertMerkleNodes: async () => {},
+    bulkDeleteMerkleNodes: async () => {},
+    bulkDeleteSubtrees: async () => 0,
+    replaceAllMerkleNodes: async () => {},
+    deleteSubtree: async () => 0,
+    getSubtreePaths: async () => [],
+    pruneEmptyParents: async () => {},
+    renamePath: async () => {},
+    getMerkleNode: async () => null,
+    getChildren: async () => [],
+    hasChildren: async () => false,
+    getAllNodes: async () => [],
+    getAllFileNodes: async () => [],
+    getAllPaths: async () => [],
+    getIndexStats: async () => null,
+    setIndexStats: async () => {},
+    atomicCompletionCheck: async () => ({ dlqEmpty: true, dlqEntries: [] }),
+    upsertDeadLetterEntries: async () => {},
+    removeDeadLetterEntries: async () => {},
+    getDeadLetterEntries: async () => [],
+    getEmbeddings: async () => new Map(),
+    setEmbeddings: async () => {},
+    deleteEmbeddings: async () => {},
+    clearEmbeddings: async () => {},
+    pruneEmbeddings: async () => 0,
+  } as unknown as IStructuredCatalog;
+  const symbolRetrievalService = new SymbolRetrievalService({ catalog: structuredCatalog, sanitizer });
+
   const options: NexusServerOptions = {
     projectRoot: root,
     sanitizer,
     semanticSearch: stub<ISemanticSearch>(),
     grepEngine: new LocalGrepEngine(),
-    orchestrator: stub<SearchOrchestrator>(),
+    orchestrator: stub<SearchOrchestrator>({
+      search: async () => ({ results: [], grepResults: [], fusionScoreByPath: {} }),
+    }),
     vectorStore: createStubVectorStore(),
-    metadataStore: createStubMetadataStore(),
+    metadataStore: structuredCatalog as unknown as IMetadataStore,
     pipeline: createStubPipeline(),
     pluginRegistry: createStubPluginRegistry(),
     runReindex: async (_options?: ReindexOptions): Promise<IndexEvent[]> => [],
     loadFileContent,
     lspNavigationService: undefined,
+    symbolRetrievalService,
   };
 
   const handlers = buildToolHandlers(options);
@@ -703,3 +774,4 @@ export function createLspStubAdapter(
     },
   };
 }
+export { findRgExecutable };
