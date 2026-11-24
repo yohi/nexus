@@ -250,7 +250,8 @@ const initialCost = (): RunningCost => ({
   retries: 0,
 });
 
-const canAfford = (cost: RunningCost, limits: QualityBudgets): boolean =>
+const canAfford = (cost: RunningCost, limits: QualityBudgets, signal?: AbortSignal): boolean =>
+  !signal?.aborted &&
   cost.logicalOperations < limits.maxLogicalOperations &&
   cost.invocations < limits.maxLogicalOperations &&
   cost.contextBytes < limits.maxContextBytes;
@@ -291,11 +292,15 @@ const isIdentifierInPreview = (identifier: string, preview?: string): boolean =>
 const isVerifiedAdoption = (adoption: SourceAdoption, clues: ParsedClues): boolean => {
   if (adoption.sourceValidation !== 'verified') return false;
   if (adoption.content.length === 0) return false;
-  if (clues.file !== undefined) return adoption.filePath === clues.file;
-  if (clues.id !== undefined) return isIdentifierInPreview(clues.id, adoption.content);
-  if (clues.symbol !== undefined) return adoption.content.includes(clues.symbol);
-  if (clues.concept !== undefined) return true;
-  return false;
+  if (clues.file !== undefined && adoption.filePath !== clues.file) return false;
+  if (clues.position !== undefined && adoption.filePath !== clues.position.filePath) return false;
+  if (clues.id !== undefined && !isIdentifierInPreview(clues.id, adoption.content)) return false;
+  if (clues.symbol !== undefined && !adoption.content.includes(clues.symbol)) return false;
+  return clues.file !== undefined ||
+    clues.position !== undefined ||
+    clues.id !== undefined ||
+    clues.symbol !== undefined ||
+    clues.concept !== undefined;
 };
 
 const buildReadArgs = (candidate: Candidate): { tool: QualityTool; args: Record<string, unknown> } | null => {
@@ -491,32 +496,35 @@ export async function runQualityPolicy(
     fallback: boolean,
     currentClues: ParsedClues,
   ): Promise<boolean> => {
-    if (!canAfford(cost, limits)) return false;
-    let observation = await invokeTool(state, tool, args, query, fallback, cost.retries);
+    if (!canAfford(cost, limits, signal)) return false;
+    let observation = await invokeTool(state, tool, args, query, fallback, 0);
     cost = addObservationCost(cost, observation);
     recordNavigation(trace[trace.length - 1]?.sequence ?? 0, tool, observation);
+    if (signal.aborted) return false;
 
     if (observation.status === 'ok' && observation.results.length === 0) return false;
 
     const retryable = new Set<QualityObservationStatus>(['error', 'timeout', 'cancelled', 'unavailable']);
     let retries = 0;
-    while (retryable.has(observation.status) && retries < limits.maxRetries && canAfford(cost, limits)) {
+    while (!signal.aborted && retryable.has(observation.status) && retries < limits.maxRetries && canAfford(cost, limits, signal)) {
       retries += 1;
       cost = { ...cost, retries: cost.retries + 1 };
       observation = await invokeTool(state, tool, args, query, fallback, retries);
       cost = addObservationCost(cost, observation);
       recordNavigation(trace[trace.length - 1]?.sequence ?? 0, tool, observation);
+      if (signal.aborted) return false;
     }
 
     if (observation.status !== 'ok') return false;
 
     const candidates = observation.results.slice(0, limits.maxCandidates);
     for (const candidate of candidates) {
-      if (!canAfford(cost, limits)) return false;
+      if (!canAfford(cost, limits, signal)) return false;
       const readSpec = adapter.arm === 'R' ? buildRReadArgs(candidate) : buildReadArgs(candidate);
       if (readSpec === null) continue;
       const readObservation = await invokeTool('READ', readSpec.tool, readSpec.args, null, fallback, 0);
       cost = addObservationCost(cost, readObservation);
+      if (signal.aborted) return false;
       const attemptedAdoption = adapter.arm === 'R' ? toFileAdoption(candidate.filePath, readObservation) : toAdoption(readObservation);
       if (attemptedAdoption === null) continue;
       if (isVerifiedAdoption(attemptedAdoption, currentClues)) {
@@ -537,10 +545,11 @@ export async function runQualityPolicy(
     currentClues: ParsedClues,
     fallback: boolean,
   ): Promise<boolean> => {
-    if (!canAfford(cost, limits)) return false;
+    if (!canAfford(cost, limits, signal)) return false;
     const observation = await invokeTool(state, tool, args, null, fallback, 0);
     cost = addObservationCost(cost, observation);
     recordNavigation(trace[trace.length - 1]?.sequence ?? 0, tool, observation);
+    if (signal.aborted) return false;
     const attemptedAdoption =
       tool === 'read_file'
         ? toFileAdoption(String(args.filePath ?? ''), observation)
@@ -571,10 +580,11 @@ export async function runQualityPolicy(
           maxResults: 20,
         }
       : { symbolId: currentClues.symbol, maxResults: 20 };
-    if (!canAfford(cost, limits)) return false;
+    if (!canAfford(cost, limits, signal)) return false;
     const observation = await invokeTool('VERIFY', tool, args, null, fallback, 0);
     cost = addObservationCost(cost, observation);
     recordNavigation(trace[trace.length - 1]?.sequence ?? 0, tool, observation);
+    if (signal.aborted) return false;
     if (observation.status === 'ok' && observation.navigation && observation.navigation.locations.length > 0) {
       const navAdoption: SourceAdoption = {
         filePath: observation.navigation.locations[0]?.filePath ?? '',
@@ -600,7 +610,7 @@ export async function runQualityPolicy(
       if (clues.id !== undefined && (await runSearchAndAdopt('FALLBACK', 'grep_search', { pattern: clues.id, maxResults: limits.maxCandidates }, clues.id, true, clues))) return completeResult(cost, adoption, adoptionEvents, navigationEvents, trace);
       if (clues.file !== undefined && (await runReadRoute('FALLBACK', 'get_context', { filePath: clues.file, startLine: 1, endLine: 10, mode: 'bounded' }, clues, true))) return completeResult(cost, adoption, adoptionEvents, navigationEvents, trace);
     } else if (clues.file !== undefined) {
-      if (canAfford(cost, limits)) {
+      if (canAfford(cost, limits, signal)) {
         const outline = await invokeTool('DISCOVER', 'get_file_outline', { filePath: clues.file }, null, false, 0);
         cost = addObservationCost(cost, outline);
       }

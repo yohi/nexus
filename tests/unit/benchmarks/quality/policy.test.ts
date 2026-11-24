@@ -161,6 +161,74 @@ describe('runQualityPolicy', () => {
     expect(result.adoption?.content).toContain('answer');
   });
 
+  it('requires an id clue to match content even when the file clue matches', async () => {
+    const adapter = fakeAdapter('N', (tool) => {
+      if (tool === 'get_file_outline') return okObservation([{ filePath: 'src/answer.ts', preview: 'answer', rank: 1 }]);
+      if (tool === 'grep_search') return emptyOk();
+      expect(tool).toBe('get_context');
+      return readObservation('src/answer.ts', 'export function unrelated(): number');
+    });
+    const result = await runQualityPolicy(
+      makeTask(['file:src/answer.ts', 'id:answer']),
+      adapter,
+      QUALITY_BUDGETS_V1,
+      new AbortController().signal,
+    );
+    expect(result.status).toBe('EXHAUSTED');
+    expect(result.adoption).toBeUndefined();
+  });
+
+  it('requires a symbol clue to match content when id and file clues also match', async () => {
+    const adapter = fakeAdapter('N', (tool) => {
+      if (tool === 'get_symbol_source') {
+        return okObservation([{ filePath: 'src/answer.ts', symbolId: 'answer', preview: 'export function answer(): number', rank: 1 }]);
+      }
+      if (tool === 'get_context') return readObservation('src/answer.ts', 'export function answer(): number');
+      return emptyOk();
+    });
+    const result = await runQualityPolicy(
+      makeTask(['file:src/answer.ts', 'id:answer', 'symbol:expectedSymbol']),
+      adapter,
+      QUALITY_BUDGETS_V1,
+      new AbortController().signal,
+    );
+    expect(result.status).toBe('EXHAUSTED');
+    expect(result.adoption).toBeUndefined();
+  });
+
+  it('adopts an R-arm read matching a nav position file', async () => {
+    const adapter = fakeAdapter('R', (tool) => {
+      expect(tool).toBe('read_file');
+      return readObservation('src/answer.ts', 'export function answer(): number');
+    });
+    const result = await runQualityPolicy(
+      makeTask(['nav:definition', 'position:src/answer.ts@4:2']),
+      adapter,
+      QUALITY_BUDGETS_V1,
+      new AbortController().signal,
+    );
+    expect(result.status).toBe('COMPLETE');
+    expect(result.adoption?.filePath).toBe('src/answer.ts');
+  });
+
+  it('adopts the N-arm fallback read matching a nav position file', async () => {
+    const adapter = fakeAdapter('N', (tool) => {
+      if (tool === 'get_definition') return emptyOk();
+      if (tool === 'grep_search') return okObservation([{ filePath: 'src/answer.ts', line: 4, preview: 'answer', rank: 1 }]);
+      expect(tool).toBe('get_context');
+      return readObservation('src/answer.ts', 'export function answer(): number');
+    });
+    const result = await runQualityPolicy(
+      makeTask(['nav:definition', 'position:src/answer.ts@4:2']),
+      adapter,
+      QUALITY_BUDGETS_V1,
+      new AbortController().signal,
+    );
+    expect(result.status).toBe('COMPLETE');
+    expect(result.adoption?.filePath).toBe('src/answer.ts');
+    expect(result.trace.some((event) => event.fallback)).toBe(true);
+  });
+
   it('adopts an id clue via rg_search on R', async () => {
     const adapter = fakeAdapter('R', (tool, args) => {
       if (tool === 'rg_search') {
@@ -205,6 +273,42 @@ describe('runQualityPolicy', () => {
     expect(grepTraces[0]?.retries).toBe(0);
     expect(grepTraces[1]?.retries).toBe(1);
     expect(grepTraces[2]?.retries).toBe(2);
+  });
+
+  it('records retries per search operation instead of carrying them into fallback attempts', async () => {
+    let hybridCalls = 0;
+    let semanticCalls = 0;
+    const adapter = fakeAdapter('N', (tool) => {
+      if (tool === 'hybrid_search') {
+        hybridCalls += 1;
+        return hybridCalls === 1 ? errorObservation('TOOL_ERROR') : emptyOk();
+      }
+      if (tool === 'semantic_search') {
+        semanticCalls += 1;
+        return semanticCalls === 1
+          ? errorObservation('TOOL_ERROR')
+          : okObservation([{ filePath: 'a.ts', line: 1, preview: 'concept hit', rank: 1 }]);
+      }
+      return readObservation('a.ts', 'concept hit');
+    });
+    const result = await runQualityPolicy(makeTask(['concept:foo']), adapter, QUALITY_BUDGETS_V1, new AbortController().signal);
+    expect(result.status).toBe('COMPLETE');
+    expect(result.trace.filter((event) => event.tool === 'hybrid_search').map((event) => event.retries)).toEqual([0, 1]);
+    expect(result.trace.filter((event) => event.tool === 'semantic_search').map((event) => event.retries)).toEqual([0, 1]);
+  });
+
+  it('stops retries and fallback routes after cancellation during a search', async () => {
+    const controller = new AbortController();
+    let adapterCalls = 0;
+    const adapter = fakeAdapter('N', () => {
+      adapterCalls += 1;
+      controller.abort();
+      return errorObservation('TOOL_ERROR');
+    });
+    const result = await runQualityPolicy(makeTask(['id:answer']), adapter, QUALITY_BUDGETS_V1, controller.signal);
+    expect(adapterCalls).toBe(1);
+    expect(result.trace).toHaveLength(1);
+    expect(result.logicalOperations).toBe(1);
   });
 
   it('records navigation events for LSP lookups', async () => {
