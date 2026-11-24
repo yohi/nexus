@@ -332,6 +332,27 @@ describe('runQualityPolicy', () => {
     expect(result.trace.some((event) => event.tool === 'grep_search')).toBe(false);
   });
 
+  it('tries the N-arm nav position read after id search does not adopt', async () => {
+    const calls: QualityTool[] = [];
+    const adapter = fakeAdapter('N', (tool, args) => {
+      calls.push(tool);
+      if (tool === 'get_definition' || tool === 'grep_search') return emptyOk();
+      expect(tool).toBe('get_context');
+      expect(args.filePath).toBe('src/answer.ts');
+      return readObservation('src/answer.ts', 'export function answer(): number');
+    });
+    const result = await runQualityPolicy(
+      makeTask(['nav:definition', 'position:src/answer.ts@4:2', 'id:answer']),
+      adapter,
+      QUALITY_BUDGETS_V1,
+      new AbortController().signal,
+    );
+
+    expect(calls).toEqual(['get_definition', 'grep_search', 'get_context']);
+    expect(result.status).toBe('COMPLETE');
+    expect(result.adoption?.filePath).toBe('src/answer.ts');
+  });
+
   it('adopts an id clue via rg_search on R', async () => {
     const adapter = fakeAdapter('R', (tool, args) => {
       if (tool === 'rg_search') {
@@ -342,6 +363,26 @@ describe('runQualityPolicy', () => {
     const result = await runQualityPolicy(makeTask(['id:answer']), adapter, QUALITY_BUDGETS_V1, new AbortController().signal);
     expect(result.status).toBe('COMPLETE');
     expect(result.adoption?.filePath).toBe('src/answer.ts');
+  });
+
+  it('does not repeat an R-arm search for a one-word concept', async () => {
+    const queries: string[] = [];
+    const adapter = fakeAdapter('R', (tool, args) => {
+      if (tool === 'rg_search') {
+        queries.push(String(args.query));
+        return emptyOk();
+      }
+      return emptyOk();
+    });
+    const result = await runQualityPolicy(
+      makeTask(['concept:foo']),
+      adapter,
+      QUALITY_BUDGETS_V1,
+      new AbortController().signal,
+    );
+
+    expect(queries).toEqual(['foo']);
+    expect(result.logicalOperations).toBe(1);
   });
 
   it('falls back along the concept route on N when hybrid is empty', async () => {

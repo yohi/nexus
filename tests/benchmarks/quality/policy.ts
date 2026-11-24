@@ -599,7 +599,6 @@ export async function runQualityPolicy(
     const observation = await invokeTool('VERIFY', tool, args, null, fallback, 0);
     cost = addObservationCost(cost, observation);
     recordNavigation(trace[trace.length - 1]?.sequence ?? 0, tool, observation);
-    if (signal.aborted) return;
   };
 
   // Primary routes.
@@ -616,7 +615,8 @@ export async function runQualityPolicy(
           true,
           clues,
         )) return completeResult(cost, adoption, adoptionEvents, navigationEvents, trace);
-      } else if (clues.position !== undefined) {
+      }
+      if (clues.position !== undefined) {
         const startLine = Math.max(1, clues.position.line - 2);
         if (await runReadRoute(
           'FALLBACK',
@@ -667,7 +667,7 @@ export async function runQualityPolicy(
       if (await runSearchAndAdopt('DISCOVER', 'rg_search', { query: clues.concept }, clues.concept, false, clues)) return completeResult(cost, adoption, adoptionEvents, navigationEvents, trace);
       const tokens = clues.concept
         .split(/\s+/)
-        .filter((t) => t.length >= 3)
+        .filter((t) => t.length >= 3 && t !== clues.concept)
         .sort((a, b) => (b.length - a.length || a.localeCompare(b)))
         .slice(0, 3);
       for (const token of tokens) {
