@@ -389,6 +389,49 @@ describe('runQualityPolicy', () => {
     expect(result.adoption?.filePath).toBe('src/answer.ts');
   });
 
+  it('reads R-arm candidates from a bounded window around the matched byte offset', async () => {
+    let readArgs: Readonly<Record<string, unknown>> | undefined;
+    const adapter = fakeAdapter('R', (tool, args) => {
+      if (tool === 'rg_search') {
+        const candidate = Object.assign(
+          { filePath: 'src/deep.ts', line: 700, preview: 'answer', rank: 1 },
+          { matchStartByte: 8192 },
+        );
+        return okObservation([candidate]);
+      }
+      readArgs = args;
+      return readObservation('src/deep.ts', 'answer');
+    });
+
+    const result = await runQualityPolicy(
+      makeTask(['id:answer']),
+      adapter,
+      QUALITY_BUDGETS_V1,
+      new AbortController().signal,
+    );
+
+    expect(readArgs).toEqual({ filePath: 'src/deep.ts', startByte: 6144, endByte: 10240 });
+    expect(result.status).toBe('COMPLETE');
+  });
+
+  it('reads an R-arm position route from its requested line', async () => {
+    let readArgs: Readonly<Record<string, unknown>> | undefined;
+    const adapter = fakeAdapter('R', (_tool, args) => {
+      readArgs = args;
+      return readObservation('src/deep.ts', 'answer');
+    });
+
+    const result = await runQualityPolicy(
+      makeTask(['nav:definition', 'position:src/deep.ts@700:2']),
+      adapter,
+      QUALITY_BUDGETS_V1,
+      new AbortController().signal,
+    );
+
+    expect(readArgs).toEqual({ filePath: 'src/deep.ts', startLine: 700 });
+    expect(result.status).toBe('COMPLETE');
+  });
+
   it('does not repeat an R-arm search for a one-word concept', async () => {
     const queries: string[] = [];
     const adapter = fakeAdapter('R', (tool, args) => {

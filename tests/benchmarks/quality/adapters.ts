@@ -20,6 +20,7 @@ export interface PublicCandidate {
   readonly symbolId?: string;
   readonly publicScore?: number;
   readonly rank: number;
+  readonly matchStartByte?: number;
   readonly line?: number;
   readonly character?: number;
   readonly endLine?: number;
@@ -188,6 +189,32 @@ const asNormalizedArgs = (
 const clampInt = (value: unknown, fallback: number): number => {
   const parsed = typeof value === 'number' && Number.isFinite(value) ? Math.trunc(value) : Number.NaN;
   return Number.isNaN(parsed) ? fallback : parsed;
+};
+
+const findLineStartByte = async (
+  fileHandle: Awaited<ReturnType<typeof open>>,
+  lineNumber: number,
+  fileLength: number,
+  signal: AbortSignal,
+): Promise<number> => {
+  if (lineNumber <= 1) return 0;
+
+  const buffer = Buffer.alloc(READ_MAX_BYTES);
+  let scannedBytes = 0;
+  let currentLine = 1;
+  while (scannedBytes < fileLength && !signal.aborted) {
+    const requestedBytes = Math.min(buffer.length, fileLength - scannedBytes);
+    const { bytesRead } = await fileHandle.read(buffer, 0, requestedBytes, scannedBytes);
+    if (bytesRead === 0) return fileLength;
+
+    for (let index = 0; index < bytesRead; index += 1) {
+      if (buffer[index] !== 0x0a) continue;
+      currentLine += 1;
+      if (currentLine === lineNumber) return scannedBytes + index + 1;
+    }
+    scannedBytes += bytesRead;
+  }
+  return fileLength;
 };
 
 const RG_ARGV_POLICY = Object.freeze({
@@ -420,6 +447,7 @@ const parseRgMatches = (stdout: string): RgParseResult => {
       path?: { text?: string } | string;
       lines?: { text?: string; bytes?: string } | string;
       line_number?: number;
+      absolute_offset?: number;
       submatches?: Array<{ match?: { text?: string } | string; start?: number; end?: number }>;
     };
 
@@ -449,6 +477,15 @@ const parseRgMatches = (stdout: string): RgParseResult => {
       typeof typedData.line_number === 'number' && Number.isFinite(typedData.line_number)
         ? Math.trunc(typedData.line_number)
         : undefined;
+    const absoluteOffset =
+      typeof typedData.absolute_offset === 'number' &&
+      Number.isSafeInteger(typedData.absolute_offset) &&
+      typedData.absolute_offset >= 0
+        ? typedData.absolute_offset
+        : undefined;
+    if (typedData.absolute_offset !== undefined && absoluteOffset === undefined) {
+      return { kind: 'error', reason: 'RG_INVALID_BYTE_OFFSET' };
+    }
     if (!filePath || lineNumber === undefined) {
       return { kind: 'error', reason: 'RG_INVALID_JSON' };
     }
@@ -462,6 +499,7 @@ const parseRgMatches = (stdout: string): RgParseResult => {
         endLine: lineNumber,
         endCharacter: lineText.length,
         preview: lineText,
+        ...(absoluteOffset === undefined ? {} : { matchStartByte: absoluteOffset }),
       });
       continue;
     }
@@ -489,6 +527,10 @@ const parseRgMatches = (stdout: string): RgParseResult => {
       if (startChar === undefined || endChar === undefined || endChar < startChar) {
         return { kind: 'error', reason: 'RG_INVALID_BYTE_OFFSET' };
       }
+      const matchStartByte = absoluteOffset === undefined ? undefined : absoluteOffset + startByte;
+      if (matchStartByte !== undefined && !Number.isSafeInteger(matchStartByte)) {
+        return { kind: 'error', reason: 'RG_INVALID_BYTE_OFFSET' };
+      }
       candidates.push({
         filePath,
         line: lineNumber,
@@ -496,6 +538,7 @@ const parseRgMatches = (stdout: string): RgParseResult => {
         endLine: lineNumber,
         endCharacter: endChar,
         preview: matchText || lineText,
+        ...(matchStartByte === undefined ? {} : { matchStartByte }),
       });
     }
   }
@@ -853,12 +896,19 @@ export const createRipgrepAdapter = (
     }
 
     let startByte = Math.max(0, clampInt(args.startByte, 0));
+    const requestedStartLine =
+      typeof args.startLine === 'number' && Number.isSafeInteger(args.startLine) && args.startLine >= 1
+        ? args.startLine
+        : undefined;
     const rawEndByte = typeof args.endByte === 'number' && Number.isFinite(args.endByte) ? Math.trunc(args.endByte) : null;
 
     let fileHandle: Awaited<ReturnType<typeof open>> | undefined;
     try {
       fileHandle = await open(realResolved, 'r');
       const fileLength = (await fileHandle.stat()).size;
+      if (requestedStartLine !== undefined) {
+        startByte = await findLineStartByte(fileHandle, requestedStartLine, fileLength, signal);
+      }
       startByte = Math.min(startByte, fileLength);
       const requestedEndByte =
         rawEndByte === null ? Math.min(startByte + READ_MAX_BYTES, fileLength) : rawEndByte;
@@ -905,6 +955,7 @@ export const createRipgrepAdapter = (
       const content = slice.toString('utf8');
       const normalizedArgs = Object.freeze({
         filePath: toForwardSlashes(relativePath),
+        ...(requestedStartLine === undefined ? {} : { startLine: requestedStartLine }),
         startByte,
         endByte: actualEndByte,
       });

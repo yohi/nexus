@@ -70,6 +70,12 @@ const sha256 = (content: string | Uint8Array): string =>
 
 const utf8Bytes = (text: string): Uint8Array => new TextEncoder().encode(text);
 
+const compareCodeUnitStrings = (left: string, right: string): number => {
+  if (left < right) return -1;
+  if (left > right) return 1;
+  return 0;
+};
+
 export const canonicalJson = (value: NormalizedPublicArgs[string]): string => {
   if (value === null || typeof value !== 'object') {
     return JSON.stringify(value) ?? 'null';
@@ -79,7 +85,7 @@ export const canonicalJson = (value: NormalizedPublicArgs[string]): string => {
   }
 
   const entries = Object.entries(value as Readonly<Record<string, NormalizedPublicArgs[string]>>)
-    .sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0));
+    .sort(([left], [right]) => compareCodeUnitStrings(left, right));
   return `{${entries.map(([key, nestedValue]) => `${JSON.stringify(key)}:${canonicalJson(nestedValue)}`).join(',')}}`;
 };
 
@@ -147,7 +153,7 @@ const normalizedArgsForTool = (tool: QualityTool, args: Readonly<Record<string, 
       return emptyObject;
     case 'read_file': {
       const out: Record<string, NormalizedPublicArgs[string]> = {};
-      for (const key of ['filePath', 'startByte', 'endByte']) {
+      for (const key of ['filePath', 'startByte', 'endByte', 'startLine']) {
         const value = args[key];
         if (isPublicJsonValue(value)) out[key] = value;
       }
@@ -296,6 +302,7 @@ const freezeCost = (cost: RunningCost): QualityCumulativeCost =>
 interface Candidate {
   readonly filePath: string;
   readonly symbolId?: string;
+  readonly matchStartByte?: number;
   readonly line?: number;
   readonly character?: number;
   readonly endLine?: number;
@@ -337,8 +344,16 @@ const buildReadArgs = (candidate: Candidate): { tool: QualityTool; args: Record<
 };
 
 const buildRReadArgs = (candidate: Candidate): { tool: QualityTool; args: Record<string, unknown> } => {
-  // Approximate byte budget: we cannot map line/char to bytes without the file,
-  // so read a bounded window from the top of the file. Tests use short files.
+  if (candidate.matchStartByte !== undefined) {
+    const startByte = Math.max(0, candidate.matchStartByte - Math.floor(READ_MAX_BYTES / 2));
+    return {
+      tool: 'read_file',
+      args: { filePath: candidate.filePath, startByte, endByte: startByte + READ_MAX_BYTES },
+    };
+  }
+  if (candidate.line !== undefined) {
+    return { tool: 'read_file', args: { filePath: candidate.filePath, startLine: candidate.line } };
+  }
   return { tool: 'read_file', args: { filePath: candidate.filePath, startByte: 0, endByte: READ_MAX_BYTES } };
 };
 
@@ -673,7 +688,7 @@ export async function runQualityPolicy(
   } else {
     // R arm
     if (clues.nav !== undefined && clues.position !== undefined) {
-      if (await runReadRoute('READ', 'read_file', { filePath: clues.position.filePath, startByte: 0, endByte: READ_MAX_BYTES }, clues, false)) return completeResult(cost, adoption, adoptionEvents, navigationEvents, trace);
+      if (await runReadRoute('READ', 'read_file', { filePath: clues.position.filePath, startLine: clues.position.line }, clues, false)) return completeResult(cost, adoption, adoptionEvents, navigationEvents, trace);
       if (clues.id !== undefined && (await runSearchAndAdopt('FALLBACK', 'rg_search', { query: clues.id }, clues.id, true, clues))) return completeResult(cost, adoption, adoptionEvents, navigationEvents, trace);
     } else if (clues.symbol !== undefined) {
       if (clues.id !== undefined && (await runSearchAndAdopt('DISCOVER', 'rg_search', { query: clues.id }, clues.id, false, clues))) return completeResult(cost, adoption, adoptionEvents, navigationEvents, trace);

@@ -159,6 +159,27 @@ describe('createRipgrepAdapter', () => {
     await cleanup(root);
   });
 
+  it('preserves the absolute byte offset of a ripgrep match', async () => {
+    const root = await makeRoot();
+    await writeFiles(root, { 'deep.ts': `${'x'.repeat(8192)}needle\n` });
+    const adapter = createRipgrepAdapter(root, rgExecutable);
+
+    const observation = await adapter.invoke(
+      'rg_search',
+      { query: 'needle' },
+      new AbortController().signal,
+      ctx(1),
+    );
+
+    expect(observation.status).toBe('ok');
+    expect(observation.results[0]).toMatchObject({
+      filePath: './deep.ts',
+      line: 1,
+      matchStartByte: 8192,
+    });
+    await cleanup(root);
+  });
+
   it('validates the trace sequence and classifies an aborted first call before lazy initialization', async () => {
     const adapter = createRipgrepAdapter('/does/not/exist', rgExecutable);
     const controller = new AbortController();
@@ -478,6 +499,28 @@ describe('createRipgrepAdapter', () => {
     await cleanup(root);
   });
 
+  it('reads a bounded window starting at a requested line beyond the first 4 KiB', async () => {
+    const root = await makeRoot();
+    const prefix = `${'x'.repeat(4096)}\n`;
+    await writeFiles(root, { 'deep.ts': `${prefix}answer is here\n` });
+    const adapter = createRipgrepAdapter(root, rgExecutable);
+
+    const observation = await adapter.invoke(
+      'read_file',
+      { filePath: 'deep.ts', startLine: 2 },
+      new AbortController().signal,
+      ctx(1),
+    );
+
+    expect(observation.status).toBe('ok');
+    expect(observation.sourceAdoptions[0]).toMatchObject({
+      startByte: Buffer.byteLength(prefix),
+      content: 'answer is here\n',
+    });
+    expect(observation.exposedBytes).toBeLessThanOrEqual(4096);
+    await cleanup(root);
+  });
+
   it('allows a 4096-byte read window and rejects a 4097-byte window', async () => {
     const root = await makeRoot();
     await writeFiles(root, { 'big.bin': 'x'.repeat(5000) });
@@ -571,6 +614,44 @@ describe('createRipgrepAdapter', () => {
       sourceAdoptions: [],
     });
     expect(handleClosed).toBe(true);
+  });
+
+  it('stops scanning for a requested line after cancellation', async () => {
+    const root = await makeRoot();
+    const filePath = join(root, 'many-lines.txt');
+    await writeFile(filePath, 'line\n'.repeat(6000), 'utf8');
+    const controller = new AbortController();
+    let readCount = 0;
+    const originalOpen = fsPromises.open.bind(fsPromises);
+    vi.spyOn(fsPromises, 'open').mockImplementation(async (...args) => {
+      const handle = await originalOpen(...args);
+      if (args[0] === filePath) {
+        const originalRead = handle.read.bind(handle);
+        Object.defineProperty(handle, 'read', {
+          configurable: true,
+          value: async (buffer: Buffer, offset: number, length: number, position: number) => {
+            readCount += 1;
+            const result = await originalRead(buffer, offset, length, position);
+            if (readCount === 1) controller.abort(new DOMException('cancelled', 'AbortError'));
+            return result;
+          },
+        });
+      }
+      return handle;
+    });
+    syncBuiltinESMExports();
+    const adapter = createRipgrepAdapter(root, rgExecutable);
+
+    const observation = await adapter.invoke(
+      'read_file',
+      { filePath: 'many-lines.txt', startLine: 5000 },
+      controller.signal,
+      ctx(1),
+    );
+
+    expect(observation.status).toBe('cancelled');
+    expect(readCount).toBe(1);
+    await cleanup(root);
   });
 
   it('reads at most 4096 bytes and reports only bytes actually read', async () => {
