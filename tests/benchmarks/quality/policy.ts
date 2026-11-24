@@ -79,7 +79,7 @@ export const canonicalJson = (value: NormalizedPublicArgs[string]): string => {
   }
 
   const entries = Object.entries(value as Readonly<Record<string, NormalizedPublicArgs[string]>>)
-    .sort(([left], [right]) => left.localeCompare(right, 'en'));
+    .sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0));
   return `{${entries.map(([key, nestedValue]) => `${JSON.stringify(key)}:${canonicalJson(nestedValue)}`).join(',')}}`;
 };
 
@@ -270,8 +270,15 @@ const canAfford = (cost: RunningCost, limits: QualityBudgets, signal?: AbortSign
   cost.logicalOperations < limits.maxLogicalOperations &&
   cost.contextBytes < limits.maxContextBytes;
 
-const addObservationCost = (cost: RunningCost, observation: QualityObservation): RunningCost => ({
-  logicalOperations: cost.logicalOperations + 1,
+const canAffordRetry = (cost: RunningCost, limits: QualityBudgets, signal?: AbortSignal): boolean =>
+  !signal?.aborted && cost.contextBytes < limits.maxContextBytes;
+
+const addObservationCost = (
+  cost: RunningCost,
+  observation: QualityObservation,
+  newLogicalOperation = true,
+): RunningCost => ({
+  logicalOperations: cost.logicalOperations + (newLogicalOperation ? 1 : 0),
   invocations: cost.invocations + 1,
   contextBytes: cost.contextBytes + observation.exposedBytes,
   contextTokens: cost.contextTokens + countTokens(observation.results.map((r) => r.preview ?? '').join('\n')),
@@ -428,7 +435,20 @@ export async function runQualityPolicy(
       recordTrace(state, tool, args, query, fallback, retriesSoFar, sequence, cancelled);
       return cancelled;
     }
-    const observation = await adapter.invoke(tool, args, signal, { traceSequence: sequence });
+    let observation: QualityObservation;
+    try {
+      observation = await adapter.invoke(tool, args, signal, { traceSequence: sequence });
+    } catch {
+      observation = {
+        status: 'error',
+        results: Object.freeze([]),
+        exposedBytes: 0,
+        sourceAdoptions: Object.freeze([]),
+        rawDigest: sha256('quality-adapter-invoke-failed-v1'),
+        normalizedPublicArgs,
+        reasonCode: 'ADAPTER_INVOKE_FAILED',
+      };
+    }
     recordTrace(state, tool, args, query, fallback, retriesSoFar, sequence, observation);
     return observation;
   };
@@ -457,7 +477,7 @@ export async function runQualityPolicy(
         reasonCode: observation.reasonCode ?? null,
         resultCount: observation.results.length,
         exposedBytes: observation.exposedBytes,
-        logicalOperations: cost.logicalOperations + 1,
+        logicalOperations: cost.logicalOperations + (retries === 0 ? 1 : 0),
         invocationCount: cost.invocations + 1,
         retries,
         fallback,
@@ -524,11 +544,11 @@ export async function runQualityPolicy(
 
     const retryable = new Set<QualityObservationStatus>(['error', 'timeout', 'cancelled', 'unavailable']);
     let retries = 0;
-    while (!signal.aborted && retryable.has(observation.status) && retries < limits.maxRetries && canAfford(cost, limits, signal)) {
+    while (retryable.has(observation.status) && retries < limits.maxRetries && canAffordRetry(cost, limits, signal)) {
       retries += 1;
       cost = { ...cost, retries: cost.retries + 1 };
       observation = await invokeTool(state, tool, args, query, fallback, retries);
-      cost = addObservationCost(cost, observation);
+      cost = addObservationCost(cost, observation, false);
       recordNavigation(trace[trace.length - 1]?.sequence ?? 0, tool, observation);
       if (signal.aborted) return false;
     }

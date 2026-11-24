@@ -73,14 +73,14 @@ const makeTask = (clues: readonly string[]): PublicQualityTask =>
   Object.freeze({ taskDescription: 'test', initialClues: Object.freeze([...clues]) });
 
 describe('canonicalJson', () => {
-  it('preserves nested values and sorts every object by locale-aware key order', () => {
+  it('preserves nested values and sorts every object by code-unit key order', () => {
     expect(canonicalJson({
       z: 1,
       A: 2,
       a: 3,
       nested: { zebra: false, Alpha: true },
       list: [{ value: 1, id: 'first' }],
-    })).toBe('{"a":3,"A":2,"list":[{"id":"first","value":1}],"nested":{"Alpha":true,"zebra":false},"z":1}');
+    })).toBe('{"A":2,"a":3,"list":[{"id":"first","value":1}],"nested":{"Alpha":true,"zebra":false},"z":1}');
   });
 });
 
@@ -441,6 +441,65 @@ describe('runQualityPolicy', () => {
     expect(grepTraces[0]?.retries).toBe(0);
     expect(grepTraces[1]?.retries).toBe(1);
     expect(grepTraces[2]?.retries).toBe(2);
+    expect(grepTraces.map((event) => event.logicalOperations)).toEqual([1, 1, 1]);
+    expect(grepTraces.map((event) => event.invocationCount)).toEqual([1, 2, 3]);
+    expect(result.logicalOperations).toBe(2);
+    expect(result.invocations).toBe(4);
+  });
+
+  it('allows retries when the logical-operation budget is already full', async () => {
+    let semanticCalls = 0;
+    const adapter = fakeAdapter('N', (tool, args) => {
+      if (tool === 'grep_search') {
+        return okObservation(Array.from({ length: 10 }, (_, index) => ({
+          filePath: `f${index}.ts`,
+          line: 1,
+          preview: 'foo',
+          rank: index + 1,
+        })));
+      }
+      if (tool === 'get_context') return readObservation(String(args.filePath ?? ''), 'unrelated');
+      if (tool === 'semantic_search') {
+        semanticCalls += 1;
+        return semanticCalls === 1 ? errorObservation('TOOL_ERROR') : emptyOk();
+      }
+      return emptyOk();
+    });
+
+    const result = await runQualityPolicy(makeTask(['id:foo']), adapter, QUALITY_BUDGETS_V1, new AbortController().signal);
+    const semanticTraces = result.trace.filter((event) => event.tool === 'semantic_search');
+
+    expect(result.status).toBe('EXHAUSTED');
+    expect(semanticTraces.map((event) => event.retries)).toEqual([0, 1]);
+    expect(result.logicalOperations).toBe(12);
+    expect(result.invocations).toBe(13);
+  });
+
+  it('records and retries adapter rejections as error observations', async () => {
+    let searchCalls = 0;
+    const adapter = fakeAdapter('N', (tool) => {
+      if (tool === 'grep_search') {
+        searchCalls += 1;
+        if (searchCalls === 1) throw new Error('private adapter failure');
+        return okObservation([{ filePath: 'a.ts', line: 1, preview: 'answer', rank: 1 }]);
+      }
+      return readObservation('a.ts', 'answer');
+    });
+
+    const result = await runQualityPolicy(makeTask(['id:answer']), adapter, QUALITY_BUDGETS_V1, new AbortController().signal);
+    const searchTraces = result.trace.filter((event) => event.tool === 'grep_search');
+
+    expect(result.status).toBe('COMPLETE');
+    expect(searchTraces).toHaveLength(2);
+    expect(searchTraces[0]).toMatchObject({
+      resultStatus: 'error',
+      reasonCode: 'ADAPTER_INVOKE_FAILED',
+      retries: 0,
+    });
+    expect(searchTraces[1]).toMatchObject({ resultStatus: 'ok', retries: 1 });
+    expect(result.logicalOperations).toBe(2);
+    expect(result.invocations).toBe(3);
+    expect(JSON.stringify(result.trace)).not.toContain('private adapter failure');
   });
 
   it('records retries per search operation instead of carrying them into fallback attempts', async () => {
