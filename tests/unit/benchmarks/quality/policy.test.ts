@@ -104,6 +104,30 @@ describe('runQualityPolicy', () => {
     expect(result.trace).toHaveLength(0);
   });
 
+  it.each([
+    'position:src/answer.ts@12abc:3',
+    'position:src/answer.ts@1.5:2',
+    'position:src/answer.ts@1:3tail',
+    'position:@1:2',
+    'position:src/answer.ts@9007199254740993:3',
+  ])('rejects malformed navigation position clue %s before tool calls', async (position) => {
+    let calls = 0;
+    const adapter = fakeAdapter('N', () => {
+      calls += 1;
+      return emptyOk();
+    });
+    const result = await runQualityPolicy(
+      makeTask(['nav:definition', position]),
+      adapter,
+      QUALITY_BUDGETS_V1,
+      new AbortController().signal,
+    );
+
+    expect(result.status).toBe('EXHAUSTED');
+    expect(result.trace).toHaveLength(0);
+    expect(calls).toBe(0);
+  });
+
   it('reserves a unique trace sequence for every adapter call', async () => {
     const adapter = fakeAdapter('N', (tool) => {
       if (tool === 'grep_search') return okObservation([{ filePath: 'a.ts', line: 1, preview: 'id foo', rank: 1 }]);

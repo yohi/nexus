@@ -232,11 +232,12 @@ const parseClues = (clues: readonly string[]): { readonly valid: true; readonly 
       const atIndex = rest.lastIndexOf('@');
       if (atIndex < 0) return { valid: false };
       const filePath = rest.slice(0, atIndex);
+      if (filePath.trim().length === 0) return { valid: false };
       const coords = rest.slice(atIndex + 1).split(':');
-      if (coords.length !== 2) return { valid: false };
-      const line = Number.parseInt(coords[0] ?? '', 10);
-      const character = Number.parseInt(coords[1] ?? '', 10);
-      if (!Number.isInteger(line) || line <= 0 || !Number.isInteger(character) || character < 0) return { valid: false };
+      if (coords.length !== 2 || coords.some((coordinate) => !/^\d+$/u.test(coordinate))) return { valid: false };
+      const line = Number(coords[0]);
+      const character = Number(coords[1]);
+      if (!Number.isSafeInteger(line) || line <= 0 || !Number.isSafeInteger(character) || character < 0) return { valid: false };
       parsed.position = { filePath, line, character };
     } else if (clue.startsWith('nav:')) {
       if (parsed.nav !== undefined) return { valid: false };
@@ -267,7 +268,6 @@ const initialCost = (): RunningCost => ({
 const canAfford = (cost: RunningCost, limits: QualityBudgets, signal?: AbortSignal): boolean =>
   !signal?.aborted &&
   cost.logicalOperations < limits.maxLogicalOperations &&
-  cost.invocations < limits.maxLogicalOperations &&
   cost.contextBytes < limits.maxContextBytes;
 
 const addObservationCost = (cost: RunningCost, observation: QualityObservation): RunningCost => ({
