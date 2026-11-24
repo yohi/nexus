@@ -83,12 +83,21 @@ export const canonicalJson = (value: NormalizedPublicArgs[string]): string => {
   return `{${entries.map(([key, nestedValue]) => `${JSON.stringify(key)}:${canonicalJson(nestedValue)}`).join(',')}}`;
 };
 
+const tokenEncoder = (() => {
+  try {
+    return getEncoding('cl100k_base');
+  } catch {
+    return undefined;
+  }
+})();
+
 const countTokens = (text: string): number => {
   try {
-    return getEncoding('cl100k_base').encode(text).length;
+    if (tokenEncoder !== undefined) return tokenEncoder.encode(text).length;
   } catch {
-    return Math.ceil(Buffer.byteLength(text, 'utf8') / 4);
+    // Fall back to a byte estimate if tokenization fails for this text.
   }
+  return Math.ceil(Buffer.byteLength(text, 'utf8') / 4);
 };
 
 const argsDigest = (normalized: NormalizedPublicArgs): string =>
@@ -196,6 +205,11 @@ interface ParsedClues {
 }
 
 const NAV_KINDS = new Set<string>(['definition', 'references', 'implementations']);
+const NAV_TOOL_BY_KIND = {
+  definition: 'get_definition',
+  references: 'get_references',
+  implementations: 'get_implementations',
+} as const;
 
 const parseClues = (clues: readonly string[]): { readonly valid: true; readonly value: ParsedClues } | { readonly valid: false } => {
   const parsed: ParsedClues = {};
@@ -303,7 +317,7 @@ const isVerifiedAdoption = (adoption: SourceAdoption, clues: ParsedClues): boole
     clues.concept !== undefined;
 };
 
-const buildReadArgs = (candidate: Candidate): { tool: QualityTool; args: Record<string, unknown> } | null => {
+const buildReadArgs = (candidate: Candidate): { tool: QualityTool; args: Record<string, unknown> } => {
   if (candidate.symbolId !== undefined) {
     return { tool: 'get_symbol_source', args: { symbolId: candidate.symbolId, tokenBudget: 1024 } };
   }
@@ -315,12 +329,9 @@ const buildReadArgs = (candidate: Candidate): { tool: QualityTool; args: Record<
   return { tool: 'read_file', args: { filePath: candidate.filePath, startByte: 0, endByte: READ_MAX_BYTES } };
 };
 
-const buildRReadArgs = (candidate: Candidate): { tool: QualityTool; args: Record<string, unknown> } | null => {
-  if (candidate.line !== undefined && candidate.character !== undefined) {
-    // Approximate byte budget: we cannot map line/char to bytes without the file,
-    // so read a bounded window from the top of the file. Tests use short files.
-    return { tool: 'read_file', args: { filePath: candidate.filePath, startByte: 0, endByte: READ_MAX_BYTES } };
-  }
+const buildRReadArgs = (candidate: Candidate): { tool: QualityTool; args: Record<string, unknown> } => {
+  // Approximate byte budget: we cannot map line/char to bytes without the file,
+  // so read a bounded window from the top of the file. Tests use short files.
   return { tool: 'read_file', args: { filePath: candidate.filePath, startByte: 0, endByte: READ_MAX_BYTES } };
 };
 
@@ -328,12 +339,14 @@ const toAdoption = (observation: QualityObservation): SourceAdoption | null => {
   if (observation.status !== 'ok' || observation.results.length === 0) return null;
   const candidate = observation.results[0];
   if (!candidate) return null;
+  const sourceAdoption = observation.sourceAdoptions[0];
+  if (sourceAdoption !== undefined) return sourceAdoption;
   return {
     filePath: candidate.filePath,
     startByte: 0,
     endByte: observation.exposedBytes,
     content: candidate.preview ?? '',
-    sourceValidation: 'verified',
+    sourceValidation: 'unknown',
   };
 };
 
@@ -341,12 +354,14 @@ const toFileAdoption = (filePath: string, observation: QualityObservation): Sour
   if (observation.status !== 'ok') return null;
   const candidate = observation.results[0];
   if (!candidate) return null;
+  const sourceAdoption = observation.sourceAdoptions[0];
+  if (sourceAdoption !== undefined) return sourceAdoption;
   return {
     filePath,
     startByte: 0,
     endByte: observation.exposedBytes,
     content: candidate.preview ?? '',
-    sourceValidation: observation.sourceAdoptions[0]?.sourceValidation ?? 'verified',
+    sourceValidation: 'unknown',
   };
 };
 
@@ -446,7 +461,6 @@ export async function runQualityPolicy(
         invocationCount: cost.invocations + 1,
         retries,
         fallback,
-        adoptionSequence: undefined,
       }),
     );
   };
@@ -467,11 +481,8 @@ export async function runQualityPolicy(
     );
   };
 
-  const publishAdoption = async (source: SourceAdoption): Promise<void> => {
+  const publishAdoption = async (source: SourceAdoption, traceSequence?: number): Promise<void> => {
     adoptionCounter += 1;
-    const contentBytes = Buffer.byteLength(source.content, 'utf8');
-    const contentTokens = countTokens(source.content);
-    cost = { ...cost, contextBytes: cost.contextBytes + contentBytes, contextTokens: cost.contextTokens + contentTokens };
     const event: QualityAdoptionEvent = Object.freeze({
       sequence: adoptionCounter,
       source,
@@ -479,6 +490,13 @@ export async function runQualityPolicy(
       elapsedMs: elapsed(),
     });
     adoptionEvents.push(event);
+    if (traceSequence !== undefined) {
+      const traceIndex = trace.findIndex((traceEvent) => traceEvent.sequence === traceSequence);
+      const traceEvent = trace[traceIndex];
+      if (traceEvent !== undefined) {
+        trace[traceIndex] = Object.freeze({ ...traceEvent, adoptionSequence: event.sequence });
+      }
+    }
     if (observer) {
       try {
         await observer.onAdoptionPublished(event);
@@ -521,19 +539,19 @@ export async function runQualityPolicy(
     for (const candidate of candidates) {
       if (!canAfford(cost, limits, signal)) return false;
       const readSpec = adapter.arm === 'R' ? buildRReadArgs(candidate) : buildReadArgs(candidate);
-      if (readSpec === null) continue;
       const readObservation = await invokeTool('READ', readSpec.tool, readSpec.args, null, fallback, 0);
       cost = addObservationCost(cost, readObservation);
       if (signal.aborted) return false;
       const attemptedAdoption = adapter.arm === 'R' ? toFileAdoption(candidate.filePath, readObservation) : toAdoption(readObservation);
       if (attemptedAdoption === null) continue;
+      const readTraceSequence = trace[trace.length - 1]?.sequence;
       if (isVerifiedAdoption(attemptedAdoption, currentClues)) {
         adoption = attemptedAdoption;
-        await publishAdoption(attemptedAdoption);
+        await publishAdoption(attemptedAdoption, readTraceSequence);
         return true;
       }
       // Tentative/wrong adoption is recorded but we continue searching.
-      await publishAdoption(attemptedAdoption);
+      await publishAdoption(attemptedAdoption, readTraceSequence);
     }
     return false;
   };
@@ -554,24 +572,21 @@ export async function runQualityPolicy(
       tool === 'read_file'
         ? toFileAdoption(String(args.filePath ?? ''), observation)
         : toAdoption(observation);
+    const readTraceSequence = trace[trace.length - 1]?.sequence;
     if (attemptedAdoption !== null && isVerifiedAdoption(attemptedAdoption, currentClues)) {
       adoption = attemptedAdoption;
-      await publishAdoption(attemptedAdoption);
+      await publishAdoption(attemptedAdoption, readTraceSequence);
       return true;
     }
     if (attemptedAdoption !== null) {
-      await publishAdoption(attemptedAdoption);
+      await publishAdoption(attemptedAdoption, readTraceSequence);
     }
     return false;
   };
 
-  const runNavRoute = async (currentClues: ParsedClues, fallback: boolean): Promise<boolean> => {
-    if (currentClues.nav === undefined || (currentClues.position === undefined && currentClues.symbol === undefined)) return false;
-    const tool = currentClues.nav === 'definition'
-      ? 'get_definition'
-      : currentClues.nav === 'references'
-        ? 'get_references'
-        : 'get_implementations';
+  const runNavRoute = async (currentClues: ParsedClues, fallback: boolean): Promise<void> => {
+    if (currentClues.nav === undefined || (currentClues.position === undefined && currentClues.symbol === undefined)) return;
+    const tool = NAV_TOOL_BY_KIND[currentClues.nav];
     const args: Record<string, unknown> = currentClues.position !== undefined
       ? {
           filePath: currentClues.position.filePath,
@@ -580,31 +595,42 @@ export async function runQualityPolicy(
           maxResults: 20,
         }
       : { symbolId: currentClues.symbol, maxResults: 20 };
-    if (!canAfford(cost, limits, signal)) return false;
+    if (!canAfford(cost, limits, signal)) return;
     const observation = await invokeTool('VERIFY', tool, args, null, fallback, 0);
     cost = addObservationCost(cost, observation);
     recordNavigation(trace[trace.length - 1]?.sequence ?? 0, tool, observation);
-    if (signal.aborted) return false;
-    if (observation.status === 'ok' && observation.navigation && observation.navigation.locations.length > 0) {
-      const navAdoption: SourceAdoption = {
-        filePath: observation.navigation.locations[0]?.filePath ?? '',
-        startByte: 0,
-        endByte: 0,
-        content: '',
-        sourceValidation: 'verified',
-      };
-      adoption = navAdoption;
-      await publishAdoption(navAdoption);
-      return true;
-    }
-    return false;
+    if (signal.aborted) return;
   };
 
   // Primary routes.
   if (adapter.arm === 'N') {
     if (clues.nav !== undefined) {
-      if (await runNavRoute(clues, false)) return completeResult(cost, adoption, adoptionEvents, navigationEvents, trace);
-      if (await runSearchAndAdopt('FALLBACK', 'grep_search', { pattern: clues.id ?? clues.symbol ?? 'fallback', maxResults: limits.maxCandidates }, clues.id ?? clues.symbol ?? 'fallback', true, clues)) return completeResult(cost, adoption, adoptionEvents, navigationEvents, trace);
+      await runNavRoute(clues, false);
+      const searchPattern = clues.id ?? clues.symbol;
+      if (searchPattern !== undefined) {
+        if (await runSearchAndAdopt(
+          'FALLBACK',
+          'grep_search',
+          { pattern: searchPattern, maxResults: limits.maxCandidates },
+          searchPattern,
+          true,
+          clues,
+        )) return completeResult(cost, adoption, adoptionEvents, navigationEvents, trace);
+      } else if (clues.position !== undefined) {
+        const startLine = Math.max(1, clues.position.line - 2);
+        if (await runReadRoute(
+          'FALLBACK',
+          'get_context',
+          {
+            filePath: clues.position.filePath,
+            startLine,
+            endLine: clues.position.line + 2,
+            mode: 'bounded',
+          },
+          clues,
+          true,
+        )) return completeResult(cost, adoption, adoptionEvents, navigationEvents, trace);
+      }
     } else if (clues.symbol !== undefined) {
       if (await runReadRoute('READ', 'get_symbol_source', { symbolId: clues.symbol, tokenBudget: 1024 }, clues, false)) return completeResult(cost, adoption, adoptionEvents, navigationEvents, trace);
       if (clues.id !== undefined && (await runSearchAndAdopt('FALLBACK', 'grep_search', { pattern: clues.id, maxResults: limits.maxCandidates }, clues.id, true, clues))) return completeResult(cost, adoption, adoptionEvents, navigationEvents, trace);

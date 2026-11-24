@@ -114,6 +114,36 @@ describe('runQualityPolicy', () => {
     const sequences = result.trace.map((t) => t.sequence);
     expect(new Set(sequences).size).toBe(sequences.length);
     expect(sequences).toEqual([1, 2]);
+    expect(result.trace.find((event) => event.adoptionSequence !== undefined)).toMatchObject({
+      sequence: 2,
+      adoptionSequence: 1,
+    });
+    expect(result.adoptionEvents[0]?.sequence).toBe(1);
+  });
+
+  it('counts adopted bytes and tokens only once', async () => {
+    const adapter = fakeAdapter('N', (tool) => {
+      if (tool === 'grep_search') return okObservation([{ filePath: 'a.ts', line: 1, preview: 'x', rank: 1 }]);
+      return readObservation('a.ts', 'x');
+    });
+    const result = await runQualityPolicy(makeTask(['id:x']), adapter, QUALITY_BUDGETS_V1, new AbortController().signal);
+
+    expect(result.status).toBe('COMPLETE');
+    expect(result.contextBytes).toBe(2);
+    expect(result.contextTokens).toBe(2);
+    expect(result.adoptionEvents[0]?.cumulativeCost).toMatchObject({ contextBytes: 2, contextTokens: 2 });
+  });
+
+  it('does not double-count a rejected tentative adoption', async () => {
+    const adapter = fakeAdapter('N', (tool) => {
+      if (tool === 'grep_search') return okObservation([{ filePath: 'a.ts', line: 1, preview: 'answer', rank: 1 }]);
+      return readObservation('a.ts', 'other');
+    });
+    const result = await runQualityPolicy(makeTask(['id:answer']), adapter, QUALITY_BUDGETS_V1, new AbortController().signal);
+
+    expect(result.status).toBe('EXHAUSTED');
+    expect(result.adoption).toBeUndefined();
+    expect(result.adoptionEvents[0]?.cumulativeCost.contextBytes).toBe(11);
   });
 
   it('keeps raw queries out of normalizedPublicArgs and trace queryDigest is present', async () => {
@@ -151,14 +181,84 @@ describe('runQualityPolicy', () => {
   it('adopts a symbol clue via get_symbol_source on N', async () => {
     const adapter = fakeAdapter('N', (tool, args) => {
       if (tool === 'get_symbol_source') {
+        const content = 'export function answer(): number';
         expect(args.symbolId).toBe('answer');
-        return okObservation([{ filePath: 'src/answer.ts', symbolId: 'answer', preview: 'export function answer(): number', rank: 1 }]);
+        return okObservation(
+          [{ filePath: 'src/answer.ts', symbolId: 'answer', preview: content, rank: 1 }],
+          { sourceAdoptions: readObservation('src/answer.ts', content).sourceAdoptions },
+        );
       }
       return emptyOk();
     });
     const result = await runQualityPolicy(makeTask(['symbol:answer', 'file:src/answer.ts']), adapter, QUALITY_BUDGETS_V1, new AbortController().signal);
     expect(result.status).toBe('COMPLETE');
     expect(result.adoption?.content).toContain('answer');
+  });
+
+  it('does not promote unverified N-arm previews to verified adoptions', async () => {
+    const content = 'export function answer(): number';
+    const partialSource = readObservation('src/answer.ts', content).sourceAdoptions[0];
+    const adapter = fakeAdapter('N', (tool) => {
+      if (tool === 'get_symbol_source') {
+        return okObservation(
+          [{ filePath: 'src/answer.ts', symbolId: 'answer', preview: content, rank: 1 }],
+          {
+            sourceAdoptions: partialSource
+              ? [Object.freeze({ ...partialSource, sourceValidation: 'partial' })]
+              : [],
+          },
+        );
+      }
+      return emptyOk();
+    });
+    const result = await runQualityPolicy(
+      makeTask(['symbol:answer', 'file:src/answer.ts']),
+      adapter,
+      QUALITY_BUDGETS_V1,
+      new AbortController().signal,
+    );
+
+    expect(result.status).toBe('EXHAUSTED');
+    expect(result.adoption).toBeUndefined();
+    expect(result.adoptionEvents[0]?.source.sourceValidation).toBe('partial');
+  });
+
+  it('treats missing N-arm source validation as unknown', async () => {
+    const content = 'export function answer(): number';
+    const adapter = fakeAdapter('N', (tool) => {
+      if (tool === 'get_symbol_source') {
+        return okObservation([{ filePath: 'src/answer.ts', symbolId: 'answer', preview: content, rank: 1 }]);
+      }
+      return emptyOk();
+    });
+    const result = await runQualityPolicy(
+      makeTask(['symbol:answer', 'file:src/answer.ts']),
+      adapter,
+      QUALITY_BUDGETS_V1,
+      new AbortController().signal,
+    );
+
+    expect(result.status).toBe('EXHAUSTED');
+    expect(result.adoption).toBeUndefined();
+    expect(result.adoptionEvents[0]?.source.sourceValidation).toBe('unknown');
+  });
+
+  it('treats missing R-arm source validation as unknown', async () => {
+    const content = 'export function answer(): number';
+    const adapter = fakeAdapter('R', (tool) => {
+      expect(tool).toBe('read_file');
+      return okObservation([{ filePath: 'src/answer.ts', preview: content, rank: 1 }]);
+    });
+    const result = await runQualityPolicy(
+      makeTask(['file:src/answer.ts']),
+      adapter,
+      QUALITY_BUDGETS_V1,
+      new AbortController().signal,
+    );
+
+    expect(result.status).toBe('EXHAUSTED');
+    expect(result.adoption).toBeUndefined();
+    expect(result.adoptionEvents[0]?.source.sourceValidation).toBe('unknown');
   });
 
   it('requires an id clue to match content even when the file clue matches', async () => {
@@ -212,10 +312,12 @@ describe('runQualityPolicy', () => {
   });
 
   it('adopts the N-arm fallback read matching a nav position file', async () => {
-    const adapter = fakeAdapter('N', (tool) => {
+    const adapter = fakeAdapter('N', (tool, args) => {
       if (tool === 'get_definition') return emptyOk();
-      if (tool === 'grep_search') return okObservation([{ filePath: 'src/answer.ts', line: 4, preview: 'answer', rank: 1 }]);
       expect(tool).toBe('get_context');
+      expect(args.filePath).toBe('src/answer.ts');
+      expect(args.startLine).toBe(2);
+      expect(args.endLine).toBe(6);
       return readObservation('src/answer.ts', 'export function answer(): number');
     });
     const result = await runQualityPolicy(
@@ -227,6 +329,7 @@ describe('runQualityPolicy', () => {
     expect(result.status).toBe('COMPLETE');
     expect(result.adoption?.filePath).toBe('src/answer.ts');
     expect(result.trace.some((event) => event.fallback)).toBe(true);
+    expect(result.trace.some((event) => event.tool === 'grep_search')).toBe(false);
   });
 
   it('adopts an id clue via rg_search on R', async () => {
@@ -311,34 +414,40 @@ describe('runQualityPolicy', () => {
     expect(result.logicalOperations).toBe(1);
   });
 
-  it('records navigation events for LSP lookups', async () => {
-    const locations = [
-      { filePath: 'a.ts', startLine: 1, startCharacter: 0, endLine: 1, endCharacter: 4 },
-      { filePath: 'a.ts', startLine: 1, startCharacter: 10, endLine: 1, endCharacter: 14 },
-    ];
-    const adapter = fakeAdapter('N', (tool) =>
-      tool === 'get_references'
-        ? okObservation([], {
-            navigation: {
-              locations: Object.freeze([...locations]),
-              truncated: false,
-              sourceValidation: 'verified',
-              capability: 'supported',
-            },
-          })
-        : emptyOk(),
-    );
-    const result = await runQualityPolicy(
-      makeTask(['position:a.ts@1:5', 'nav:references']),
-      adapter,
-      QUALITY_BUDGETS_V1,
-      new AbortController().signal,
-    );
-    expect(result.status).toBe('COMPLETE');
-    expect(result.navigationEvents).toHaveLength(1);
-    expect(result.navigationEvents[0]?.locations).toHaveLength(2);
-    expect(result.navigationEvents[0]?.tool).toBe('get_references');
-  });
+  it.each(['verified', 'partial', 'unknown'] as const)(
+    'records %s navigation events without adopting locations as source',
+    async (sourceValidation) => {
+      const locations = [
+        { filePath: 'a.ts', startLine: 1, startCharacter: 0, endLine: 1, endCharacter: 4 },
+        { filePath: 'a.ts', startLine: 1, startCharacter: 10, endLine: 1, endCharacter: 14 },
+      ];
+      const adapter = fakeAdapter('N', (tool) =>
+        tool === 'get_references'
+          ? okObservation([], {
+              navigation: {
+                locations: Object.freeze([...locations]),
+                truncated: false,
+                sourceValidation,
+                capability: 'supported',
+              },
+            })
+          : emptyOk(),
+      );
+      const result = await runQualityPolicy(
+        makeTask(['position:a.ts@1:5', 'nav:references']),
+        adapter,
+        QUALITY_BUDGETS_V1,
+        new AbortController().signal,
+      );
+      expect(result.status).toBe('EXHAUSTED');
+      expect(result.adoption).toBeUndefined();
+      expect(result.adoptionEvents).toHaveLength(0);
+      expect(result.navigationEvents).toHaveLength(1);
+      expect(result.navigationEvents[0]?.locations).toHaveLength(2);
+      expect(result.navigationEvents[0]?.tool).toBe('get_references');
+      expect(result.navigationEvents[0]?.sourceValidation).toBe(sourceValidation);
+    },
+  );
 
   it('notifies the observer at each adoption without allowing observer errors to abort policy', async () => {
     const events: Array<QualityPolicyResult['adoptionEvents'][number]> = [];
