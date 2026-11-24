@@ -20,6 +20,8 @@ import {
   type QualityInvocationContext,
   type QualityTool,
 } from '../../../benchmarks/quality/adapters.js';
+import { QUALITY_BUDGETS_V1 } from '../../../benchmarks/quality/contracts.js';
+import { runQualityPolicy } from '../../../benchmarks/quality/policy.js';
 import type { buildToolHandlers } from '../../../../src/server/tools/tool-support.js';
 import type { NexusToolCallResult, ToolHandler } from '../../../../src/server/tools/types.js';
 
@@ -494,8 +496,35 @@ describe('createRipgrepAdapter', () => {
     expect(observation.status).toBe('ok');
     expect(observation.normalizedPublicArgs).toEqual({ filePath: 'src/file.ts', startByte: 0, endByte: 6 });
     expect(observation.sourceAdoptions).toHaveLength(1);
-    expect(observation.sourceAdoptions[0]?.sourceValidation).toBe('partial');
+    expect(observation.sourceAdoptions[0]?.sourceValidation).toBe('verified');
     expect(observation.results[0]?.preview).toBe('conten');
+    await cleanup(root);
+  });
+
+  it('completes R adoption after the first verified read without searching fallback tokens', async () => {
+    const root = await makeRoot();
+    await writeFiles(root, {
+      'src/a-target.ts': 'charlie\n',
+      'src/b-target.ts': 'charlie\n',
+    });
+    const adapter = createRipgrepAdapter(root, rgExecutable);
+
+    const result = await runQualityPolicy(
+      {
+        taskDescription: 'find the matching source',
+        initialClues: ['concept:alpha bravo charlie delta echo'],
+      },
+      adapter,
+      QUALITY_BUDGETS_V1,
+      new AbortController().signal,
+    );
+
+    expect(result.status).toBe('COMPLETE');
+    expect(result.adoption).toMatchObject({
+      filePath: 'src/a-target.ts',
+      sourceValidation: 'verified',
+    });
+    expect(result.trace.map((event) => event.tool)).toEqual(['rg_search', 'rg_search', 'read_file']);
     await cleanup(root);
   });
 

@@ -972,7 +972,7 @@ export const createRipgrepAdapter = (
         startByte,
         endByte: actualEndByte,
         content,
-        sourceValidation: 'partial',
+        sourceValidation: 'verified',
       };
 
       return makeObservation(
