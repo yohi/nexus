@@ -703,7 +703,7 @@ export async function runQualityPolicy(
       const tokens = clues.concept
         .split(/\s+/)
         .filter((t) => t.length >= 3 && t !== clues.concept)
-        .sort((a, b) => (b.length - a.length || a.localeCompare(b)))
+        .sort((a, b) => (b.length - a.length || compareCodeUnitStrings(a, b)))
         .slice(0, 3);
       for (const token of tokens) {
         if (await runSearchAndAdopt('FALLBACK', 'rg_search', { query: token }, token, true, clues)) return completeResult(cost, adoption, adoptionEvents, navigationEvents, trace);

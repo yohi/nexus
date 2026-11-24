@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import {
   canonicalJson,
   qualityArmOrder,
@@ -664,6 +664,40 @@ describe('runQualityPolicy', () => {
     }
     for (let i = 1; i < result.adoptionEvents.length; i += 1) {
       expect(result.adoptionEvents[i]?.elapsedMs).toBeGreaterThanOrEqual(result.adoptionEvents[i - 1]?.elapsedMs ?? 0);
+    }
+  });
+
+  it('selects fallback tokens in code-unit order independent of locale collation', async () => {
+    const queries: string[] = [];
+    const localeCompareSpy = vi.spyOn(String.prototype, 'localeCompare').mockImplementation(function (
+      this: string,
+      compareString: string,
+    ) {
+      return this < compareString ? 1 : this > compareString ? -1 : 0;
+    });
+
+    try {
+      const adapter = fakeAdapter('R', (tool, args) => {
+        expect(tool).toBe('rg_search');
+        queries.push(String(args.query));
+        return emptyOk();
+      });
+      const result = await runQualityPolicy(
+        makeTask(['concept:alpha bravo charlie delta echo']),
+        adapter,
+        QUALITY_BUDGETS_V1,
+        new AbortController().signal,
+      );
+
+      expect(result.status).toBe('EXHAUSTED');
+      expect(queries).toEqual([
+        'alpha bravo charlie delta echo',
+        'charlie',
+        'alpha',
+        'bravo',
+      ]);
+    } finally {
+      localeCompareSpy.mockRestore();
     }
   });
 });
