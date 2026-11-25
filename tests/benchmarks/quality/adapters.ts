@@ -217,6 +217,85 @@ const findLineStartByte = async (
   return fileLength;
 };
 
+const utf8SequenceLength = (leadingByte: number | undefined): number => {
+  if (leadingByte === undefined) return 0;
+  if (leadingByte <= 0x7f) return 1;
+  if (leadingByte >= 0xc2 && leadingByte <= 0xdf) return 2;
+  if (leadingByte >= 0xe0 && leadingByte <= 0xef) return 3;
+  if (leadingByte >= 0xf0 && leadingByte <= 0xf4) return 4;
+  return 0;
+};
+
+const isUtf8SequenceAt = (bytes: Buffer, start: number, length: number): boolean => {
+  if (length < 2 || start + length > bytes.length) return false;
+  const first = bytes[start];
+  const second = bytes[start + 1];
+  if (first === undefined || second === undefined) return false;
+  if ((second & 0xc0) !== 0x80) return false;
+  if (first === 0xe0 && second < 0xa0) return false;
+  if (first === 0xed && second > 0x9f) return false;
+  if (first === 0xf0 && second < 0x90) return false;
+  if (first === 0xf4 && second > 0x8f) return false;
+  for (let index = 2; index < length; index += 1) {
+    const continuation = bytes[start + index];
+    if (continuation === undefined || (continuation & 0xc0) !== 0x80) return false;
+  }
+  return true;
+};
+
+const readBoundaryProbe = async (
+  fileHandle: Awaited<ReturnType<typeof open>>,
+  boundary: number,
+  fileLength: number,
+): Promise<{ readonly bytes: Buffer; readonly offset: number }> => {
+  const offset = Math.max(0, boundary - 3);
+  const buffer = Buffer.alloc(Math.min(7, fileLength - offset));
+  const { bytesRead } = await fileHandle.read(buffer, 0, buffer.length, offset);
+  return { bytes: buffer.subarray(0, bytesRead), offset };
+};
+
+const findUtf8CodePointCrossingBoundary = (
+  probe: { readonly bytes: Buffer; readonly offset: number },
+  boundary: number,
+): { readonly startByte: number; readonly endByte: number } | undefined => {
+  const boundaryIndex = boundary - probe.offset;
+  const firstCandidate = Math.max(0, boundaryIndex - 3);
+  for (let index = firstCandidate; index < boundaryIndex; index += 1) {
+    const length = utf8SequenceLength(probe.bytes[index]);
+    if (
+      length > 1 &&
+      index + length > boundaryIndex &&
+      isUtf8SequenceAt(probe.bytes, index, length)
+    ) {
+      return {
+        startByte: probe.offset + index,
+        endByte: probe.offset + index + length,
+      };
+    }
+  }
+  return undefined;
+};
+
+const alignUtf8Window = async (
+  fileHandle: Awaited<ReturnType<typeof open>>,
+  startByte: number,
+  endByte: number,
+  fileLength: number,
+): Promise<{ readonly startByte: number; readonly endByte: number }> => {
+  const startProbe = await readBoundaryProbe(fileHandle, startByte, fileLength);
+  const startCodePoint = findUtf8CodePointCrossingBoundary(startProbe, startByte);
+  const alignedStartByte = startCodePoint?.endByte ?? startByte;
+
+  const endProbe = await readBoundaryProbe(fileHandle, endByte, fileLength);
+  const endCodePoint = findUtf8CodePointCrossingBoundary(endProbe, endByte);
+  const alignedEndByte = endCodePoint?.startByte ?? endByte;
+
+  return {
+    startByte: alignedStartByte,
+    endByte: Math.max(alignedStartByte, alignedEndByte),
+  };
+};
+
 const RG_ARGV_POLICY = Object.freeze({
   fixedArguments: Object.freeze([
     '--no-config',
@@ -269,7 +348,7 @@ const contractDigest = (
   return sha256(utf8Bytes(payload));
 };
 
-const queryDigest = (publicQuery: string): string =>
+export const queryDigest = (publicQuery: string): string =>
   sha256(utf8Bytes(`quality-query-v1\0${publicQuery}`));
 
 const redactArgvQuery = (argv: readonly string[], publicQuery: string): readonly string[] => {
@@ -896,6 +975,7 @@ export const createRipgrepAdapter = (
     }
 
     let startByte = Math.max(0, clampInt(args.startByte, 0));
+    const alignUtf8Boundaries = args.alignUtf8Boundaries === true;
     const requestedStartLine =
       typeof args.startLine === 'number' && Number.isSafeInteger(args.startLine) && args.startLine >= 1
         ? args.startLine
@@ -950,14 +1030,33 @@ export const createRipgrepAdapter = (
         );
       }
 
-      const slice = buffer.subarray(0, bytesRead);
-      const actualEndByte = startByte + bytesRead;
+      let actualStartByte = startByte;
+      let actualEndByte = startByte + bytesRead;
+      let slice = buffer.subarray(0, bytesRead);
+      if (alignUtf8Boundaries) {
+        const aligned = await alignUtf8Window(fileHandle, actualStartByte, actualEndByte, fileLength);
+        actualStartByte = aligned.startByte;
+        actualEndByte = aligned.endByte;
+        slice = slice.subarray(actualStartByte - startByte, actualEndByte - startByte);
+        if (signal.aborted) {
+          const timedOut = isTimeoutSignal(signal);
+          return makeObservation(
+            timedOut ? 'timeout' : 'cancelled',
+            [],
+            sha256(''),
+            Object.freeze({ filePath: toForwardSlashes(relativePath), startByte: actualStartByte, endByte: actualEndByte }),
+            [],
+            timedOut ? 'TIMEOUT' : 'REQUEST_CANCELLED',
+          );
+        }
+      }
       const content = slice.toString('utf8');
       const sourceValidation = Buffer.from(content, 'utf8').equals(slice) ? 'verified' : 'partial';
       const normalizedArgs = Object.freeze({
         filePath: toForwardSlashes(relativePath),
         ...(requestedStartLine === undefined ? {} : { startLine: requestedStartLine }),
-        startByte,
+        ...(alignUtf8Boundaries ? { alignUtf8Boundaries: true } : {}),
+        startByte: actualStartByte,
         endByte: actualEndByte,
       });
 
@@ -970,7 +1069,7 @@ export const createRipgrepAdapter = (
 
       const adoption: SourceAdoption = {
         filePath: toForwardSlashes(relativePath),
-        startByte,
+        startByte: actualStartByte,
         endByte: actualEndByte,
         content,
         sourceValidation,

@@ -6,7 +6,12 @@ import {
   type QualityPolicyObserver,
   type QualityPolicyResult,
 } from '../../../benchmarks/quality/policy.js';
-import type { QualityAdapter, QualityObservation, QualityTool } from '../../../benchmarks/quality/adapters.js';
+import {
+  queryDigest,
+  type QualityAdapter,
+  type QualityObservation,
+  type QualityTool,
+} from '../../../benchmarks/quality/adapters.js';
 import type { PublicQualityTask } from '../../../benchmarks/quality/contracts.js';
 import { QUALITY_BUDGETS_V1 } from '../../../benchmarks/quality/contracts.js';
 
@@ -183,7 +188,7 @@ describe('runQualityPolicy', () => {
     const searchTrace = result.trace.find((t) => t.tool === 'grep_search');
     expect(searchTrace).toBeDefined();
     expect(searchTrace?.normalizedPublicArgs).not.toHaveProperty('pattern');
-    expect(searchTrace?.queryDigest).toMatch(/^[a-f0-9]{64}$/);
+    expect(searchTrace?.queryDigest).toBe(queryDigest('secret'));
   });
 
   it('adopts a file clue via bounded get_context on N', async () => {
@@ -410,7 +415,37 @@ describe('runQualityPolicy', () => {
       new AbortController().signal,
     );
 
-    expect(readArgs).toEqual({ filePath: 'src/deep.ts', startByte: 6144, endByte: 10240 });
+    expect(readArgs).toEqual({
+      filePath: 'src/deep.ts',
+      startByte: 6144,
+      endByte: 10240,
+      alignUtf8Boundaries: true,
+    });
+    expect(result.status).toBe('COMPLETE');
+  });
+
+  it('aligns an R-arm line-based candidate read to UTF-8 boundaries', async () => {
+    let readArgs: Readonly<Record<string, unknown>> | undefined;
+    const adapter = fakeAdapter('R', (tool, args) => {
+      if (tool === 'rg_search') {
+        return okObservation([{ filePath: 'src/deep.ts', line: 700, preview: 'answer', rank: 1 }]);
+      }
+      readArgs = args;
+      return readObservation('src/deep.ts', 'answer');
+    });
+
+    const result = await runQualityPolicy(
+      makeTask(['id:answer']),
+      adapter,
+      QUALITY_BUDGETS_V1,
+      new AbortController().signal,
+    );
+
+    expect(readArgs).toEqual({
+      filePath: 'src/deep.ts',
+      startLine: 700,
+      alignUtf8Boundaries: true,
+    });
     expect(result.status).toBe('COMPLETE');
   });
 
@@ -428,7 +463,7 @@ describe('runQualityPolicy', () => {
       new AbortController().signal,
     );
 
-    expect(readArgs).toEqual({ filePath: 'src/deep.ts', startLine: 700 });
+    expect(readArgs).toEqual({ filePath: 'src/deep.ts', startLine: 700, alignUtf8Boundaries: true });
     expect(result.status).toBe('COMPLETE');
   });
 

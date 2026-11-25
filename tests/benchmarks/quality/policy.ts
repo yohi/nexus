@@ -1,6 +1,14 @@
 import { createHash } from 'node:crypto';
 import { getEncoding } from 'js-tiktoken';
-import type { QualityAdapter, NormalizedPublicArgs, PublicSourceLocation, QualityObservation, QualityObservationStatus, QualityTool } from './adapters.js';
+import {
+  queryDigest,
+  type NormalizedPublicArgs,
+  type PublicSourceLocation,
+  type QualityAdapter,
+  type QualityObservation,
+  type QualityObservationStatus,
+  type QualityTool,
+} from './adapters.js';
 import type { PublicQualityTask, QualityArm, QualityBudgets } from './contracts.js';
 import type { SourceAdoption } from './oracle.js';
 
@@ -109,9 +117,6 @@ const countTokens = (text: string): number => {
 const argsDigest = (normalized: NormalizedPublicArgs): string =>
   sha256(utf8Bytes(canonicalJson(normalized)));
 
-const queryDigest = (query: string): string =>
-  sha256(utf8Bytes(`quality-query-v1\0${query}`));
-
 const emptyObject: NormalizedPublicArgs = Object.freeze({});
 
 const isPublicJsonValue = (value: unknown): value is NormalizedPublicArgs[string] => {
@@ -153,7 +158,7 @@ const normalizedArgsForTool = (tool: QualityTool, args: Readonly<Record<string, 
       return emptyObject;
     case 'read_file': {
       const out: Record<string, NormalizedPublicArgs[string]> = {};
-      for (const key of ['filePath', 'startByte', 'endByte', 'startLine']) {
+      for (const key of ['filePath', 'startByte', 'endByte', 'startLine', 'alignUtf8Boundaries']) {
         const value = args[key];
         if (isPublicJsonValue(value)) out[key] = value;
       }
@@ -348,13 +353,24 @@ const buildRReadArgs = (candidate: Candidate): { tool: QualityTool; args: Record
     const startByte = Math.max(0, candidate.matchStartByte - Math.floor(READ_MAX_BYTES / 2));
     return {
       tool: 'read_file',
-      args: { filePath: candidate.filePath, startByte, endByte: startByte + READ_MAX_BYTES },
+      args: {
+        filePath: candidate.filePath,
+        startByte,
+        endByte: startByte + READ_MAX_BYTES,
+        alignUtf8Boundaries: true,
+      },
     };
   }
   if (candidate.line !== undefined) {
-    return { tool: 'read_file', args: { filePath: candidate.filePath, startLine: candidate.line } };
+    return {
+      tool: 'read_file',
+      args: { filePath: candidate.filePath, startLine: candidate.line, alignUtf8Boundaries: true },
+    };
   }
-  return { tool: 'read_file', args: { filePath: candidate.filePath, startByte: 0, endByte: READ_MAX_BYTES } };
+  return {
+    tool: 'read_file',
+    args: { filePath: candidate.filePath, startByte: 0, endByte: READ_MAX_BYTES, alignUtf8Boundaries: true },
+  };
 };
 
 const toAdoption = (observation: QualityObservation): SourceAdoption | null => {
@@ -688,13 +704,31 @@ export async function runQualityPolicy(
   } else {
     // R arm
     if (clues.nav !== undefined && clues.position !== undefined) {
-      if (await runReadRoute('READ', 'read_file', { filePath: clues.position.filePath, startLine: clues.position.line }, clues, false)) return completeResult(cost, adoption, adoptionEvents, navigationEvents, trace);
+      if (await runReadRoute(
+        'READ',
+        'read_file',
+        { filePath: clues.position.filePath, startLine: clues.position.line, alignUtf8Boundaries: true },
+        clues,
+        false,
+      )) return completeResult(cost, adoption, adoptionEvents, navigationEvents, trace);
       if (clues.id !== undefined && (await runSearchAndAdopt('FALLBACK', 'rg_search', { query: clues.id }, clues.id, true, clues))) return completeResult(cost, adoption, adoptionEvents, navigationEvents, trace);
     } else if (clues.symbol !== undefined) {
       if (clues.id !== undefined && (await runSearchAndAdopt('DISCOVER', 'rg_search', { query: clues.id }, clues.id, false, clues))) return completeResult(cost, adoption, adoptionEvents, navigationEvents, trace);
-      if (clues.file !== undefined && (await runReadRoute('READ', 'read_file', { filePath: clues.file, startByte: 0, endByte: READ_MAX_BYTES }, clues, false))) return completeResult(cost, adoption, adoptionEvents, navigationEvents, trace);
+      if (clues.file !== undefined && (await runReadRoute(
+        'READ',
+        'read_file',
+        { filePath: clues.file, startByte: 0, endByte: READ_MAX_BYTES, alignUtf8Boundaries: true },
+        clues,
+        false,
+      ))) return completeResult(cost, adoption, adoptionEvents, navigationEvents, trace);
     } else if (clues.file !== undefined) {
-      if (await runReadRoute('READ', 'read_file', { filePath: clues.file, startByte: 0, endByte: READ_MAX_BYTES }, clues, false)) return completeResult(cost, adoption, adoptionEvents, navigationEvents, trace);
+      if (await runReadRoute(
+        'READ',
+        'read_file',
+        { filePath: clues.file, startByte: 0, endByte: READ_MAX_BYTES, alignUtf8Boundaries: true },
+        clues,
+        false,
+      )) return completeResult(cost, adoption, adoptionEvents, navigationEvents, trace);
       if (clues.id !== undefined && (await runSearchAndAdopt('FALLBACK', 'rg_search', { query: clues.id }, clues.id, true, clues))) return completeResult(cost, adoption, adoptionEvents, navigationEvents, trace);
     } else if (clues.id !== undefined) {
       if (await runSearchAndAdopt('DISCOVER', 'rg_search', { query: clues.id }, clues.id, false, clues)) return completeResult(cost, adoption, adoptionEvents, navigationEvents, trace);

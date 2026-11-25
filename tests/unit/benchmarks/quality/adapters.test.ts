@@ -525,6 +525,61 @@ describe('createRipgrepAdapter', () => {
     await cleanup(root);
   });
 
+  it.each(['α', 'あ', '😀'] as const)(
+    'aligns opt-in byte windows inward when their edges split UTF-8 characters (%s)',
+    async (character) => {
+      const root = await makeRoot();
+      const characterBytes = Buffer.byteLength(character, 'utf8');
+      const startByte = 1001;
+      const endByte = startByte + 4096;
+      const middle = 'b'.repeat(endByte - 1 - 1000 - characterBytes);
+      await writeFiles(root, { 'src/file.ts': `${'x'.repeat(1000)}${character}${middle}${character}tail\n` });
+      const adapter = createRipgrepAdapter(root, rgExecutable);
+
+      const observation = await adapter.invoke(
+        'read_file',
+        { filePath: 'src/file.ts', startByte, endByte, alignUtf8Boundaries: true },
+        new AbortController().signal,
+        ctx(1),
+      );
+
+      expect(observation.status).toBe('ok');
+      expect(observation.normalizedPublicArgs).toMatchObject({
+        startByte: 1000 + characterBytes,
+        endByte: endByte - 1,
+      });
+      expect(observation.sourceAdoptions[0]).toMatchObject({
+        startByte: 1000 + characterBytes,
+        endByte: endByte - 1,
+        content: middle,
+        sourceValidation: 'verified',
+      });
+      await cleanup(root);
+    },
+  );
+
+  it('aligns an opt-in startLine read when its 4 KiB end splits a UTF-8 character', async () => {
+    const root = await makeRoot();
+    await writeFiles(root, { 'src/file.ts': `${'x'.repeat(4095)}あtail\n` });
+    const adapter = createRipgrepAdapter(root, rgExecutable);
+
+    const observation = await adapter.invoke(
+      'read_file',
+      { filePath: 'src/file.ts', startLine: 1, alignUtf8Boundaries: true },
+      new AbortController().signal,
+      ctx(1),
+    );
+
+    expect(observation.status).toBe('ok');
+    expect(observation.sourceAdoptions[0]).toMatchObject({
+      startByte: 0,
+      endByte: 4095,
+      content: 'x'.repeat(4095),
+      sourceValidation: 'verified',
+    });
+    await cleanup(root);
+  });
+
   it('completes R adoption after the first verified read without searching fallback tokens', async () => {
     const root = await makeRoot();
     await writeFiles(root, {
