@@ -953,6 +953,7 @@ export const createRipgrepAdapter = (
       const slice = buffer.subarray(0, bytesRead);
       const actualEndByte = startByte + bytesRead;
       const content = slice.toString('utf8');
+      const sourceValidation = Buffer.from(content, 'utf8').equals(slice) ? 'verified' : 'partial';
       const normalizedArgs = Object.freeze({
         filePath: toForwardSlashes(relativePath),
         ...(requestedStartLine === undefined ? {} : { startLine: requestedStartLine }),
@@ -972,7 +973,7 @@ export const createRipgrepAdapter = (
         startByte,
         endByte: actualEndByte,
         content,
-        sourceValidation: 'verified',
+        sourceValidation,
       };
 
       return makeObservation(

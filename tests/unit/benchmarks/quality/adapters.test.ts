@@ -501,6 +501,30 @@ describe('createRipgrepAdapter', () => {
     await cleanup(root);
   });
 
+  it.each([
+    { content: 'αtail', startByte: 1, endByte: 3 },
+    { content: 'tailα', startByte: 4, endByte: 5 },
+  ])('marks read_file as partial when its byte range splits a UTF-8 character ($startByte-$endByte)', async ({
+    content,
+    startByte,
+    endByte,
+  }) => {
+    const root = await makeRoot();
+    await writeFiles(root, { 'src/file.ts': content });
+    const adapter = createRipgrepAdapter(root, rgExecutable);
+
+    const observation = await adapter.invoke(
+      'read_file',
+      { filePath: 'src/file.ts', startByte, endByte },
+      new AbortController().signal,
+      ctx(1),
+    );
+
+    expect(observation.status).toBe('ok');
+    expect(observation.sourceAdoptions[0]?.sourceValidation).toBe('partial');
+    await cleanup(root);
+  });
+
   it('completes R adoption after the first verified read without searching fallback tokens', async () => {
     const root = await makeRoot();
     await writeFiles(root, {
