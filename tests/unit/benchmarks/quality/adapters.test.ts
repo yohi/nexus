@@ -532,8 +532,9 @@ describe('createRipgrepAdapter', () => {
       const characterBytes = Buffer.byteLength(character, 'utf8');
       const startByte = 1001;
       const endByte = startByte + 4096;
-      const middle = 'b'.repeat(endByte - 1 - 1000 - characterBytes);
-      await writeFiles(root, { 'src/file.ts': `${'x'.repeat(1000)}${character}${middle}${character}tail\n` });
+      await writeFiles(root, {
+        'src/file.ts': `${'x'.repeat(1000)}${character}${'b'.repeat(endByte - 1 - 1000 - characterBytes)}${character}tail\n`,
+      });
       const adapter = createRipgrepAdapter(root, rgExecutable);
 
       const observation = await adapter.invoke(
@@ -546,12 +547,12 @@ describe('createRipgrepAdapter', () => {
       expect(observation.status).toBe('ok');
       expect(observation.normalizedPublicArgs).toMatchObject({
         startByte: 1000 + characterBytes,
-        endByte: endByte - 1,
+        endByte: 5083,
       });
       expect(observation.sourceAdoptions[0]).toMatchObject({
         startByte: 1000 + characterBytes,
-        endByte: endByte - 1,
-        content: middle,
+        endByte: 5083,
+        content: 'b'.repeat(5083 - (1000 + characterBytes)),
         sourceValidation: 'verified',
       });
       await cleanup(root);
@@ -573,9 +574,31 @@ describe('createRipgrepAdapter', () => {
     expect(observation.status).toBe('ok');
     expect(observation.sourceAdoptions[0]).toMatchObject({
       startByte: 0,
-      endByte: 4095,
-      content: 'x'.repeat(4095),
+      endByte: 4082,
+      content: 'x'.repeat(4082),
       sourceValidation: 'verified',
+    });
+    await cleanup(root);
+  });
+
+  it('returns an empty aligned range inside the actual read window when it contains no full UTF-8 character', async () => {
+    const root = await makeRoot();
+    await writeFiles(root, { 'src/file.ts': 'a😀z' });
+    const adapter = createRipgrepAdapter(root, rgExecutable);
+
+    const observation = await adapter.invoke(
+      'read_file',
+      { filePath: 'src/file.ts', startByte: 2, endByte: 3, alignUtf8Boundaries: true },
+      new AbortController().signal,
+      ctx(1),
+    );
+
+    expect(observation.status).toBe('ok');
+    expect(observation.normalizedPublicArgs).toMatchObject({ startByte: 5, endByte: 5 });
+    expect(observation.sourceAdoptions[0]).toMatchObject({
+      startByte: 5,
+      endByte: 5,
+      content: '',
     });
     await cleanup(root);
   });
@@ -607,25 +630,77 @@ describe('createRipgrepAdapter', () => {
     await cleanup(root);
   });
 
-  it('reads a bounded window starting at a requested line beyond the first 4 KiB', async () => {
+  it('fails closed when finding a requested line would exceed the total 4 KiB read budget', async () => {
     const root = await makeRoot();
-    const prefix = `${'x'.repeat(4096)}\n`;
-    await writeFiles(root, { 'deep.ts': `${prefix}answer is here\n` });
+    const filePath = join(root, 'deep.ts');
+    await writeFile(filePath, `${'x'.repeat(4096)}\nanswer is here\n`, 'utf8');
+    let totalReadBytes = 0;
+    const originalOpen = fsPromises.open.bind(fsPromises);
+    vi.spyOn(fsPromises, 'open').mockImplementation(async (...args) => {
+      const handle = await originalOpen(...args);
+      if (args[0] === filePath) {
+        const originalRead = handle.read.bind(handle);
+        Object.defineProperty(handle, 'read', {
+          configurable: true,
+          value: async (buffer: Buffer, offset: number, length: number, position: number) => {
+            const result = await originalRead(buffer, offset, length, position);
+            totalReadBytes += result.bytesRead;
+            return result;
+          },
+        });
+      }
+      return handle;
+    });
+    syncBuiltinESMExports();
     const adapter = createRipgrepAdapter(root, rgExecutable);
 
     const observation = await adapter.invoke(
       'read_file',
-      { filePath: 'deep.ts', startLine: 2 },
+      { filePath: 'deep.ts', startLine: 2, alignUtf8Boundaries: true },
+      new AbortController().signal,
+      ctx(1),
+    );
+
+    expect(observation.status).toBe('error');
+    expect(observation.reasonCode).toBe('READ_BYTE_BUDGET_EXCEEDED');
+    expect(totalReadBytes).toBeLessThanOrEqual(4096);
+    await cleanup(root);
+  });
+
+  it('counts UTF-8 boundary probes toward the total 4 KiB read budget', async () => {
+    const root = await makeRoot();
+    const filePath = join(root, 'aligned.bin');
+    await writeFile(filePath, 'x'.repeat(5000), 'utf8');
+    let totalReadBytes = 0;
+    const originalOpen = fsPromises.open.bind(fsPromises);
+    vi.spyOn(fsPromises, 'open').mockImplementation(async (...args) => {
+      const handle = await originalOpen(...args);
+      if (args[0] === filePath) {
+        const originalRead = handle.read.bind(handle);
+        Object.defineProperty(handle, 'read', {
+          configurable: true,
+          value: async (buffer: Buffer, offset: number, length: number, position: number) => {
+            const result = await originalRead(buffer, offset, length, position);
+            totalReadBytes += result.bytesRead;
+            return result;
+          },
+        });
+      }
+      return handle;
+    });
+    syncBuiltinESMExports();
+    const adapter = createRipgrepAdapter(root, rgExecutable);
+
+    const observation = await adapter.invoke(
+      'read_file',
+      { filePath: 'aligned.bin', startByte: 0, endByte: 4096, alignUtf8Boundaries: true },
       new AbortController().signal,
       ctx(1),
     );
 
     expect(observation.status).toBe('ok');
-    expect(observation.sourceAdoptions[0]).toMatchObject({
-      startByte: Buffer.byteLength(prefix),
-      content: 'answer is here\n',
-    });
-    expect(observation.exposedBytes).toBeLessThanOrEqual(4096);
+    expect(totalReadBytes).toBe(4096);
+    expect(observation.sourceAdoptions[0]).toMatchObject({ startByte: 0, endByte: 4082 });
     await cleanup(root);
   });
 
@@ -1047,6 +1122,112 @@ describe('createNexusAdapter', () => {
     expect(observation.normalizedPublicArgs).not.toHaveProperty('query');
     expect(observation.normalizedPublicArgs).not.toHaveProperty('unknownField');
     expect(observation.normalizedPublicArgs).toEqual({ maxResults: 10 });
+  });
+
+  it('creates verified source adoptions only when read path and byte range can be validated', async () => {
+    const contextText = 'let answer = 1;';
+    const contextAdapter = createNexusAdapter(handlersFor({
+      get_context: handler({
+        content: [{ type: 'text', text: '' }],
+        structuredContent: {
+          status: 'ok',
+          filePath: 'src/a.ts',
+          startByte: 0,
+          endByte: Buffer.byteLength(contextText, 'utf8'),
+          startLine: 1,
+          endLine: 1,
+          content: contextText,
+        },
+      }),
+    }));
+    const context = await contextAdapter.invoke(
+      'get_context',
+      { filePath: 'src/a.ts', startLine: 1, endLine: 1, mode: 'bounded' },
+      new AbortController().signal,
+      ctx(1),
+    );
+
+    expect(context.sourceAdoptions).toEqual([{
+      filePath: 'src/a.ts',
+      startByte: 0,
+      endByte: 15,
+      content: contextText,
+      sourceValidation: 'verified',
+    }]);
+
+    const symbolId = 'symbol_v1_verified';
+    const symbolAdapter = createNexusAdapter(handlersFor({
+      get_symbol_source: handler({
+        content: [{ type: 'text', text: '' }],
+        structuredContent: {
+          status: 'ok',
+          freshness: 'fresh',
+          reindexRequired: false,
+          filePath: 'src/a.ts',
+          startByte: 20,
+          endByte: 35,
+          source: contextText,
+          request: { symbolId },
+        },
+      }),
+    }));
+    const symbol = await symbolAdapter.invoke(
+      'get_symbol_source',
+      { symbolId },
+      new AbortController().signal,
+      ctx(1),
+    );
+
+    expect(symbol.sourceAdoptions).toEqual([{
+      filePath: 'src/a.ts',
+      startByte: 20,
+      endByte: 35,
+      content: contextText,
+      sourceValidation: 'verified',
+    }]);
+  });
+
+  it('leaves read previews unverified when the requested path or range cannot be validated', async () => {
+    const adapter = createNexusAdapter(handlersFor({
+      get_context: handler({
+        content: [{ type: 'text', text: '' }],
+        structuredContent: {
+          status: 'ok',
+          filePath: 'other.ts',
+          startLine: 2,
+          endLine: 4,
+          content: 'answer',
+        },
+      }),
+      get_symbol_source: handler({
+        content: [{ type: 'text', text: '' }],
+        structuredContent: {
+          status: 'ok',
+          freshness: 'fresh',
+          reindexRequired: false,
+          source: 'answer',
+          request: { symbolId: 'symbol_v1_missing_range' },
+        },
+      }),
+    }));
+
+    const context = await adapter.invoke(
+      'get_context',
+      { filePath: 'src/a.ts', startLine: 1, endLine: 4, mode: 'bounded' },
+      new AbortController().signal,
+      ctx(1),
+    );
+    const symbol = await adapter.invoke(
+      'get_symbol_source',
+      { symbolId: 'symbol_v1_missing_range' },
+      new AbortController().signal,
+      ctx(2),
+    );
+
+    expect(context.results[0]?.preview).toBe('answer');
+    expect(context.sourceAdoptions).toHaveLength(0);
+    expect(symbol.results[0]?.preview).toBe('answer');
+    expect(symbol.sourceAdoptions).toHaveLength(0);
   });
 
   it('maps ok, not_found, stale_identity and unavailable statuses distinctly', async () => {

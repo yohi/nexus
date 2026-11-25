@@ -317,8 +317,12 @@ interface Candidate {
 }
 
 const isIdentifierInPreview = (identifier: string, preview?: string): boolean => {
-  if (!preview) return false;
-  const pattern = new RegExp(`\\b${identifier.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`);
+  if (!identifier || !preview) return false;
+  const escapedIdentifier = identifier.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const pattern = new RegExp(
+    `(?:^|[^\\p{ID_Continue}$\\u200c\\u200d])${escapedIdentifier}(?![\\p{ID_Continue}$\\u200c\\u200d])`,
+    'u',
+  );
   return pattern.test(preview);
 };
 
@@ -549,10 +553,27 @@ export async function runQualityPolicy(
       }
     }
     if (observer) {
+      let cleanupAbortListener = (): void => {};
+      const aborted = new Promise<void>((resolve) => {
+        const onAbort = (): void => {
+          cleanupAbortListener();
+          resolve();
+        };
+        cleanupAbortListener = () => signal.removeEventListener('abort', onAbort);
+        signal.addEventListener('abort', onAbort, { once: true });
+        if (signal.aborted) onAbort();
+      });
       try {
-        await observer.onAdoptionPublished(event);
+        await Promise.race([
+          Promise.resolve()
+            .then(() => observer.onAdoptionPublished(event))
+            .catch(() => undefined),
+          aborted,
+        ]);
       } catch {
         // Observer failures must not abort policy.
+      } finally {
+        cleanupAbortListener();
       }
     }
   };
@@ -570,6 +591,7 @@ export async function runQualityPolicy(
     cost = addObservationCost(cost, observation);
     recordNavigation(trace[trace.length - 1]?.sequence ?? 0, tool, observation);
     if (signal.aborted) return false;
+    if (cost.contextBytes > limits.maxContextBytes) return false;
 
     if (observation.status === 'ok' && observation.results.length === 0) return false;
 
@@ -593,6 +615,7 @@ export async function runQualityPolicy(
       const readObservation = await invokeTool('READ', readSpec.tool, readSpec.args, null, fallback, 0);
       cost = addObservationCost(cost, readObservation);
       if (signal.aborted) return false;
+      if (cost.contextBytes > limits.maxContextBytes) return false;
       const attemptedAdoption = adapter.arm === 'R' ? toFileAdoption(candidate.filePath, readObservation) : toAdoption(readObservation);
       if (attemptedAdoption === null) continue;
       const readTraceSequence = trace[trace.length - 1]?.sequence;
@@ -619,6 +642,7 @@ export async function runQualityPolicy(
     cost = addObservationCost(cost, observation);
     recordNavigation(trace[trace.length - 1]?.sequence ?? 0, tool, observation);
     if (signal.aborted) return false;
+    if (cost.contextBytes > limits.maxContextBytes) return false;
     const attemptedAdoption =
       tool === 'read_file'
         ? toFileAdoption(String(args.filePath ?? ''), observation)

@@ -994,7 +994,7 @@ describe('SymbolRetrievalService', () => {
       })).resolves.toEqual({ status: 'cancelled', reasonCode: 'REQUEST_CANCELLED', reindexRequired: false });
     });
 
-    it('leaves getSymbolSource output unchanged for the same symbol', async () => {
+    it('returns the verified source byte range for the same symbol', async () => {
       const text = 'export function foo() {}';
       const indexed = await indexParsed('src/a.ts', text);
       const symbolId = symbolIdOf(indexed.declarations, 'foo');
@@ -1002,6 +1002,9 @@ describe('SymbolRetrievalService', () => {
         status: 'ok',
         freshness: 'fresh',
         reindexRequired: false,
+        filePath: 'src/a.ts',
+        startByte: 0,
+        endByte: 24,
         source: text,
         request: { symbolId },
       });

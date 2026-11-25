@@ -686,13 +686,105 @@ describe('runQualityPolicy', () => {
     expect(result.logicalOperations).toBeLessThanOrEqual(QUALITY_BUDGETS_V1.maxLogicalOperations);
   });
 
-  it('stamps monotonic nonnegative elapsedMs on adoption events', async () => {
+  it('rejects an observation that exceeds the context byte budget without adopting it', async () => {
+    let invocations = 0;
     const adapter = fakeAdapter('N', (tool) => {
-      if (tool === 'grep_search') return okObservation([{ filePath: 'a.ts', line: 1, preview: 'answer', rank: 1 }]);
+      invocations += 1;
+      if (tool === 'grep_search') {
+        return okObservation([{ filePath: 'a.ts', line: 1, preview: '', rank: 1 }]);
+      }
+      if (tool === 'get_context') {
+        return {
+          ...readObservation('a.ts', 'answer'),
+          exposedBytes: QUALITY_BUDGETS_V1.maxContextBytes + 1,
+        };
+      }
+      return emptyOk();
+    });
+
+    const result = await runQualityPolicy(
+      makeTask(['id:answer']),
+      adapter,
+      QUALITY_BUDGETS_V1,
+      new AbortController().signal,
+    );
+
+    expect(result.status).toBe('EXHAUSTED');
+    expect(result.contextBytes).toBe(QUALITY_BUDGETS_V1.maxContextBytes + 1);
+    expect(result.adoption).toBeUndefined();
+    expect(result.adoptionEvents).toHaveLength(0);
+    expect(invocations).toBe(2);
+  });
+
+  it('recognizes Unicode identifiers without matching them inside another identifier', async () => {
+    const run = async (content: string): Promise<QualityPolicyResult> => {
+      const adapter = fakeAdapter('N', (tool) => {
+        if (tool === 'grep_search') {
+          return okObservation([{ filePath: 'a.ts', line: 1, preview: content, rank: 1 }]);
+        }
+        return readObservation('a.ts', content);
+      });
+      return runQualityPolicy(
+        makeTask(['id:変数']),
+        adapter,
+        QUALITY_BUDGETS_V1,
+        new AbortController().signal,
+      );
+    };
+
+    const exactIdentifier = await run('const 変数 = 1;');
+    const embeddedIdentifier = await run('const 別変数 = 1;');
+
+    expect(exactIdentifier.status).toBe('COMPLETE');
+    expect(embeddedIdentifier.status).toBe('EXHAUSTED');
+  });
+
+  it('returns when the observer is still pending after the request signal aborts', async () => {
+    const controller = new AbortController();
+    const observer: QualityPolicyObserver = {
+      onAdoptionPublished: () => {
+        controller.abort(new DOMException('cancelled', 'AbortError'));
+        return new Promise<void>(() => undefined);
+      },
+    };
+    const adapter = fakeAdapter('N', (tool) => {
+      if (tool === 'grep_search') {
+        return okObservation([{ filePath: 'a.ts', line: 1, preview: 'answer', rank: 1 }]);
+      }
       return readObservation('a.ts', 'answer');
+    });
+
+    let timeout: NodeJS.Timeout | undefined;
+    const outcome = await Promise.race([
+      runQualityPolicy(makeTask(['id:answer']), adapter, QUALITY_BUDGETS_V1, controller.signal, observer)
+        .then((value) => ({ kind: 'result' as const, value })),
+      new Promise<{ kind: 'timeout' }>((resolve) => {
+        timeout = setTimeout(() => resolve({ kind: 'timeout' }), 1_000);
+      }),
+    ]);
+    if (timeout !== undefined) clearTimeout(timeout);
+
+    expect(outcome.kind).toBe('result');
+    if (outcome.kind === 'result') {
+      expect(outcome.value.status).toBe('COMPLETE');
+      expect(outcome.value.adoptionEvents).toHaveLength(1);
+    }
+  });
+
+  it('stamps monotonic nonnegative elapsedMs on adoption events', async () => {
+    const adapter = fakeAdapter('N', (tool, args) => {
+      if (tool === 'grep_search') {
+        return okObservation([
+          { filePath: 'tentative.ts', line: 1, preview: 'answer', rank: 1 },
+          { filePath: 'final.ts', line: 1, preview: 'answer', rank: 2 },
+        ]);
+      }
+      const filePath = String(args.filePath);
+      return readObservation(filePath, filePath === 'tentative.ts' ? 'other' : 'answer');
     });
     const result = await runQualityPolicy(makeTask(['id:answer']), adapter, QUALITY_BUDGETS_V1, new AbortController().signal);
     expect(result.status).toBe('COMPLETE');
+    expect(result.adoptionEvents).toHaveLength(2);
     for (const event of result.adoptionEvents) {
       expect(event.elapsedMs).toBeGreaterThanOrEqual(0);
       expect(Number.isFinite(event.elapsedMs)).toBe(true);
