@@ -100,7 +100,7 @@ function matchGlob(filePath: string, glob?: string[]): boolean {
   return included;
 }
 
-function simpleGlobMatch(filePath: string, pattern: string): boolean {
+export function simpleGlobMatch(filePath: string, pattern: string): boolean {
   if (pattern === '*' || pattern === '**/*') {
     return true;
   }
@@ -108,7 +108,8 @@ function simpleGlobMatch(filePath: string, pattern: string): boolean {
     return true;
   }
   if (pattern.includes('*')) {
-    const regex = new RegExp(`^${pattern.replaceAll('*', '.*').replaceAll('.', '\\.')}$`);
+    const regexPattern = pattern.replace(/[.+?^${}()|[\]\\]/g, '\\$&').replaceAll('*', '.*');
+    const regex = new RegExp(`^${regexPattern}$`);
     return regex.test(filePath);
   }
   return filePath === pattern;
