@@ -1,7 +1,12 @@
 import { createHash } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
 import type { QualityArm } from '../../../../tests/benchmarks/quality/contracts.js';
-import type { QualityPolicyResult, QualityTraceEvent } from '../../../../tests/benchmarks/quality/policy.js';
+import { QUALITY_BUDGETS_V1, type PublicQualityTask } from '../../../../tests/benchmarks/quality/contracts.js';
+import {
+  runQualityPolicy,
+  type QualityPolicyResult,
+  type QualityTraceEvent,
+} from '../../../../tests/benchmarks/quality/policy.js';
 import type { SourceProvenance, SourceSnapshot } from '../../../../tests/benchmarks/quality/oracle.js';
 import {
   gradeQualityArm,
@@ -9,7 +14,7 @@ import {
   buildBaselineRgExecutionEvidence,
   type QualityPublicationEvidence,
 } from '../../../../tests/benchmarks/quality/scoring.js';
-import type { RgExecutionSnapshot } from '../../../../tests/benchmarks/quality/adapters.js';
+import type { QualityAdapter, QualityObservation, RgExecutionSnapshot } from '../../../../tests/benchmarks/quality/adapters.js';
 
 const sha256 = (content: string | Uint8Array): string =>
   createHash('sha256').update(content).digest('hex');
@@ -70,6 +75,43 @@ const emptyPolicy: QualityPolicyResult = {
   invocations: 0,
   contextBytes: 0,
   contextTokens: 0,
+};
+
+const refusalClues: PublicQualityTask = {
+  taskDescription: 'inspect the retired symbol',
+  initialClues: ['symbol:retired', 'id:retired'],
+};
+
+const runSymbolSourceAttempt = async (
+  result: Pick<QualityObservation, 'status' | 'reasonCode' | 'exposedBytes'>,
+  options: { signal?: AbortSignal; throws?: boolean } = {},
+) => {
+  let calls = 0;
+  const adapter: QualityAdapter = {
+    arm: 'N',
+    invoke: (tool, _args, _signal, context) => {
+      calls += 1;
+      if (options.throws && tool === 'get_symbol_source') {
+        return Promise.reject(new Error('private adapter failure'));
+      }
+      return Promise.resolve({
+        ...(tool === 'get_symbol_source' ? result : { status: 'ok' as const, reasonCode: undefined, exposedBytes: 0 }),
+        results: Object.freeze([]),
+        sourceAdoptions: Object.freeze([]),
+        rawDigest: sha256(`symbol-source:${context.traceSequence}`),
+        normalizedPublicArgs: Object.freeze({ symbolId: 'retired' }),
+      });
+    },
+  };
+  const policy = await runQualityPolicy(
+    refusalClues,
+    adapter,
+    QUALITY_BUDGETS_V1,
+    options.signal ?? new AbortController().signal,
+  );
+  const task = { ...baseTask, expectedRefusalConditions: ['SYMBOL_NOT_FOUND'] };
+  const graded = gradeQualityArm(task, snapshot, policy, []);
+  return { calls, policy, graded };
 };
 
 const makeTraceEvent = (tool: QualityTraceEvent['tool'], status: QualityTraceEvent['resultStatus'], resultCount: number): QualityTraceEvent => ({
@@ -163,18 +205,60 @@ describe('gradeQualityArm', () => {
     expect(result.correctSourceReached).toBe(false);
   });
 
-  it('returns CORRECT_REFUSAL only when an investigated target has the expected refusal reason', () => {
-    const refusalTask = { ...baseTask, expectedRefusalConditions: ['SYMBOL_NOT_FOUND'] };
-    const policy: QualityPolicyResult = {
-      ...emptyPolicy,
-      status: 'COMPLETE',
-      trace: [{
-        ...makeTraceEvent('get_symbol_source', 'not_found', 0),
-        reasonCode: 'SYMBOL_NOT_FOUND',
-      }],
-    };
-    const result = gradeQualityArm(refusalTask, snapshot, policy, []);
-    expect(result.observation).toBe('CORRECT_REFUSAL');
+  it('keeps a pre-start abort as not_run rather than scoring a refusal', async () => {
+    const controller = new AbortController();
+    controller.abort();
+    const { calls, policy, graded } = await runSymbolSourceAttempt(
+      { status: 'not_found', reasonCode: 'SYMBOL_NOT_FOUND', exposedBytes: 0 },
+      { signal: controller.signal },
+    );
+
+    expect(calls).toBe(0);
+    expect(policy.status).toBe('NOT_STARTED');
+    expect(graded.executionStatus).toBe('not_run');
+    expect(graded.observation).toBeNull();
+    expect(graded.reasonCode).toBe('REQUEST_CANCELLED');
+  });
+
+  it('keeps an adapter execution failure inconclusive instead of treating it as a refusal', async () => {
+    const { calls, policy, graded } = await runSymbolSourceAttempt(
+      { status: 'not_found', reasonCode: 'SYMBOL_NOT_FOUND', exposedBytes: 0 },
+      { throws: true },
+    );
+
+    expect(calls).toBe(2);
+    expect(policy.trace[0]).toMatchObject({
+      tool: 'get_symbol_source',
+      resultStatus: 'error',
+      reasonCode: 'ADAPTER_INVOKE_FAILED',
+    });
+    expect(graded.observation).toBe('INCONCLUSIVE');
+    expect(graded.reasonCode).toBe('POLICY_EXECUTION_FAILED');
+  });
+
+  it('scores an executed refusal with the expected reason as CORRECT_REFUSAL', async () => {
+    const { policy, graded } = await runSymbolSourceAttempt({
+      status: 'not_found',
+      reasonCode: 'SYMBOL_NOT_FOUND',
+      exposedBytes: 0,
+    });
+
+    expect(policy.status).toBe('EXHAUSTED');
+    expect(policy.trace[0]).toMatchObject({ tool: 'get_symbol_source', resultStatus: 'not_found' });
+    expect(graded.observation).toBe('CORRECT_REFUSAL');
+  });
+
+  it('scores an executed refusal with an unexpected reason as FALSE_REFUSAL', async () => {
+    const { policy, graded } = await runSymbolSourceAttempt({
+      status: 'stale_identity',
+      reasonCode: 'SYMBOL_RETIRED',
+      exposedBytes: 0,
+    });
+
+    expect(policy.status).toBe('EXHAUSTED');
+    expect(policy.trace[0]).toMatchObject({ tool: 'get_symbol_source', resultStatus: 'stale_identity' });
+    expect(graded.observation).toBe('FALSE_REFUSAL');
+    expect(graded.reasonCode).toBe('UNEXPECTED_REFUSAL');
   });
 
   it('returns INCONCLUSIVE when policy exhausts without any adoption or refusal evidence', () => {
@@ -325,6 +409,71 @@ describe('gradeDiscovery', () => {
       adoptionEvents: [{ ...makeAdoptionEvent('src/answer.ts', source), sequence: 3 }],
     };
     const result = gradeDiscovery(baseTask, 'N', policy);
+    expect(result.reciprocalRank).toBe(0.5);
+  });
+
+  it('uses the adopted candidate rank when rank 1 cannot be read', async () => {
+    const adapter: QualityAdapter = {
+      arm: 'N',
+      invoke: (tool, args) => {
+        if (tool === 'grep_search') {
+          return Promise.resolve({
+            status: 'ok',
+            results: Object.freeze([
+              { filePath: 'src/unreadable.ts', rank: 1 },
+              { filePath: 'src/answer.ts', rank: 2 },
+            ]),
+            exposedBytes: 0,
+            sourceAdoptions: Object.freeze([]),
+            rawDigest: 'ranked-search',
+            normalizedPublicArgs: Object.freeze({}),
+          });
+        }
+        if (tool === 'read_file' && args.filePath === 'src/unreadable.ts') {
+          return Promise.resolve({
+            status: 'not_found',
+            results: Object.freeze([]),
+            exposedBytes: 0,
+            sourceAdoptions: Object.freeze([]),
+            rawDigest: 'unreadable-candidate',
+            normalizedPublicArgs: Object.freeze({}),
+          });
+        }
+        if (tool === 'read_file' && args.filePath === 'src/answer.ts') {
+          return Promise.resolve({
+            status: 'ok',
+            results: Object.freeze([{ filePath: 'src/answer.ts', preview: source, rank: 1 }]),
+            exposedBytes: bytes.length,
+            sourceAdoptions: Object.freeze([{
+              filePath: 'src/answer.ts',
+              startByte: 0,
+              endByte: bytes.length,
+              content: source,
+              sourceValidation: 'verified',
+            }]),
+            rawDigest: 'read-answer',
+            normalizedPublicArgs: Object.freeze({}),
+          });
+        }
+        return Promise.reject(new Error(`unexpected tool: ${tool}`));
+      },
+    };
+    const policy = await runQualityPolicy(
+      { taskDescription: 'find answer', initialClues: ['id:answer'] },
+      adapter,
+      QUALITY_BUDGETS_V1,
+      new AbortController().signal,
+    );
+    const declarationTask = {
+      ...baseTask,
+      expectedSymbols: [{
+        ...baseTask.expectedSymbols[0],
+        endByte: bytes.length - 1,
+      }],
+    };
+    const result = gradeDiscovery(declarationTask, 'N', policy);
+
+    expect(policy.adoptionEvents[0]?.candidateRank).toBe(2);
     expect(result.reciprocalRank).toBe(0.5);
   });
 });

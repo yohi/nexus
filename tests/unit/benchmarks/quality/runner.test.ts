@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
+import { tmpdir } from 'node:os';
 import { describe, expect, it } from 'vitest';
 import {
   applyQualityMutation,
@@ -9,7 +10,10 @@ import {
 import { canonicalJson } from '../../../../tests/benchmarks/quality/canonical-json.js';
 import {
   collectQualityRouteCoverage,
+  createNexusAdapterForRoot,
   getLineSubmatches,
+  isProbeCovered,
+  LocalGrepEngine,
   runQualityPair,
 } from '../../../../tests/benchmarks/quality/runner.js';
 
@@ -17,11 +21,110 @@ const sha256 = (content: string | Uint8Array): string =>
   createHash('sha256').update(content).digest('hex');
 
 describe('quality route coverage', () => {
+  it('returns immediately for an empty grep query without traversing the root', async () => {
+    const engine = new LocalGrepEngine();
+
+    await expect(engine.search({ query: '', cwd: join(tmpdir(), 'missing-quality-root') })).resolves.toEqual([]);
+    await expect(engine.search({ query: 'answer', cwd: join(tmpdir(), 'missing-quality-root') })).rejects.toMatchObject({
+      code: 'ENOENT',
+    });
+  });
+
   it('rejects empty line-search needles while preserving non-empty matching', () => {
     expect(getLineSubmatches('', 'answer')).toEqual([]);
     expect(getLineSubmatches('wer', 'answer')).toEqual([
       { start: 3, end: 6, match: 'wer' },
     ]);
+  });
+
+  it('does not count empty discovery results as probe coverage', async () => {
+    const fixture = await createQualityFixture(['Q01@quality-v1'], new AbortController().signal);
+    try {
+      const task = fixture.oracleCases[0];
+      if (task === undefined) throw new Error('Q01 fixture missing');
+      const probe = {
+        probeId: 'Q01-empty-discovery',
+        taskId: task.taskId,
+        rootKey: task.worktreeIdentity.rootKey,
+        tool: 'grep_search',
+        expectedAction: 'discovery_current',
+      } as const;
+      const observation = {
+        status: 'ok',
+        results: [],
+        exposedBytes: 0,
+        sourceAdoptions: [],
+        rawDigest: 'empty',
+        normalizedPublicArgs: {},
+      } as const;
+
+      expect(isProbeCovered(probe, task, observation)).toBe(false);
+    } finally {
+      await fixture.dispose();
+    }
+  });
+
+  it('does not count verified but stale source bytes as current-source coverage', async () => {
+    const fixture = await createQualityFixture(['Q01@quality-v1'], new AbortController().signal);
+    try {
+      const task = fixture.oracleCases[0];
+      if (task === undefined) throw new Error('Q01 fixture missing');
+      const probe = {
+        probeId: 'Q01-stale-source',
+        taskId: task.taskId,
+        rootKey: task.worktreeIdentity.rootKey,
+        tool: 'get_context',
+        expectedAction: 'current_source',
+      } as const;
+      const filePath = task.expectedFiles[0];
+      if (filePath === undefined) throw new Error('Q01 expected file missing');
+      const observation = {
+        status: 'ok',
+        results: [],
+        exposedBytes: 10,
+        sourceAdoptions: [{
+          filePath,
+          startByte: 0,
+          endByte: 10,
+          content: 'stale data',
+          sourceValidation: 'verified',
+        }],
+        rawDigest: 'stale',
+        normalizedPublicArgs: {},
+      } as const;
+
+      expect(isProbeCovered(probe, task, observation)).toBe(false);
+    } finally {
+      await fixture.dispose();
+    }
+  });
+
+  it('does not count a refusal that exposed source as safe-refusal coverage', async () => {
+    const fixture = await createQualityFixture(['Q03@quality-v1'], new AbortController().signal);
+    try {
+      const task = fixture.oracleCases[0];
+      if (task === undefined) throw new Error('Q03 fixture missing');
+      const probe = {
+        probeId: 'Q03-leaking-refusal',
+        taskId: task.taskId,
+        rootKey: task.worktreeIdentity.rootKey,
+        tool: 'get_symbol_source',
+        expectedAction: 'safe_refusal',
+      } as const;
+      const observation = {
+        status: 'stale_identity',
+        results: [],
+        exposedBytes: Buffer.byteLength('retired source'),
+        sourceAdoptions: [],
+        rawDigest: 'refusal-with-source',
+        normalizedPublicArgs: {},
+        reasonCode: 'SYMBOL_RETIRED',
+      } as const;
+
+      expect(isProbeCovered(probe, task, observation)).toBe(false);
+    } finally {
+      await fixture.dispose();
+    }
   });
 
   it('records a trace for each invoked Q01 probe with its sequence and normalized public arguments', async () => {
@@ -87,6 +190,31 @@ describe('quality route coverage', () => {
       expect(currentIdentity?.observedStatus).toBe('ok');
       expect(currentIdentity?.status).toBe('COVERED');
       expect(route?.status).toBe('COVERED');
+    } finally {
+      await fixture.dispose();
+    }
+  });
+
+  it('retrieves Q10 declarations from the real file outline handler', async () => {
+    const fixture = await createQualityFixture(['Q10@quality-v1'], new AbortController().signal);
+    try {
+      const task = fixture.oracleCases[0];
+      const root = fixture.roots.single;
+      if (task === undefined || root === undefined) throw new Error('Q10 fixture missing');
+      const adapter = await createNexusAdapterForRoot(root, task);
+      const paths = [task.expectedFiles[0], 'Q10/scope-b.ts'];
+      for (const [index, filePath] of paths.entries()) {
+        if (filePath === undefined) throw new Error('Q10 outline path missing');
+        const observation = await adapter.invoke(
+          'get_file_outline',
+          { filePath },
+          new AbortController().signal,
+          { traceSequence: index + 1 },
+        );
+        expect(observation.status).toBe('ok');
+        expect(observation.results.some(({ filePath: resultPath, preview }) =>
+          resultPath === filePath && preview === 'lookup')).toBe(true);
+      }
     } finally {
       await fixture.dispose();
     }

@@ -3,7 +3,7 @@ import { join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createQualityFixture, type OwnedQualityFixture } from '../../../tests/benchmarks/quality/fixtures.js';
 import type { QualityCaseManifest } from '../../../tests/benchmarks/quality/contracts.js';
-import { collectQualityRouteCoverage, runQualityPair } from '../../../tests/benchmarks/quality/runner.js';
+import { collectQualityRouteCoverage, createNexusAdapterForRoot, runQualityPair } from '../../../tests/benchmarks/quality/runner.js';
 
 describe('quality benchmark core integration', () => {
   let fixture: OwnedQualityFixture;
@@ -41,6 +41,23 @@ describe('quality benchmark core integration', () => {
     expect(result.rootKey).toBe('single');
     expect(result.fixtureDigest).toMatch(/^[a-f0-9]{64}$/);
     expect(result.policyVersion).toBe('quality-policy-v1');
+
+    const projectRoot = fixture.roots.single;
+    const expectedSymbol = task.expectedSymbols[0];
+    if (projectRoot === undefined || expectedSymbol === undefined) throw new Error('Q01 golden missing');
+    const sourceBytes = await readFile(join(projectRoot, expectedSymbol.filePath));
+    expect(sourceBytes[sourceBytes.length - 1]).toBe(0x0a);
+    const goldenBytes = sourceBytes.subarray(expectedSymbol.startByte, expectedSymbol.endByte);
+    const goldenContent = goldenBytes.toString('utf8');
+    for (const arm of ['R', 'N'] as const) {
+      expect(result.outcomes[arm].policy?.adoption).toMatchObject({
+        filePath: expectedSymbol.filePath,
+        startByte: expectedSymbol.startByte,
+        endByte: expectedSymbol.endByte,
+        content: goldenContent,
+        sourceValidation: 'verified',
+      });
+    }
 
     expect(result.outcomes.R.executionStatus).toBe('executed');
     expect(result.outcomes.N.executionStatus).toBe('executed');
@@ -94,4 +111,49 @@ describe('quality benchmark core integration', () => {
     expect(route?.status).toBe('INCOMPLETE');
     expect(route?.probes.some(({ status }) => status === 'INCOMPLETE')).toBe(true);
   });
+
+  it.each(['Q07@quality-v1', 'Q08@quality-v1'] as const)(
+    'exercises paired retrieval against scenario-specific index state for %s',
+    async (scenarioId) => {
+      const scenarioFixture = await createQualityFixture([scenarioId], new AbortController().signal);
+      try {
+        const task = scenarioFixture.oracleCases[0];
+        if (task === undefined) throw new Error(`${scenarioId} fixture missing`);
+
+        if (scenarioId === 'Q07@quality-v1') {
+          const root = scenarioFixture.roots.single;
+          if (root === undefined) throw new Error('Q07 fixture root missing');
+          const adapter = await createNexusAdapterForRoot(root, task);
+          const observation = await adapter.invoke(
+            'hybrid_search',
+            { query: 'answer', topK: 20 },
+            new AbortController().signal,
+            { traceSequence: 1 },
+          );
+          expect(observation.status).toBe('ok');
+          expect(observation.results.some(({ preview }) => preview?.includes('return 41'))).toBe(true);
+          expect(observation.results.some(({ preview }) => preview?.includes('return 42'))).toBe(false);
+        }
+
+        const result = await runQualityPair(task, scenarioFixture, { signal: new AbortController().signal });
+        const nTrace = result.outcomes.N.policy?.trace ?? [];
+
+        expect(nTrace.some(({ tool }) => tool === 'hybrid_search')).toBe(true);
+        if (scenarioId === 'Q07@quality-v1') {
+          expect(task.mutationSchedule).toHaveLength(0);
+          expect(result.outcomes.N.policy?.trace.some(({ resultDigest }) => resultDigest !== null)).toBe(true);
+        } else {
+          expect(task.mutationSchedule).toEqual(expect.arrayContaining([
+            expect.objectContaining({ phase: 'during_request', operation: 'delete' }),
+            expect.objectContaining({ phase: 'before_publication', operation: 'recreate' }),
+          ]));
+          expect(result.outcomes.R.observation).not.toBe('CORRECT_CURRENT');
+          expect(result.outcomes.N.observation).not.toBe('CORRECT_CURRENT');
+        }
+      } finally {
+        await scenarioFixture.dispose();
+      }
+    },
+    60_000,
+  );
 });

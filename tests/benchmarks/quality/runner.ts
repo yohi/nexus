@@ -140,9 +140,10 @@ export function getLineSubmatches(
   return submatches;
 }
 
-class LocalGrepEngine implements IGrepEngine {
+export class LocalGrepEngine implements IGrepEngine {
   async search(params: GrepParams): Promise<GrepMatch[]> {
     const { query, cwd, glob, maxResults, abortSignal } = params;
+    if (query.length === 0) return [];
     const caseSensitive = params.caseSensitive ?? false;
     const limit = maxResults ?? 100;
     const context: LocalGrepContext = {
@@ -287,11 +288,23 @@ function fixtureSymbolRetrievalService(
         request: { symbolId },
       };
     }
+    for (const file of await fixtureFiles(root)) {
+      const { declarations } = await parseDeclarations(file.filePath);
+      if (declarations.some((declaration) => declaration.name === symbolId)) {
+        return {
+          status: 'stale_identity',
+          freshness: 'unknown',
+          reindexRequired: false,
+          reasonCode: 'SYMBOL_RETIRED',
+          request: { symbolId },
+        };
+      }
+    }
     return {
-      status: task.scenarioId === 'Q03@quality-v1' ? 'stale_identity' : 'not_found',
+      status: 'not_found',
       freshness: 'unknown',
       reindexRequired: false,
-      reasonCode: task.scenarioId === 'Q03@quality-v1' ? 'SYMBOL_RETIRED' : 'SYMBOL_NOT_FOUND',
+      reasonCode: 'SYMBOL_NOT_FOUND',
       request: { symbolId },
     };
   };
@@ -363,7 +376,7 @@ function createStubPluginRegistry(): PluginRegistry {
   });
 }
 
-async function createNexusAdapterForRoot(root: string, task: QualityCaseManifest): Promise<QualityAdapter> {
+export async function createNexusAdapterForRoot(root: string, task: QualityCaseManifest): Promise<QualityAdapter> {
   const sanitizer = await PathSanitizer.create(root);
 
   const loadFileContent = async (filePath: string): Promise<string> => {
@@ -381,21 +394,26 @@ async function createNexusAdapterForRoot(root: string, task: QualityCaseManifest
           params.filePatterns.some((pattern) => simpleGlobMatch(filePath, pattern.replace(/^!/, '')))
         )
         .slice(0, params.topK ?? 20)
-        .map(({ filePath, content }) => ({
-          chunk: {
-            id: `${filePath}:fixture`,
-            filePath,
-            content,
-            language: 'typescript',
-            symbolName: filePath.split('/').at(-1)?.replace(/\.[^.]+$/, '') ?? 'fixture',
-            symbolKind: 'unknown',
-            startLine: 1,
-            endLine: content.split('\n').length,
-            hash: sha256(content),
-          },
-          score: 1,
-          source: 'semantic',
-        }));
+        .map(({ filePath, content: currentContent }) => {
+          const content = task.scenarioId === 'Q07@quality-v1'
+            ? currentContent.replace('return 42', 'return 41')
+            : currentContent;
+          return {
+            chunk: {
+              id: `${filePath}:fixture`,
+              filePath,
+              content,
+              language: 'typescript',
+              symbolName: filePath.split('/').at(-1)?.replace(/\.[^.]+$/, '') ?? 'fixture',
+              symbolKind: 'unknown',
+              startLine: 1,
+              endLine: content.split('\n').length,
+              hash: sha256(content),
+            },
+            score: 1,
+            source: 'semantic',
+          };
+        });
     },
   };
   const options: NexusServerOptions = {
@@ -453,7 +471,7 @@ async function runSingleArm(
       const observation = await adapter.invoke(tool, args, invocationSignal, context);
       if (
         !duringRequestApplied &&
-        ['read_file', 'get_context', 'get_symbol_source', 'get_symbol_context'].includes(tool)
+        ['hybrid_search', 'read_file', 'get_context', 'get_symbol_source', 'get_symbol_context'].includes(tool)
       ) {
         duringRequestApplied = true;
         await applyQualityMutation(fixture, task.taskId, 'during_request');
@@ -532,9 +550,7 @@ export async function runQualityPair(
       const root = armFixture.roots[rootKey];
       if (root === undefined) throw new Error('quality_root_key_missing');
       const generatedTask = armFixture.oracleCases.find(({ taskId }) => taskId === task.taskId);
-      const armTask = generatedTask === undefined
-        ? task
-        : { ...generatedTask, ...task, worktreeIdentity: generatedTask.worktreeIdentity };
+      const armTask = generatedTask ?? task;
       await applyQualityMutation(armFixture, task.taskId, 'before_request');
       const adapter = arm === 'R'
         ? createRipgrepAdapter(root, rgExecutable, { rootKey })
@@ -747,7 +763,7 @@ function probeArgsForTool(
   }
 }
 
-function isProbeCovered(
+export function isProbeCovered(
   probe: QualityRequiredProbe,
   task: QualityCaseManifest,
   observation: QualityObservation,
@@ -768,9 +784,18 @@ function isProbeCovered(
     case 'current_source':
       return observation.status === 'ok' &&
         observation.exposedBytes > 0 &&
-        observation.sourceAdoptions.some((source) =>
-          task.expectedFiles.includes(source.filePath) && source.sourceValidation === 'verified',
-        );
+        observation.sourceAdoptions.some((source) => {
+          if (!task.expectedFiles.includes(source.filePath) || source.sourceValidation !== 'verified') return false;
+          const expectedHash = task.expectedSourceHashes[source.filePath];
+          const expectedRange = task.expectedSymbols.find((symbol) => symbol.filePath === source.filePath);
+          if (expectedHash === undefined || expectedRange === undefined ||
+            source.startByte > expectedRange.startByte || source.endByte < expectedRange.endByte) return false;
+          const bytes = utf8Bytes(source.content);
+          const start = expectedRange.startByte - source.startByte;
+          const end = expectedRange.endByte - source.startByte;
+          return start >= 0 && end <= bytes.byteLength &&
+            sha256(bytes.subarray(start, end)) === expectedHash;
+        });
     case 'safe_refusal': {
       const refusalStatus = observation.status === 'not_found' ||
         observation.status === 'stale_identity' ||

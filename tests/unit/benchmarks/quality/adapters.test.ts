@@ -1198,6 +1198,29 @@ describe('createNexusAdapter', () => {
     }]);
   });
 
+  it('retains source-exposure evidence from a refusal envelope', async () => {
+    const adapter = createNexusAdapter(handlersFor({
+      get_symbol_source: handler({
+        content: [{ type: 'text', text: '' }],
+        structuredContent: {
+          status: 'stale_identity',
+          reasonCode: 'SYMBOL_RETIRED',
+          source: 'export function retiredSecret() {}',
+        },
+      }),
+    }));
+
+    const observation = await adapter.invoke(
+      'get_symbol_source',
+      { symbolId: 'retired-id' },
+      new AbortController().signal,
+      ctx(1),
+    );
+
+    expect(observation.status).toBe('stale_identity');
+    expect(observation.exposedBytes).toBeGreaterThan(0);
+  });
+
   it('leaves read previews unverified when the requested path or range cannot be validated', async () => {
     const adapter = createNexusAdapter(handlersFor({
       get_context: handler({

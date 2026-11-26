@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
 import { getEncoding } from 'js-tiktoken';
+import ts from 'typescript';
 import {
   queryDigest,
   type NormalizedPublicArgs,
@@ -22,6 +23,7 @@ export interface QualityCumulativeCost {
 export interface QualityAdoptionEvent {
   readonly sequence: number;
   readonly source: SourceAdoption;
+  readonly candidateRank?: number;
   readonly cumulativeCost: QualityCumulativeCost;
   readonly elapsedMs: number;
 }
@@ -56,7 +58,7 @@ export interface QualityTraceEvent {
 }
 
 export interface QualityPolicyResult {
-  readonly status: 'COMPLETE' | 'EXHAUSTED';
+  readonly status: 'COMPLETE' | 'EXHAUSTED' | 'NOT_STARTED';
   readonly adoption?: SourceAdoption;
   readonly adoptionEvents: readonly QualityAdoptionEvent[];
   readonly navigationEvents: readonly QualityNavigationEvent[];
@@ -377,34 +379,94 @@ const buildRReadArgs = (candidate: Candidate): { tool: QualityTool; args: Record
   };
 };
 
-const toAdoption = (observation: QualityObservation): SourceAdoption | null => {
+const selectTargetDeclaration = (
+  adoption: SourceAdoption,
+  clues: ParsedClues,
+): SourceAdoption => {
+  const expectedName = clues.symbol ?? clues.id;
+  if (
+    adoption.sourceValidation !== 'verified' ||
+    expectedName === undefined ||
+    !/\.(?:[cm]?tsx?|[cm]?jsx?)$/iu.test(adoption.filePath)
+  ) {
+    return adoption;
+  }
+
+  const sourceFile = ts.createSourceFile(
+    adoption.filePath,
+    adoption.content,
+    ts.ScriptTarget.Latest,
+    true,
+  );
+  let match: ts.Node | undefined;
+  const visit = (node: ts.Node): void => {
+    if (
+      (ts.isFunctionDeclaration(node) ||
+        ts.isClassDeclaration(node) ||
+        ts.isInterfaceDeclaration(node) ||
+        ts.isTypeAliasDeclaration(node) ||
+        ts.isEnumDeclaration(node) ||
+        ts.isModuleDeclaration(node) ||
+        ts.isMethodDeclaration(node) ||
+        ts.isPropertyDeclaration(node) ||
+        ts.isVariableDeclaration(node)) &&
+      node.name !== undefined &&
+      ts.isIdentifier(node.name) &&
+      node.name.text === expectedName &&
+      match === undefined
+    ) {
+      match = ts.isVariableDeclaration(node) ? node.parent.parent : node;
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(sourceFile);
+  if (match === undefined) return adoption;
+
+  const start = match.getStart(sourceFile);
+  const end = match.end;
+  return Object.freeze({
+    ...adoption,
+    startByte: adoption.startByte + Buffer.byteLength(adoption.content.slice(0, start), 'utf8'),
+    endByte: adoption.startByte + Buffer.byteLength(adoption.content.slice(0, end), 'utf8'),
+    content: adoption.content.slice(start, end),
+  });
+};
+
+const toAdoption = (
+  observation: QualityObservation,
+  clues: ParsedClues,
+): SourceAdoption | null => {
   if (observation.status !== 'ok' || observation.results.length === 0) return null;
   const candidate = observation.results[0];
   if (!candidate) return null;
   const sourceAdoption = observation.sourceAdoptions[0];
-  if (sourceAdoption !== undefined) return sourceAdoption;
-  return {
-    filePath: candidate.filePath,
-    startByte: 0,
-    endByte: observation.exposedBytes,
-    content: candidate.preview ?? '',
-    sourceValidation: 'unknown',
-  };
+  if (sourceAdoption !== undefined) return selectTargetDeclaration(sourceAdoption, clues);
+  return selectTargetDeclaration({
+      filePath: candidate.filePath,
+      startByte: 0,
+      endByte: observation.exposedBytes,
+      content: candidate.preview ?? '',
+      sourceValidation: 'unknown',
+    }, clues);
 };
 
-const toFileAdoption = (filePath: string, observation: QualityObservation): SourceAdoption | null => {
+const toFileAdoption = (
+  filePath: string,
+  observation: QualityObservation,
+  clues: ParsedClues,
+): SourceAdoption | null => {
   if (observation.status !== 'ok') return null;
   const candidate = observation.results[0];
   if (!candidate) return null;
   const sourceAdoption = observation.sourceAdoptions[0];
-  if (sourceAdoption !== undefined) return sourceAdoption;
-  return {
-    filePath,
-    startByte: 0,
-    endByte: observation.exposedBytes,
-    content: candidate.preview ?? '',
-    sourceValidation: 'unknown',
-  };
+  if (sourceAdoption !== undefined) return selectTargetDeclaration(sourceAdoption, clues);
+  return selectTargetDeclaration({
+      filePath,
+      startByte: 0,
+      endByte: observation.exposedBytes,
+      content: candidate.preview ?? '',
+      sourceValidation: 'unknown',
+    }, clues);
 };
 
 export const qualityArmOrder = (sortedTaskIndex: number): readonly [QualityArm, QualityArm] =>
@@ -418,7 +480,7 @@ export async function runQualityPolicy(
   observer?: QualityPolicyObserver,
 ): Promise<QualityPolicyResult> {
   if (signal.aborted) {
-    return exhaustedResult(initialCost(), []);
+    return notStartedResult(initialCost());
   }
 
   const parsed = parseClues(task.initialClues);
@@ -559,11 +621,18 @@ export async function runQualityPolicy(
     );
   };
 
-  const publishAdoption = async (source: SourceAdoption, traceSequence?: number): Promise<void> => {
+  const publishAdoption = async (
+    source: SourceAdoption,
+    traceSequence?: number,
+    candidateRank?: number,
+  ): Promise<void> => {
     adoptionCounter += 1;
     const event: QualityAdoptionEvent = Object.freeze({
       sequence: adoptionCounter,
       source,
+      ...(candidateRank !== undefined && Number.isSafeInteger(candidateRank) && candidateRank > 0
+        ? { candidateRank }
+        : {}),
       cumulativeCost: freezeCost(cost),
       elapsedMs: elapsed(),
     });
@@ -637,16 +706,18 @@ export async function runQualityPolicy(
       const readObservation = await invokeTool('READ', readSpec.tool, readSpec.args, null, fallback, 0);
       accountObservation(readObservation);
       if (signal.aborted || contextBudgetExceeded) return false;
-      const attemptedAdoption = adapter.arm === 'R' ? toFileAdoption(candidate.filePath, readObservation) : toAdoption(readObservation);
+      const attemptedAdoption = adapter.arm === 'R'
+        ? toFileAdoption(candidate.filePath, readObservation, currentClues)
+        : toAdoption(readObservation, currentClues);
       if (attemptedAdoption === null) continue;
       const readTraceSequence = trace[trace.length - 1]?.sequence;
       if (isVerifiedAdoption(attemptedAdoption, currentClues)) {
         adoption = attemptedAdoption;
-        await publishAdoption(attemptedAdoption, readTraceSequence);
+        await publishAdoption(attemptedAdoption, readTraceSequence, candidate.rank);
         return true;
       }
       // Tentative/wrong adoption is recorded but we continue searching.
-      await publishAdoption(attemptedAdoption, readTraceSequence);
+      await publishAdoption(attemptedAdoption, readTraceSequence, candidate.rank);
     }
     return false;
   };
@@ -665,8 +736,8 @@ export async function runQualityPolicy(
     if (signal.aborted || contextBudgetExceeded) return false;
     const attemptedAdoption =
       tool === 'read_file'
-        ? toFileAdoption(String(args.filePath ?? ''), observation)
-        : toAdoption(observation);
+        ? toFileAdoption(String(args.filePath ?? ''), observation, currentClues)
+        : toAdoption(observation, currentClues);
     const readTraceSequence = trace[trace.length - 1]?.sequence;
     if (attemptedAdoption !== null && isVerifiedAdoption(attemptedAdoption, currentClues)) {
       adoption = attemptedAdoption;
@@ -818,6 +889,19 @@ const exhaustedResult = (cost: RunningCost, trace: QualityTraceEvent[]): Quality
     adoptionEvents: Object.freeze([]),
     navigationEvents: Object.freeze([]),
     trace: Object.freeze([...trace]),
+    logicalOperations: cost.logicalOperations,
+    invocations: cost.invocations,
+    contextBytes: cost.contextBytes,
+    contextTokens: cost.contextTokens,
+  });
+
+const notStartedResult = (cost: RunningCost): QualityPolicyResult =>
+  Object.freeze({
+    status: 'NOT_STARTED',
+    adoption: undefined,
+    adoptionEvents: Object.freeze([]),
+    navigationEvents: Object.freeze([]),
+    trace: Object.freeze([]),
     logicalOperations: cost.logicalOperations,
     invocations: cost.invocations,
     contextBytes: cost.contextBytes,

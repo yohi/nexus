@@ -699,6 +699,18 @@ const rankCandidates = (candidates: CandidateSeed[]): readonly PublicCandidate[]
 const exposedBytes = (candidates: readonly PublicCandidate[]): number =>
   candidates.reduce((total, candidate) => total + Buffer.byteLength(candidate.preview ?? '', 'utf8'), 0);
 
+const sourceExposureBytes = (value: unknown): number => {
+  if (Array.isArray(value)) {
+    return (value as unknown[]).reduce<number>((total, item) => total + sourceExposureBytes(item), 0);
+  }
+  if (value === null || typeof value !== 'object') return 0;
+  return Object.entries(value as Record<string, unknown>).reduce((total, [key, item]) => {
+    const carriesSource = ['source', 'context', 'preview', 'snippet', 'content'].includes(key.toLowerCase());
+    const ownBytes = carriesSource && typeof item === 'string' ? Buffer.byteLength(item, 'utf8') : 0;
+    return total + ownBytes + (typeof item === 'object' && item !== null ? sourceExposureBytes(item) : 0);
+  }, 0);
+};
+
 const makeObservation = (
   status: QualityObservationStatus,
   results: readonly PublicCandidate[],
@@ -707,11 +719,12 @@ const makeObservation = (
   sourceAdoptions: readonly SourceAdoption[] = [],
   reasonCode?: string,
   navigation?: QualityObservation['navigation'],
+  exposureOverride?: number,
 ): QualityObservation =>
   Object.freeze({
     status,
     results,
-    exposedBytes: exposedBytes(results),
+    exposedBytes: exposureOverride ?? exposedBytes(results),
     sourceAdoptions,
     rawDigest,
     normalizedPublicArgs,
@@ -1820,6 +1833,7 @@ export const createNexusAdapter = (handlers: ToolHandlers): QualityAdapter => {
       sourceAdoptions,
       reasonCode,
       navigation,
+      status === 'ok' ? undefined : sourceExposureBytes(envelope),
     );
   };
 

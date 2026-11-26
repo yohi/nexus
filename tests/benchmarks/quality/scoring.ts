@@ -185,6 +185,15 @@ interface AdoptionGradingState {
   finalObservation: ObservationKind | null;
 }
 
+const REFUSAL_STATUSES = new Set<QualityTraceEvent['resultStatus']>([
+  'not_found',
+  'stale_identity',
+  'unsupported',
+  'unavailable',
+]);
+
+const EXECUTION_FAILURE_STATUSES = new Set<QualityTraceEvent['resultStatus']>(['error', 'timeout']);
+
 function recordAdoptionObservation(
   state: AdoptionGradingState,
   observation: ObservationKind,
@@ -218,19 +227,16 @@ function resolveFinalObservation(
   if (policyResult.adoptionEvents.length > 0) {
     return history.at(-1)?.observation ?? 'INCONCLUSIVE';
   }
-  if (policyResult.status !== 'COMPLETE') return 'INCONCLUSIVE';
   const expectedRefusal = new Set(task.expectedRefusalConditions);
-  const refusedForExpectedReason = policyResult.trace.some(
-    (event) =>
-      (event.resultStatus === 'unavailable' ||
-        event.resultStatus === 'not_found' ||
-        event.resultStatus === 'unsupported') &&
-      event.reasonCode !== null &&
-      expectedRefusal.has(event.reasonCode) &&
-      event.exposedBytes === 0,
+  const refusalEvents = policyResult.trace.filter((event) => REFUSAL_STATUSES.has(event.resultStatus));
+  const refusedForExpectedReason = refusalEvents.some((event) =>
+    event.reasonCode !== null &&
+    expectedRefusal.has(event.reasonCode) &&
+    event.exposedBytes === 0,
   );
   if (refusedForExpectedReason) return 'CORRECT_REFUSAL';
-  return 'FALSE_REFUSAL';
+  if (refusalEvents.length > 0) return 'FALSE_REFUSAL';
+  return 'INCONCLUSIVE';
 }
 
 export function gradeQualityArm(
@@ -251,6 +257,21 @@ export function gradeQualityArm(
       correctSourceReached: false,
       wrongSourceAdopted: false,
       reasonCode: 'POLICY_NOT_RUN',
+    });
+  }
+
+  if (policyResult.status === 'NOT_STARTED') {
+    return Object.freeze({
+      executionStatus: 'not_run',
+      observation: null,
+      policy: policyResult,
+      adoptionHistory: Object.freeze([]),
+      firstCorrectSourceCost: null,
+      firstCorrectSourceElapsedMs: null,
+      firstCorrectSourceElapsedReason: 'NOT_RUN',
+      correctSourceReached: false,
+      wrongSourceAdopted: false,
+      reasonCode: 'REQUEST_CANCELLED',
     });
   }
 
@@ -309,11 +330,21 @@ export function gradeQualityArm(
   const elapsedReason: QualityArmResult['firstCorrectSourceElapsedReason'] = state.correctSourceReached
     ? null
     : 'NOT_REACHED';
+  const executionFailure = policyResult.trace.some((event) => EXECUTION_FAILURE_STATUSES.has(event.resultStatus));
+  const wasCancelled = policyResult.trace.some((event) => event.resultStatus === 'cancelled');
   const reasonCode = state.wrongSourceAdopted
     ? 'SAFETY_FAIL'
     : state.correctSourceReached
       ? undefined
-      : 'NOT_REACHED';
+      : finalObservation === 'CORRECT_REFUSAL'
+        ? undefined
+        : finalObservation === 'FALSE_REFUSAL'
+          ? 'UNEXPECTED_REFUSAL'
+          : executionFailure
+            ? 'POLICY_EXECUTION_FAILED'
+            : wasCancelled
+              ? 'REQUEST_CANCELLED'
+              : 'NOT_REACHED';
 
   return Object.freeze({
     executionStatus: 'executed',
@@ -402,7 +433,8 @@ function summarizeDiscoveryAdoptions(
       const searchIndex = searchEvents.findIndex(
         (searchEvent) => searchEvent.adoptionSequence === event.sequence,
       );
-      summary.firstRelevantRank = searchIndex >= 0 ? searchIndex + 1 : adoptionIndex + 1;
+      summary.firstRelevantRank =
+        event.candidateRank ?? (searchIndex >= 0 ? searchIndex + 1 : adoptionIndex + 1);
     }
     if (fileRelevant) summary.fileFound = true;
     if (symbolRelevant) summary.symbolFound = true;
@@ -514,6 +546,7 @@ export function gradeDiscovery(
     adoptions: policyResult.adoptionEvents.map((event) => ({
       sequence: event.sequence,
       filePath: event.source.filePath,
+      candidateRank: event.candidateRank ?? null,
     })),
   });
 
