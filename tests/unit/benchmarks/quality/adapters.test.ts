@@ -594,10 +594,10 @@ describe('createRipgrepAdapter', () => {
     );
 
     expect(observation.status).toBe('ok');
-    expect(observation.normalizedPublicArgs).toMatchObject({ startByte: 5, endByte: 5 });
+    expect(observation.normalizedPublicArgs).toMatchObject({ startByte: 3, endByte: 3 });
     expect(observation.sourceAdoptions[0]).toMatchObject({
-      startByte: 5,
-      endByte: 5,
+      startByte: 3,
+      endByte: 3,
       content: '',
     });
     await cleanup(root);

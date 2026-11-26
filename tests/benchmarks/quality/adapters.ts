@@ -321,9 +321,14 @@ const alignUtf8Window = async (
   const endCodePoint = findUtf8CodePointCrossingBoundary(endProbe, endByte);
   const alignedEndByte = endCodePoint?.startByte ?? endByte;
 
+  if (alignedStartByte > alignedEndByte) {
+    const emptyRangeByte = Math.min(endByte, Math.max(startByte, alignedStartByte));
+    return { startByte: emptyRangeByte, endByte: emptyRangeByte };
+  }
+
   return {
     startByte: alignedStartByte,
-    endByte: Math.max(alignedStartByte, alignedEndByte),
+    endByte: alignedEndByte,
   };
 };
 
