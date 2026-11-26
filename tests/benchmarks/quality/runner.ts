@@ -30,6 +30,7 @@ import {
   createNexusAdapter,
   createRipgrepAdapter,
   type QualityAdapter,
+  type RipgrepQualityAdapter,
   type QualityObservation,
   type QualityInvocationContext,
   type QualityTool as AdapterQualityTool,
@@ -37,7 +38,11 @@ import {
 } from './adapters.js';
 import { publicTask, type QualityCaseManifest, type QualityArm, type QualityRootKey } from './contracts.js';
 import { captureOracleSnapshot, type SourceSnapshot, type SourceProvenance } from './oracle.js';
-import type { OwnedQualityFixture } from './fixtures.js';
+import {
+  applyQualityMutation,
+  createQualityFixture,
+  type OwnedQualityFixture,
+} from './fixtures.js';
 import {
   gradeQualityArm,
   gradeDiscovery,
@@ -433,17 +438,35 @@ async function runSingleArm(
   rootKey: QualityRootKey,
   root: string,
   adapter: QualityAdapter,
+  fixture: OwnedQualityFixture,
   signal: AbortSignal,
 ): Promise<{ policyResult: QualityPolicyResult; publications: QualityPublicationEvidence[]; finalSnapshot: SourceSnapshot }> {
   const publications: QualityPublicationEvidence[] = [];
   const canonicalRoot = await realpath(root);
   const provenance = buildProvenance(rootKey, canonicalRoot);
   const observerWork = new Map<number, Promise<void>>();
+  let duringRequestApplied = false;
+
+  const armAdapter: QualityAdapter = {
+    arm: adapter.arm,
+    invoke: async (tool, args, invocationSignal, context) => {
+      const observation = await adapter.invoke(tool, args, invocationSignal, context);
+      if (
+        !duringRequestApplied &&
+        ['read_file', 'get_context', 'get_symbol_source', 'get_symbol_context'].includes(tool)
+      ) {
+        duringRequestApplied = true;
+        await applyQualityMutation(fixture, task.taskId, 'during_request');
+      }
+      return observation;
+    },
+  };
 
   const capturePublication = (event: Parameters<QualityPolicyObserver['onAdoptionPublished']>[0]): Promise<void> => {
     const existing = observerWork.get(event.sequence);
     if (existing !== undefined) return existing;
     const work = (async () => {
+      await applyQualityMutation(fixture, task.taskId, 'before_publication');
       const snapshot = await captureOracleSnapshot(
         { root: dirname(canonicalRoot), roots: { [rootKey]: canonicalRoot }, publicTasks: [], oracleCases: [task], dispose: async () => {} } as OwnedQualityFixture,
         rootKey,
@@ -468,7 +491,7 @@ async function runSingleArm(
 
   const policyResult = await runQualityPolicy(
     publicTask(task),
-    adapter,
+    armAdapter,
     QUALITY_BUDGETS_V1,
     signal,
     observer,
@@ -498,25 +521,39 @@ export async function runQualityPair(
   options: Readonly<{ signal: AbortSignal; rgExecutable?: string }>,
 ): Promise<PairedQualityResult> {
   const rootKey = task.worktreeIdentity.rootKey;
-  const root = fixture.roots[rootKey];
-  if (root === undefined) {
+  if (fixture.roots[rootKey] === undefined) {
     throw new Error('quality_root_key_missing');
   }
-
   const rgExecutable = options.rgExecutable ?? findRgExecutable();
   const signal = options.signal;
+  const makeArm = async (arm: QualityArm) => {
+    const armFixture = await createQualityFixture([task.scenarioId], signal);
+    try {
+      const root = armFixture.roots[rootKey];
+      if (root === undefined) throw new Error('quality_root_key_missing');
+      const generatedTask = armFixture.oracleCases.find(({ taskId }) => taskId === task.taskId);
+      const armTask = generatedTask === undefined
+        ? task
+        : { ...generatedTask, ...task, worktreeIdentity: generatedTask.worktreeIdentity };
+      await applyQualityMutation(armFixture, task.taskId, 'before_request');
+      const adapter = arm === 'R'
+        ? createRipgrepAdapter(root, rgExecutable, { rootKey })
+        : await createNexusAdapterForRoot(root, armTask);
+      const result = await runSingleArm(armTask, rootKey, root, adapter, armFixture, signal);
+      return { ...result, adapter };
+    } finally {
+      await armFixture.dispose();
+    }
+  };
 
-  const rAdapter = createRipgrepAdapter(root, rgExecutable, { rootKey });
-  const nAdapter = await createNexusAdapterForRoot(root, task);
-
-  const rArm = await runSingleArm(task, rootKey, root, rAdapter, signal);
-  const nArm = await runSingleArm(task, rootKey, root, nAdapter, signal);
+  const rArm = await makeArm('R');
+  const nArm = await makeArm('N');
 
   const rResult = gradeQualityArm(task, rArm.finalSnapshot, rArm.policyResult, rArm.publications);
   const nResult = gradeQualityArm(task, nArm.finalSnapshot, nArm.policyResult, nArm.publications);
 
   const baselineRgExecution = buildBaselineRgExecutionEvidence(
-    rAdapter.snapshotRgExecution(),
+    (rArm.adapter as RipgrepQualityAdapter).snapshotRgExecution(),
     rArm.policyResult.trace,
   );
 

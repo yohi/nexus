@@ -1,10 +1,16 @@
 import { createHash } from 'node:crypto';
+import { readFile } from 'node:fs/promises';
+import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { createQualityFixture } from '../../../../tests/benchmarks/quality/fixtures.js';
+import {
+  applyQualityMutation,
+  createQualityFixture,
+} from '../../../../tests/benchmarks/quality/fixtures.js';
 import { canonicalJson } from '../../../../tests/benchmarks/quality/canonical-json.js';
 import {
   collectQualityRouteCoverage,
   getLineSubmatches,
+  runQualityPair,
 } from '../../../../tests/benchmarks/quality/runner.js';
 
 const sha256 = (content: string | Uint8Array): string =>
@@ -101,6 +107,50 @@ describe('quality route coverage', () => {
       expect(route?.probeTrace).toEqual([]);
     } finally {
       await fixture.dispose();
+    }
+  });
+
+  it('runs both Q06 arms from isolated fixtures and publishes the recreated value', async () => {
+    const fixture = await createQualityFixture(['Q06@quality-v1'], new AbortController().signal);
+    try {
+      const generatedTask = fixture.oracleCases[0];
+      if (generatedTask === undefined) throw new Error('Q06 fixture missing');
+      const task = { ...generatedTask, initialClues: ['file:Q06/src/recreated.ts'] };
+
+      const result = await runQualityPair(task, fixture, { signal: new AbortController().signal });
+
+      expect(result.outcomes.R.observation).toBe('FALSE_FRESH');
+      expect(result.outcomes.N.observation).toBe('FALSE_FRESH');
+      expect(result.outcomes.R.policy?.adoption?.content).toContain('return 42');
+      expect(result.outcomes.N.policy?.adoption?.content).toContain('return 42');
+      expect(result.outcomes.R.adoptionHistory[0]?.publicationSnapshotDigest).not.toBeNull();
+      expect(result.outcomes.N.adoptionHistory[0]?.publicationSnapshotDigest).not.toBeNull();
+    } finally {
+      await fixture.dispose();
+    }
+  });
+
+  it('keeps Q06 fixture mutations isolated and recreates the expected value 43', async () => {
+    const signal = new AbortController().signal;
+    const first = await createQualityFixture(['Q06@quality-v1'], signal);
+    const second = await createQualityFixture(['Q06@quality-v1'], signal);
+    try {
+      const firstTask = first.oracleCases[0];
+      const secondTask = second.oracleCases[0];
+      if (firstTask === undefined || secondTask === undefined) throw new Error('Q06 fixture missing');
+      const firstPath = join(first.roots.single ?? '', firstTask.expectedFiles[0] ?? '');
+      const secondPath = join(second.roots.single ?? '', secondTask.expectedFiles[0] ?? '');
+
+      expect(firstPath).not.toBe(secondPath);
+      await applyQualityMutation(first, firstTask.taskId, 'during_request');
+      await expect(readFile(firstPath, 'utf8')).rejects.toMatchObject({ code: 'ENOENT' });
+      expect(await readFile(secondPath, 'utf8')).toContain('return 42');
+      await applyQualityMutation(first, firstTask.taskId, 'before_publication');
+
+      expect(await readFile(firstPath, 'utf8')).toContain('return 43');
+      expect(await readFile(secondPath, 'utf8')).toContain('return 42');
+    } finally {
+      await Promise.all([first.dispose(), second.dispose()]);
     }
   });
 });
