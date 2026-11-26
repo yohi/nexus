@@ -218,7 +218,19 @@ function resolveFinalObservation(
   if (policyResult.adoptionEvents.length > 0) {
     return history.at(-1)?.observation ?? 'INCONCLUSIVE';
   }
-  return task.expectedRefusalConditions.length > 0 ? 'CORRECT_REFUSAL' : 'FALSE_REFUSAL';
+  if (policyResult.status !== 'COMPLETE') return 'INCONCLUSIVE';
+  const expectedRefusal = new Set(task.expectedRefusalConditions);
+  const refusedForExpectedReason = policyResult.trace.some(
+    (event) =>
+      (event.resultStatus === 'unavailable' ||
+        event.resultStatus === 'not_found' ||
+        event.resultStatus === 'unsupported') &&
+      event.reasonCode !== null &&
+      expectedRefusal.has(event.reasonCode) &&
+      event.exposedBytes === 0,
+  );
+  if (refusedForExpectedReason) return 'CORRECT_REFUSAL';
+  return 'FALSE_REFUSAL';
 }
 
 export function gradeQualityArm(
@@ -336,7 +348,7 @@ interface DiscoveryAdoptionSummary {
   irrelevantUniqueCandidates: number;
   fileFound: boolean | null;
   symbolFound: boolean | null;
-  firstRelevantSequence: number | null;
+  firstRelevantRank: number | null;
 }
 
 function summarizeDiscoveryAdoptions(
@@ -348,32 +360,50 @@ function summarizeDiscoveryAdoptions(
   policyResult: QualityPolicyResult,
 ): DiscoveryAdoptionSummary {
   const relevantFiles = new Set(task.expectedFiles);
-  const relevantSymbolNames = [...new Set(task.expectedSymbols.map((symbol) => symbol.name))];
+  const relevantSymbols = task.expectedSymbols;
   const seenRelevantKeys = new Set<string>();
+  const seenIrrelevantKeys = new Set<string>();
   const summary: DiscoveryAdoptionSummary = {
     labeledUniqueCandidates: 0,
     irrelevantUniqueCandidates: 0,
     fileFound: null,
     symbolFound: null,
-    firstRelevantSequence: null,
+    firstRelevantRank: null,
   };
 
-  for (const event of policyResult.adoptionEvents) {
+  const searchEvents = policyResult.trace.filter((event) => isDiscoveryTool(event.tool));
+  for (const [adoptionIndex, event] of policyResult.adoptionEvents.entries()) {
     const { source } = event;
     const fileRelevant = relevantFiles.has(source.filePath);
-    const matchingSymbols = relevantSymbolNames.filter((name) => source.content.includes(name));
+    const matchingSymbols = relevantSymbols.filter((symbol) =>
+      symbol.filePath === source.filePath &&
+      symbol.startByte === source.startByte &&
+      symbol.endByte === source.endByte &&
+      source.content.includes(symbol.name),
+    );
     const symbolRelevant = eligibleSymbolTask && matchingSymbols.length > 0;
-    if (!fileRelevant && !symbolRelevant) {
-      summary.irrelevantUniqueCandidates += 1;
+    const candidateRelevant = symbolRelevant || (fileRelevant && !eligibleSymbolTask);
+    const candidateKey = `${source.filePath}\0${source.startByte}\0${source.endByte}`;
+    if (!candidateRelevant) {
+      if (!seenIrrelevantKeys.has(candidateKey)) {
+        seenIrrelevantKeys.add(candidateKey);
+        summary.irrelevantUniqueCandidates += 1;
+      }
+      if (fileRelevant) summary.fileFound = true;
       continue;
     }
 
-    const relevantKey = `${source.filePath}\0${matchingSymbols.join(',')}`;
+    const relevantKey = candidateKey;
     if (!seenRelevantKeys.has(relevantKey)) {
       seenRelevantKeys.add(relevantKey);
       summary.labeledUniqueCandidates += 1;
     }
-    summary.firstRelevantSequence ??= event.sequence;
+    if (summary.firstRelevantRank === null) {
+      const searchIndex = searchEvents.findIndex(
+        (searchEvent) => searchEvent.adoptionSequence === event.sequence,
+      );
+      summary.firstRelevantRank = searchIndex >= 0 ? searchIndex + 1 : adoptionIndex + 1;
+    }
     if (fileRelevant) summary.fileFound = true;
     if (symbolRelevant) summary.symbolFound = true;
   }
@@ -471,7 +501,7 @@ export function gradeDiscovery(
   );
   const hitsAtK = Math.max(0, adoptionSummary.labeledUniqueCandidates);
   const reciprocalRank =
-    adoptionSummary.firstRelevantSequence === null ? null : 1 / adoptionSummary.firstRelevantSequence;
+    adoptionSummary.firstRelevantRank === null ? null : 1 / adoptionSummary.firstRelevantRank;
 
   const candidateEvidenceDigest = digest({
     arm: _arm,

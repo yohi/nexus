@@ -156,16 +156,30 @@ describe('gradeQualityArm', () => {
     expect(result.reasonCode).toBe('SAFETY_FAIL');
   });
 
-  it('returns CORRECT_REFUSAL when refusal conditions are expected and no source is adopted', () => {
-    const refusalTask = { ...baseTask, expectedRefusalConditions: ['unreachable'] };
+  it('does not score an exhausted investigation as a correct refusal', () => {
+    const refusalTask = { ...baseTask, expectedRefusalConditions: ['SYMBOL_NOT_FOUND'] };
     const result = gradeQualityArm(refusalTask, snapshot, emptyPolicy, []);
-    expect(result.observation).toBe('CORRECT_REFUSAL');
+    expect(result.observation).toBe('INCONCLUSIVE');
     expect(result.correctSourceReached).toBe(false);
   });
 
-  it('returns FALSE_REFUSAL when no adoption occurs and no refusal conditions are expected', () => {
+  it('returns CORRECT_REFUSAL only when an investigated target has the expected refusal reason', () => {
+    const refusalTask = { ...baseTask, expectedRefusalConditions: ['SYMBOL_NOT_FOUND'] };
+    const policy: QualityPolicyResult = {
+      ...emptyPolicy,
+      status: 'COMPLETE',
+      trace: [{
+        ...makeTraceEvent('get_symbol_source', 'not_found', 0),
+        reasonCode: 'SYMBOL_NOT_FOUND',
+      }],
+    };
+    const result = gradeQualityArm(refusalTask, snapshot, policy, []);
+    expect(result.observation).toBe('CORRECT_REFUSAL');
+  });
+
+  it('returns INCONCLUSIVE when policy exhausts without any adoption or refusal evidence', () => {
     const result = gradeQualityArm(baseTask, snapshot, emptyPolicy, []);
-    expect(result.observation).toBe('FALSE_REFUSAL');
+    expect(result.observation).toBe('INCONCLUSIVE');
     expect(result.correctSourceReached).toBe(false);
   });
 });
@@ -215,6 +229,103 @@ describe('gradeDiscovery', () => {
     expect(result.fileFound).toBe(false);
     expect(result.symbolFound).toBe(false);
     expect(result.irrelevantUniqueCandidates).toBe(1);
+  });
+
+  it('does not mark a same-named declaration in another file as the expected symbol', () => {
+    const policy: QualityPolicyResult = {
+      ...emptyPolicy,
+      status: 'COMPLETE',
+      trace: [makeTraceEvent('grep_search', 'ok', 1)],
+      adoptionEvents: [makeAdoptionEvent('src/other.ts', source)],
+    };
+    const result = gradeDiscovery(baseTask, 'N', policy);
+    expect(result.symbolFound).toBe(false);
+    expect(result.hitsAtK).toBe(0);
+  });
+
+  it('does not mark a same-file declaration at a different range as the expected symbol', () => {
+    const policy: QualityPolicyResult = {
+      ...emptyPolicy,
+      status: 'COMPLETE',
+      trace: [makeTraceEvent('grep_search', 'ok', 1)],
+    adoptionEvents: [{
+      ...makeAdoptionEvent('src/answer.ts', source),
+      source: { ...makeAdoptionEvent('src/answer.ts', source).source, endByte: bytes.length - 1 },
+    }],
+    };
+    const result = gradeDiscovery(baseTask, 'N', policy);
+    expect(result.symbolFound).toBe(false);
+    expect(result.hitsAtK).toBe(0);
+  });
+
+  it('counts repeated adoptions of one file and declaration range once', () => {
+    const policy: QualityPolicyResult = {
+      ...emptyPolicy,
+      status: 'COMPLETE',
+      trace: [makeTraceEvent('grep_search', 'ok', 2)],
+      adoptionEvents: [
+        makeAdoptionEvent('src/answer.ts', source),
+        { ...makeAdoptionEvent('src/answer.ts', source), sequence: 2 },
+      ],
+    };
+    const result = gradeDiscovery(baseTask, 'N', policy);
+    expect(result.labeledUniqueCandidates).toBe(1);
+    expect(result.hitsAtK).toBe(1);
+  });
+
+  it('counts distinct declaration ranges in one file as distinct candidates', () => {
+    const taskWithDifferentGoldenRange = {
+      ...baseTask,
+      expectedSymbols: [{ filePath: 'src/answer.ts', name: 'answer', startByte: 5, endByte: 6 }],
+    };
+    const policy: QualityPolicyResult = {
+      ...emptyPolicy,
+      status: 'COMPLETE',
+      trace: [makeTraceEvent('grep_search', 'ok', 2)],
+      adoptionEvents: [
+        makeAdoptionEvent('src/answer.ts', source),
+        {
+          ...makeAdoptionEvent('src/answer.ts', source),
+          sequence: 2,
+          source: { ...makeAdoptionEvent('src/answer.ts', source).source, startByte: 1, endByte: bytes.length },
+        },
+      ],
+    };
+    const result = gradeDiscovery(taskWithDifferentGoldenRange, 'N', policy);
+    expect(result.irrelevantUniqueCandidates).toBe(2);
+    expect(result.labeledUniqueCandidates).toBe(0);
+    expect(result.hitsAtK).toBe(0);
+  });
+
+  it('counts repeated irrelevant adoptions of one range once', () => {
+    const policy: QualityPolicyResult = {
+      ...emptyPolicy,
+      status: 'COMPLETE',
+      trace: [makeTraceEvent('grep_search', 'ok', 2)],
+      adoptionEvents: [
+        makeAdoptionEvent('src/other.ts', 'export function unrelated(): number { return 1; }\n'),
+        {
+          ...makeAdoptionEvent('src/other.ts', 'export function unrelated(): number { return 1; }\n'),
+          sequence: 2,
+        },
+      ],
+    };
+    const result = gradeDiscovery(baseTask, 'N', policy);
+    expect(result.irrelevantUniqueCandidates).toBe(1);
+  });
+
+  it('computes reciprocal rank from the discovery search position, not adoption sequence', () => {
+    const policy: QualityPolicyResult = {
+      ...emptyPolicy,
+      status: 'COMPLETE',
+      trace: [
+        { ...makeTraceEvent('grep_search', 'ok', 1), sequence: 1 },
+        { ...makeTraceEvent('hybrid_search', 'ok', 1), sequence: 4, adoptionSequence: 3 },
+      ],
+      adoptionEvents: [{ ...makeAdoptionEvent('src/answer.ts', source), sequence: 3 }],
+    };
+    const result = gradeDiscovery(baseTask, 'N', policy);
+    expect(result.reciprocalRank).toBe(0.5);
   });
 });
 
