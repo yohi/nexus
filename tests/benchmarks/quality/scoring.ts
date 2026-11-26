@@ -150,9 +150,6 @@ const isUnsafeObservation = (observation: ObservationKind): boolean =>
 const isCorrectObservation = (observation: ObservationKind): boolean =>
   observation === 'CORRECT_CURRENT';
 
-const emptyCost = (): QualityCumulativeCost =>
-  Object.freeze({ logicalOperations: 0, invocations: 0, contextBytes: 0, contextTokens: 0 });
-
 function profileForEligibility(
   eligibility: QualityCaseManifest['evaluationEligibility'],
 ): import('./contracts.js').QualityProfile {
