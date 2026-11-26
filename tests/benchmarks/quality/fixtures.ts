@@ -50,7 +50,7 @@ const declarationRange = (path: string, source: string, expectedName: string): R
 };
 
 function sourceFor(name: string, value = 42): string {
-  return `export function ${name}(): number { return ${value}; }\n`;
+  return `export function ${name}(): number { return ${value}; }`;
 }
 
 function scenarioShape(task: QualityCaseManifest): ScenarioShape {

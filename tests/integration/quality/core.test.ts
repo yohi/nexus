@@ -1,13 +1,9 @@
-import { createHash } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createQualityFixture, type OwnedQualityFixture } from '../../../tests/benchmarks/quality/fixtures.js';
 import type { QualityCaseManifest } from '../../../tests/benchmarks/quality/contracts.js';
 import { collectQualityRouteCoverage, runQualityPair } from '../../../tests/benchmarks/quality/runner.js';
-
-const sha256 = (content: string | Uint8Array): string =>
-  createHash('sha256').update(content).digest('hex');
 
 describe('quality benchmark core integration', () => {
   let fixture: OwnedQualityFixture;
@@ -30,16 +26,9 @@ describe('quality benchmark core integration', () => {
     const symbolName = baseTask.expectedSymbols[0]?.name ?? 'answer';
     if (expectedFile === undefined) throw new Error('expected file missing');
     const content = await readFile(join(projectRoot, expectedFile), 'utf8');
-    const fileBytes = new TextEncoder().encode(content);
-    const wholeHash = sha256(fileBytes);
+    expect(content).toContain(`function ${symbolName}`);
     return {
       ...baseTask,
-      initialClues: ['id:answer'],
-      expectedSymbols: [
-        { filePath: expectedFile, name: symbolName, startByte: 0, endByte: fileBytes.length },
-      ],
-      expectedSourceHashes: { [expectedFile]: wholeHash },
-      expectedLocations: [{ filePath: expectedFile, line: 1, character: 0 }],
     };
   };
 
@@ -81,12 +70,28 @@ describe('quality benchmark core integration', () => {
     expect(route.requiredProbeIds.length).toBeGreaterThan(0);
     expect(route.probes).toHaveLength(route.requiredProbeIds.length);
     expect(route.setupProofDigest).toMatch(/^[a-f0-9]{64}$/);
-    expect(['COVERED', 'INCOMPLETE']).toContain(route.status);
+    expect(route.status).toBe('COVERED');
 
     for (const probe of route.probes) {
       expect(probe.probeId).toMatch(/^unit-q01|^Q01/);
       expect(probe.taskId).toBe(task.taskId);
       expect(probe.traceSequence).toBeGreaterThan(0);
     }
+    expect(route.probeTrace.map(({ sequence }) => sequence)).toEqual(
+      route.probes.map(({ traceSequence }) => traceSequence),
+    );
   }, 60_000);
+
+  it('marks a route incomplete when expected discovery targets are absent', async () => {
+    const task = await makeTask();
+    const incompleteTask = { ...task, expectedFiles: [], expectedSymbols: [] };
+    const [route] = await collectQualityRouteCoverage(
+      incompleteTask,
+      fixture,
+      { signal: new AbortController().signal },
+    );
+
+    expect(route?.status).toBe('INCOMPLETE');
+    expect(route?.probes.some(({ status }) => status === 'INCOMPLETE')).toBe(true);
+  });
 });

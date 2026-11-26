@@ -115,9 +115,8 @@ describe('quality route coverage', () => {
     try {
       const generatedTask = fixture.oracleCases[0];
       if (generatedTask === undefined) throw new Error('Q06 fixture missing');
-      const task = { ...generatedTask, initialClues: ['file:Q06/src/recreated.ts'] };
 
-      const result = await runQualityPair(task, fixture, { signal: new AbortController().signal });
+      const result = await runQualityPair(generatedTask, fixture, { signal: new AbortController().signal });
 
       expect(result.outcomes.R.observation).toBe('FALSE_FRESH');
       expect(result.outcomes.N.observation).toBe('FALSE_FRESH');
