@@ -224,24 +224,26 @@ describe('runQualityPolicy', () => {
     expect(result.adoption?.content).toContain('answer');
   });
 
-  it('does not promote unverified N-arm previews to verified adoptions', async () => {
+  it.each([
+    { arm: 'N' as const, validation: 'partial', clue: 'symbol:answer' },
+    { arm: 'N' as const, validation: 'unknown', clue: 'symbol:answer' },
+    { arm: 'R' as const, validation: 'unknown', clue: undefined },
+  ])('does not promote $arm-arm previews with $validation source validation', async ({ arm, validation, clue }) => {
     const content = 'export function answer(): number';
     const partialSource = readObservation('src/answer.ts', content).sourceAdoptions[0];
-    const adapter = fakeAdapter('N', (tool) => {
-      if (tool === 'get_symbol_source') {
-        return okObservation(
-          [{ filePath: 'src/answer.ts', symbolId: 'answer', preview: content, rank: 1 }],
-          {
-            sourceAdoptions: partialSource
-              ? [Object.freeze({ ...partialSource, sourceValidation: 'partial' })]
-              : [],
-          },
-        );
-      }
-      return emptyOk();
+    const adapter = fakeAdapter(arm, (tool) => {
+      const sourceTool = arm === 'N' ? 'get_symbol_source' : 'read_file';
+      expect(tool).toBe(sourceTool);
+      const overrides = arm === 'N' && validation === 'partial' && partialSource !== undefined
+        ? { sourceAdoptions: [Object.freeze({ ...partialSource, sourceValidation: 'partial' as const })] }
+        : {};
+      return okObservation(
+        [{ filePath: 'src/answer.ts', ...(arm === 'N' ? { symbolId: 'answer' } : {}), preview: content, rank: 1 }],
+        overrides,
+      );
     });
     const result = await runQualityPolicy(
-      makeTask(['symbol:answer', 'file:src/answer.ts']),
+      makeTask([...(clue ? [clue] : []), 'file:src/answer.ts']),
       adapter,
       QUALITY_BUDGETS_V1,
       new AbortController().signal,
@@ -249,45 +251,7 @@ describe('runQualityPolicy', () => {
 
     expect(result.status).toBe('EXHAUSTED');
     expect(result.adoption).toBeUndefined();
-    expect(result.adoptionEvents[0]?.source.sourceValidation).toBe('partial');
-  });
-
-  it('treats missing N-arm source validation as unknown', async () => {
-    const content = 'export function answer(): number';
-    const adapter = fakeAdapter('N', (tool) => {
-      if (tool === 'get_symbol_source') {
-        return okObservation([{ filePath: 'src/answer.ts', symbolId: 'answer', preview: content, rank: 1 }]);
-      }
-      return emptyOk();
-    });
-    const result = await runQualityPolicy(
-      makeTask(['symbol:answer', 'file:src/answer.ts']),
-      adapter,
-      QUALITY_BUDGETS_V1,
-      new AbortController().signal,
-    );
-
-    expect(result.status).toBe('EXHAUSTED');
-    expect(result.adoption).toBeUndefined();
-    expect(result.adoptionEvents[0]?.source.sourceValidation).toBe('unknown');
-  });
-
-  it('treats missing R-arm source validation as unknown', async () => {
-    const content = 'export function answer(): number';
-    const adapter = fakeAdapter('R', (tool) => {
-      expect(tool).toBe('read_file');
-      return okObservation([{ filePath: 'src/answer.ts', preview: content, rank: 1 }]);
-    });
-    const result = await runQualityPolicy(
-      makeTask(['file:src/answer.ts']),
-      adapter,
-      QUALITY_BUDGETS_V1,
-      new AbortController().signal,
-    );
-
-    expect(result.status).toBe('EXHAUSTED');
-    expect(result.adoption).toBeUndefined();
-    expect(result.adoptionEvents[0]?.source.sourceValidation).toBe('unknown');
+    expect(result.adoptionEvents[0]?.source.sourceValidation).toBe(validation);
   });
 
   it('requires an id clue to match content even when the file clue matches', async () => {

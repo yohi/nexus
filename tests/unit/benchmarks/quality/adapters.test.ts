@@ -127,6 +127,28 @@ const writeFiles = async (root: string, files: Record<string, string>): Promise<
   }
 };
 
+const trackReadBytes = (filePath: string): (() => number) => {
+  let totalReadBytes = 0;
+  const originalOpen = fsPromises.open.bind(fsPromises);
+  vi.spyOn(fsPromises, 'open').mockImplementation(async (...args) => {
+    const handle = await originalOpen(...args);
+    if (args[0] === filePath) {
+      const originalRead = handle.read.bind(handle);
+      Object.defineProperty(handle, 'read', {
+        configurable: true,
+        value: async (buffer: Buffer, offset: number, length: number, position: number) => {
+          const result = await originalRead(buffer, offset, length, position);
+          totalReadBytes += result.bytesRead;
+          return result;
+        },
+      });
+    }
+    return handle;
+  });
+  syncBuiltinESMExports();
+  return () => totalReadBytes;
+};
+
 const ctx = (traceSequence: number): QualityInvocationContext => ({ traceSequence });
 
 const handler =
@@ -636,24 +658,7 @@ describe('createRipgrepAdapter', () => {
     const root = await makeRoot();
     const filePath = join(root, 'deep.ts');
     await writeFile(filePath, `${'x'.repeat(4096)}\nanswer is here\n`, 'utf8');
-    let totalReadBytes = 0;
-    const originalOpen = fsPromises.open.bind(fsPromises);
-    vi.spyOn(fsPromises, 'open').mockImplementation(async (...args) => {
-      const handle = await originalOpen(...args);
-      if (args[0] === filePath) {
-        const originalRead = handle.read.bind(handle);
-        Object.defineProperty(handle, 'read', {
-          configurable: true,
-          value: async (buffer: Buffer, offset: number, length: number, position: number) => {
-            const result = await originalRead(buffer, offset, length, position);
-            totalReadBytes += result.bytesRead;
-            return result;
-          },
-        });
-      }
-      return handle;
-    });
-    syncBuiltinESMExports();
+    const totalReadBytes = trackReadBytes(filePath);
     const adapter = createRipgrepAdapter(root, rgExecutable);
 
     const observation = await adapter.invoke(
@@ -665,7 +670,7 @@ describe('createRipgrepAdapter', () => {
 
     expect(observation.status).toBe('error');
     expect(observation.reasonCode).toBe('READ_BYTE_BUDGET_EXCEEDED');
-    expect(totalReadBytes).toBeLessThanOrEqual(4096);
+    expect(totalReadBytes()).toBeLessThanOrEqual(4096);
     await cleanup(root);
   });
 
@@ -673,24 +678,7 @@ describe('createRipgrepAdapter', () => {
     const root = await makeRoot();
     const filePath = join(root, 'aligned.bin');
     await writeFile(filePath, 'x'.repeat(5000), 'utf8');
-    let totalReadBytes = 0;
-    const originalOpen = fsPromises.open.bind(fsPromises);
-    vi.spyOn(fsPromises, 'open').mockImplementation(async (...args) => {
-      const handle = await originalOpen(...args);
-      if (args[0] === filePath) {
-        const originalRead = handle.read.bind(handle);
-        Object.defineProperty(handle, 'read', {
-          configurable: true,
-          value: async (buffer: Buffer, offset: number, length: number, position: number) => {
-            const result = await originalRead(buffer, offset, length, position);
-            totalReadBytes += result.bytesRead;
-            return result;
-          },
-        });
-      }
-      return handle;
-    });
-    syncBuiltinESMExports();
+    const totalReadBytes = trackReadBytes(filePath);
     const adapter = createRipgrepAdapter(root, rgExecutable);
 
     const observation = await adapter.invoke(
@@ -701,7 +689,7 @@ describe('createRipgrepAdapter', () => {
     );
 
     expect(observation.status).toBe('ok');
-    expect(totalReadBytes).toBe(4096);
+    expect(totalReadBytes()).toBe(4096);
     expect(observation.sourceAdoptions[0]).toMatchObject({ startByte: 0, endByte: 4082 });
     await cleanup(root);
   });
@@ -921,58 +909,51 @@ describe('createRipgrepAdapter', () => {
     await cleanup(root);
   });
 
-  it('redacts the query `path` by position without corrupting fixed argv tokens', async () => {
+  it.each([
+    { query: 'path', fileContent: 'path\n' },
+    { query: '!.git/**', fileContent: '!.git/**\n' },
+  ])('redacts query "$query" by position without corrupting fixed argv tokens', async ({ query, fileContent }) => {
     const root = await makeRoot();
-    await writeFiles(root, { 'a.ts': 'path\n' });
+    await writeFiles(root, { 'a.ts': fileContent });
     const adapter = createRipgrepAdapter(root, rgExecutable);
-    await adapter.invoke('rg_search', { query: 'path' }, new AbortController().signal, ctx(1));
+    await adapter.invoke('rg_search', { query }, new AbortController().signal, ctx(1));
     const snapshot = adapter.snapshotRgExecution();
     const spawn = snapshot.spawns[0];
     if (spawn === undefined) throw new Error('spawn missing');
     expect(spawn.normalizedObservedArgv).toEqual([...fixedRgArgv('<public-query>')]);
-    expect(spawn.normalizedObservedArgv[spawn.normalizedObservedArgv.length - 2]).toBe('<public-query>');
-    expect(spawn.queryDigest).toBe(queryDigest('path'));
+    expect(spawn.normalizedObservedArgv.at(-2)).toBe('<public-query>');
+    expect(spawn.queryDigest).toBe(queryDigest(query));
     expect(snapshot.evidenceComplete).toBe(true);
     await cleanup(root);
   });
 
-  it('redacts an exclusion-glob literal query by position without leaking it', async () => {
-    const root = await makeRoot();
-    await writeFiles(root, { 'a.ts': '!.git/**\n' });
-    const adapter = createRipgrepAdapter(root, rgExecutable);
-    await adapter.invoke('rg_search', { query: '!.git/**' }, new AbortController().signal, ctx(1));
-    const snapshot = adapter.snapshotRgExecution();
-    const spawn = snapshot.spawns[0];
-    if (spawn === undefined) throw new Error('spawn missing');
-    expect(spawn.normalizedObservedArgv).toEqual([...fixedRgArgv('<public-query>')]);
-    expect(spawn.normalizedObservedArgv[spawn.normalizedObservedArgv.length - 2]).toBe('<public-query>');
-    expect(spawn.queryDigest).toBe(queryDigest('!.git/**'));
-    expect(snapshot.evidenceComplete).toBe(true);
-    await cleanup(root);
-  });
-
-  it('returns error RG_INVALID_JSON when a fake rg prints non-JSON stdout', async () => {
+  it.each([
+    {
+      reasonCode: 'RG_INVALID_JSON',
+      stdout: 'printf "%s" "this is not json"',
+      stderr: '',
+      exit: '',
+    },
+    {
+      reasonCode: 'RG_EXIT_1_DIAGNOSTIC',
+      stdout: '',
+      stderr: 'printf "%s" "bad pattern" >&2',
+      exit: 'exit 1',
+    },
+  ])('returns $reasonCode for invalid ripgrep output', async ({ reasonCode, stdout, stderr, exit }) => {
     const root = await makeRoot();
     const fakeRg = join(root, 'fake-rg');
-    await writeFile(fakeRg, '#!/bin/sh\nif [ "$1" = "--version" ]; then echo "ripgrep 0.0.0"; exit 0; fi\nprintf "%s" "this is not json"\n', 'utf8');
+    await writeFile(
+      fakeRg,
+      `#!/bin/sh\nif [ "$1" = "--version" ]; then echo "ripgrep 0.0.0"; exit 0; fi\n${stdout}\n${stderr}\n${exit}\n`,
+      'utf8',
+    );
     await chmod(fakeRg, 0o755);
     const adapter = createRipgrepAdapter(root, fakeRg);
     const observation = await adapter.invoke('rg_search', { query: 'x' }, new AbortController().signal, ctx(1));
     expect(observation.status).toBe('error');
-    expect(observation.reasonCode).toBe('RG_INVALID_JSON');
-    expect(observation.results).toHaveLength(0);
-    await cleanup(root);
-  });
-
-  it('returns error RG_EXIT_1_DIAGNOSTIC when rg exits 1 with stderr', async () => {
-    const root = await makeRoot();
-    const fakeRg = join(root, 'fake-rg');
-    await writeFile(fakeRg, '#!/bin/sh\nif [ "$1" = "--version" ]; then echo "ripgrep 0.0.0"; exit 0; fi\nprintf "%s" "bad pattern" >&2\nexit 1\n', 'utf8');
-    await chmod(fakeRg, 0o755);
-    const adapter = createRipgrepAdapter(root, fakeRg);
-    const observation = await adapter.invoke('rg_search', { query: 'x' }, new AbortController().signal, ctx(1));
-    expect(observation.status).toBe('error');
-    expect(observation.reasonCode).toBe('RG_EXIT_1_DIAGNOSTIC');
+    expect(observation.reasonCode).toBe(reasonCode);
+    if (reasonCode === 'RG_INVALID_JSON') expect(observation.results).toHaveLength(0);
     await cleanup(root);
   });
 
