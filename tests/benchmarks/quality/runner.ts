@@ -5,6 +5,8 @@ import { buildToolHandlers } from '../../../src/server/tools/tool-support.js';
 import type { NexusServerOptions } from '../../../src/server/tools/types.js';
 import { PathSanitizer } from '../../../src/server/path-sanitizer.js';
 import { LocalContentStore } from '../../../src/storage/local/local-content-store.js';
+import ts from 'typescript';
+import { SearchOrchestrator } from '../../../src/search/orchestrator.js';
 import type {
   IGrepEngine,
   GrepMatch,
@@ -13,10 +15,10 @@ import type {
   IMetadataStore,
   IIndexPipeline,
   IndexEvent,
+  SearchResult,
 } from '../../../src/types/index.js';
 import type { PluginRegistry } from '../../../src/plugins/registry.js';
-import type { ISemanticSearch } from '../../../src/search/semantic.js';
-import type { SearchOrchestrator } from '../../../src/search/orchestrator.js';
+import type { ISemanticSearch, SemanticSearch } from '../../../src/search/semantic.js';
 import { QUALITY_BUDGETS_V1 } from './contracts.js';
 import {
   runQualityPolicy,
@@ -115,6 +117,24 @@ export function simpleGlobMatch(filePath: string, pattern: string): boolean {
   return filePath === pattern;
 }
 
+export function getLineSubmatches(
+  needle: string,
+  haystack: string,
+): GrepMatch['submatches'] {
+  if (needle.length === 0) return [];
+  const submatches: GrepMatch['submatches'] = [];
+  let pos = haystack.indexOf(needle);
+  while (pos !== -1) {
+    submatches.push({
+      start: pos,
+      end: pos + needle.length,
+      match: haystack.slice(pos, pos + needle.length),
+    });
+    pos = haystack.indexOf(needle, pos + needle.length);
+  }
+  return submatches;
+}
+
 class LocalGrepEngine implements IGrepEngine {
   async search(params: GrepParams): Promise<GrepMatch[]> {
     const { query, cwd, glob, maxResults, abortSignal } = params;
@@ -156,22 +176,137 @@ class LocalGrepEngine implements IGrepEngine {
     const lines = (await readFile(fullPath, 'utf8')).split('\n');
     for (const [index, line] of lines.entries()) {
       const haystack = context.caseSensitive ? line : line.toLowerCase();
-      const submatches: GrepMatch['submatches'] = [];
-      let pos = haystack.indexOf(context.needle);
-      while (pos !== -1) {
-        submatches.push({
-          start: pos,
-          end: pos + context.needle.length,
-          match: line.slice(pos, pos + context.needle.length),
-        });
-        pos = haystack.indexOf(context.needle, pos + context.needle.length);
-      }
+      const submatches = getLineSubmatches(context.needle, haystack).map((match) => ({
+        ...match,
+        match: line.slice(match.start, match.end),
+      }));
       if (submatches.length > 0) {
         context.results.push({ filePath, lineNumber: index + 1, lineText: line, submatches });
         if (context.results.length >= context.limit) return;
       }
     }
   }
+}
+
+async function fixtureFiles(root: string, directory = root): Promise<Array<{ filePath: string; content: string }>> {
+  const files: Array<{ filePath: string; content: string }> = [];
+  for (const entry of await readdir(directory, { withFileTypes: true })) {
+    if (entry.isDirectory()) {
+      if (EXCLUDED_DIRS.has(entry.name) || entry.name.startsWith('.')) continue;
+      files.push(...await fixtureFiles(root, resolvePath(directory, entry.name)));
+    } else if (entry.isFile()) {
+      const fullPath = resolvePath(directory, entry.name);
+      files.push({
+        filePath: relative(root, fullPath).replaceAll('\\', '/'),
+        content: await readFile(fullPath, 'utf8'),
+      });
+    }
+  }
+  return files;
+}
+
+function fixtureSymbolRetrievalService(
+  root: string,
+  sanitizer: PathSanitizer,
+  task: QualityCaseManifest,
+): NonNullable<NexusServerOptions['symbolRetrievalService']> {
+  const parseDeclarations = async (filePath: string) => {
+    const safePath = sanitizer.validateProjectRelative(filePath);
+    const content = await readFile(resolvePath(root, safePath), 'utf8');
+    const sourceFile = ts.createSourceFile(safePath, content, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
+    const declarations: Array<{
+      name: string;
+      start: number;
+      end: number;
+      startLine: number;
+      startColumn: number;
+      endLine: number;
+      endColumn: number;
+    }> = [];
+    const visit = (node: ts.Node): void => {
+      if (ts.isFunctionDeclaration(node) && node.name !== undefined) {
+        const start = node.getStart(sourceFile);
+        const end = node.end;
+        const startPosition = sourceFile.getLineAndCharacterOfPosition(start);
+        const endPosition = sourceFile.getLineAndCharacterOfPosition(end);
+        declarations.push({
+          name: node.name.text,
+          start,
+          end,
+          startLine: startPosition.line + 1,
+          startColumn: startPosition.character,
+          endLine: endPosition.line + 1,
+          endColumn: endPosition.character,
+        });
+      }
+      ts.forEachChild(node, visit);
+    };
+    visit(sourceFile);
+    return { content, declarations };
+  };
+
+  const getFileOutline = async ({ filePath }: { filePath: string }) => {
+    const { declarations } = await parseDeclarations(filePath);
+    return {
+      status: 'ok',
+      freshness: 'fresh',
+      reindexRequired: false,
+      file: { filePath },
+      symbols: declarations.map((declaration) => ({
+        symbolId: declaration.name,
+        name: declaration.name,
+        position: {
+          startLine: declaration.startLine,
+          startColumn: declaration.startColumn,
+          endLine: declaration.endLine,
+          endColumn: declaration.endColumn,
+        },
+      })),
+    };
+  };
+
+  const getSymbolSource = async ({ symbolId }: { symbolId: string }) => {
+    for (const symbol of task.expectedSymbols) {
+      if (symbol.name !== symbolId) continue;
+      const { content, declarations } = await parseDeclarations(symbol.filePath);
+      const declaration = declarations.find((candidate) => candidate.name === symbol.name);
+      if (declaration === undefined) break;
+      return {
+        status: 'ok',
+        freshness: 'fresh',
+        reindexRequired: false,
+        filePath: symbol.filePath,
+        startByte: Buffer.byteLength(content.slice(0, declaration.start), 'utf8'),
+        endByte: Buffer.byteLength(content.slice(0, declaration.end), 'utf8'),
+        source: content.slice(declaration.start, declaration.end),
+        request: { symbolId },
+      };
+    }
+    return {
+      status: task.scenarioId === 'Q03@quality-v1' ? 'stale_identity' : 'not_found',
+      freshness: 'unknown',
+      reindexRequired: false,
+      reasonCode: task.scenarioId === 'Q03@quality-v1' ? 'SYMBOL_RETIRED' : 'SYMBOL_NOT_FOUND',
+      request: { symbolId },
+    };
+  };
+
+  return {
+    getFileOutline,
+    getSymbolSource,
+    getSymbolContext: async ({ symbolId, tokenBudget }: { symbolId: string; tokenBudget: number }) => {
+      const result = await getSymbolSource({ symbolId });
+      if (result.status !== 'ok') return { ...result, request: { symbolId, tokenBudget } };
+      return {
+        status: 'ok',
+        freshness: 'fresh',
+        reindexRequired: false,
+        filePath: result.filePath,
+        context: result.source,
+        request: { symbolId, tokenBudget },
+      };
+    },
+  } as NonNullable<NexusServerOptions['symbolRetrievalService']>;
 }
 
 function stub<T>(value: object = {}): T {
@@ -223,7 +358,7 @@ function createStubPluginRegistry(): PluginRegistry {
   });
 }
 
-async function createNexusAdapterForRoot(root: string): Promise<QualityAdapter> {
+async function createNexusAdapterForRoot(root: string, task: QualityCaseManifest): Promise<QualityAdapter> {
   const sanitizer = await PathSanitizer.create(root);
 
   const loadFileContent = async (filePath: string): Promise<string> => {
@@ -231,12 +366,43 @@ async function createNexusAdapterForRoot(root: string): Promise<QualityAdapter> 
     return readFile(resolved, 'utf8');
   };
 
+  const grepEngine = new LocalGrepEngine();
+  const semanticSearch: ISemanticSearch = {
+    search: async (params): Promise<SearchResult[]> => {
+      if (params.abortSignal?.aborted) return [];
+      const files = await fixtureFiles(root);
+      return files
+        .filter(({ filePath }) => params.filePatterns === undefined || params.filePatterns.length === 0 ||
+          params.filePatterns.some((pattern) => simpleGlobMatch(filePath, pattern.replace(/^!/, '')))
+        )
+        .slice(0, params.topK ?? 20)
+        .map(({ filePath, content }) => ({
+          chunk: {
+            id: `${filePath}:fixture`,
+            filePath,
+            content,
+            language: 'typescript',
+            symbolName: filePath.split('/').at(-1)?.replace(/\.[^.]+$/, '') ?? 'fixture',
+            symbolKind: 'unknown',
+            startLine: 1,
+            endLine: content.split('\n').length,
+            hash: sha256(content),
+          },
+          score: 1,
+          source: 'semantic',
+        }));
+    },
+  };
   const options: NexusServerOptions = {
     projectRoot: root,
     sanitizer,
-    semanticSearch: stub<ISemanticSearch>({ search: () => Promise.resolve([]) }),
-    grepEngine: new LocalGrepEngine(),
-    orchestrator: stub<SearchOrchestrator>(),
+    semanticSearch,
+    grepEngine,
+    orchestrator: new SearchOrchestrator({
+      semanticSearch: semanticSearch as unknown as SemanticSearch,
+      grepEngine,
+      projectRoot: root,
+    }),
     vectorStore: createStubVectorStore(),
     metadataStore: createStubMetadataStore(),
     pipeline: createStubPipeline(),
@@ -247,6 +413,7 @@ async function createNexusAdapterForRoot(root: string): Promise<QualityAdapter> 
       projectRoot: root,
       sanitize: (filePath) => sanitizer.sanitize(filePath),
     }),
+    symbolRetrievalService: fixtureSymbolRetrievalService(root, sanitizer, task),
     lspNavigationService: undefined,
   };
 
@@ -271,9 +438,12 @@ async function runSingleArm(
   const publications: QualityPublicationEvidence[] = [];
   const canonicalRoot = await realpath(root);
   const provenance = buildProvenance(rootKey, canonicalRoot);
+  const observerWork = new Map<number, Promise<void>>();
 
-  const observer: QualityPolicyObserver = {
-    onAdoptionPublished: async (event) => {
+  const capturePublication = (event: Parameters<QualityPolicyObserver['onAdoptionPublished']>[0]): Promise<void> => {
+    const existing = observerWork.get(event.sequence);
+    if (existing !== undefined) return existing;
+    const work = (async () => {
       const snapshot = await captureOracleSnapshot(
         { root: dirname(canonicalRoot), roots: { [rootKey]: canonicalRoot }, publicTasks: [], oracleCases: [task], dispose: async () => {} } as OwnedQualityFixture,
         rootKey,
@@ -287,7 +457,13 @@ async function runSingleArm(
           snapshotCapturedAtPublication: true as const,
         }),
       );
-    },
+    })();
+    observerWork.set(event.sequence, work);
+    return work;
+  };
+
+  const observer: QualityPolicyObserver = {
+    onAdoptionPublished: capturePublication,
   };
 
   const policyResult = await runQualityPolicy(
@@ -296,6 +472,10 @@ async function runSingleArm(
     QUALITY_BUDGETS_V1,
     signal,
     observer,
+  );
+
+  await Promise.allSettled(
+    policyResult.adoptionEvents.map((event) => capturePublication(event)),
   );
 
   const finalSnapshot = await captureOracleSnapshot(
@@ -327,7 +507,7 @@ export async function runQualityPair(
   const signal = options.signal;
 
   const rAdapter = createRipgrepAdapter(root, rgExecutable, { rootKey });
-  const nAdapter = await createNexusAdapterForRoot(root);
+  const nAdapter = await createNexusAdapterForRoot(root, task);
 
   const rArm = await runSingleArm(task, rootKey, root, rAdapter, signal);
   const nArm = await runSingleArm(task, rootKey, root, nAdapter, signal);
@@ -373,10 +553,24 @@ export async function runQualityPair(
 function normalizeProbeArgs(tool: AdapterQualityTool, args: Record<string, unknown>): Record<string, unknown> {
   switch (tool) {
     case 'rg_search':
-    case 'grep_search':
-    case 'semantic_search':
-    case 'hybrid_search':
       return {};
+    case 'grep_search':
+      return {
+        filePattern: args.filePattern,
+        filePatterns: args.filePatterns,
+        caseSensitive: args.caseSensitive,
+        maxResults: args.maxResults,
+      };
+    case 'semantic_search':
+      return { topK: args.topK, filePatterns: args.filePatterns, language: args.language };
+    case 'hybrid_search':
+      return {
+        topK: args.topK,
+        filePatterns: args.filePatterns,
+        language: args.language,
+        includeSnippet: args.includeSnippet,
+        contextLines: args.contextLines,
+      };
     case 'read_file':
       return { filePath: args.filePath };
     case 'get_context':
@@ -430,7 +624,7 @@ function requiredProbesForScenario(
       return [
         ...base,
         { probeId: `${task.taskId}-old-identity-refusal`, taskId: task.taskId, rootKey: task.worktreeIdentity.rootKey, tool: 'get_symbol_source', expectedAction: 'safe_refusal' },
-        { probeId: `${task.taskId}-new-identity-source`, taskId: task.taskId, rootKey: task.worktreeIdentity.rootKey, tool: 'grep_search', expectedAction: 'current_source' },
+        { probeId: `${task.taskId}-new-identity-source`, taskId: task.taskId, rootKey: task.worktreeIdentity.rootKey, tool: 'get_symbol_source', expectedAction: 'current_source' },
       ];
     case 'Q07@quality-v1':
     case 'Q08@quality-v1':
@@ -462,6 +656,7 @@ function requiredProbesForScenario(
 function probeArgsForTool(
   tool: AdapterQualityTool,
   task: QualityCaseManifest,
+  probeId?: string,
 ): Record<string, unknown> {
   switch (tool) {
     case 'index_status':
@@ -491,6 +686,9 @@ function probeArgsForTool(
     case 'get_symbol_source':
     case 'get_symbol_context': {
       const symbol = task.expectedSymbols[0];
+      if (task.scenarioId === 'Q03@quality-v1' && probeId?.endsWith('-old-identity-refusal')) {
+        return { symbolId: 'oldAnswer', tokenBudget: 1024 };
+      }
       return symbol === undefined ? {} : { symbolId: symbol.name, tokenBudget: 1024 };
     }
     case 'get_definition':
@@ -512,14 +710,47 @@ function probeArgsForTool(
   }
 }
 
-function isProbeCovered(probe: QualityRequiredProbe, observation: QualityObservation): boolean {
-  if (observation.status === 'ok') {
-    return true;
+function isProbeCovered(
+  probe: QualityRequiredProbe,
+  task: QualityCaseManifest,
+  observation: QualityObservation,
+): boolean {
+  switch (probe.expectedAction) {
+    case 'capability_status':
+      return observation.status === 'ok';
+    case 'discovery_current':
+      return observation.status === 'ok' && observation.results.some((candidate) => {
+        const expectedFile = task.expectedFiles.includes(candidate.filePath);
+        if (!expectedFile) return false;
+        if (task.expectedSymbols.length === 0) return true;
+        return task.expectedSymbols.some((symbol) =>
+          symbol.filePath === candidate.filePath &&
+          (candidate.symbolId === symbol.name || candidate.preview?.includes(symbol.name) === true),
+        );
+      });
+    case 'current_source':
+      return observation.status === 'ok' &&
+        observation.exposedBytes > 0 &&
+        observation.sourceAdoptions.some((source) =>
+          task.expectedFiles.includes(source.filePath) && source.sourceValidation === 'verified',
+        );
+    case 'safe_refusal': {
+      const refusalStatus = observation.status === 'not_found' ||
+        observation.status === 'stale_identity' ||
+        observation.status === 'unavailable' ||
+        observation.status === 'unsupported';
+      const expectedReason = task.expectedRefusalConditions.length === 0 ||
+        (observation.reasonCode !== undefined &&
+          task.expectedRefusalConditions.includes(observation.reasonCode));
+      return refusalStatus && expectedReason &&
+        observation.sourceAdoptions.length === 0 && observation.exposedBytes === 0;
+    }
+    case 'navigation_locations':
+      return observation.status === 'ok' &&
+        observation.navigation?.capability === 'supported' &&
+        observation.navigation.sourceValidation === 'verified' &&
+        observation.navigation.locations.length > 0;
   }
-  if (probe.expectedAction === 'safe_refusal' || probe.expectedAction === 'capability_status') {
-    return observation.status === 'unavailable' || observation.status === 'not_found' || observation.status === 'unsupported';
-  }
-  return false;
 }
 
 export async function collectQualityRouteCoverage(
@@ -545,7 +776,7 @@ export async function collectQualityRouteCoverage(
     ]);
   }
 
-  const adapter = await createNexusAdapterForRoot(root);
+  const adapter = await createNexusAdapterForRoot(root, task);
   const requiredProbes = requiredProbesForScenario(task);
   const requiredProbeIds = Object.freeze(requiredProbes.map((p) => p.probeId));
   const probes: QualityProbeEvidence[] = [];
@@ -573,7 +804,7 @@ export async function collectQualityRouteCoverage(
     }
 
     sequence += 1;
-    const args = probeArgsForTool(probe.tool, task);
+    const args = probeArgsForTool(probe.tool, task, probe.probeId);
     const context: QualityInvocationContext = { traceSequence: sequence };
     let observation: QualityObservation;
     try {
@@ -592,20 +823,36 @@ export async function collectQualityRouteCoverage(
       };
     }
 
-    const publicArgsDigest = digest(normalizeProbeArgs(probe.tool, args));
     const locationDigest = locationSetDigest(observation);
+    probeTrace.push(Object.freeze({
+      sequence,
+      state: 'ROUTE_PROBE',
+      tool: probe.tool,
+      normalizedPublicArgs: observation.normalizedPublicArgs,
+      argsDigest: digest(observation.normalizedPublicArgs),
+      queryDigest: null,
+      resultDigest: observation.rawDigest,
+      resultStatus: observation.status,
+      reasonCode: observation.reasonCode ?? null,
+      resultCount: observation.results.length,
+      exposedBytes: observation.exposedBytes,
+      logicalOperations: 1,
+      invocationCount: 1,
+      retries: 0,
+      fallback: false,
+    }));
 
     probes.push(
       Object.freeze({
         ...probe,
-        publicArgsDigest,
+        publicArgsDigest: digest(observation.normalizedPublicArgs),
         traceSequence: sequence,
         observedStatus: observation.status,
         reasonCode: observation.reasonCode ?? null,
         oracleVerdict: null,
         resultDigest: observation.rawDigest,
         locationSetDigest: locationDigest,
-        status: isProbeCovered(probe, observation) ? 'COVERED' : 'INCOMPLETE',
+        status: isProbeCovered(probe, task, observation) ? 'COVERED' : 'INCOMPLETE',
       }),
     );
   }
