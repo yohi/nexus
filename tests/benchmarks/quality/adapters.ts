@@ -1481,7 +1481,11 @@ const verifiedSourceAdoptionsForTool = (
     const endByte = asNumber(envelope.endByte);
     const requestedStartLine = asNumber(args.startLine);
     const requestedEndLine = asNumber(args.endLine);
+    const actualStartLine = asNumber(envelope.startLine);
+    const actualEndLine = asNumber(envelope.endLine);
     if (
+      args.mode === 'deferred' ||
+      envelope.mode === 'deferred' ||
       filePath === undefined ||
       filePath.length === 0 ||
       filePath !== asString(args.filePath) ||
@@ -1494,10 +1498,19 @@ const verifiedSourceAdoptionsForTool = (
       startByte < 0 ||
       endByte < startByte ||
       Buffer.byteLength(content, 'utf8') !== endByte - startByte ||
+      requestedStartLine === undefined ||
+      requestedEndLine === undefined ||
+      actualStartLine === undefined ||
+      actualEndLine === undefined ||
       !Number.isSafeInteger(requestedStartLine) ||
       !Number.isSafeInteger(requestedEndLine) ||
-      asNumber(envelope.startLine) !== requestedStartLine ||
-      asNumber(envelope.endLine) !== requestedEndLine
+      requestedStartLine > requestedEndLine ||
+      !Number.isSafeInteger(actualStartLine) ||
+      !Number.isSafeInteger(actualEndLine) ||
+      actualStartLine < 1 ||
+      actualStartLine !== requestedStartLine ||
+      actualEndLine < actualStartLine ||
+      actualEndLine > requestedEndLine
     ) {
       return [];
     }

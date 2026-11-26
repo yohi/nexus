@@ -22,8 +22,10 @@ import {
 } from '../../../benchmarks/quality/adapters.js';
 import { QUALITY_BUDGETS_V1 } from '../../../benchmarks/quality/contracts.js';
 import { runQualityPolicy } from '../../../benchmarks/quality/policy.js';
-import type { buildToolHandlers } from '../../../../src/server/tools/tool-support.js';
+import { buildToolHandlers } from '../../../../src/server/tools/tool-support.js';
+import { LocalContentStoreFactory } from '../../../../src/storage/local/local-content-store.js';
 import type { NexusToolCallResult, ToolHandler } from '../../../../src/server/tools/types.js';
+import { createTestNexusOptions } from '../../../shared/create-test-nexus-options.js';
 
 type ToolHandlers = ReturnType<typeof buildToolHandlers>;
 
@@ -1091,6 +1093,34 @@ describe('createRipgrepAdapter', () => {
 });
 
 describe('createNexusAdapter', () => {
+  it('completes a file-clue route using byte ranges from the real get_context handler', async () => {
+    const root = await makeRoot();
+    const source = 'alpha\r\nβeta\r\nlast\n';
+    await writeFiles(root, { 'src/auth.ts': source });
+    const { options } = await createTestNexusOptions({ projectRoot: root, fileContent: source });
+    const contentStore = new LocalContentStoreFactory({
+      projectRoot: root,
+      sanitize: (filePath) => options.sanitizer.sanitize(filePath),
+    }).getStore('workspace', 'revision');
+    const handlers = buildToolHandlers({ ...options, contentStore });
+
+    const result = await runQualityPolicy(
+      { taskDescription: 'read the file', initialClues: ['file:src/auth.ts'] },
+      createNexusAdapter(handlers),
+      QUALITY_BUDGETS_V1,
+      new AbortController().signal,
+    );
+
+    expect(result.status).toBe('COMPLETE');
+    expect(result.adoption).toEqual({
+      filePath: 'src/auth.ts',
+      startByte: 0,
+      endByte: 19,
+      content: source,
+      sourceValidation: 'verified',
+    });
+  });
+
   it('rejects duplicate or invalid trace sequences', async () => {
     const adapter = createNexusAdapter(handlersFor());
     await adapter.invoke('index_status', {}, new AbortController().signal, ctx(1));

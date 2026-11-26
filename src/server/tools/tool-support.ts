@@ -1,8 +1,8 @@
 import { sanitizeErrorMessage } from '../../utils/error-utils.js';
-import type { IContentStore } from '../../storage/interfaces/content-store.js';
+import type { ContentRangeWithOffsets, IContentStore } from '../../storage/interfaces/content-store.js';
 import { withToolMetrics } from '../tool-instrumentation.js';
 import type { LspNavigationKind, NavigationToolArgs } from '../../lsp/contracts.js';
-import { executeGetContext } from './get-context.js';
+import { executeGetContext, type GetContextContentReader } from './get-context.js';
 import { executeLspNavigation } from './get-lsp-navigation.js';
 import type { GetContextToolArgs } from './get-context-schema.js';
 import { executeGrepSearch, type GrepSearchToolArgs } from './grep-search.js';
@@ -15,6 +15,15 @@ import { executeReindex } from './reindex.js';
 import { executeSemanticSearch, type SemanticSearchToolArgs } from './semantic-search.js';
 import type { ToolName } from './registry/definitions.js';
 import type { NexusServerOptions, ToolHandler } from './types.js';
+
+interface ContentReader extends GetContextContentReader {
+  (
+    filePath: string,
+    startLine?: number,
+    endLine?: number,
+    signal?: AbortSignal,
+  ): Promise<string>;
+}
 
 export const errorResult = (error: unknown) => {
   const errorMessage = sanitizeErrorMessage(error);
@@ -57,9 +66,9 @@ export const toolResult = <T extends object>(structuredContent: T) => {
 export const createContentReader = (
   contentStore: IContentStore | undefined,
   fallback: (filePath: string, signal?: AbortSignal) => Promise<string>,
-): ((filePath: string, startLine?: number, endLine?: number, signal?: AbortSignal) => Promise<string>) => {
-  if (contentStore === undefined) {
-    return async (filePath, startLine = 1, endLine = Number.MAX_SAFE_INTEGER, signal) => {
+): ContentReader => {
+  const reader: ContentReader = async (filePath, startLine = 1, endLine = Number.MAX_SAFE_INTEGER, signal) => {
+    if (contentStore === undefined) {
       const content = await fallback(filePath, signal);
       const lines = content.split('\n');
       const clampedStart = Math.max(1, Math.min(startLine, lines.length));
@@ -68,9 +77,7 @@ export const createContentReader = (
         throw new Error(`Invalid line range: startLine (${clampedStart}) is greater than endLine (${clampedEnd})`);
       }
       return lines.slice(clampedStart - 1, clampedEnd).join('\n');
-    };
-  }
-  return async (filePath, startLine = 1, endLine = Number.MAX_SAFE_INTEGER, signal): Promise<string> => {
+    }
     try {
       return await contentStore.readRange(filePath, startLine, endLine, signal);
     } catch (error) {
@@ -85,6 +92,23 @@ export const createContentReader = (
       return lines.slice(clampedStart - 1, clampedEnd).join('\n');
     }
   };
+
+  const readRangeWithOffsets = contentStore?.readRangeWithOffsets?.bind(contentStore);
+  if (readRangeWithOffsets !== undefined) {
+    reader.readRangeWithOffsets = async (
+      filePath: string,
+      startLine: number,
+      endLine: number,
+      signal?: AbortSignal,
+    ): Promise<ContentRangeWithOffsets | undefined> => {
+      try {
+        return await readRangeWithOffsets(filePath, startLine, endLine, signal);
+      } catch {
+        return undefined;
+      }
+    };
+  }
+  return reader;
 };
 
 const lspNavigationHandler = (

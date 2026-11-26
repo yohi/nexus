@@ -34,6 +34,25 @@ export interface IContentStore {
    * string.
    */
   readRange(path: string, startLine: number, endLine: number, signal?: AbortSignal): Promise<string>;
+
+  /**
+   * Return an inclusive line range and its exact half-open byte range when the
+   * implementation can derive offsets from the original content bytes.
+   */
+  readRangeWithOffsets?(
+    path: string,
+    startLine: number,
+    endLine: number,
+    signal?: AbortSignal,
+  ): Promise<ContentRangeWithOffsets>;
+}
+
+export interface ContentRangeWithOffsets {
+  readonly content: string;
+  readonly startLine: number;
+  readonly endLine: number;
+  readonly startByte: number;
+  readonly endByte: number;
 }
 
 /**
