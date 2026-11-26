@@ -691,7 +691,7 @@ describe('runQualityPolicy', () => {
     const adapter = fakeAdapter('N', (tool) => {
       invocations += 1;
       if (tool === 'grep_search') {
-        return okObservation([{ filePath: 'a.ts', line: 1, preview: '', rank: 1 }]);
+        return okObservation([{ filePath: 'a.ts', line: 1, preview: 'answer', rank: 1 }]);
       }
       if (tool === 'get_context') {
         return {
@@ -710,10 +710,38 @@ describe('runQualityPolicy', () => {
     );
 
     expect(result.status).toBe('EXHAUSTED');
-    expect(result.contextBytes).toBe(QUALITY_BUDGETS_V1.maxContextBytes + 1);
+    expect(result.contextBytes).toBe(Buffer.byteLength('answer', 'utf8'));
     expect(result.adoption).toBeUndefined();
     expect(result.adoptionEvents).toHaveLength(0);
     expect(invocations).toBe(2);
+  });
+
+  it('does not charge or continue after a search observation exceeds the remaining context budget', async () => {
+    let invocations = 0;
+    const adapter = fakeAdapter('N', (tool) => {
+      invocations += 1;
+      if (tool === 'grep_search') {
+        return okObservation([{
+          filePath: 'a.ts',
+          line: 1,
+          preview: 'x'.repeat(QUALITY_BUDGETS_V1.maxContextBytes + 1),
+          rank: 1,
+        }]);
+      }
+      return emptyOk();
+    });
+
+    const result = await runQualityPolicy(
+      makeTask(['id:answer']),
+      adapter,
+      QUALITY_BUDGETS_V1,
+      new AbortController().signal,
+    );
+
+    expect(result.status).toBe('EXHAUSTED');
+    expect(result.contextBytes).toBe(0);
+    expect(result.adoption).toBeUndefined();
+    expect(invocations).toBe(1);
   });
 
   it('recognizes Unicode identifiers without matching them inside another identifier', async () => {

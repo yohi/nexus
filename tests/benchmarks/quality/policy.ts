@@ -444,8 +444,31 @@ export async function runQualityPolicy(
   const adoptionEvents: QualityAdoptionEvent[] = [];
   const navigationEvents: QualityNavigationEvent[] = [];
   let cost = initialCost();
+  let contextBudgetExceeded = false;
   let adoption: SourceAdoption | undefined;
   let adoptionCounter = 0;
+
+  const canContinue = (): boolean =>
+    !contextBudgetExceeded && canAfford(cost, limits, signal);
+
+  const canContinueRetry = (): boolean =>
+    !contextBudgetExceeded && canAffordRetry(cost, limits, signal);
+
+  const accountObservation = (
+    observation: QualityObservation,
+    newLogicalOperation = true,
+  ): void => {
+    if (observation.exposedBytes > limits.maxContextBytes - cost.contextBytes) {
+      contextBudgetExceeded = true;
+      cost = {
+        ...cost,
+        logicalOperations: cost.logicalOperations + (newLogicalOperation ? 1 : 0),
+        invocations: cost.invocations + 1,
+      };
+      return;
+    }
+    cost = addObservationCost(cost, observation, newLogicalOperation);
+  };
 
   const invokeTool = async (
     state: string,
@@ -586,36 +609,34 @@ export async function runQualityPolicy(
     fallback: boolean,
     currentClues: ParsedClues,
   ): Promise<boolean> => {
-    if (!canAfford(cost, limits, signal)) return false;
+    if (!canContinue()) return false;
     let observation = await invokeTool(state, tool, args, query, fallback, 0);
-    cost = addObservationCost(cost, observation);
+    accountObservation(observation);
     recordNavigation(trace[trace.length - 1]?.sequence ?? 0, tool, observation);
-    if (signal.aborted) return false;
-    if (cost.contextBytes > limits.maxContextBytes) return false;
+    if (signal.aborted || contextBudgetExceeded) return false;
 
     if (observation.status === 'ok' && observation.results.length === 0) return false;
 
     const retryable = new Set<QualityObservationStatus>(['error', 'timeout', 'cancelled', 'unavailable']);
     let retries = 0;
-    while (retryable.has(observation.status) && retries < limits.maxRetries && canAffordRetry(cost, limits, signal)) {
+    while (retryable.has(observation.status) && retries < limits.maxRetries && canContinueRetry()) {
       retries += 1;
       cost = { ...cost, retries: cost.retries + 1 };
       observation = await invokeTool(state, tool, args, query, fallback, retries);
-      cost = addObservationCost(cost, observation, false);
+      accountObservation(observation, false);
       recordNavigation(trace[trace.length - 1]?.sequence ?? 0, tool, observation);
-      if (signal.aborted) return false;
+      if (signal.aborted || contextBudgetExceeded) return false;
     }
 
     if (observation.status !== 'ok') return false;
 
     const candidates = observation.results.slice(0, limits.maxCandidates);
     for (const candidate of candidates) {
-      if (!canAfford(cost, limits, signal)) return false;
+      if (!canContinue()) return false;
       const readSpec = adapter.arm === 'R' ? buildRReadArgs(candidate) : buildReadArgs(candidate);
       const readObservation = await invokeTool('READ', readSpec.tool, readSpec.args, null, fallback, 0);
-      cost = addObservationCost(cost, readObservation);
-      if (signal.aborted) return false;
-      if (cost.contextBytes > limits.maxContextBytes) return false;
+      accountObservation(readObservation);
+      if (signal.aborted || contextBudgetExceeded) return false;
       const attemptedAdoption = adapter.arm === 'R' ? toFileAdoption(candidate.filePath, readObservation) : toAdoption(readObservation);
       if (attemptedAdoption === null) continue;
       const readTraceSequence = trace[trace.length - 1]?.sequence;
@@ -637,12 +658,11 @@ export async function runQualityPolicy(
     currentClues: ParsedClues,
     fallback: boolean,
   ): Promise<boolean> => {
-    if (!canAfford(cost, limits, signal)) return false;
+    if (!canContinue()) return false;
     const observation = await invokeTool(state, tool, args, null, fallback, 0);
-    cost = addObservationCost(cost, observation);
+    accountObservation(observation);
     recordNavigation(trace[trace.length - 1]?.sequence ?? 0, tool, observation);
-    if (signal.aborted) return false;
-    if (cost.contextBytes > limits.maxContextBytes) return false;
+    if (signal.aborted || contextBudgetExceeded) return false;
     const attemptedAdoption =
       tool === 'read_file'
         ? toFileAdoption(String(args.filePath ?? ''), observation)
@@ -670,9 +690,9 @@ export async function runQualityPolicy(
           maxResults: 20,
         }
       : { symbolId: currentClues.symbol, maxResults: 20 };
-    if (!canAfford(cost, limits, signal)) return;
+    if (!canContinue()) return;
     const observation = await invokeTool('VERIFY', tool, args, null, fallback, 0);
-    cost = addObservationCost(cost, observation);
+    accountObservation(observation);
     recordNavigation(trace[trace.length - 1]?.sequence ?? 0, tool, observation);
   };
 
@@ -711,9 +731,9 @@ export async function runQualityPolicy(
       if (clues.id !== undefined && (await runSearchAndAdopt('FALLBACK', 'grep_search', { pattern: clues.id, maxResults: limits.maxCandidates }, clues.id, true, clues))) return completeResult(cost, adoption, adoptionEvents, navigationEvents, trace);
       if (clues.file !== undefined && (await runReadRoute('FALLBACK', 'get_context', { filePath: clues.file, startLine: 1, endLine: 10, mode: 'bounded' }, clues, true))) return completeResult(cost, adoption, adoptionEvents, navigationEvents, trace);
     } else if (clues.file !== undefined) {
-      if (canAfford(cost, limits, signal)) {
+      if (canContinue()) {
         const outline = await invokeTool('DISCOVER', 'get_file_outline', { filePath: clues.file }, null, false, 0);
-        cost = addObservationCost(cost, outline);
+        accountObservation(outline);
       }
       if (await runReadRoute('READ', 'get_context', { filePath: clues.file, startLine: 1, endLine: 10, mode: 'bounded' }, clues, false)) return completeResult(cost, adoption, adoptionEvents, navigationEvents, trace);
       if (clues.id !== undefined && (await runSearchAndAdopt('FALLBACK', 'grep_search', { pattern: clues.id, maxResults: limits.maxCandidates }, clues.id, true, clues))) return completeResult(cost, adoption, adoptionEvents, navigationEvents, trace);
