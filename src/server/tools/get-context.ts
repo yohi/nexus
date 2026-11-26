@@ -1,4 +1,5 @@
 import type { PathSanitizer } from '../path-sanitizer.js';
+import type { ContentRangeWithOffsets } from '../../storage/interfaces/content-store.js';
 import { resolveLineRange, sliceContent, type LineRange } from './context-helpers.js';
 import type { GetContextToolArgs } from './get-context-schema.js';
 
@@ -10,6 +11,8 @@ export interface GetContextEagerResult {
   content: string;
   startLine: number;
   endLine: number;
+  startByte?: number;
+  endByte?: number;
 }
 
 export interface GetContextDeferredResult {
@@ -23,6 +26,21 @@ export interface GetContextDeferredResult {
 }
 
 export type GetContextResult = GetContextEagerResult | GetContextDeferredResult;
+
+export interface GetContextContentReader {
+  (
+    filePath: string,
+    startLine: number,
+    endLine: number,
+    signal?: AbortSignal,
+  ): Promise<string>;
+  readRangeWithOffsets?: (
+    filePath: string,
+    startLine: number,
+    endLine: number,
+    signal?: AbortSignal,
+  ) => Promise<ContentRangeWithOffsets | undefined>;
+}
 
 const buildInvalidRangeError = (
   totalLines: number,
@@ -69,17 +87,24 @@ const resolveDeferredPreviewRange = (
 };
 
 export const executeGetContext = async (
-  loadFileContent: (
-    filePath: string,
-    startLine: number,
-    endLine: number,
-    signal?: AbortSignal,
-  ) => Promise<string>,
+  loadFileContent: GetContextContentReader,
   sanitizer: PathSanitizer,
   args: GetContextToolArgs,
   signal?: AbortSignal,
 ): Promise<GetContextResult> => {
   const sanitizedPath = await sanitizer.sanitize(args.filePath);
+  if (args.mode !== 'deferred' && loadFileContent.readRangeWithOffsets !== undefined) {
+    const rangedContent = await loadFileContent.readRangeWithOffsets(
+      sanitizedPath,
+      args.startLine ?? 1,
+      args.endLine ?? Number.MAX_SAFE_INTEGER,
+      signal,
+    );
+    if (rangedContent !== undefined) {
+      return { filePath: args.filePath, ...rangedContent };
+    }
+  }
+
   const hasExplicitEagerRange = args.mode !== 'deferred' && args.startLine !== undefined && args.endLine !== undefined;
   const requestedStartLine = args.startLine;
   const requestedEndLine = args.endLine;

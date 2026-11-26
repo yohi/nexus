@@ -20,8 +20,12 @@ import {
   type QualityInvocationContext,
   type QualityTool,
 } from '../../../benchmarks/quality/adapters.js';
-import type { buildToolHandlers } from '../../../../src/server/tools/tool-support.js';
+import { QUALITY_BUDGETS_V1 } from '../../../benchmarks/quality/contracts.js';
+import { runQualityPolicy } from '../../../benchmarks/quality/policy.js';
+import { buildToolHandlers } from '../../../../src/server/tools/tool-support.js';
+import { LocalContentStoreFactory } from '../../../../src/storage/local/local-content-store.js';
 import type { NexusToolCallResult, ToolHandler } from '../../../../src/server/tools/types.js';
+import { createTestNexusOptions } from '../../../shared/create-test-nexus-options.js';
 
 type ToolHandlers = ReturnType<typeof buildToolHandlers>;
 
@@ -123,6 +127,28 @@ const writeFiles = async (root: string, files: Record<string, string>): Promise<
   }
 };
 
+const trackReadBytes = (filePath: string): (() => number) => {
+  let totalReadBytes = 0;
+  const originalOpen = fsPromises.open.bind(fsPromises);
+  vi.spyOn(fsPromises, 'open').mockImplementation(async (...args) => {
+    const handle = await originalOpen(...args);
+    if (args[0] === filePath) {
+      const originalRead = handle.read.bind(handle);
+      Object.defineProperty(handle, 'read', {
+        configurable: true,
+        value: async (buffer: Buffer, offset: number, length: number, position: number) => {
+          const result = await originalRead(buffer, offset, length, position);
+          totalReadBytes += result.bytesRead;
+          return result;
+        },
+      });
+    }
+    return handle;
+  });
+  syncBuiltinESMExports();
+  return () => totalReadBytes;
+};
+
 const ctx = (traceSequence: number): QualityInvocationContext => ({ traceSequence });
 
 const handler =
@@ -156,6 +182,27 @@ describe('createRipgrepAdapter', () => {
     const observation = await adapter.invoke('rg_search', { query: 'hello' }, new AbortController().signal, ctx(1));
     expect(observation.status).toBe('ok');
     expect(observation.results.some((result) => result.filePath.endsWith('a.ts'))).toBe(true);
+    await cleanup(root);
+  });
+
+  it('preserves the absolute byte offset of a ripgrep match', async () => {
+    const root = await makeRoot();
+    await writeFiles(root, { 'deep.ts': `${'x'.repeat(8192)}needle\n` });
+    const adapter = createRipgrepAdapter(root, rgExecutable);
+
+    const observation = await adapter.invoke(
+      'rg_search',
+      { query: 'needle' },
+      new AbortController().signal,
+      ctx(1),
+    );
+
+    expect(observation.status).toBe('ok');
+    expect(observation.results[0]).toMatchObject({
+      filePath: './deep.ts',
+      line: 1,
+      matchStartByte: 8192,
+    });
     await cleanup(root);
   });
 
@@ -473,8 +520,177 @@ describe('createRipgrepAdapter', () => {
     expect(observation.status).toBe('ok');
     expect(observation.normalizedPublicArgs).toEqual({ filePath: 'src/file.ts', startByte: 0, endByte: 6 });
     expect(observation.sourceAdoptions).toHaveLength(1);
-    expect(observation.sourceAdoptions[0]?.sourceValidation).toBe('partial');
+    expect(observation.sourceAdoptions[0]?.sourceValidation).toBe('verified');
     expect(observation.results[0]?.preview).toBe('conten');
+    await cleanup(root);
+  });
+
+  it.each([
+    { content: 'αtail', startByte: 1, endByte: 3 },
+    { content: 'tailα', startByte: 4, endByte: 5 },
+  ])('marks read_file as partial when its byte range splits a UTF-8 character ($startByte-$endByte)', async ({
+    content,
+    startByte,
+    endByte,
+  }) => {
+    const root = await makeRoot();
+    await writeFiles(root, { 'src/file.ts': content });
+    const adapter = createRipgrepAdapter(root, rgExecutable);
+
+    const observation = await adapter.invoke(
+      'read_file',
+      { filePath: 'src/file.ts', startByte, endByte },
+      new AbortController().signal,
+      ctx(1),
+    );
+
+    expect(observation.status).toBe('ok');
+    expect(observation.sourceAdoptions[0]?.sourceValidation).toBe('partial');
+    await cleanup(root);
+  });
+
+  it.each(['α', 'あ', '😀'] as const)(
+    'aligns opt-in byte windows inward when their edges split UTF-8 characters (%s)',
+    async (character) => {
+      const root = await makeRoot();
+      const characterBytes = Buffer.byteLength(character, 'utf8');
+      const startByte = 1001;
+      const endByte = startByte + 4096;
+      await writeFiles(root, {
+        'src/file.ts': `${'x'.repeat(1000)}${character}${'b'.repeat(endByte - 1 - 1000 - characterBytes)}${character}tail\n`,
+      });
+      const adapter = createRipgrepAdapter(root, rgExecutable);
+
+      const observation = await adapter.invoke(
+        'read_file',
+        { filePath: 'src/file.ts', startByte, endByte, alignUtf8Boundaries: true },
+        new AbortController().signal,
+        ctx(1),
+      );
+
+      expect(observation.status).toBe('ok');
+      expect(observation.normalizedPublicArgs).toMatchObject({
+        startByte: 1000 + characterBytes,
+        endByte: 5083,
+      });
+      expect(observation.sourceAdoptions[0]).toMatchObject({
+        startByte: 1000 + characterBytes,
+        endByte: 5083,
+        content: 'b'.repeat(5083 - (1000 + characterBytes)),
+        sourceValidation: 'verified',
+      });
+      await cleanup(root);
+    },
+  );
+
+  it('aligns an opt-in startLine read when its 4 KiB end splits a UTF-8 character', async () => {
+    const root = await makeRoot();
+    await writeFiles(root, { 'src/file.ts': `${'x'.repeat(4095)}あtail\n` });
+    const adapter = createRipgrepAdapter(root, rgExecutable);
+
+    const observation = await adapter.invoke(
+      'read_file',
+      { filePath: 'src/file.ts', startLine: 1, alignUtf8Boundaries: true },
+      new AbortController().signal,
+      ctx(1),
+    );
+
+    expect(observation.status).toBe('ok');
+    expect(observation.sourceAdoptions[0]).toMatchObject({
+      startByte: 0,
+      endByte: 4082,
+      content: 'x'.repeat(4082),
+      sourceValidation: 'verified',
+    });
+    await cleanup(root);
+  });
+
+  it('returns an empty aligned range inside the actual read window when it contains no full UTF-8 character', async () => {
+    const root = await makeRoot();
+    await writeFiles(root, { 'src/file.ts': 'a😀z' });
+    const adapter = createRipgrepAdapter(root, rgExecutable);
+
+    const observation = await adapter.invoke(
+      'read_file',
+      { filePath: 'src/file.ts', startByte: 2, endByte: 3, alignUtf8Boundaries: true },
+      new AbortController().signal,
+      ctx(1),
+    );
+
+    expect(observation.status).toBe('ok');
+    expect(observation.normalizedPublicArgs).toMatchObject({ startByte: 3, endByte: 3 });
+    expect(observation.sourceAdoptions[0]).toMatchObject({
+      startByte: 3,
+      endByte: 3,
+      content: '',
+    });
+    await cleanup(root);
+  });
+
+  it('completes R adoption after the first verified read without searching fallback tokens', async () => {
+    const root = await makeRoot();
+    await writeFiles(root, {
+      'src/a-target.ts': 'charlie\n',
+      'src/b-target.ts': 'charlie\n',
+    });
+    const adapter = createRipgrepAdapter(root, rgExecutable);
+
+    const result = await runQualityPolicy(
+      {
+        taskDescription: 'find the matching source',
+        initialClues: ['concept:alpha bravo charlie delta echo'],
+      },
+      adapter,
+      QUALITY_BUDGETS_V1,
+      new AbortController().signal,
+    );
+
+    expect(result.status).toBe('COMPLETE');
+    expect(result.adoption).toMatchObject({
+      filePath: 'src/a-target.ts',
+      sourceValidation: 'verified',
+    });
+    expect(result.trace.map((event) => event.tool)).toEqual(['rg_search', 'rg_search', 'read_file']);
+    await cleanup(root);
+  });
+
+  it('fails closed when finding a requested line would exceed the total 4 KiB read budget', async () => {
+    const root = await makeRoot();
+    const filePath = join(root, 'deep.ts');
+    await writeFile(filePath, `${'x'.repeat(4096)}\nanswer is here\n`, 'utf8');
+    const totalReadBytes = trackReadBytes(filePath);
+    const adapter = createRipgrepAdapter(root, rgExecutable);
+
+    const observation = await adapter.invoke(
+      'read_file',
+      { filePath: 'deep.ts', startLine: 2, alignUtf8Boundaries: true },
+      new AbortController().signal,
+      ctx(1),
+    );
+
+    expect(observation.status).toBe('error');
+    expect(observation.reasonCode).toBe('READ_BYTE_BUDGET_EXCEEDED');
+    expect(totalReadBytes()).toBeLessThanOrEqual(4096);
+    await cleanup(root);
+  });
+
+  it('counts UTF-8 boundary probes toward the total 4 KiB read budget', async () => {
+    const root = await makeRoot();
+    const filePath = join(root, 'aligned.bin');
+    await writeFile(filePath, 'x'.repeat(5000), 'utf8');
+    const totalReadBytes = trackReadBytes(filePath);
+    const adapter = createRipgrepAdapter(root, rgExecutable);
+
+    const observation = await adapter.invoke(
+      'read_file',
+      { filePath: 'aligned.bin', startByte: 0, endByte: 4096, alignUtf8Boundaries: true },
+      new AbortController().signal,
+      ctx(1),
+    );
+
+    expect(observation.status).toBe('ok');
+    expect(totalReadBytes()).toBe(4096);
+    expect(observation.sourceAdoptions[0]).toMatchObject({ startByte: 0, endByte: 4082 });
     await cleanup(root);
   });
 
@@ -573,6 +789,44 @@ describe('createRipgrepAdapter', () => {
     expect(handleClosed).toBe(true);
   });
 
+  it('stops scanning for a requested line after cancellation', async () => {
+    const root = await makeRoot();
+    const filePath = join(root, 'many-lines.txt');
+    await writeFile(filePath, 'line\n'.repeat(6000), 'utf8');
+    const controller = new AbortController();
+    let readCount = 0;
+    const originalOpen = fsPromises.open.bind(fsPromises);
+    vi.spyOn(fsPromises, 'open').mockImplementation(async (...args) => {
+      const handle = await originalOpen(...args);
+      if (args[0] === filePath) {
+        const originalRead = handle.read.bind(handle);
+        Object.defineProperty(handle, 'read', {
+          configurable: true,
+          value: async (buffer: Buffer, offset: number, length: number, position: number) => {
+            readCount += 1;
+            const result = await originalRead(buffer, offset, length, position);
+            if (readCount === 1) controller.abort(new DOMException('cancelled', 'AbortError'));
+            return result;
+          },
+        });
+      }
+      return handle;
+    });
+    syncBuiltinESMExports();
+    const adapter = createRipgrepAdapter(root, rgExecutable);
+
+    const observation = await adapter.invoke(
+      'read_file',
+      { filePath: 'many-lines.txt', startLine: 5000 },
+      controller.signal,
+      ctx(1),
+    );
+
+    expect(observation.status).toBe('cancelled');
+    expect(readCount).toBe(1);
+    await cleanup(root);
+  });
+
   it('reads at most 4096 bytes and reports only bytes actually read', async () => {
     const root = await makeRoot();
     const filePath = join(root, 'large.bin');
@@ -655,58 +909,51 @@ describe('createRipgrepAdapter', () => {
     await cleanup(root);
   });
 
-  it('redacts the query `path` by position without corrupting fixed argv tokens', async () => {
+  it.each([
+    { query: 'path', fileContent: 'path\n' },
+    { query: '!.git/**', fileContent: '!.git/**\n' },
+  ])('redacts query "$query" by position without corrupting fixed argv tokens', async ({ query, fileContent }) => {
     const root = await makeRoot();
-    await writeFiles(root, { 'a.ts': 'path\n' });
+    await writeFiles(root, { 'a.ts': fileContent });
     const adapter = createRipgrepAdapter(root, rgExecutable);
-    await adapter.invoke('rg_search', { query: 'path' }, new AbortController().signal, ctx(1));
+    await adapter.invoke('rg_search', { query }, new AbortController().signal, ctx(1));
     const snapshot = adapter.snapshotRgExecution();
     const spawn = snapshot.spawns[0];
     if (spawn === undefined) throw new Error('spawn missing');
     expect(spawn.normalizedObservedArgv).toEqual([...fixedRgArgv('<public-query>')]);
-    expect(spawn.normalizedObservedArgv[spawn.normalizedObservedArgv.length - 2]).toBe('<public-query>');
-    expect(spawn.queryDigest).toBe(queryDigest('path'));
+    expect(spawn.normalizedObservedArgv.at(-2)).toBe('<public-query>');
+    expect(spawn.queryDigest).toBe(queryDigest(query));
     expect(snapshot.evidenceComplete).toBe(true);
     await cleanup(root);
   });
 
-  it('redacts an exclusion-glob literal query by position without leaking it', async () => {
-    const root = await makeRoot();
-    await writeFiles(root, { 'a.ts': '!.git/**\n' });
-    const adapter = createRipgrepAdapter(root, rgExecutable);
-    await adapter.invoke('rg_search', { query: '!.git/**' }, new AbortController().signal, ctx(1));
-    const snapshot = adapter.snapshotRgExecution();
-    const spawn = snapshot.spawns[0];
-    if (spawn === undefined) throw new Error('spawn missing');
-    expect(spawn.normalizedObservedArgv).toEqual([...fixedRgArgv('<public-query>')]);
-    expect(spawn.normalizedObservedArgv[spawn.normalizedObservedArgv.length - 2]).toBe('<public-query>');
-    expect(spawn.queryDigest).toBe(queryDigest('!.git/**'));
-    expect(snapshot.evidenceComplete).toBe(true);
-    await cleanup(root);
-  });
-
-  it('returns error RG_INVALID_JSON when a fake rg prints non-JSON stdout', async () => {
+  it.each([
+    {
+      reasonCode: 'RG_INVALID_JSON',
+      stdout: 'printf "%s" "this is not json"',
+      stderr: '',
+      exit: '',
+    },
+    {
+      reasonCode: 'RG_EXIT_1_DIAGNOSTIC',
+      stdout: '',
+      stderr: 'printf "%s" "bad pattern" >&2',
+      exit: 'exit 1',
+    },
+  ])('returns $reasonCode for invalid ripgrep output', async ({ reasonCode, stdout, stderr, exit }) => {
     const root = await makeRoot();
     const fakeRg = join(root, 'fake-rg');
-    await writeFile(fakeRg, '#!/bin/sh\nif [ "$1" = "--version" ]; then echo "ripgrep 0.0.0"; exit 0; fi\nprintf "%s" "this is not json"\n', 'utf8');
+    await writeFile(
+      fakeRg,
+      `#!/bin/sh\nif [ "$1" = "--version" ]; then echo "ripgrep 0.0.0"; exit 0; fi\n${stdout}\n${stderr}\n${exit}\n`,
+      'utf8',
+    );
     await chmod(fakeRg, 0o755);
     const adapter = createRipgrepAdapter(root, fakeRg);
     const observation = await adapter.invoke('rg_search', { query: 'x' }, new AbortController().signal, ctx(1));
     expect(observation.status).toBe('error');
-    expect(observation.reasonCode).toBe('RG_INVALID_JSON');
-    expect(observation.results).toHaveLength(0);
-    await cleanup(root);
-  });
-
-  it('returns error RG_EXIT_1_DIAGNOSTIC when rg exits 1 with stderr', async () => {
-    const root = await makeRoot();
-    const fakeRg = join(root, 'fake-rg');
-    await writeFile(fakeRg, '#!/bin/sh\nif [ "$1" = "--version" ]; then echo "ripgrep 0.0.0"; exit 0; fi\nprintf "%s" "bad pattern" >&2\nexit 1\n', 'utf8');
-    await chmod(fakeRg, 0o755);
-    const adapter = createRipgrepAdapter(root, fakeRg);
-    const observation = await adapter.invoke('rg_search', { query: 'x' }, new AbortController().signal, ctx(1));
-    expect(observation.status).toBe('error');
-    expect(observation.reasonCode).toBe('RG_EXIT_1_DIAGNOSTIC');
+    expect(observation.reasonCode).toBe(reasonCode);
+    if (reasonCode === 'RG_INVALID_JSON') expect(observation.results).toHaveLength(0);
     await cleanup(root);
   });
 
@@ -827,6 +1074,34 @@ describe('createRipgrepAdapter', () => {
 });
 
 describe('createNexusAdapter', () => {
+  it('completes a file-clue route using byte ranges from the real get_context handler', async () => {
+    const root = await makeRoot();
+    const source = 'alpha\r\nβeta\r\nlast\n';
+    await writeFiles(root, { 'src/auth.ts': source });
+    const { options } = await createTestNexusOptions({ projectRoot: root, fileContent: source });
+    const contentStore = new LocalContentStoreFactory({
+      projectRoot: root,
+      sanitize: (filePath) => options.sanitizer.sanitize(filePath),
+    }).getStore('workspace', 'revision');
+    const handlers = buildToolHandlers({ ...options, contentStore });
+
+    const result = await runQualityPolicy(
+      { taskDescription: 'read the file', initialClues: ['file:src/auth.ts'] },
+      createNexusAdapter(handlers),
+      QUALITY_BUDGETS_V1,
+      new AbortController().signal,
+    );
+
+    expect(result.status).toBe('COMPLETE');
+    expect(result.adoption).toEqual({
+      filePath: 'src/auth.ts',
+      startByte: 0,
+      endByte: 19,
+      content: source,
+      sourceValidation: 'verified',
+    });
+  });
+
   it('rejects duplicate or invalid trace sequences', async () => {
     const adapter = createNexusAdapter(handlersFor());
     await adapter.invoke('index_status', {}, new AbortController().signal, ctx(1));
@@ -858,6 +1133,112 @@ describe('createNexusAdapter', () => {
     expect(observation.normalizedPublicArgs).not.toHaveProperty('query');
     expect(observation.normalizedPublicArgs).not.toHaveProperty('unknownField');
     expect(observation.normalizedPublicArgs).toEqual({ maxResults: 10 });
+  });
+
+  it('creates verified source adoptions only when read path and byte range can be validated', async () => {
+    const contextText = 'let answer = 1;';
+    const contextAdapter = createNexusAdapter(handlersFor({
+      get_context: handler({
+        content: [{ type: 'text', text: '' }],
+        structuredContent: {
+          status: 'ok',
+          filePath: 'src/a.ts',
+          startByte: 0,
+          endByte: Buffer.byteLength(contextText, 'utf8'),
+          startLine: 1,
+          endLine: 1,
+          content: contextText,
+        },
+      }),
+    }));
+    const context = await contextAdapter.invoke(
+      'get_context',
+      { filePath: 'src/a.ts', startLine: 1, endLine: 1, mode: 'bounded' },
+      new AbortController().signal,
+      ctx(1),
+    );
+
+    expect(context.sourceAdoptions).toEqual([{
+      filePath: 'src/a.ts',
+      startByte: 0,
+      endByte: 15,
+      content: contextText,
+      sourceValidation: 'verified',
+    }]);
+
+    const symbolId = 'symbol_v1_verified';
+    const symbolAdapter = createNexusAdapter(handlersFor({
+      get_symbol_source: handler({
+        content: [{ type: 'text', text: '' }],
+        structuredContent: {
+          status: 'ok',
+          freshness: 'fresh',
+          reindexRequired: false,
+          filePath: 'src/a.ts',
+          startByte: 20,
+          endByte: 35,
+          source: contextText,
+          request: { symbolId },
+        },
+      }),
+    }));
+    const symbol = await symbolAdapter.invoke(
+      'get_symbol_source',
+      { symbolId },
+      new AbortController().signal,
+      ctx(1),
+    );
+
+    expect(symbol.sourceAdoptions).toEqual([{
+      filePath: 'src/a.ts',
+      startByte: 20,
+      endByte: 35,
+      content: contextText,
+      sourceValidation: 'verified',
+    }]);
+  });
+
+  it('leaves read previews unverified when the requested path or range cannot be validated', async () => {
+    const adapter = createNexusAdapter(handlersFor({
+      get_context: handler({
+        content: [{ type: 'text', text: '' }],
+        structuredContent: {
+          status: 'ok',
+          filePath: 'other.ts',
+          startLine: 2,
+          endLine: 4,
+          content: 'answer',
+        },
+      }),
+      get_symbol_source: handler({
+        content: [{ type: 'text', text: '' }],
+        structuredContent: {
+          status: 'ok',
+          freshness: 'fresh',
+          reindexRequired: false,
+          source: 'answer',
+          request: { symbolId: 'symbol_v1_missing_range' },
+        },
+      }),
+    }));
+
+    const context = await adapter.invoke(
+      'get_context',
+      { filePath: 'src/a.ts', startLine: 1, endLine: 4, mode: 'bounded' },
+      new AbortController().signal,
+      ctx(1),
+    );
+    const symbol = await adapter.invoke(
+      'get_symbol_source',
+      { symbolId: 'symbol_v1_missing_range' },
+      new AbortController().signal,
+      ctx(2),
+    );
+
+    expect(context.results[0]?.preview).toBe('answer');
+    expect(context.sourceAdoptions).toHaveLength(0);
+    expect(symbol.results[0]?.preview).toBe('answer');
+    expect(symbol.sourceAdoptions).toHaveLength(0);
   });
 
   it('maps ok, not_found, stale_identity and unavailable statuses distinctly', async () => {

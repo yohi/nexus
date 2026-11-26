@@ -16,7 +16,15 @@ import type { StructuredDeclaration, StructuredRetrievalReasonCode } from './con
 import { packRelatedImports, tokenCounter } from './tokenizer.js';
 
 type SourceStatus =
-  | { status: 'ok'; freshness: 'fresh'; reindexRequired: false; source: string }
+  | {
+      status: 'ok';
+      freshness: 'fresh';
+      reindexRequired: false;
+      filePath: string;
+      startByte: number;
+      endByte: number;
+      source: string;
+    }
   | { status: 'stale_identity'; freshness: 'unknown'; reindexRequired: false; reasonCode: 'SYMBOL_RETIRED' }
   | { status: 'index_incomplete'; freshness?: string; reindexRequired?: boolean; reasonCode: StructuredRetrievalReasonCode | 'INDEX_PENDING_GENERATION' | 'INDEX_FILE_HASH_MISMATCH' | 'INDEX_IMPORT_HASH_MISMATCH' | 'INDEX_SYMBOL_HASH_MISMATCH' | 'INDEX_GENERATION_MISSING' | 'SYMBOL_RETIRED' | 'STRUCTURED_INDEX_MISSING' | 'FILE_NOT_FOUND' | 'INDEX_FILE_MISSING' }
   | { status: 'stale'; freshness?: string; reindexRequired?: boolean; reasonCode: StructuredRetrievalReasonCode | 'INDEX_FILE_HASH_MISMATCH' | 'INDEX_IMPORT_HASH_MISMATCH' | 'INDEX_FILE_MISSING' }
@@ -282,7 +290,16 @@ export class SymbolRetrievalService {
 
     const symbolSlice = verified.bytes.subarray(verified.declaration.startByte, verified.declaration.endByte);
     const source = decodeUtf8(symbolSlice);
-    return { status: 'ok', freshness: 'fresh', reindexRequired: false, source, request: { symbolId: input.symbolId } };
+    return {
+      status: 'ok',
+      freshness: 'fresh',
+      reindexRequired: false,
+      filePath: verified.filePath,
+      startByte: verified.declaration.startByte,
+      endByte: verified.declaration.endByte,
+      source,
+      request: { symbolId: input.symbolId },
+    };
   }
 
   async getSymbolContext(input: { symbolId: string; tokenBudget: number; signal?: AbortSignal }): Promise<unknown> {

@@ -1,7 +1,11 @@
 import { readFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 
-import type { IContentStore, IContentStoreFactory } from '../interfaces/content-store.js';
+import type {
+  ContentRangeWithOffsets,
+  IContentStore,
+  IContentStoreFactory,
+} from '../interfaces/content-store.js';
 
 export interface LocalContentStoreDeps {
   readonly projectRoot: string;
@@ -35,10 +39,22 @@ export class LocalContentStore implements IContentStore {
     endLine: number,
     signal?: AbortSignal,
   ): Promise<string> {
+    return (await this.readRangeWithOffsets(filePath, startLine, endLine, signal)).content;
+  }
+
+  async readRangeWithOffsets(
+    filePath: string,
+    startLine: number,
+    endLine: number,
+    signal?: AbortSignal,
+  ): Promise<ContentRangeWithOffsets> {
     const sanitizedPath = await this.deps.sanitize(filePath);
-    const content = await readFile(resolve(this.deps.projectRoot, sanitizedPath), { encoding: 'utf8', signal });
-    const lines = content.split('\n');
-    const totalLines = lines.length;
+    const content = await readFile(resolve(this.deps.projectRoot, sanitizedPath), { signal });
+    const lineStarts = [0];
+    for (let byteOffset = 0; byteOffset < content.length; byteOffset += 1) {
+      if (content[byteOffset] === 0x0a) lineStarts.push(byteOffset + 1);
+    }
+    const totalLines = lineStarts.length;
     const clampedStart = clampLine(startLine, totalLines);
     const clampedEnd = clampLine(endLine, totalLines);
     if (clampedStart > clampedEnd) {
@@ -46,7 +62,17 @@ export class LocalContentStore implements IContentStore {
         `Invalid line range: startLine (${clampedStart}) is greater than endLine (${clampedEnd})`,
       );
     }
-    return lines.slice(clampedStart - 1, clampedEnd).join('\n');
+    const startByte = lineStarts[clampedStart - 1] ?? content.length;
+    const nextLineStart = lineStarts[clampedEnd];
+    const endByte = nextLineStart === undefined ? content.length : nextLineStart - 1;
+
+    return {
+      content: content.subarray(startByte, endByte).toString('utf8'),
+      startLine: clampedStart,
+      endLine: clampedEnd,
+      startByte,
+      endByte,
+    };
   }
 }
 

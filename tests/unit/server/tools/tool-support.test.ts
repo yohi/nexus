@@ -1,6 +1,10 @@
+import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 import type { IContentStore } from '../../../../src/storage/interfaces/content-store.js';
+import { LocalContentStoreFactory } from '../../../../src/storage/local/local-content-store.js';
 import { buildToolHandlers, createContentReader } from '../../../../src/server/tools/tool-support.js';
 import { createTestNexusOptions } from '../../../shared/create-test-nexus-options.js';
 
@@ -103,6 +107,39 @@ describe('createContentReader', () => {
 
     const result = await handlers.get_context({ filePath: 'src/index.ts', startLine: 2, endLine: 4 });
     expect(result.structuredContent).toMatchObject({ filePath: 'src/index.ts', content: '2-4' });
+  });
+
+  it('returns exact UTF-8 byte offsets from the real ContentStore-backed get_context handler', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'nexus-context-range-'));
+    try {
+      const source = 'alpha\r\nβeta\r\nlast\n';
+      await mkdir(path.join(root, 'src'), { recursive: true });
+      await writeFile(path.join(root, 'src', 'auth.ts'), source);
+      const { options } = await createTestNexusOptions({ projectRoot: root, fileContent: source });
+      const contentStore = new LocalContentStoreFactory({
+        projectRoot: root,
+        sanitize: (filePath) => options.sanitizer.sanitize(filePath),
+      }).getStore('workspace', 'revision');
+      const handlers = buildToolHandlers({ ...options, contentStore });
+
+      const result = await handlers.get_context({
+        filePath: 'src/auth.ts',
+        startLine: 2,
+        endLine: 2,
+        mode: 'eager',
+      });
+
+      expect(result.structuredContent).toMatchObject({
+        filePath: 'src/auth.ts',
+        content: 'βeta\r',
+        startLine: 2,
+        endLine: 2,
+        startByte: 7,
+        endByte: 13,
+      });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
   });
 
   it('uses ContentStore reads for hybrid search snippets', async () => {

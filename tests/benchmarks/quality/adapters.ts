@@ -20,6 +20,7 @@ export interface PublicCandidate {
   readonly symbolId?: string;
   readonly publicScore?: number;
   readonly rank: number;
+  readonly matchStartByte?: number;
   readonly line?: number;
   readonly character?: number;
   readonly endLine?: number;
@@ -127,6 +128,25 @@ export interface RipgrepQualityAdapter extends QualityAdapter {
 type ToolHandlers = ReturnType<typeof buildToolHandlers>;
 
 const READ_MAX_BYTES = 4096 satisfies number;
+const READ_SCAN_CHUNK_BYTES = 256;
+
+interface ReadByteBudget {
+  bytesRead: number;
+}
+
+const readWithinBudget = async (
+  fileHandle: Awaited<ReturnType<typeof open>>,
+  buffer: Buffer,
+  length: number,
+  position: number,
+  budget: ReadByteBudget,
+): Promise<number> => {
+  const remaining = READ_MAX_BYTES - budget.bytesRead;
+  if (length <= 0 || remaining <= 0) return 0;
+  const { bytesRead } = await fileHandle.read(buffer, 0, Math.min(length, remaining), position);
+  budget.bytesRead += bytesRead;
+  return bytesRead;
+};
 const SEARCH_SCOPE = '.' as const satisfies '.';
 const DEFAULT_ROOT_KEY: QualityRootKey = 'single';
 const RG_ARG_QUERY_PLACEHOLDER = '<public-query>';
@@ -190,6 +210,128 @@ const clampInt = (value: unknown, fallback: number): number => {
   return Number.isNaN(parsed) ? fallback : parsed;
 };
 
+const findLineStartByte = async (
+  fileHandle: Awaited<ReturnType<typeof open>>,
+  lineNumber: number,
+  fileLength: number,
+  signal: AbortSignal,
+  budget: ReadByteBudget,
+): Promise<number | undefined> => {
+  if (lineNumber <= 1) return 0;
+
+  const buffer = Buffer.alloc(READ_SCAN_CHUNK_BYTES);
+  let scannedBytes = 0;
+  let currentLine = 1;
+  while (scannedBytes < fileLength && !signal.aborted) {
+    const remaining = READ_MAX_BYTES - budget.bytesRead;
+    if (remaining <= 0) return undefined;
+    const requestedBytes = Math.min(buffer.length, fileLength - scannedBytes, remaining);
+    const bytesRead = await readWithinBudget(fileHandle, buffer, requestedBytes, scannedBytes, budget);
+    if (bytesRead === 0) return fileLength;
+
+    for (let index = 0; index < bytesRead; index += 1) {
+      if (buffer[index] !== 0x0a) continue;
+      currentLine += 1;
+      if (currentLine === lineNumber) return scannedBytes + index + 1;
+    }
+    scannedBytes += bytesRead;
+  }
+  return fileLength;
+};
+
+const utf8SequenceLength = (leadingByte: number | undefined): number => {
+  if (leadingByte === undefined) return 0;
+  if (leadingByte <= 0x7f) return 1;
+  if (leadingByte >= 0xc2 && leadingByte <= 0xdf) return 2;
+  if (leadingByte >= 0xe0 && leadingByte <= 0xef) return 3;
+  if (leadingByte >= 0xf0 && leadingByte <= 0xf4) return 4;
+  return 0;
+};
+
+const isUtf8SequenceAt = (bytes: Buffer, start: number, length: number): boolean => {
+  if (length < 2 || start + length > bytes.length) return false;
+  const first = bytes[start];
+  const second = bytes[start + 1];
+  if (first === undefined || second === undefined) return false;
+  if ((second & 0xc0) !== 0x80) return false;
+  if (first === 0xe0 && second < 0xa0) return false;
+  if (first === 0xed && second > 0x9f) return false;
+  if (first === 0xf0 && second < 0x90) return false;
+  if (first === 0xf4 && second > 0x8f) return false;
+  for (let index = 2; index < length; index += 1) {
+    const continuation = bytes[start + index];
+    if (continuation === undefined || (continuation & 0xc0) !== 0x80) return false;
+  }
+  return true;
+};
+
+const readBoundaryProbe = async (
+  fileHandle: Awaited<ReturnType<typeof open>>,
+  boundary: number,
+  fileLength: number,
+  budget: ReadByteBudget,
+): Promise<{ readonly bytes: Buffer; readonly offset: number }> => {
+  const offset = Math.max(0, boundary - 3);
+  const probeLength = Math.min(7, fileLength - offset);
+  if (probeLength > READ_MAX_BYTES - budget.bytesRead) {
+    throw new Error('READ_BYTE_BUDGET_EXCEEDED');
+  }
+  const buffer = Buffer.alloc(probeLength);
+  const bytesRead = await readWithinBudget(fileHandle, buffer, buffer.length, offset, budget);
+  if (bytesRead !== probeLength) {
+    throw new Error('READ_BYTE_BUDGET_EXCEEDED');
+  }
+  return { bytes: buffer.subarray(0, bytesRead), offset };
+};
+
+const findUtf8CodePointCrossingBoundary = (
+  probe: { readonly bytes: Buffer; readonly offset: number },
+  boundary: number,
+): { readonly startByte: number; readonly endByte: number } | undefined => {
+  const boundaryIndex = boundary - probe.offset;
+  const firstCandidate = Math.max(0, boundaryIndex - 3);
+  for (let index = firstCandidate; index < boundaryIndex; index += 1) {
+    const length = utf8SequenceLength(probe.bytes[index]);
+    if (
+      length > 1 &&
+      index + length > boundaryIndex &&
+      isUtf8SequenceAt(probe.bytes, index, length)
+    ) {
+      return {
+        startByte: probe.offset + index,
+        endByte: probe.offset + index + length,
+      };
+    }
+  }
+  return undefined;
+};
+
+const alignUtf8Window = async (
+  fileHandle: Awaited<ReturnType<typeof open>>,
+  startByte: number,
+  endByte: number,
+  fileLength: number,
+  budget: ReadByteBudget,
+): Promise<{ readonly startByte: number; readonly endByte: number }> => {
+  const startProbe = await readBoundaryProbe(fileHandle, startByte, fileLength, budget);
+  const startCodePoint = findUtf8CodePointCrossingBoundary(startProbe, startByte);
+  const alignedStartByte = startCodePoint?.endByte ?? startByte;
+
+  const endProbe = await readBoundaryProbe(fileHandle, endByte, fileLength, budget);
+  const endCodePoint = findUtf8CodePointCrossingBoundary(endProbe, endByte);
+  const alignedEndByte = endCodePoint?.startByte ?? endByte;
+
+  if (alignedStartByte > alignedEndByte) {
+    const emptyRangeByte = Math.min(endByte, Math.max(startByte, alignedStartByte));
+    return { startByte: emptyRangeByte, endByte: emptyRangeByte };
+  }
+
+  return {
+    startByte: alignedStartByte,
+    endByte: alignedEndByte,
+  };
+};
+
 const RG_ARGV_POLICY = Object.freeze({
   fixedArguments: Object.freeze([
     '--no-config',
@@ -242,7 +384,7 @@ const contractDigest = (
   return sha256(utf8Bytes(payload));
 };
 
-const queryDigest = (publicQuery: string): string =>
+export const queryDigest = (publicQuery: string): string =>
   sha256(utf8Bytes(`quality-query-v1\0${publicQuery}`));
 
 const redactArgvQuery = (argv: readonly string[], publicQuery: string): readonly string[] => {
@@ -420,6 +562,7 @@ const parseRgMatches = (stdout: string): RgParseResult => {
       path?: { text?: string } | string;
       lines?: { text?: string; bytes?: string } | string;
       line_number?: number;
+      absolute_offset?: number;
       submatches?: Array<{ match?: { text?: string } | string; start?: number; end?: number }>;
     };
 
@@ -449,6 +592,15 @@ const parseRgMatches = (stdout: string): RgParseResult => {
       typeof typedData.line_number === 'number' && Number.isFinite(typedData.line_number)
         ? Math.trunc(typedData.line_number)
         : undefined;
+    const absoluteOffset =
+      typeof typedData.absolute_offset === 'number' &&
+      Number.isSafeInteger(typedData.absolute_offset) &&
+      typedData.absolute_offset >= 0
+        ? typedData.absolute_offset
+        : undefined;
+    if (typedData.absolute_offset !== undefined && absoluteOffset === undefined) {
+      return { kind: 'error', reason: 'RG_INVALID_BYTE_OFFSET' };
+    }
     if (!filePath || lineNumber === undefined) {
       return { kind: 'error', reason: 'RG_INVALID_JSON' };
     }
@@ -462,6 +614,7 @@ const parseRgMatches = (stdout: string): RgParseResult => {
         endLine: lineNumber,
         endCharacter: lineText.length,
         preview: lineText,
+        ...(absoluteOffset === undefined ? {} : { matchStartByte: absoluteOffset }),
       });
       continue;
     }
@@ -489,6 +642,10 @@ const parseRgMatches = (stdout: string): RgParseResult => {
       if (startChar === undefined || endChar === undefined || endChar < startChar) {
         return { kind: 'error', reason: 'RG_INVALID_BYTE_OFFSET' };
       }
+      const matchStartByte = absoluteOffset === undefined ? undefined : absoluteOffset + startByte;
+      if (matchStartByte !== undefined && !Number.isSafeInteger(matchStartByte)) {
+        return { kind: 'error', reason: 'RG_INVALID_BYTE_OFFSET' };
+      }
       candidates.push({
         filePath,
         line: lineNumber,
@@ -496,6 +653,7 @@ const parseRgMatches = (stdout: string): RgParseResult => {
         endLine: lineNumber,
         endCharacter: endChar,
         preview: matchText || lineText,
+        ...(matchStartByte === undefined ? {} : { matchStartByte }),
       });
     }
   }
@@ -853,12 +1011,32 @@ export const createRipgrepAdapter = (
     }
 
     let startByte = Math.max(0, clampInt(args.startByte, 0));
+    const alignUtf8Boundaries = args.alignUtf8Boundaries === true;
+    const requestedStartLine =
+      typeof args.startLine === 'number' && Number.isSafeInteger(args.startLine) && args.startLine >= 1
+        ? args.startLine
+        : undefined;
     const rawEndByte = typeof args.endByte === 'number' && Number.isFinite(args.endByte) ? Math.trunc(args.endByte) : null;
 
     let fileHandle: Awaited<ReturnType<typeof open>> | undefined;
     try {
       fileHandle = await open(realResolved, 'r');
       const fileLength = (await fileHandle.stat()).size;
+      const readBudget: ReadByteBudget = { bytesRead: 0 };
+      if (requestedStartLine !== undefined) {
+        const lineStart = await findLineStartByte(fileHandle, requestedStartLine, fileLength, signal, readBudget);
+        if (lineStart === undefined) {
+          return makeObservation(
+            'error',
+            [],
+            sha256(''),
+            Object.freeze({ filePath: toForwardSlashes(relativePath), startLine: requestedStartLine }),
+            [],
+            'READ_BYTE_BUDGET_EXCEEDED',
+          );
+        }
+        startByte = lineStart;
+      }
       startByte = Math.min(startByte, fileLength);
       const requestedEndByte =
         rawEndByte === null ? Math.min(startByte + READ_MAX_BYTES, fileLength) : rawEndByte;
@@ -886,8 +1064,11 @@ export const createRipgrepAdapter = (
         );
       }
 
-      const buffer = Buffer.alloc(endByte - startByte);
-      const { bytesRead } = await fileHandle.read(buffer, 0, buffer.length, startByte);
+      const reservedProbeBytes = alignUtf8Boundaries ? 14 : 0;
+      const remainingPayloadBytes = Math.max(0, READ_MAX_BYTES - readBudget.bytesRead - reservedProbeBytes);
+      const payloadBytes = Math.min(endByte - startByte, remainingPayloadBytes);
+      const buffer = Buffer.alloc(payloadBytes);
+      const bytesRead = await readWithinBudget(fileHandle, buffer, buffer.length, startByte, readBudget);
       if (signal.aborted) {
         const timedOut = isTimeoutSignal(signal);
         return makeObservation(
@@ -900,12 +1081,33 @@ export const createRipgrepAdapter = (
         );
       }
 
-      const slice = buffer.subarray(0, bytesRead);
-      const actualEndByte = startByte + bytesRead;
+      let actualStartByte = startByte;
+      let actualEndByte = startByte + bytesRead;
+      let slice = buffer.subarray(0, bytesRead);
+      if (alignUtf8Boundaries) {
+        const aligned = await alignUtf8Window(fileHandle, actualStartByte, actualEndByte, fileLength, readBudget);
+        actualStartByte = aligned.startByte;
+        actualEndByte = aligned.endByte;
+        slice = slice.subarray(actualStartByte - startByte, actualEndByte - startByte);
+        if (signal.aborted) {
+          const timedOut = isTimeoutSignal(signal);
+          return makeObservation(
+            timedOut ? 'timeout' : 'cancelled',
+            [],
+            sha256(''),
+            Object.freeze({ filePath: toForwardSlashes(relativePath), startByte: actualStartByte, endByte: actualEndByte }),
+            [],
+            timedOut ? 'TIMEOUT' : 'REQUEST_CANCELLED',
+          );
+        }
+      }
       const content = slice.toString('utf8');
+      const sourceValidation = Buffer.from(content, 'utf8').equals(slice) ? 'verified' : 'partial';
       const normalizedArgs = Object.freeze({
         filePath: toForwardSlashes(relativePath),
-        startByte,
+        ...(requestedStartLine === undefined ? {} : { startLine: requestedStartLine }),
+        ...(alignUtf8Boundaries ? { alignUtf8Boundaries: true } : {}),
+        startByte: actualStartByte,
         endByte: actualEndByte,
       });
 
@@ -918,10 +1120,10 @@ export const createRipgrepAdapter = (
 
       const adoption: SourceAdoption = {
         filePath: toForwardSlashes(relativePath),
-        startByte,
+        startByte: actualStartByte,
         endByte: actualEndByte,
         content,
-        sourceValidation: 'partial',
+        sourceValidation,
       };
 
       return makeObservation(
@@ -931,14 +1133,18 @@ export const createRipgrepAdapter = (
         normalizedArgs,
         [Object.freeze(adoption)],
       );
-    } catch {
+    } catch (error) {
+      const reasonCode =
+        error instanceof Error && error.message === 'READ_BYTE_BUDGET_EXCEEDED'
+          ? 'READ_BYTE_BUDGET_EXCEEDED'
+          : 'READ_FAILED';
       return makeObservation(
         'error',
         [],
         sha256(''),
         Object.freeze({ filePath: toForwardSlashes(relativePath), startByte }),
         [],
-        'READ_FAILED',
+        reasonCode,
       );
     } finally {
       await fileHandle?.close().catch(() => undefined);
@@ -1260,6 +1466,87 @@ const normalizeCandidates = (
   }
 };
 
+const verifiedSourceAdoptionsForTool = (
+  tool: QualityTool,
+  args: Readonly<Record<string, unknown>>,
+  envelope: Record<string, unknown>,
+  status: QualityObservationStatus,
+): readonly SourceAdoption[] => {
+  if (status !== 'ok') return [];
+
+  if (tool === 'get_context') {
+    const filePath = asString(envelope.filePath);
+    const content = asString(envelope.content);
+    const startByte = asNumber(envelope.startByte);
+    const endByte = asNumber(envelope.endByte);
+    const requestedStartLine = asNumber(args.startLine);
+    const requestedEndLine = asNumber(args.endLine);
+    const actualStartLine = asNumber(envelope.startLine);
+    const actualEndLine = asNumber(envelope.endLine);
+    if (
+      args.mode === 'deferred' ||
+      envelope.mode === 'deferred' ||
+      filePath === undefined ||
+      filePath.length === 0 ||
+      filePath !== asString(args.filePath) ||
+      content === undefined ||
+      content.length === 0 ||
+      !Number.isSafeInteger(startByte) ||
+      !Number.isSafeInteger(endByte) ||
+      startByte === undefined ||
+      endByte === undefined ||
+      startByte < 0 ||
+      endByte < startByte ||
+      Buffer.byteLength(content, 'utf8') !== endByte - startByte ||
+      requestedStartLine === undefined ||
+      requestedEndLine === undefined ||
+      actualStartLine === undefined ||
+      actualEndLine === undefined ||
+      !Number.isSafeInteger(requestedStartLine) ||
+      !Number.isSafeInteger(requestedEndLine) ||
+      requestedStartLine > requestedEndLine ||
+      !Number.isSafeInteger(actualStartLine) ||
+      !Number.isSafeInteger(actualEndLine) ||
+      actualStartLine < 1 ||
+      actualStartLine !== requestedStartLine ||
+      actualEndLine < actualStartLine ||
+      actualEndLine > requestedEndLine
+    ) {
+      return [];
+    }
+    return [Object.freeze({ filePath, startByte, endByte, content, sourceValidation: 'verified' })];
+  }
+
+  if (tool === 'get_symbol_source') {
+    const filePath = asString(envelope.filePath);
+    const source = asString(envelope.source);
+    const startByte = asNumber(envelope.startByte);
+    const endByte = asNumber(envelope.endByte);
+    const request = envelope.request as { symbolId?: unknown } | undefined;
+    if (
+      envelope.freshness !== 'fresh' ||
+      envelope.reindexRequired !== false ||
+      filePath === undefined ||
+      filePath.length === 0 ||
+      source === undefined ||
+      source.length === 0 ||
+      !Number.isSafeInteger(startByte) ||
+      !Number.isSafeInteger(endByte) ||
+      startByte === undefined ||
+      endByte === undefined ||
+      startByte < 0 ||
+      endByte < startByte ||
+      Buffer.byteLength(source, 'utf8') !== endByte - startByte ||
+      request?.symbolId !== args.symbolId
+    ) {
+      return [];
+    }
+    return [Object.freeze({ filePath, startByte, endByte, content: source, sourceValidation: 'verified' })];
+  }
+
+  return [];
+};
+
 const toNavigation = (
   envelope: Record<string, unknown>,
 ): QualityObservation['navigation'] => {
@@ -1518,18 +1805,19 @@ export const createNexusAdapter = (handlers: ToolHandlers): QualityAdapter => {
         );
       }
     }
-const candidates = status === 'ok' ? normalizeCandidates(tool, envelope) : [];
-const navigation =
-tool === 'get_definition' || tool === 'get_references' || tool === 'get_implementations'
-? toNavigation(envelope)
-: undefined;
+    const candidates = status === 'ok' ? normalizeCandidates(tool, envelope) : [];
+    const sourceAdoptions = verifiedSourceAdoptionsForTool(tool, args, envelope, status);
+    const navigation =
+      tool === 'get_definition' || tool === 'get_references' || tool === 'get_implementations'
+        ? toNavigation(envelope)
+        : undefined;
 
     return makeObservation(
       status,
       rankCandidates(candidates),
       rawDigest,
       normalizedArgsForTool(tool, args),
-      [],
+      sourceAdoptions,
       reasonCode,
       navigation,
     );
