@@ -79,7 +79,7 @@ describe('quality benchmark core integration', () => {
     expect(route.scenarioId).toBe(task.scenarioId);
     expect(route.rootKey).toBe('single');
     expect(route.requiredProbeIds.length).toBeGreaterThan(0);
-    expect(route.probes.length).toBe(route.requiredProbeIds.length);
+    expect(route.probes).toHaveLength(route.requiredProbeIds.length);
     expect(route.setupProofDigest).toMatch(/^[a-f0-9]{64}$/);
     expect(['COVERED', 'INCOMPLETE']).toContain(route.status);
 

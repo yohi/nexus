@@ -4,6 +4,7 @@ import { resolve as resolvePath, relative, dirname } from 'node:path';
 import { buildToolHandlers } from '../../../src/server/tools/tool-support.js';
 import type { NexusServerOptions } from '../../../src/server/tools/types.js';
 import { PathSanitizer } from '../../../src/server/path-sanitizer.js';
+import { LocalContentStore } from '../../../src/storage/local/local-content-store.js';
 import type {
   IGrepEngine,
   GrepMatch,
@@ -12,7 +13,6 @@ import type {
   IMetadataStore,
   IIndexPipeline,
   IndexEvent,
-  ReindexOptions,
 } from '../../../src/types/index.js';
 import type { PluginRegistry } from '../../../src/plugins/registry.js';
 import type { ISemanticSearch } from '../../../src/search/semantic.js';
@@ -30,7 +30,6 @@ import {
   type QualityAdapter,
   type QualityObservation,
   type QualityInvocationContext,
-  type RipgrepQualityAdapter,
   type QualityTool as AdapterQualityTool,
   type PublicJsonValue,
 } from './adapters.js';
@@ -46,8 +45,8 @@ import {
   type QualityRouteCoverage,
   type QualityRequiredProbe,
   type QualityProbeEvidence,
-  type RequiredProbeAction,
 } from './scoring.js';
+import { canonicalJson } from './canonical-json.js';
 
 export type {
   QualityPublicationEvidence,
@@ -68,12 +67,19 @@ const sha256 = (content: string | Uint8Array): string =>
 
 const utf8Bytes = (text: string): Uint8Array => new TextEncoder().encode(text);
 
-const canonicalJson = (value: unknown): string =>
-  JSON.stringify(value, Object.keys(value as object).sort());
-
 const digest = (value: unknown): string => sha256(utf8Bytes(canonicalJson(value)));
 
 const EXCLUDED_DIRS = new Set(['.git', 'node_modules', '.nexus']);
+
+interface LocalGrepContext {
+  readonly root: string;
+  readonly needle: string;
+  readonly caseSensitive: boolean;
+  readonly glob: string[] | undefined;
+  readonly limit: number;
+  readonly results: GrepMatch[];
+  readonly abortSignal: AbortSignal | undefined;
+}
 
 function matchGlob(filePath: string, glob?: string[]): boolean {
   if (glob === undefined || glob.length === 0) {
@@ -102,7 +108,7 @@ function simpleGlobMatch(filePath: string, pattern: string): boolean {
     return true;
   }
   if (pattern.includes('*')) {
-    const regex = new RegExp(`^${pattern.replace(/\*/g, '.*').replace(/\./g, '\\.')}$`);
+    const regex = new RegExp(`^${pattern.replaceAll('*', '.*').replaceAll('.', '\\.')}$`);
     return regex.test(filePath);
   }
   return filePath === pattern;
@@ -113,69 +119,55 @@ class LocalGrepEngine implements IGrepEngine {
     const { query, cwd, glob, maxResults, abortSignal } = params;
     const caseSensitive = params.caseSensitive ?? false;
     const limit = maxResults ?? 100;
-    const needle = caseSensitive ? query : query.toLowerCase();
-    const results: GrepMatch[] = [];
-    await this.searchDir(cwd, cwd, needle, caseSensitive, glob, limit, results, abortSignal);
-    return results;
+    const context: LocalGrepContext = {
+      root: cwd,
+      needle: caseSensitive ? query : query.toLowerCase(),
+      caseSensitive,
+      glob,
+      limit,
+      results: [],
+      abortSignal,
+    };
+    await this.searchDir(cwd, context);
+    return context.results;
   }
 
-  private async searchDir(
-    root: string,
-    dir: string,
-    needle: string,
-    caseSensitive: boolean,
-    glob: string[] | undefined,
-    limit: number,
-    results: GrepMatch[],
-    abortSignal?: AbortSignal,
-  ): Promise<void> {
-    if (abortSignal?.aborted) {
-      return;
-    }
+  private async searchDir(dir: string, context: LocalGrepContext): Promise<void> {
+    if (context.abortSignal?.aborted || context.results.length >= context.limit) return;
     const entries = await readdir(dir, { withFileTypes: true });
     for (const entry of entries) {
+      if (context.abortSignal?.aborted || context.results.length >= context.limit) return;
       if (entry.isDirectory()) {
         if (EXCLUDED_DIRS.has(entry.name) || entry.name.startsWith('.')) {
           continue;
         }
-        await this.searchDir(
-          root,
-          resolvePath(dir, entry.name),
-          needle,
-          caseSensitive,
-          glob,
-          limit,
-          results,
-          abortSignal,
-        );
+        await this.searchDir(resolvePath(dir, entry.name), context);
       } else if (entry.isFile()) {
-        const fullPath = resolvePath(dir, entry.name);
-        const filePath = relative(root, fullPath).replace(/\\/g, '/');
-        if (!matchGlob(filePath, glob)) {
-          continue;
-        }
-        const content = await readFile(fullPath, 'utf8');
-        const lines = content.split('\n');
-        for (let index = 0; index < lines.length; index += 1) {
-          const line = lines[index] ?? '';
-          const haystack = caseSensitive ? line : line.toLowerCase();
-          const submatches: GrepMatch['submatches'] = [];
-          let pos = haystack.indexOf(needle);
-          while (pos !== -1) {
-            submatches.push({
-              start: pos,
-              end: pos + needle.length,
-              match: line.slice(pos, pos + needle.length),
-            });
-            pos = haystack.indexOf(needle, pos + needle.length);
-          }
-          if (submatches.length > 0) {
-            results.push({ filePath, lineNumber: index + 1, lineText: line, submatches });
-            if (results.length >= limit) {
-              return;
-            }
-          }
-        }
+        await this.searchFile(resolvePath(dir, entry.name), context);
+      }
+    }
+  }
+
+  private async searchFile(fullPath: string, context: LocalGrepContext): Promise<void> {
+    const filePath = relative(context.root, fullPath).replaceAll('\\', '/');
+    if (!matchGlob(filePath, context.glob)) return;
+
+    const lines = (await readFile(fullPath, 'utf8')).split('\n');
+    for (const [index, line] of lines.entries()) {
+      const haystack = context.caseSensitive ? line : line.toLowerCase();
+      const submatches: GrepMatch['submatches'] = [];
+      let pos = haystack.indexOf(context.needle);
+      while (pos !== -1) {
+        submatches.push({
+          start: pos,
+          end: pos + context.needle.length,
+          match: line.slice(pos, pos + context.needle.length),
+        });
+        pos = haystack.indexOf(context.needle, pos + context.needle.length);
+      }
+      if (submatches.length > 0) {
+        context.results.push({ filePath, lineNumber: index + 1, lineText: line, submatches });
+        if (context.results.length >= context.limit) return;
       }
     }
   }
@@ -187,17 +179,17 @@ function stub<T>(value: object = {}): T {
 
 function createStubMetadataStore(): IMetadataStore {
   return stub<IMetadataStore>({
-    initialize: async () => {},
-    getIndexStats: async () => null,
-    getDeadLetterEntries: async () => [],
+    initialize: () => Promise.resolve(),
+    getIndexStats: () => Promise.resolve(null),
+    getDeadLetterEntries: () => Promise.resolve([]),
     getStructuredIndexState: undefined,
   });
 }
 
 function createStubVectorStore(): IVectorStore {
   return stub<IVectorStore>({
-    initialize: async () => {},
-    getStats: async () => ({
+    initialize: () => Promise.resolve(),
+    getStats: () => Promise.resolve({
       totalChunks: 0,
       totalFiles: 0,
       dimensions: 0,
@@ -226,14 +218,14 @@ function createStubPluginRegistry(): PluginRegistry {
     getActiveEmbeddingProviderName: () => undefined,
     getRegisteredEmbeddingProviderNames: () => [],
     getEmbeddingProviderHealth: () => undefined,
-    healthCheck: async () => ({ status: 'ok' }),
+    healthCheck: () => Promise.resolve({ status: 'ok' }),
   });
 }
 
 async function createNexusAdapterForRoot(root: string): Promise<QualityAdapter> {
   const sanitizer = await PathSanitizer.create(root);
 
-  const loadFileContent = async (filePath: string, _signal?: AbortSignal): Promise<string> => {
+  const loadFileContent = async (filePath: string): Promise<string> => {
     const resolved = await realpath(filePath);
     return readFile(resolved, 'utf8');
   };
@@ -241,15 +233,19 @@ async function createNexusAdapterForRoot(root: string): Promise<QualityAdapter> 
   const options: NexusServerOptions = {
     projectRoot: root,
     sanitizer,
-    semanticSearch: stub<ISemanticSearch>(),
+    semanticSearch: stub<ISemanticSearch>({ search: () => Promise.resolve([]) }),
     grepEngine: new LocalGrepEngine(),
     orchestrator: stub<SearchOrchestrator>(),
     vectorStore: createStubVectorStore(),
     metadataStore: createStubMetadataStore(),
     pipeline: createStubPipeline(),
     pluginRegistry: createStubPluginRegistry(),
-    runReindex: async (_options?: ReindexOptions): Promise<IndexEvent[]> => [],
+    runReindex: (): Promise<IndexEvent[]> => Promise.resolve([]),
     loadFileContent,
+    contentStore: new LocalContentStore({
+      projectRoot: root,
+      sanitize: (filePath) => sanitizer.sanitize(filePath),
+    }),
     lspNavigationService: undefined,
   };
 
@@ -354,10 +350,16 @@ export async function runQualityPair(
   });
 
   const fixtureDigest = rArm.finalSnapshot.snapshotDigest;
+  const profile =
+    task.evaluationEligibility === 'conditional_worktree'
+      ? 'quality-worktree-v1'
+      : task.evaluationEligibility === 'conditional_lsp'
+        ? 'quality-lsp-v1'
+        : 'quality-core-v1';
 
   return Object.freeze({
     taskId: task.taskId,
-    profile: task.evaluationEligibility === 'conditional_worktree' ? 'quality-worktree-v1' : task.evaluationEligibility === 'conditional_lsp' ? 'quality-lsp-v1' : 'quality-core-v1',
+    profile,
     rootKey,
     fixtureDigest,
     policyVersion: 'quality-policy-v1' as const,
@@ -574,6 +576,7 @@ export async function collectQualityRouteCoverage(
     const context: QualityInvocationContext = { traceSequence: sequence };
     let observation: QualityObservation;
     try {
+      // Probe order determines traceSequence and abort behavior; keep invocations sequential.
       observation = await adapter.invoke(probe.tool, args, options.signal, context);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
