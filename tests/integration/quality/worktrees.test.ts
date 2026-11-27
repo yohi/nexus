@@ -54,21 +54,41 @@ describe.skipIf(!gitAvailable)('Q12 primary/linked worktree boundaries', () => {
   });
 
   it('resolves the same root key in paired arms for each Q12 task and produces distinct fixture digests', async () => {
-    const fixture = await createPrimaryLinkedQualityFixture(signal);
+    const armFixtures: Array<Awaited<ReturnType<typeof createPrimaryLinkedQualityFixture>>> = [];
     try {
-      const primaryTask = taskFor(fixture, 'Q12-primary');
-      const linkedTask = taskFor(fixture, 'Q12-linked');
-      const primaryResult = await runQualityPair(primaryTask, fixture, { signal });
-      const linkedResult = await runQualityPair(linkedTask, fixture, { signal });
+      armFixtures.push(await createPrimaryLinkedQualityFixture(signal));
+      armFixtures.push(await createPrimaryLinkedQualityFixture(signal));
+      const [armFixtureR, armFixtureN] = armFixtures;
+      if (armFixtureR === undefined || armFixtureN === undefined) throw new Error('paired_git_fixtures_required');
+      const taskFixture = { R: armFixtureR, N: armFixtureN };
+      const primaryTask = taskFor(armFixtureR, 'Q12-primary');
+      const linkedTask = taskFor(armFixtureR, 'Q12-linked');
+      const primaryResult = await runQualityPair(primaryTask, armFixtureR, { signal, armFixtures: taskFixture });
+      const linkedResult = await runQualityPair(linkedTask, armFixtureR, { signal, armFixtures: taskFixture });
       expect(primaryResult.rootKey).toBe('primary');
       expect(linkedResult.rootKey).toBe('linked');
       expect(primaryResult.outcomes.R.correctSourceReached).toBe(true);
       expect(primaryResult.outcomes.N.correctSourceReached).toBe(true);
       expect(linkedResult.outcomes.R.correctSourceReached).toBe(true);
       expect(linkedResult.outcomes.N.correctSourceReached).toBe(true);
+      expect(primaryResult.fixtureDigest).toBe(primaryTask.sourceSnapshotDigest);
+      expect(linkedResult.fixtureDigest).toBe(linkedTask.sourceSnapshotDigest);
+      expect(primaryResult.armFixtureDigests.R).toBe(taskFor(armFixtureR, 'Q12-primary').sourceSnapshotDigest);
+      expect(primaryResult.armFixtureDigests.N).toBe(taskFor(armFixtureN, 'Q12-primary').sourceSnapshotDigest);
+      expect(linkedResult.armFixtureDigests.R).toBe(taskFor(armFixtureR, 'Q12-linked').sourceSnapshotDigest);
+      expect(linkedResult.armFixtureDigests.N).toBe(taskFor(armFixtureN, 'Q12-linked').sourceSnapshotDigest);
+      for (const armFixture of armFixtures) {
+        const primaryRoot = armFixture.roots.primary ?? '';
+        const linkedRoot = armFixture.roots.linked ?? '';
+        expect((await lstat(join(primaryRoot, '.git'))).isDirectory()).toBe(true);
+        expect(await readFile(join(linkedRoot, '.git'), 'utf8')).toMatch(/^gitdir: /);
+        expect(await readFile(join(linkedRoot, 'src/answer.ts'), 'utf8')).toContain('return 43');
+        expect(taskFor(armFixture, 'Q12-primary').sourceSnapshotDigest).toBe(primaryResult.fixtureDigest);
+        expect(taskFor(armFixture, 'Q12-linked').sourceSnapshotDigest).toBe(linkedResult.fixtureDigest);
+      }
       expect(primaryResult.fixtureDigest).not.toBe(linkedResult.fixtureDigest);
     } finally {
-      await fixture.dispose();
+      await Promise.all(armFixtures.map((fixture) => fixture.dispose()));
     }
   });
 

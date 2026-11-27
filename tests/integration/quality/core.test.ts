@@ -1,13 +1,9 @@
-import { createHash } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createQualityFixture, type OwnedQualityFixture } from '../../../tests/benchmarks/quality/fixtures.js';
 import type { QualityCaseManifest } from '../../../tests/benchmarks/quality/contracts.js';
-import { collectQualityRouteCoverage, runQualityPair } from '../../../tests/benchmarks/quality/runner.js';
-
-const sha256 = (content: string | Uint8Array): string =>
-  createHash('sha256').update(content).digest('hex');
+import { collectQualityRouteCoverage, createNexusAdapterForRoot, runQualityPair } from '../../../tests/benchmarks/quality/runner.js';
 
 describe('quality benchmark core integration', () => {
   let fixture: OwnedQualityFixture;
@@ -30,16 +26,9 @@ describe('quality benchmark core integration', () => {
     const symbolName = baseTask.expectedSymbols[0]?.name ?? 'answer';
     if (expectedFile === undefined) throw new Error('expected file missing');
     const content = await readFile(join(projectRoot, expectedFile), 'utf8');
-    const fileBytes = new TextEncoder().encode(content);
-    const wholeHash = sha256(fileBytes);
+    expect(content).toContain(`function ${symbolName}`);
     return {
       ...baseTask,
-      initialClues: ['id:answer'],
-      expectedSymbols: [
-        { filePath: expectedFile, name: symbolName, startByte: 0, endByte: fileBytes.length },
-      ],
-      expectedSourceHashes: { [expectedFile]: wholeHash },
-      expectedLocations: [{ filePath: expectedFile, line: 1, character: 0 }],
     };
   };
 
@@ -52,6 +41,23 @@ describe('quality benchmark core integration', () => {
     expect(result.rootKey).toBe('single');
     expect(result.fixtureDigest).toMatch(/^[a-f0-9]{64}$/);
     expect(result.policyVersion).toBe('quality-policy-v1');
+
+    const projectRoot = fixture.roots.single;
+    const expectedSymbol = task.expectedSymbols[0];
+    if (projectRoot === undefined || expectedSymbol === undefined) throw new Error('Q01 golden missing');
+    const sourceBytes = await readFile(join(projectRoot, expectedSymbol.filePath));
+    expect(sourceBytes[sourceBytes.length - 1]).toBe(0x0a);
+    const goldenBytes = sourceBytes.subarray(expectedSymbol.startByte, expectedSymbol.endByte);
+    const goldenContent = goldenBytes.toString('utf8');
+    for (const arm of ['R', 'N'] as const) {
+      expect(result.outcomes[arm].policy?.adoption).toMatchObject({
+        filePath: expectedSymbol.filePath,
+        startByte: expectedSymbol.startByte,
+        endByte: expectedSymbol.endByte,
+        content: goldenContent,
+        sourceValidation: 'verified',
+      });
+    }
 
     expect(result.outcomes.R.executionStatus).toBe('executed');
     expect(result.outcomes.N.executionStatus).toBe('executed');
@@ -79,14 +85,75 @@ describe('quality benchmark core integration', () => {
     expect(route.scenarioId).toBe(task.scenarioId);
     expect(route.rootKey).toBe('single');
     expect(route.requiredProbeIds.length).toBeGreaterThan(0);
-    expect(route.probes.length).toBe(route.requiredProbeIds.length);
+    expect(route.probes).toHaveLength(route.requiredProbeIds.length);
     expect(route.setupProofDigest).toMatch(/^[a-f0-9]{64}$/);
-    expect(['COVERED', 'INCOMPLETE']).toContain(route.status);
+    expect(route.status).toBe('COVERED');
 
     for (const probe of route.probes) {
       expect(probe.probeId).toMatch(/^unit-q01|^Q01/);
       expect(probe.taskId).toBe(task.taskId);
       expect(probe.traceSequence).toBeGreaterThan(0);
     }
+    expect(route.probeTrace.map(({ sequence }) => sequence)).toEqual(
+      route.probes.map(({ traceSequence }) => traceSequence),
+    );
   }, 60_000);
+
+  it('marks a route incomplete when expected discovery targets are absent', async () => {
+    const task = await makeTask();
+    const incompleteTask = { ...task, expectedFiles: [], expectedSymbols: [] };
+    const [route] = await collectQualityRouteCoverage(
+      incompleteTask,
+      fixture,
+      { signal: new AbortController().signal },
+    );
+
+    expect(route?.status).toBe('INCOMPLETE');
+    expect(route?.probes.some(({ status }) => status === 'INCOMPLETE')).toBe(true);
+  });
+
+  it.each(['Q07@quality-v1', 'Q08@quality-v1'] as const)(
+    'exercises paired retrieval against scenario-specific index state for %s',
+    async (scenarioId) => {
+      const scenarioFixture = await createQualityFixture([scenarioId], new AbortController().signal);
+      try {
+        const task = scenarioFixture.oracleCases[0];
+        if (task === undefined) throw new Error(`${scenarioId} fixture missing`);
+
+        if (scenarioId === 'Q07@quality-v1') {
+          const root = scenarioFixture.roots.single;
+          if (root === undefined) throw new Error('Q07 fixture root missing');
+          const adapter = await createNexusAdapterForRoot(root, task);
+          const observation = await adapter.invoke(
+            'hybrid_search',
+            { query: 'answer', topK: 20 },
+            new AbortController().signal,
+            { traceSequence: 1 },
+          );
+          expect(observation.status).toBe('ok');
+          expect(observation.results.some(({ preview }) => preview?.includes('return 41'))).toBe(true);
+          expect(observation.results.some(({ preview }) => preview?.includes('return 42'))).toBe(false);
+        }
+
+        const result = await runQualityPair(task, scenarioFixture, { signal: new AbortController().signal });
+        const nTrace = result.outcomes.N.policy?.trace ?? [];
+
+        expect(nTrace.some(({ tool }) => tool === 'hybrid_search')).toBe(true);
+        if (scenarioId === 'Q07@quality-v1') {
+          expect(task.mutationSchedule).toHaveLength(0);
+          expect(result.outcomes.N.policy?.trace.some(({ resultDigest }) => resultDigest !== null)).toBe(true);
+        } else {
+          expect(task.mutationSchedule).toEqual(expect.arrayContaining([
+            expect.objectContaining({ phase: 'during_request', operation: 'delete' }),
+            expect.objectContaining({ phase: 'before_publication', operation: 'recreate' }),
+          ]));
+          expect(result.outcomes.R.observation).not.toBe('CORRECT_CURRENT');
+          expect(result.outcomes.N.observation).not.toBe('CORRECT_CURRENT');
+        }
+      } finally {
+        await scenarioFixture.dispose();
+      }
+    },
+    60_000,
+  );
 });
