@@ -22,6 +22,17 @@ describe('runQualitySuite integration', () => {
       expect(Object.keys(result.reports)).toEqual(
         expect.arrayContaining(['quality-core-v1', 'quality-worktree-v1', 'quality-lsp-v1']),
       );
+      expect(result.reports['quality-core-v1'].expectedTaskIds).toEqual([
+        'Q01', 'Q02', 'Q03', 'Q04', 'Q05', 'Q06', 'Q07', 'Q08', 'Q09', 'Q10', 'Q11', 'Q14',
+      ]);
+      expect(result.reports['quality-worktree-v1'].expectedTaskIds).toEqual(['Q12-primary', 'Q12-linked']);
+      expect(result.reports['quality-lsp-v1'].expectedTaskIds).toEqual([
+        'Q13-definition', 'Q13-references', 'Q13-implementations',
+      ]);
+      expect(result.reports['quality-core-v1'].missingTaskIds).not.toContain('Q12-primary');
+      expect(result.reports['quality-core-v1'].missingTaskIds).not.toContain('Q13-definition');
+      expect(result.reports['quality-worktree-v1'].missingTaskIds).not.toContain('Q01');
+      expect(result.reports['quality-lsp-v1'].missingTaskIds).not.toContain('Q01');
 
       const resolvedOutput = await realpath(outputRoot);
       expect(result.outputPaths.json.startsWith(resolvedOutput)).toBe(true);

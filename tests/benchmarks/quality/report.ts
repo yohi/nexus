@@ -470,14 +470,14 @@ function buildGate2Arm(pairs: readonly PairedQualityResult[], arm: QualityArm): 
   };
 }
 
-function buildGate3(expected: readonly string[], pairs: readonly PairedQualityResult[]): GateAgentLoopReport {
+function buildGate3(pairs: readonly PairedQualityResult[]): GateAgentLoopReport {
   let bothSuccess = 0;
   let baselineOnly = 0;
   let nexusOnly = 0;
   let bothFail = 0;
 
-  const rSuccesses: QualityArmResult[] = [];
-  const nSuccesses: QualityArmResult[] = [];
+  const rBothSuccesses: QualityArmResult[] = [];
+  const nBothSuccesses: QualityArmResult[] = [];
   const rAll: QualityArmResult[] = [];
   const nAll: QualityArmResult[] = [];
 
@@ -488,8 +488,8 @@ function buildGate3(expected: readonly string[], pairs: readonly PairedQualityRe
     const nOk = n.correctSourceReached;
     if (rOk && nOk) {
       bothSuccess += 1;
-      rSuccesses.push(r);
-      nSuccesses.push(n);
+      rBothSuccesses.push(r);
+      nBothSuccesses.push(n);
     } else if (rOk && !nOk) {
       baselineOnly += 1;
     } else if (!rOk && nOk) {
@@ -503,7 +503,7 @@ function buildGate3(expected: readonly string[], pairs: readonly PairedQualityRe
 
   const effectiveExpected = pairs.length;
 
-  function armMetrics(all: QualityArmResult[], successes: QualityArmResult[]): QualityArmLoopMetrics {
+  function armMetrics(all: QualityArmResult[]): QualityArmLoopMetrics {
     const completedTasks = all.filter((a) => a.correctSourceReached).length;
     const failedTasks = all.filter((a) => a.wrongSourceAdopted || a.observation === 'FALSE_FRESH' || a.observation === 'MISSING').length;
     const wrongAdoptions = all.filter((a) => a.wrongSourceAdopted).length;
@@ -516,7 +516,7 @@ function buildGate3(expected: readonly string[], pairs: readonly PairedQualityRe
       failureRate: makeRate(failedTasks, effectiveExpected, effectiveExpected > 0 ? null : 'NO_PAIRS'),
       wrongSourceAdoptionRate: makeRate(wrongAdoptions, effectiveExpected, effectiveExpected > 0 ? null : 'NO_PAIRS'),
       fallbackTaskFrequency: makeRate(fallbackTasks, effectiveExpected, effectiveExpected > 0 ? null : 'NO_PAIRS'),
-      firstCorrectSource: buildFirstCorrectCost(successes),
+      firstCorrectSource: buildFirstCorrectCost(all.filter((a) => a.correctSourceReached)),
     };
   }
 
@@ -527,12 +527,12 @@ function buildGate3(expected: readonly string[], pairs: readonly PairedQualityRe
     nexusOnly,
     bothFail,
     byArm: {
-      R: armMetrics(rAll, rSuccesses),
-      N: armMetrics(nAll, nSuccesses),
+      R: armMetrics(rAll),
+      N: armMetrics(nAll),
     },
     bothSuccessOnlyCost: {
-      R: buildFirstCorrectCost(rSuccesses),
-      N: buildFirstCorrectCost(nSuccesses),
+      R: buildFirstCorrectCost(rBothSuccesses),
+      N: buildFirstCorrectCost(nBothSuccesses),
     },
   };
 }
@@ -564,7 +564,7 @@ export function buildQualityReport(
   const gate1 = buildGate1(expected, pairs, routeCoverage);
   const gate2R = buildGate2Arm(pairs, 'R');
   const gate2N = buildGate2Arm(pairs, 'N');
-  const gate3 = buildGate3(expected, pairs);
+  const gate3 = buildGate3(pairs);
 
   const limitations: string[] = [...metadataIssues];
   if (missingTaskIds.length > 0) limitations.push(`MISSING_TASKS:${missingTaskIds.join(',')}`);
@@ -707,10 +707,17 @@ export async function runQualitySuite(options: Readonly<{
   const coreTaskIds = [
     'Q01', 'Q02', 'Q03', 'Q04', 'Q05', 'Q06', 'Q07', 'Q08', 'Q09', 'Q10', 'Q11', 'Q14',
   ] as const;
+  const worktreeTaskIds = ['Q12-primary', 'Q12-linked'] as const;
+  const lspTaskIds = ['Q13-definition', 'Q13-references', 'Q13-implementations'] as const;
+  const expectedTaskIdsByProfile: Readonly<Record<QualityProfile, readonly string[]>> = {
+    'quality-core-v1': coreTaskIds,
+    'quality-worktree-v1': worktreeTaskIds,
+    'quality-lsp-v1': lspTaskIds,
+  };
   const expectedTaskIds: readonly string[] = [
     ...coreTaskIds,
-    'Q12-primary', 'Q12-linked',
-    'Q13-definition', 'Q13-references', 'Q13-implementations',
+    ...worktreeTaskIds,
+    ...lspTaskIds,
   ];
 
   const startedAt = new Date().toISOString();
@@ -726,14 +733,10 @@ export async function runQualitySuite(options: Readonly<{
 
   const pairs: PairedQualityResult[] = [];
   const coverage: QualityRouteCoverage[] = [];
-  const missing: string[] = [];
 
   for (const taskId of expectedTaskIds) {
     const task = taskManifests.get(taskId);
-    if (task === undefined) {
-      missing.push(taskId);
-      continue;
-    }
+    if (task === undefined) continue;
     const fixture = taskId.startsWith('Q12')
       ? primaryLinkedFixture
       : taskId.startsWith('Q13')
@@ -743,7 +746,7 @@ export async function runQualitySuite(options: Readonly<{
       const pair = await runQualityPair(task, fixture, { signal: options.signal, rgExecutable: options.rgExecutable });
       pairs.push(pair);
     } catch {
-      missing.push(taskId);
+      // The profile report derives missing tasks from expected IDs and collected pairs.
     }
     try {
       const routeCoverage = await collectQualityRouteCoverage(task, fixture, { signal: options.signal });
@@ -810,10 +813,11 @@ export async function runQualitySuite(options: Readonly<{
 
   const reports: Partial<Record<QualityProfile, QualityReport>> = {};
   for (const [profile, profilePairs] of grouped) {
+    const profileExpectedTaskIds = expectedTaskIdsByProfile[profile];
     const profileCoverage = routeByProfile.get(profile) ?? [];
     const fixtureDigest = profilePairs[0]?.fixtureDigest ?? digest({ profile });
-    const manifestDigest = digest({ expected: expectedTaskIds });
-    const oracleDigest = digest({ expected: expectedTaskIds });
+    const manifestDigest = digest({ expected: profileExpectedTaskIds });
+    const oracleDigest = digest({ expected: profileExpectedTaskIds });
     const metadata: QualityReportMetadata = {
       ...commonMetadataBase,
       profile,
@@ -821,19 +825,20 @@ export async function runQualitySuite(options: Readonly<{
       oracleDigest,
       manifestDigest,
     };
-    reports[profile] = buildQualityReport(expectedTaskIds, profilePairs, profileCoverage, metadata);
+    reports[profile] = buildQualityReport(profileExpectedTaskIds, profilePairs, profileCoverage, metadata);
   }
 
   for (const profile of ['quality-core-v1', 'quality-worktree-v1', 'quality-lsp-v1'] as QualityProfile[]) {
     if (reports[profile] === undefined) {
+      const profileExpectedTaskIds = expectedTaskIdsByProfile[profile];
       const metadata: QualityReportMetadata = {
         ...commonMetadataBase,
         profile,
         fixtureDigest: digest({ profile }),
-        oracleDigest: digest({ profile }),
-        manifestDigest: digest({ profile }),
+        oracleDigest: digest({ expected: profileExpectedTaskIds }),
+        manifestDigest: digest({ expected: profileExpectedTaskIds }),
       };
-      reports[profile] = buildQualityReport(expectedTaskIds, [], [], metadata);
+      reports[profile] = buildQualityReport(profileExpectedTaskIds, [], [], metadata);
     }
   }
 

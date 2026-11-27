@@ -147,6 +147,40 @@ describe('buildQualityReport', () => {
     expect(report.gate1.status).toBe('SAFETY_FAIL');
   });
 
+  it('includes single-arm successes in each arm first-correct-source cost', () => {
+    const basePair = makePair();
+    const baselineOnly = makePair({
+      outcomes: Object.freeze({
+        R: {
+          ...basePair.outcomes.R,
+          firstCorrectSourceCost: { logicalOperations: 1, invocations: 2, contextBytes: 100, contextTokens: 20 },
+        },
+        N: { ...basePair.outcomes.N, observation: 'MISSING' as const, correctSourceReached: false },
+      }),
+    });
+    const nexusOnly = makePair({
+      taskId: 'Q02',
+      outcomes: Object.freeze({
+        R: { ...basePair.outcomes.R, observation: 'MISSING' as const, correctSourceReached: false },
+        N: {
+          ...basePair.outcomes.N,
+          firstCorrectSourceCost: { logicalOperations: 1, invocations: 3, contextBytes: 100, contextTokens: 20 },
+        },
+      }),
+    });
+    const report = buildQualityReport(
+      ['Q01', 'Q02'],
+      [baselineOnly, nexusOnly],
+      [makeRoute('Q01'), makeRoute('Q02')],
+      baseMetadata,
+    );
+
+    expect(report.gate3.byArm.R.firstCorrectSource.toolCalls).toMatchObject({ eligibleCount: 1, min: 2 });
+    expect(report.gate3.byArm.N.firstCorrectSource.toolCalls).toMatchObject({ eligibleCount: 1, min: 3 });
+    expect(report.gate3.bothSuccessOnlyCost.R.toolCalls.eligibleCount).toBe(0);
+    expect(report.gate3.bothSuccessOnlyCost.N.toolCalls.eligibleCount).toBe(0);
+  });
+
   it('redacts source content in public pairs', () => {
     const armResult = {
       executionStatus: 'executed' as const,
