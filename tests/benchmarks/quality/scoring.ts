@@ -1,9 +1,22 @@
 import { createHash } from 'node:crypto';
-import type { QualityArm, QualityCaseManifest, ObservationKind, QualityExecutionStatus } from './contracts.js';
-import type { QualityTool } from './adapters.js';
+import type {
+  QualityArm,
+  QualityCaseManifest,
+  ObservationKind,
+  QualityExecutionStatus,
+  QualityProfile,
+  QualityRootKey,
+} from './contracts.js';
+import type {
+  QualityObservation,
+  QualityTool,
+  RgExecutionSnapshot,
+  RgSpawnObservation,
+} from './adapters.js';
 import type { QualityCumulativeCost, QualityPolicyResult, QualityTraceEvent } from './policy.js';
 import { gradeTaskSource, checkSourceFreshness } from './oracle.js';
 import type { SourceAdoption, SourceProvenance, SourceSnapshot } from './oracle.js';
+import { canonicalJson } from './canonical-json.js';
 
 export interface QualityPublicationEvidence {
   readonly adoptionSequence: number;
@@ -59,7 +72,7 @@ export interface GradedDiscoveryEvidence {
 export interface BaselineRgEvidenceCommon {
   readonly initializedContractDigest: string;
   readonly spawnAttemptCount: number | null;
-  readonly observedSpawns: readonly import('./adapters.js').RgSpawnObservation[];
+  readonly observedSpawns: readonly RgSpawnObservation[];
   readonly traceComplete: boolean;
 }
 
@@ -89,8 +102,8 @@ export type BaselineRgExecutionEvidence = BaselineRgEvidenceCommon & (
 
 export interface PairedQualityResult {
   readonly taskId: string;
-  readonly profile: import('./contracts.js').QualityProfile;
-  readonly rootKey: import('./contracts.js').QualityRootKey;
+  readonly profile: QualityProfile;
+  readonly rootKey: QualityRootKey;
   readonly fixtureDigest: string;
   readonly policyVersion: 'quality-policy-v1';
   readonly baselineRgExecution: BaselineRgExecutionEvidence;
@@ -108,7 +121,7 @@ export type RequiredProbeAction =
 export interface QualityRequiredProbe {
   readonly probeId: string;
   readonly taskId: string;
-  readonly rootKey: import('./contracts.js').QualityRootKey;
+  readonly rootKey: QualityRootKey;
   readonly tool: QualityTool;
   readonly expectedAction: RequiredProbeAction;
 }
@@ -116,7 +129,7 @@ export interface QualityRequiredProbe {
 export interface QualityProbeEvidence extends QualityRequiredProbe {
   readonly publicArgsDigest: string | null;
   readonly traceSequence: number | null;
-  readonly observedStatus: import('./adapters.js').QualityObservation['status'] | null;
+  readonly observedStatus: QualityObservation['status'] | null;
   readonly reasonCode: string | null;
   readonly oracleVerdict: ObservationKind | null;
   readonly resultDigest: string | null;
@@ -127,7 +140,7 @@ export interface QualityProbeEvidence extends QualityRequiredProbe {
 export interface QualityRouteCoverage {
   readonly taskId: string;
   readonly scenarioId: string;
-  readonly rootKey: import('./contracts.js').QualityRootKey;
+  readonly rootKey: QualityRootKey;
   readonly requiredProbeIds: readonly string[];
   readonly probes: readonly QualityProbeEvidence[];
   readonly probeTrace: readonly QualityTraceEvent[];
@@ -141,9 +154,6 @@ const sha256 = (content: string | Uint8Array): string =>
 
 const utf8Bytes = (text: string): Uint8Array => new TextEncoder().encode(text);
 
-const canonicalJson = (value: unknown): string =>
-  JSON.stringify(value, Object.keys(value as object).sort());
-
 const digest = (value: unknown): string => sha256(utf8Bytes(canonicalJson(value)));
 
 const isUnsafeObservation = (observation: ObservationKind): boolean =>
@@ -152,12 +162,9 @@ const isUnsafeObservation = (observation: ObservationKind): boolean =>
 const isCorrectObservation = (observation: ObservationKind): boolean =>
   observation === 'CORRECT_CURRENT';
 
-const emptyCost = (): QualityCumulativeCost =>
-  Object.freeze({ logicalOperations: 0, invocations: 0, contextBytes: 0, contextTokens: 0 });
-
 function profileForEligibility(
   eligibility: QualityCaseManifest['evaluationEligibility'],
-): import('./contracts.js').QualityProfile {
+): QualityProfile {
   switch (eligibility) {
     case 'conditional_worktree':
       return 'quality-worktree-v1';
@@ -182,6 +189,117 @@ function verifiedAdoptionIfProven(
   return adoption;
 }
 
+interface AdoptionGradingState {
+  correctSourceReached: boolean;
+  wrongSourceAdopted: boolean;
+  firstCorrectSourceCost: QualityCumulativeCost | null;
+  firstCorrectSourceElapsedMs: number | null;
+  finalObservation: ObservationKind | null;
+}
+
+const REFUSAL_STATUSES = new Set<QualityTraceEvent['resultStatus']>([
+  'not_found',
+  'stale_identity',
+  'unsupported',
+  'unavailable',
+]);
+
+const EXECUTION_FAILURE_STATUSES = new Set<QualityTraceEvent['resultStatus']>(['error', 'timeout']);
+
+function expectedSymbolTargets(task: QualityCaseManifest): readonly string[] {
+  const fromClues = task.initialClues.flatMap((clue) => {
+    const match = /^(?:id|symbol):(.+)$/.exec(clue);
+    return match?.[1] === undefined ? [] : [match[1]];
+  });
+  return fromClues.length > 0 ? fromClues : task.expectedSymbols.map(({ name }) => name);
+}
+
+function refusalTargetsExpectedTask(
+  event: QualityTraceEvent,
+  task: QualityCaseManifest,
+): boolean {
+  const args = event.normalizedPublicArgs;
+  switch (event.tool) {
+    case 'get_symbol_source':
+    case 'get_symbol_context':
+      return typeof args.symbolId === 'string' &&
+        expectedSymbolTargets(task).includes(args.symbolId);
+    case 'get_definition':
+    case 'get_references':
+    case 'get_implementations':
+      if (typeof args.symbolId === 'string') {
+        if (!expectedSymbolTargets(task).includes(args.symbolId)) return false;
+        const expectedSymbol = task.expectedSymbols.find(({ name }) => name === args.symbolId);
+        return args.filePath === undefined ||
+          (expectedSymbol !== undefined && args.filePath === expectedSymbol.filePath);
+      }
+      return task.expectedLocations.some((location) =>
+        args.filePath === location.filePath &&
+        args.line === location.line &&
+        args.character === location.character,
+      );
+    case 'read_file':
+    case 'get_context':
+    case 'get_file_outline': {
+      if (typeof args.filePath !== 'string' || !task.expectedFiles.includes(args.filePath)) {
+        return false;
+      }
+      return typeof args.symbolName !== 'string' ||
+        expectedSymbolTargets(task).includes(args.symbolName);
+    }
+    default:
+      // Search terms are intentionally redacted from normalized arguments, so their target
+      // cannot be proven from the public trace.
+      return false;
+  }
+}
+
+function recordAdoptionObservation(
+  state: AdoptionGradingState,
+  observation: ObservationKind,
+  event: QualityPolicyResult['adoptionEvents'][number],
+): void {
+  if (isCorrectObservation(observation)) {
+    if (!state.correctSourceReached) {
+      state.correctSourceReached = true;
+      state.firstCorrectSourceCost = event.cumulativeCost;
+      state.firstCorrectSourceElapsedMs = Number.isFinite(event.elapsedMs) ? event.elapsedMs : null;
+    }
+    if (state.finalObservation === null || !isUnsafeObservation(state.finalObservation)) {
+      state.finalObservation = 'CORRECT_CURRENT';
+    }
+  }
+  if (!isUnsafeObservation(observation)) return;
+
+  state.wrongSourceAdopted = true;
+  if (state.finalObservation === null || !isCorrectObservation(state.finalObservation)) {
+    state.finalObservation = observation;
+  }
+}
+
+function resolveFinalObservation(
+  state: AdoptionGradingState,
+  task: QualityCaseManifest,
+  policyResult: QualityPolicyResult,
+  history: readonly GradedQualityAdoption[],
+): ObservationKind {
+  if (state.finalObservation !== null) return state.finalObservation;
+  if (policyResult.adoptionEvents.length > 0) {
+    return history.at(-1)?.observation ?? 'INCONCLUSIVE';
+  }
+  const expectedRefusal = new Set(task.expectedRefusalConditions);
+  const refusalEvents = policyResult.trace.filter((event) => REFUSAL_STATUSES.has(event.resultStatus));
+  const refusedForExpectedReason = expectedRefusal.size > 0 && refusalEvents.some((event) =>
+    event.reasonCode !== null &&
+    expectedRefusal.has(event.reasonCode) &&
+    event.exposedBytes === 0 &&
+    refusalTargetsExpectedTask(event, task),
+  );
+  if (refusedForExpectedReason) return 'CORRECT_REFUSAL';
+  if (refusalEvents.length > 0) return 'FALSE_REFUSAL';
+  return 'INCONCLUSIVE';
+}
+
 export function gradeQualityArm(
   task: QualityCaseManifest,
   snapshot: SourceSnapshot | null,
@@ -203,6 +321,21 @@ export function gradeQualityArm(
     });
   }
 
+  if (policyResult.status === 'NOT_STARTED') {
+    return Object.freeze({
+      executionStatus: 'not_run',
+      observation: null,
+      policy: policyResult,
+      adoptionHistory: Object.freeze([]),
+      firstCorrectSourceCost: null,
+      firstCorrectSourceElapsedMs: null,
+      firstCorrectSourceElapsedReason: 'NOT_RUN',
+      correctSourceReached: false,
+      wrongSourceAdopted: false,
+      reasonCode: 'REQUEST_CANCELLED',
+    });
+  }
+
   if (snapshot === null) {
     return Object.freeze({
       executionStatus: 'executed',
@@ -219,12 +352,13 @@ export function gradeQualityArm(
   }
 
   const adoptionHistory: GradedQualityAdoption[] = [];
-  let correctSourceReached = false;
-  let wrongSourceAdopted = false;
-  let firstCorrectSourceCost: QualityCumulativeCost | null = null;
-  let firstCorrectSourceElapsedMs: number | null = null;
-  let firstUnsafeObservation: ObservationKind | null = null;
-  let finalObservation: ObservationKind | null = null;
+  const state: AdoptionGradingState = {
+    correctSourceReached: false,
+    wrongSourceAdopted: false,
+    firstCorrectSourceCost: null,
+    firstCorrectSourceElapsedMs: null,
+    finalObservation: null,
+  };
 
   for (const event of policyResult.adoptionEvents) {
     const publication = publications.find((p) => p.adoptionSequence === event.sequence);
@@ -250,61 +384,39 @@ export function gradeQualityArm(
       }),
     );
 
-    if (isCorrectObservation(observation)) {
-      if (!correctSourceReached) {
-        correctSourceReached = true;
-        firstCorrectSourceCost = event.cumulativeCost;
-        firstCorrectSourceElapsedMs = Number.isFinite(event.elapsedMs) ? event.elapsedMs : null;
-      }
-      if (finalObservation === null || !isUnsafeObservation(finalObservation)) {
-        finalObservation = 'CORRECT_CURRENT';
-      }
-    }
-
-    if (isUnsafeObservation(observation)) {
-      wrongSourceAdopted = true;
-      if (firstUnsafeObservation === null) {
-        firstUnsafeObservation = observation;
-      }
-      if (finalObservation === null || !isCorrectObservation(finalObservation)) {
-        finalObservation = observation;
-      }
-    }
+    recordAdoptionObservation(state, observation, event);
   }
 
-  if (finalObservation === null) {
-    if (policyResult.adoptionEvents.length > 0) {
-      finalObservation = adoptionHistory[adoptionHistory.length - 1]?.observation ?? 'INCONCLUSIVE';
-    } else if (task.expectedRefusalConditions.length > 0) {
-      finalObservation = 'CORRECT_REFUSAL';
-    } else {
-      finalObservation = 'FALSE_REFUSAL';
-    }
-  }
-
-  let elapsedReason: QualityArmResult['firstCorrectSourceElapsedReason'] = correctSourceReached
+  const finalObservation = resolveFinalObservation(state, task, policyResult, adoptionHistory);
+  const elapsedReason: QualityArmResult['firstCorrectSourceElapsedReason'] = state.correctSourceReached
     ? null
     : 'NOT_REACHED';
-  if (!correctSourceReached && policyResult.adoptionEvents.length === 0) {
-    elapsedReason = task.expectedRefusalConditions.length > 0 ? 'NOT_REACHED' : 'NOT_REACHED';
-  }
-
-  const reasonCode = wrongSourceAdopted
+  const executionFailure = policyResult.trace.some((event) => EXECUTION_FAILURE_STATUSES.has(event.resultStatus));
+  const wasCancelled = policyResult.trace.some((event) => event.resultStatus === 'cancelled');
+  const reasonCode = state.wrongSourceAdopted
     ? 'SAFETY_FAIL'
-    : correctSourceReached
+    : state.correctSourceReached
       ? undefined
-      : 'NOT_REACHED';
+      : finalObservation === 'CORRECT_REFUSAL'
+        ? undefined
+        : finalObservation === 'FALSE_REFUSAL'
+          ? 'UNEXPECTED_REFUSAL'
+          : executionFailure
+            ? 'POLICY_EXECUTION_FAILED'
+            : wasCancelled
+              ? 'REQUEST_CANCELLED'
+              : 'NOT_REACHED';
 
   return Object.freeze({
     executionStatus: 'executed',
     observation: finalObservation,
     policy: policyResult,
     adoptionHistory: Object.freeze(adoptionHistory),
-    firstCorrectSourceCost,
-    firstCorrectSourceElapsedMs,
+    firstCorrectSourceCost: state.firstCorrectSourceCost,
+    firstCorrectSourceElapsedMs: state.firstCorrectSourceElapsedMs,
     firstCorrectSourceElapsedReason: elapsedReason,
-    correctSourceReached,
-    wrongSourceAdopted,
+    correctSourceReached: state.correctSourceReached,
+    wrongSourceAdopted: state.wrongSourceAdopted,
     reasonCode,
   });
 }
@@ -321,6 +433,77 @@ const DISCOVERY_TOOLS = new Set<QualityTool>([
 
 function isDiscoveryTool(tool: QualityTool): boolean {
   return DISCOVERY_TOOLS.has(tool);
+}
+
+interface DiscoveryAdoptionSummary {
+  labeledUniqueCandidates: number;
+  irrelevantUniqueCandidates: number;
+  fileFound: boolean | null;
+  symbolFound: boolean | null;
+  firstRelevantRank: number | null;
+}
+
+function summarizeDiscoveryAdoptions(
+  task: QualityCaseManifest,
+  eligibleFileTask: boolean,
+  eligibleSymbolTask: boolean,
+  observedCandidateCount: number,
+  hasEmptyCompletedResult: boolean,
+  policyResult: QualityPolicyResult,
+): DiscoveryAdoptionSummary {
+  const relevantFiles = new Set(task.expectedFiles);
+  const relevantSymbols = task.expectedSymbols;
+  const seenCandidateClassifications = new Map<string, 'relevant' | 'irrelevant'>();
+  const summary: DiscoveryAdoptionSummary = {
+    labeledUniqueCandidates: 0,
+    irrelevantUniqueCandidates: 0,
+    fileFound: null,
+    symbolFound: null,
+    firstRelevantRank: null,
+  };
+
+  for (const event of policyResult.adoptionEvents) {
+    const { source } = event;
+    const fileRelevant = relevantFiles.has(source.filePath);
+    const matchingSymbols = relevantSymbols.filter((symbol) =>
+      symbol.filePath === source.filePath &&
+      symbol.startByte === source.startByte &&
+      symbol.endByte === source.endByte &&
+      source.content.includes(symbol.name),
+    );
+    const symbolRelevant = eligibleSymbolTask && matchingSymbols.length > 0;
+    const candidateRelevant = symbolRelevant || (fileRelevant && !eligibleSymbolTask);
+    const candidateKey = `${source.filePath}\0${source.startByte}\0${source.endByte}`;
+    if (!candidateRelevant) {
+      if (!seenCandidateClassifications.has(candidateKey)) {
+        seenCandidateClassifications.set(candidateKey, 'irrelevant');
+        summary.irrelevantUniqueCandidates += 1;
+      }
+      if (fileRelevant) summary.fileFound = true;
+      continue;
+    }
+
+    const previousClassification = seenCandidateClassifications.get(candidateKey);
+    if (previousClassification !== 'relevant') {
+      if (previousClassification === 'irrelevant') summary.irrelevantUniqueCandidates -= 1;
+      seenCandidateClassifications.set(candidateKey, 'relevant');
+      summary.labeledUniqueCandidates += 1;
+    }
+    if (summary.firstRelevantRank === null && event.candidateRank !== undefined) {
+      summary.firstRelevantRank = event.candidateRank;
+    }
+    if (fileRelevant) summary.fileFound = true;
+    if (symbolRelevant) summary.symbolFound = true;
+  }
+
+  if (observedCandidateCount === 0 && hasEmptyCompletedResult) {
+    if (summary.fileFound === null && eligibleFileTask) summary.fileFound = false;
+    if (summary.symbolFound === null && eligibleSymbolTask) summary.symbolFound = false;
+  } else if (observedCandidateCount > 0) {
+    if (summary.fileFound === null && eligibleFileTask) summary.fileFound = false;
+    if (summary.symbolFound === null && eligibleSymbolTask) summary.symbolFound = false;
+  }
+  return summary;
 }
 
 export function gradeDiscovery(
@@ -396,60 +579,17 @@ export function gradeDiscovery(
     0,
   );
 
-  const relevantFiles = new Set(task.expectedFiles);
-  const relevantSymbolNames = new Set(task.expectedSymbols.map((symbol) => symbol.name));
-
-  let labeledUniqueCandidates = 0;
-  let irrelevantUniqueCandidates = 0;
-  let fileFound: boolean | null = null;
-  let symbolFound: boolean | null = null;
-  let firstRelevantSequence: number | null = null;
-  const seenRelevantKeys = new Set<string>();
-
-  for (const event of policyResult.adoptionEvents) {
-    const source = event.source;
-    const fileRelevant = relevantFiles.has(source.filePath);
-    const symbolRelevant =
-      eligibleSymbolTask &&
-      Array.from(relevantSymbolNames).some((name) => source.content.includes(name));
-    const relevantKey = `${source.filePath}\0${Array.from(relevantSymbolNames)
-      .filter((name) => source.content.includes(name))
-      .join(',')}`;
-
-    if (fileRelevant || symbolRelevant) {
-      if (!seenRelevantKeys.has(relevantKey)) {
-        seenRelevantKeys.add(relevantKey);
-        labeledUniqueCandidates += 1;
-      }
-      if (firstRelevantSequence === null) {
-        firstRelevantSequence = event.sequence;
-      }
-      if (fileRelevant) {
-        fileFound = true;
-      }
-      if (symbolRelevant) {
-        symbolFound = true;
-      }
-    } else {
-      irrelevantUniqueCandidates += 1;
-    }
-  }
-
-  if (observedCandidateCount === 0 && hasEmptyCompletedResult) {
-    fileFound = false;
-    symbolFound = false;
-  } else if (observedCandidateCount > 0) {
-    if (fileFound === null && eligibleFileTask) {
-      fileFound = false;
-    }
-    if (symbolFound === null && eligibleSymbolTask) {
-      symbolFound = false;
-    }
-  }
-
-  const hitsAtK = labeledUniqueCandidates > 0 ? labeledUniqueCandidates : 0;
+  const adoptionSummary = summarizeDiscoveryAdoptions(
+    task,
+    eligibleFileTask,
+    eligibleSymbolTask,
+    observedCandidateCount,
+    hasEmptyCompletedResult,
+    policyResult,
+  );
+  const hitsAtK = Math.max(0, adoptionSummary.labeledUniqueCandidates);
   const reciprocalRank =
-    firstRelevantSequence === null ? null : 1 / firstRelevantSequence;
+    adoptionSummary.firstRelevantRank === null ? null : 1 / adoptionSummary.firstRelevantRank;
 
   const candidateEvidenceDigest = digest({
     arm: _arm,
@@ -462,6 +602,7 @@ export function gradeDiscovery(
     adoptions: policyResult.adoptionEvents.map((event) => ({
       sequence: event.sequence,
       filePath: event.source.filePath,
+      candidateRank: event.candidateRank ?? null,
     })),
   });
 
@@ -470,11 +611,11 @@ export function gradeDiscovery(
     candidateEvidenceDigest,
     observedCandidateCount,
     eligibleFileTask,
-    fileFound,
+    fileFound: adoptionSummary.fileFound,
     eligibleSymbolTask,
-    symbolFound,
-    labeledUniqueCandidates,
-    irrelevantUniqueCandidates,
+    symbolFound: adoptionSummary.symbolFound,
+    labeledUniqueCandidates: adoptionSummary.labeledUniqueCandidates,
+    irrelevantUniqueCandidates: adoptionSummary.irrelevantUniqueCandidates,
     expectedRelevantTargets,
     hitsAtK,
     reciprocalRank,
@@ -482,7 +623,7 @@ export function gradeDiscovery(
 }
 
 export function buildBaselineRgExecutionEvidence(
-  snapshot: import('./adapters.js').RgExecutionSnapshot,
+  snapshot: RgExecutionSnapshot,
   rTrace: readonly QualityTraceEvent[],
 ): BaselineRgExecutionEvidence {
   const traceComplete = rTrace.length > 0;

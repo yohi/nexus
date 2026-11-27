@@ -1,6 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import { QUALITY_BUDGETS_V1, publicTask, validateQualityCase, validateQualityCases } from '../../../benchmarks/quality/contracts.js';
 import { QUALITY_CASES_V1 } from '../../../benchmarks/quality/manifest.js';
+import { createQualityFixture } from '../../../benchmarks/quality/fixtures.js';
+import { readFile } from 'node:fs/promises';
+import { join } from 'node:path';
 
 describe('quality case contracts', () => {
   it('projects only visible task fields and returns a fresh frozen object', () => {
@@ -113,6 +116,23 @@ describe('quality case contracts', () => {
     ] as const;
     // Then
     expect([...actual.entries()]).toEqual(expected);
+  });
+
+  it('provides parseable scenario clues and a fixture containing the retired Q03 declaration', async () => {
+    expect(QUALITY_CASES_V1.every(({ initialClues }) =>
+      initialClues.length > 0 &&
+      initialClues.every((clue) => /^(id|file|symbol|concept|position|nav):/u.test(clue)),
+    )).toBe(true);
+
+    const fixture = await createQualityFixture(['Q03@quality-v1'], new AbortController().signal);
+    try {
+      const root = fixture.roots.single;
+      if (root === undefined) throw new Error('Q03 root missing');
+      const oldDeclaration = await readFile(join(root, 'Q03/old-name.ts'), 'utf8');
+      expect(oldDeclaration).toContain('function oldAnswer');
+    } finally {
+      await fixture.dispose();
+    }
   });
 
   it('requires Q12 worktree roles to match each task identity', () => {
