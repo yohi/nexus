@@ -73,6 +73,10 @@ describe.skipIf(!gitAvailable)('Q12 primary/linked worktree boundaries', () => {
       expect(linkedResult.outcomes.N.correctSourceReached).toBe(true);
       expect(primaryResult.fixtureDigest).toBe(primaryTask.sourceSnapshotDigest);
       expect(linkedResult.fixtureDigest).toBe(linkedTask.sourceSnapshotDigest);
+      expect(primaryResult.armFixtureDigests.R).toBe(taskFor(armFixtureR, 'Q12-primary').sourceSnapshotDigest);
+      expect(primaryResult.armFixtureDigests.N).toBe(taskFor(armFixtureN, 'Q12-primary').sourceSnapshotDigest);
+      expect(linkedResult.armFixtureDigests.R).toBe(taskFor(armFixtureR, 'Q12-linked').sourceSnapshotDigest);
+      expect(linkedResult.armFixtureDigests.N).toBe(taskFor(armFixtureN, 'Q12-linked').sourceSnapshotDigest);
       for (const armFixture of armFixtures) {
         const primaryRoot = armFixture.roots.primary ?? '';
         const linkedRoot = armFixture.roots.linked ?? '';

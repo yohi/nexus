@@ -630,7 +630,11 @@ export async function runQualityPair(
     N: gradeDiscovery(nArm.task, 'N', nArm.policyResult),
   });
 
-  const fixtureDigest = rArm.finalSnapshot.snapshotDigest;
+  const armFixtureDigests: Record<QualityArm, string> = Object.freeze({
+    R: rArm.finalSnapshot.snapshotDigest,
+    N: nArm.finalSnapshot.snapshotDigest,
+  });
+  const fixtureDigest = armFixtureDigests.R;
   const profile =
     task.evaluationEligibility === 'conditional_worktree'
       ? 'quality-worktree-v1'
@@ -643,6 +647,7 @@ export async function runQualityPair(
     profile,
     rootKey,
     fixtureDigest,
+    armFixtureDigests,
     policyVersion: 'quality-policy-v1' as const,
     baselineRgExecution,
     outcomes,
