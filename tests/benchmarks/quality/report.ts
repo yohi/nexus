@@ -17,6 +17,7 @@ import type {
 import type { QualityPolicyResult, QualityAdoptionEvent } from './policy.js';
 import type { SourceAdoption } from './oracle.js';
 import { sanitizedRgArgv, rgExclusions } from './adapters.js';
+import { canonicalJson } from './canonical-json.js';
 
 export interface QualityRate {
   readonly numerator: number | null;
@@ -187,9 +188,6 @@ const sha256 = (content: string | Uint8Array): string =>
   createHash('sha256').update(content).digest('hex');
 
 const utf8Bytes = (text: string): Uint8Array => new TextEncoder().encode(text);
-
-const canonicalJson = (value: unknown): string =>
-  JSON.stringify(value, Object.keys(value as object).sort());
 
 const digest = (value: unknown): string => sha256(utf8Bytes(canonicalJson(value)));
 
