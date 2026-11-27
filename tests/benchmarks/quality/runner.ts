@@ -573,7 +573,11 @@ function findRgExecutable(): string {
 export async function runQualityPair(
   task: QualityCaseManifest,
   fixture: OwnedQualityFixture,
-  options: Readonly<{ signal: AbortSignal; rgExecutable?: string }>,
+  options: Readonly<{
+    signal: AbortSignal;
+    rgExecutable?: string;
+    armFixtures?: Readonly<Record<QualityArm, OwnedQualityFixture>>;
+  }>,
 ): Promise<PairedQualityResult> {
   const rootKey = task.worktreeIdentity.rootKey;
   if (fixture.roots[rootKey] === undefined) {
@@ -584,11 +588,15 @@ export async function runQualityPair(
   const makeArm = async (arm: QualityArm) => {
     // Request cancellation controls policy execution, not the deterministic setup/cleanup
     // needed to return a NOT_STARTED result for an arm.
-    const armFixture = await createQualityFixture([task.scenarioId], new AbortController().signal);
+    const providedFixture = options.armFixtures?.[arm];
+    const armFixture = providedFixture ?? await createQualityFixture([task.scenarioId], new AbortController().signal);
     try {
       const root = armFixture.roots[rootKey];
       if (root === undefined) throw new Error('quality_root_key_missing');
       const generatedTask = armFixture.oracleCases.find(({ taskId }) => taskId === task.taskId);
+      if (providedFixture !== undefined && generatedTask === undefined) {
+        throw new Error('quality_task_not_found');
+      }
       const armTask = generatedTask ?? task;
       await applyQualityMutation(armFixture, task.taskId, 'before_request');
       const adapter = arm === 'R'
@@ -597,7 +605,7 @@ export async function runQualityPair(
       const result = await runSingleArm(armTask, rootKey, root, adapter, armFixture, signal);
       return { ...result, adapter, task: armTask };
     } finally {
-      await armFixture.dispose();
+      if (providedFixture === undefined) await armFixture.dispose();
     }
   };
 
@@ -863,6 +871,7 @@ export function isProbeCovered(
     case 'navigation_locations':
       return observation.status === 'ok' &&
         observation.navigation?.capability === 'supported' &&
+        !observation.navigation.truncated &&
         observation.navigation.sourceValidation === 'verified' &&
         observation.navigation.locations.length > 0;
   }

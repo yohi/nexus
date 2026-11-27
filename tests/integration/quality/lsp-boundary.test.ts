@@ -58,7 +58,7 @@ describe('Q13 LSP boundary coverage', () => {
     expect(classifyCapabilityEvidence({ route: 'lsp_real', executed: true, ownerApproved: false })).toBe('NOT_RUN');
   });
 
-  it('does not treat truncated or incomplete stub observations as a complete verified set', async () => {
+  it('marks truncated stub navigation as incomplete route coverage', async () => {
     const fixture = await createQualityFixture(['Q13@quality-v1'], signal);
     try {
       const task = taskFor(fixture, 'Q13-references');
@@ -66,7 +66,7 @@ describe('Q13 LSP boundary coverage', () => {
       const [coverage] = await collectQualityRouteCoverage(task, fixture, { signal, adapter });
       if (coverage === undefined) throw new Error('missing_route_coverage');
       const referencesProbe = coverage.probes.find((probe) => probe.tool === 'get_references');
-      expect(referencesProbe?.status).toBe('COVERED');
+      expect(referencesProbe?.status).toBe('INCOMPLETE');
       expect(referencesProbe?.observedStatus).toBe('ok');
       const directObservation = await adapter.invoke('get_references', {}, signal, { traceSequence: 1 });
       expect(directObservation.navigation?.truncated).toBe(true);
