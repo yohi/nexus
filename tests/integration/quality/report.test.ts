@@ -94,7 +94,9 @@ describe('buildQualityReport integration', () => {
     expect(report.missingTaskIds).toEqual([]);
     expect(report.pairs.length).toBe(expectedIds.length);
     expect(report.routeCoverage.length).toBeGreaterThan(0);
-    expect(report.gate1.status).not.toBe('SAFETY_FAIL');
+    expect(report.gate1.status).toBe('SAFETY_FAIL');
+    expect(report.gate1.outcomeCounts.WRONG_SOURCE).toBeGreaterThan(0);
+    expect(report.gate1.outcomeCounts.FALSE_FRESH).toBeGreaterThan(0);
     expect(report.gate1.expected).toBe(expectedIds.length);
     const typedReport = report as unknown as { gate2: { R: { status: string }; N: { status: string } } };
     const gate2 = typedReport.gate2;
