@@ -1,6 +1,5 @@
 import { createHash } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
-import type { QualityArm } from '../../../../tests/benchmarks/quality/contracts.js';
 import { QUALITY_BUDGETS_V1, type PublicQualityTask } from '../../../../tests/benchmarks/quality/contracts.js';
 import {
   runQualityPolicy,
@@ -290,8 +289,9 @@ describe('gradeDiscovery', () => {
       ...emptyPolicy,
       status: 'COMPLETE',
       trace: [makeTraceEvent('grep_search', 'ok', 1)],
-      adoptionEvents: [makeAdoptionEvent('src/answer.ts', source)],
+      adoptionEvents: [{ ...makeAdoptionEvent('src/answer.ts', source), candidateRank: 1 }],
     };
+    expect(policy.adoptionEvents[0]?.candidateRank).toBe(1);
     const result = gradeDiscovery(baseTask, 'N', policy);
     expect(result.evidenceStatus).toBe('EVALUATED');
     expect(result.fileFound).toBe(true);
@@ -398,7 +398,7 @@ describe('gradeDiscovery', () => {
     expect(result.irrelevantUniqueCandidates).toBe(1);
   });
 
-  it('computes reciprocal rank from the discovery search position, not adoption sequence', () => {
+  it('does not infer reciprocal rank from discovery-call position without a candidate rank', () => {
     const policy: QualityPolicyResult = {
       ...emptyPolicy,
       status: 'COMPLETE',
@@ -409,7 +409,7 @@ describe('gradeDiscovery', () => {
       adoptionEvents: [{ ...makeAdoptionEvent('src/answer.ts', source), sequence: 3 }],
     };
     const result = gradeDiscovery(baseTask, 'N', policy);
-    expect(result.reciprocalRank).toBe(0.5);
+    expect(result.reciprocalRank).toBeNull();
   });
 
   it('uses the adopted candidate rank when rank 1 cannot be read', async () => {
@@ -475,6 +475,20 @@ describe('gradeDiscovery', () => {
 
     expect(policy.adoptionEvents[0]?.candidateRank).toBe(2);
     expect(result.reciprocalRank).toBe(0.5);
+  });
+
+  it('does not invent a reciprocal rank when an adoption has no candidate rank', () => {
+    const policy: QualityPolicyResult = {
+      ...emptyPolicy,
+      status: 'COMPLETE',
+      trace: [makeTraceEvent('get_file_outline', 'ok', 1)],
+      adoptionEvents: [makeAdoptionEvent('src/answer.ts', source)],
+    };
+
+    const result = gradeDiscovery(baseTask, 'N', policy);
+
+    expect(result.evidenceStatus).toBe('EVALUATED');
+    expect(result.reciprocalRank).toBeNull();
   });
 });
 

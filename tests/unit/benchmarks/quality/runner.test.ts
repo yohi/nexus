@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { readFile } from 'node:fs/promises';
+import { readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { describe, expect, it } from 'vitest';
@@ -8,6 +8,7 @@ import {
   createQualityFixture,
 } from '../../../../tests/benchmarks/quality/fixtures.js';
 import { canonicalJson } from '../../../../tests/benchmarks/quality/canonical-json.js';
+import { captureOracleSnapshot } from '../../../../tests/benchmarks/quality/oracle.js';
 import {
   collectQualityRouteCoverage,
   createNexusAdapterForRoot,
@@ -94,6 +95,47 @@ describe('quality route coverage', () => {
       } as const;
 
       expect(isProbeCovered(probe, task, observation)).toBe(false);
+    } finally {
+      await fixture.dispose();
+    }
+  });
+
+  it('does not count oracle-matching source as current when the fixture has changed', async () => {
+    const fixture = await createQualityFixture(['Q01@quality-v1'], new AbortController().signal);
+    try {
+      const task = fixture.oracleCases[0];
+      const root = fixture.roots.single;
+      const filePath = task?.expectedFiles[0];
+      const expected = task?.expectedSymbols[0];
+      if (task === undefined || root === undefined || filePath === undefined || expected === undefined) {
+        throw new Error('Q01 fixture missing');
+      }
+      const oldContent = 'export function answer(): number { return 42; }';
+      await writeFile(join(root, filePath), 'export function answer(): number { return 99; }\n');
+      const currentSnapshot = await captureOracleSnapshot(fixture, 'single', task.taskId);
+      const observation = {
+        status: 'ok',
+        results: [],
+        exposedBytes: Buffer.byteLength(oldContent),
+        sourceAdoptions: [{
+          filePath,
+          startByte: expected.startByte,
+          endByte: expected.endByte,
+          content: oldContent,
+          sourceValidation: 'verified',
+        }],
+        rawDigest: 'stale-but-oracle-matching',
+        normalizedPublicArgs: {},
+      } as const;
+      const probe = {
+        probeId: 'Q01-stale-but-oracle-matching-source',
+        taskId: task.taskId,
+        rootKey: task.worktreeIdentity.rootKey,
+        tool: 'get_context',
+        expectedAction: 'current_source',
+      } as const;
+
+      expect(isProbeCovered(probe, task, observation, currentSnapshot)).toBe(false);
     } finally {
       await fixture.dispose();
     }

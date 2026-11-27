@@ -419,7 +419,7 @@ const validatePublicQuery = (value: unknown): string | null => {
 };
 
 const isTimeoutSignal = (signal: AbortSignal): boolean => {
-  const reason = signal.reason;
+  const reason: unknown = signal.reason;
   return (
     reason instanceof DOMException &&
     (reason.name === 'TimeoutError' || reason.code === 23)
@@ -709,6 +709,19 @@ const sourceExposureBytes = (value: unknown): number => {
     const ownBytes = carriesSource && typeof item === 'string' ? Buffer.byteLength(item, 'utf8') : 0;
     return total + ownBytes + (typeof item === 'object' && item !== null ? sourceExposureBytes(item) : 0);
   }, 0);
+};
+
+const sourceExposureBytesFromText = (text: string): number => {
+  if (text.length === 0) return 0;
+  try {
+    const parsed: unknown = JSON.parse(text);
+    return typeof parsed === 'string'
+      ? Buffer.byteLength(parsed, 'utf8')
+      : sourceExposureBytes(parsed);
+  } catch {
+    // Unstructured refusal text cannot be proven source-free.
+    return Buffer.byteLength(text, 'utf8');
+  }
 };
 
 const makeObservation = (
@@ -1805,6 +1818,13 @@ export const createNexusAdapter = (handlers: ToolHandlers): QualityAdapter => {
         : {};
 
     const { status, reasonCode } = statusFromEnvelope(tool, envelope, isError);
+    const refusalTextExposure = status === 'ok'
+      ? 0
+      : (Array.isArray(result.content) ? result.content : []).reduce((total, item) => {
+          if (item === null || typeof item !== 'object') return total;
+          const contentText = asString((item as { text?: unknown }).text);
+          return total + (contentText === undefined ? 0 : sourceExposureBytesFromText(contentText));
+        }, 0);
     if (status === 'ok') {
       const validation = validateSearchEnvelope(tool, envelope);
       if (!validation.valid) {
@@ -1833,7 +1853,7 @@ export const createNexusAdapter = (handlers: ToolHandlers): QualityAdapter => {
       sourceAdoptions,
       reasonCode,
       navigation,
-      status === 'ok' ? undefined : sourceExposureBytes(envelope),
+      status === 'ok' ? undefined : Math.max(sourceExposureBytes(envelope), refusalTextExposure),
     );
   };
 

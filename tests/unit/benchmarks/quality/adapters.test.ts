@@ -1221,6 +1221,29 @@ describe('createNexusAdapter', () => {
     expect(observation.exposedBytes).toBeGreaterThan(0);
   });
 
+  it('retains source-exposure evidence from refusal text content', async () => {
+    const source = 'export function retiredSecret() {}';
+    const adapter = createNexusAdapter(handlersFor({
+      get_symbol_source: handler({
+        content: [{ type: 'text', text: source }],
+        structuredContent: {
+          status: 'stale_identity',
+          reasonCode: 'SYMBOL_RETIRED',
+        },
+      }),
+    }));
+
+    const observation = await adapter.invoke(
+      'get_symbol_source',
+      { symbolId: 'retired-id' },
+      new AbortController().signal,
+      ctx(1),
+    );
+
+    expect(observation.status).toBe('stale_identity');
+    expect(observation.exposedBytes).toBeGreaterThan(0);
+  });
+
   it('leaves read previews unverified when the requested path or range cannot be validated', async () => {
     const adapter = createNexusAdapter(handlersFor({
       get_context: handler({

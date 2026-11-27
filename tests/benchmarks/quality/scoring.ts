@@ -1,6 +1,18 @@
 import { createHash } from 'node:crypto';
-import type { QualityArm, QualityCaseManifest, ObservationKind, QualityExecutionStatus } from './contracts.js';
-import type { QualityTool } from './adapters.js';
+import type {
+  QualityArm,
+  QualityCaseManifest,
+  ObservationKind,
+  QualityExecutionStatus,
+  QualityProfile,
+  QualityRootKey,
+} from './contracts.js';
+import type {
+  QualityObservation,
+  QualityTool,
+  RgExecutionSnapshot,
+  RgSpawnObservation,
+} from './adapters.js';
 import type { QualityCumulativeCost, QualityPolicyResult, QualityTraceEvent } from './policy.js';
 import { gradeTaskSource, checkSourceFreshness } from './oracle.js';
 import type { SourceAdoption, SourceProvenance, SourceSnapshot } from './oracle.js';
@@ -60,7 +72,7 @@ export interface GradedDiscoveryEvidence {
 export interface BaselineRgEvidenceCommon {
   readonly initializedContractDigest: string;
   readonly spawnAttemptCount: number | null;
-  readonly observedSpawns: readonly import('./adapters.js').RgSpawnObservation[];
+  readonly observedSpawns: readonly RgSpawnObservation[];
   readonly traceComplete: boolean;
 }
 
@@ -90,8 +102,8 @@ export type BaselineRgExecutionEvidence = BaselineRgEvidenceCommon & (
 
 export interface PairedQualityResult {
   readonly taskId: string;
-  readonly profile: import('./contracts.js').QualityProfile;
-  readonly rootKey: import('./contracts.js').QualityRootKey;
+  readonly profile: QualityProfile;
+  readonly rootKey: QualityRootKey;
   readonly fixtureDigest: string;
   readonly policyVersion: 'quality-policy-v1';
   readonly baselineRgExecution: BaselineRgExecutionEvidence;
@@ -109,7 +121,7 @@ export type RequiredProbeAction =
 export interface QualityRequiredProbe {
   readonly probeId: string;
   readonly taskId: string;
-  readonly rootKey: import('./contracts.js').QualityRootKey;
+  readonly rootKey: QualityRootKey;
   readonly tool: QualityTool;
   readonly expectedAction: RequiredProbeAction;
 }
@@ -117,7 +129,7 @@ export interface QualityRequiredProbe {
 export interface QualityProbeEvidence extends QualityRequiredProbe {
   readonly publicArgsDigest: string | null;
   readonly traceSequence: number | null;
-  readonly observedStatus: import('./adapters.js').QualityObservation['status'] | null;
+  readonly observedStatus: QualityObservation['status'] | null;
   readonly reasonCode: string | null;
   readonly oracleVerdict: ObservationKind | null;
   readonly resultDigest: string | null;
@@ -128,7 +140,7 @@ export interface QualityProbeEvidence extends QualityRequiredProbe {
 export interface QualityRouteCoverage {
   readonly taskId: string;
   readonly scenarioId: string;
-  readonly rootKey: import('./contracts.js').QualityRootKey;
+  readonly rootKey: QualityRootKey;
   readonly requiredProbeIds: readonly string[];
   readonly probes: readonly QualityProbeEvidence[];
   readonly probeTrace: readonly QualityTraceEvent[];
@@ -152,7 +164,7 @@ const isCorrectObservation = (observation: ObservationKind): boolean =>
 
 function profileForEligibility(
   eligibility: QualityCaseManifest['evaluationEligibility'],
-): import('./contracts.js').QualityProfile {
+): QualityProfile {
   switch (eligibility) {
     case 'conditional_worktree':
       return 'quality-worktree-v1';
@@ -402,8 +414,7 @@ function summarizeDiscoveryAdoptions(
     firstRelevantRank: null,
   };
 
-  const searchEvents = policyResult.trace.filter((event) => isDiscoveryTool(event.tool));
-  for (const [adoptionIndex, event] of policyResult.adoptionEvents.entries()) {
+  for (const event of policyResult.adoptionEvents) {
     const { source } = event;
     const fileRelevant = relevantFiles.has(source.filePath);
     const matchingSymbols = relevantSymbols.filter((symbol) =>
@@ -429,12 +440,8 @@ function summarizeDiscoveryAdoptions(
       seenRelevantKeys.add(relevantKey);
       summary.labeledUniqueCandidates += 1;
     }
-    if (summary.firstRelevantRank === null) {
-      const searchIndex = searchEvents.findIndex(
-        (searchEvent) => searchEvent.adoptionSequence === event.sequence,
-      );
-      summary.firstRelevantRank =
-        event.candidateRank ?? (searchIndex >= 0 ? searchIndex + 1 : adoptionIndex + 1);
+    if (summary.firstRelevantRank === null && event.candidateRank !== undefined) {
+      summary.firstRelevantRank = event.candidateRank;
     }
     if (fileRelevant) summary.fileFound = true;
     if (symbolRelevant) summary.symbolFound = true;
@@ -567,7 +574,7 @@ export function gradeDiscovery(
 }
 
 export function buildBaselineRgExecutionEvidence(
-  snapshot: import('./adapters.js').RgExecutionSnapshot,
+  snapshot: RgExecutionSnapshot,
   rTrace: readonly QualityTraceEvent[],
 ): BaselineRgExecutionEvidence {
   const traceComplete = rTrace.length > 0;

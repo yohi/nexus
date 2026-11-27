@@ -37,7 +37,12 @@ import {
   type PublicJsonValue,
 } from './adapters.js';
 import { publicTask, type QualityCaseManifest, type QualityArm, type QualityRootKey } from './contracts.js';
-import { captureOracleSnapshot, type SourceSnapshot, type SourceProvenance } from './oracle.js';
+import {
+  captureOracleSnapshot,
+  checkSourceFreshness,
+  type SourceSnapshot,
+  type SourceProvenance,
+} from './oracle.js';
 import {
   applyQualityMutation,
   createQualityFixture,
@@ -767,6 +772,7 @@ export function isProbeCovered(
   probe: QualityRequiredProbe,
   task: QualityCaseManifest,
   observation: QualityObservation,
+  sourceSnapshot?: SourceSnapshot,
 ): boolean {
   switch (probe.expectedAction) {
     case 'capability_status':
@@ -786,6 +792,9 @@ export function isProbeCovered(
         observation.exposedBytes > 0 &&
         observation.sourceAdoptions.some((source) => {
           if (!task.expectedFiles.includes(source.filePath) || source.sourceValidation !== 'verified') return false;
+          if (sourceSnapshot === undefined ||
+            sourceSnapshot.rootKey !== probe.rootKey ||
+            checkSourceFreshness(sourceSnapshot, source) !== 'FRESH_BYTES') return false;
           const expectedHash = task.expectedSourceHashes[source.filePath];
           const expectedRange = task.expectedSymbols.find((symbol) => symbol.filePath === source.filePath);
           if (expectedHash === undefined || expectedRange === undefined ||
@@ -886,6 +895,9 @@ export async function collectQualityRouteCoverage(
     }
 
     const locationDigest = locationSetDigest(observation);
+    const sourceSnapshot = probe.expectedAction === 'current_source'
+      ? await captureOracleSnapshot(fixture, rootKey, task.taskId)
+      : undefined;
     probeTrace.push(Object.freeze({
       sequence,
       state: 'ROUTE_PROBE',
@@ -914,7 +926,7 @@ export async function collectQualityRouteCoverage(
         oracleVerdict: null,
         resultDigest: observation.rawDigest,
         locationSetDigest: locationDigest,
-        status: isProbeCovered(probe, task, observation) ? 'COVERED' : 'INCOMPLETE',
+        status: isProbeCovered(probe, task, observation, sourceSnapshot) ? 'COVERED' : 'INCOMPLETE',
       }),
     );
   }
