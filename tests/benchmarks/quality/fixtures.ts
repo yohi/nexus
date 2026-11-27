@@ -174,7 +174,7 @@ export async function createPrimaryLinkedQualityFixture(signal: AbortSignal): Pr
   const linkedHash = sha256(new TextEncoder().encode(sourceLinked));
   const primarySnapshotDigest = sortedDigest([[targetPath, primaryHash]]);
   const linkedSnapshotDigest = sortedDigest([[targetPath, linkedHash]]);
-  const buildCase = (taskId: 'Q12-primary' | 'Q12-linked', rootKey: QualityRootKey, source: string, snapshotDigest: string): QualityCaseManifest => {
+  const buildCase = (taskId: 'Q12-primary' | 'Q12-linked', source: string, snapshotDigest: string): QualityCaseManifest => {
     const sourceBytes = new TextEncoder().encode(source);
     const base = QUALITY_CASES_V1.find((item) => item.taskId === taskId);
     if (base === undefined) throw new QualitySetupError('scenario_unknown');
@@ -188,8 +188,8 @@ export async function createPrimaryLinkedQualityFixture(signal: AbortSignal): Pr
       initialClues: ['file:src/answer.ts'],
     };
   };
-  const primaryCase = buildCase('Q12-primary', 'primary', sourcePrimary, primarySnapshotDigest);
-  const linkedCase = buildCase('Q12-linked', 'linked', sourceLinked, linkedSnapshotDigest);
+  const primaryCase = buildCase('Q12-primary', sourcePrimary, primarySnapshotDigest);
+  const linkedCase = buildCase('Q12-linked', sourceLinked, linkedSnapshotDigest);
   const oracleCases = validateQualityCases([primaryCase, linkedCase]);
   let disposal: Promise<void> | undefined;
   const fixture: OwnedQualityFixture = Object.freeze({
