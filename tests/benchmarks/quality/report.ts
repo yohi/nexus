@@ -800,7 +800,7 @@ async function runQualitySuiteWithFixtures(
 
   const rgVersion = await readRgVersion(options.rgExecutable, options.signal);
   const rgExecutableIdentityValue = rgExecutableIdentity(options.rgExecutable, rgVersion);
-  const rgFlags = [...sanitizedRgArgv('<public-query>')];
+  const rgFlags = [...sanitizedRgArgv()];
   const rgExclusionsList = [...rgExclusions];
   const rgExecutionContractDigest = digest({ argv: rgFlags, rootKey: 'single', searchScope: '.', readMaxBytesPerCall: 4096, policyVersion: 'quality-policy-v1' });
 

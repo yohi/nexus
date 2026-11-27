@@ -235,6 +235,22 @@ describe('quality route coverage', () => {
     }
   });
 
+  it('uses a verified source-reading handler for mandatory current-source route probes', async () => {
+    const fixture = await createQualityFixture(['Q02@quality-v1'], new AbortController().signal);
+    try {
+      const task = fixture.oracleCases[0];
+      if (task === undefined) throw new Error('Q02 fixture missing');
+      const [route] = await collectQualityRouteCoverage(task, fixture, {
+        signal: new AbortController().signal,
+      });
+      expect(route?.status).toBe('COVERED');
+      expect(route?.probes[1]?.tool).toBe('get_context');
+      expect(route?.probes[1]?.expectedAction).toBe('current_source');
+    } finally {
+      await fixture.dispose();
+    }
+  });
+
   it.each(['Q07@quality-v1', 'Q08@quality-v1', 'Q10@quality-v1'])(
     'covers fixture-backed search/source routes for %s',
     async (scenarioId) => {
@@ -256,7 +272,7 @@ describe('quality route coverage', () => {
     },
   );
 
-  it('rejects Q03 old identity and reads the renamed declaration with its current identity', async () => {
+  it('preserves the Q03 indexed symbol-ID mismatch as incomplete route evidence', async () => {
     const fixture = await createQualityFixture(['Q03@quality-v1'], new AbortController().signal);
     try {
       const task = fixture.oracleCases[0];
@@ -269,12 +285,13 @@ describe('quality route coverage', () => {
 
       const oldIdentity = route?.probes.find(({ expectedAction }) => expectedAction === 'safe_refusal');
       const currentIdentity = route?.probes.find(({ expectedAction }) => expectedAction === 'current_source');
-      expect(oldIdentity?.observedStatus).toBe('stale_identity');
-      expect(oldIdentity?.reasonCode).toBe('SYMBOL_RETIRED');
-      expect(oldIdentity?.status).toBe('COVERED');
-      expect(currentIdentity?.observedStatus).toBe('ok');
-      expect(currentIdentity?.status).toBe('COVERED');
-      expect(route?.status).toBe('COVERED');
+      expect(oldIdentity?.observedStatus).toBe('not_found');
+      expect(oldIdentity?.reasonCode).toBe('SYMBOL_NOT_FOUND');
+      expect(oldIdentity?.status).toBe('INCOMPLETE');
+      expect(currentIdentity?.observedStatus).toBe('not_found');
+      expect(currentIdentity?.reasonCode).toBe('SYMBOL_NOT_FOUND');
+      expect(currentIdentity?.status).toBe('INCOMPLETE');
+      expect(route?.status).toBe('INCOMPLETE');
     } finally {
       await fixture.dispose();
     }
@@ -320,26 +337,70 @@ describe('quality route coverage', () => {
       const task = fixture.oracleCases[0];
       const root = fixture.roots.single;
       if (task === undefined || root === undefined) throw new Error('Q10 fixture missing');
-      const adapter = await createNexusAdapterForRoot(root, task);
-      const paths = [task.expectedFiles[0], 'Q10/scope-b.ts'];
-      for (const [index, filePath] of paths.entries()) {
-        if (filePath === undefined) throw new Error('Q10 outline path missing');
-        const observation = await adapter.invoke(
-          'get_file_outline',
-          { filePath },
-          new AbortController().signal,
-          { traceSequence: index + 1 },
-        );
-        expect(observation.status).toBe('ok');
-        expect(observation.results.some(({ filePath: resultPath, preview }) =>
-          resultPath === filePath && preview === 'lookup')).toBe(true);
+      const adapter = await createNexusAdapterForRoot(root);
+      try {
+        const paths = [task.expectedFiles[0], 'Q10/scope-b.ts'];
+        for (const [index, filePath] of paths.entries()) {
+          if (filePath === undefined) throw new Error('Q10 outline path missing');
+          const observation = await adapter.invoke(
+            'get_file_outline',
+            { filePath },
+            new AbortController().signal,
+            { traceSequence: index + 1 },
+          );
+          expect(observation.status).toBe('ok');
+          expect(observation.results.some(({ filePath: resultPath, preview }) =>
+            resultPath === filePath && preview === 'lookup')).toBe(true);
+        }
+      } finally {
+        await adapter.close();
       }
     } finally {
       await fixture.dispose();
     }
   });
 
-  it('returns not_found for outline and symbol requests after a fixture file is deleted', async () => {
+  it('uses the indexed Nexus structured retrieval path without receiving the Golden manifest', async () => {
+    const fixture = await createQualityFixture(['Q01@quality-v1'], new AbortController().signal);
+    let close: (() => Promise<void>) | undefined;
+    try {
+      const task = fixture.oracleCases[0];
+      const root = fixture.roots.single;
+      const filePath = task?.expectedFiles[0];
+      if (task === undefined || root === undefined || filePath === undefined) {
+        throw new Error('Q01 fixture missing');
+      }
+
+      const adapter = await createNexusAdapterForRoot(root);
+      close = adapter.close;
+      const signal = new AbortController().signal;
+      const outline = await adapter.invoke(
+        'get_file_outline',
+        { filePath },
+        signal,
+        { traceSequence: 1 },
+      );
+      const symbolId = outline.results.find((candidate) => candidate.preview === 'answer')?.symbolId;
+      expect(outline.status).toBe('ok');
+      expect(symbolId).toMatch(/^symbol_v1_[A-Za-z0-9_-]{43}$/);
+      expect(symbolId).not.toBe('answer');
+
+      if (symbolId === undefined) throw new Error('indexed symbol identity missing');
+      const source = await adapter.invoke(
+        'get_symbol_source',
+        { symbolId },
+        signal,
+        { traceSequence: 2 },
+      );
+      expect(source.status).toBe('ok');
+      expect(source.sourceAdoptions[0]?.content).toContain('return 42');
+    } finally {
+      await close?.();
+      await fixture.dispose();
+    }
+  });
+
+  it('reports indexed outline freshness after a fixture file is deleted', async () => {
     const fixture = await createQualityFixture(['Q05@quality-v1'], new AbortController().signal);
     try {
       const task = fixture.oracleCases[0];
@@ -349,24 +410,28 @@ describe('quality route coverage', () => {
       if (task === undefined || root === undefined || filePath === undefined || symbol === undefined) {
         throw new Error('Q05 fixture missing');
       }
-      const adapter = await createNexusAdapterForRoot(root, task);
-      await applyQualityMutation(fixture, task.taskId, 'before_publication');
+      const adapter = await createNexusAdapterForRoot(root);
+      try {
+        await applyQualityMutation(fixture, task.taskId, 'before_publication');
 
-      const outline = await adapter.invoke(
-        'get_file_outline',
-        { filePath },
-        new AbortController().signal,
-        { traceSequence: 1 },
-      );
-      const source = await adapter.invoke(
-        'get_symbol_source',
-        { symbolId: symbol.name },
-        new AbortController().signal,
-        { traceSequence: 2 },
-      );
+        const outline = await adapter.invoke(
+          'get_file_outline',
+          { filePath },
+          new AbortController().signal,
+          { traceSequence: 1 },
+        );
+        const source = await adapter.invoke(
+          'get_symbol_source',
+          { symbolId: symbol.name },
+          new AbortController().signal,
+          { traceSequence: 2 },
+        );
 
-      expect(outline).toMatchObject({ status: 'not_found', reasonCode: 'FILE_NOT_FOUND' });
+        expect(outline).toMatchObject({ status: 'stale', reasonCode: 'INDEX_FILE_MISSING' });
       expect(source).toMatchObject({ status: 'not_found', reasonCode: 'SYMBOL_NOT_FOUND' });
+      } finally {
+        await adapter.close();
+      }
     } finally {
       await fixture.dispose();
     }

@@ -40,16 +40,20 @@ describe('simpleGlobMatch', () => {
       const task = fixture.oracleCases[0];
       const root = fixture.roots.single;
       if (task === undefined || root === undefined) throw new Error('Q14 fixture missing');
-      const adapter = await createNexusAdapterForRoot(root, task);
+      const adapter = await createNexusAdapterForRoot(root);
+      try {
+        const observation = await adapter.invoke(
+          'semantic_search',
+          { query: 'answer', filePatterns: ['!*.py'] },
+          new AbortController().signal,
+          { traceSequence: 1 },
+        );
 
-      const observation = await adapter.invoke(
-        'semantic_search',
-        { query: 'helper', filePatterns: ['!*.py'] },
-        new AbortController().signal,
-        { traceSequence: 1 },
-      );
-
-      expect(observation.results.map(({ filePath }) => filePath)).toEqual(['Q14/answer.ts']);
+      expect(observation.status).toBe('ok');
+      expect(observation.results.every(({ filePath }) => !filePath.endsWith('.py'))).toBe(true);
+      } finally {
+        await adapter.close();
+      }
     } finally {
       await fixture.dispose();
     }

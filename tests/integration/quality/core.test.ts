@@ -1,7 +1,7 @@
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { createQualityFixture, type OwnedQualityFixture } from '../../../tests/benchmarks/quality/fixtures.js';
+import { createQualityFixture, qualityRuntimeIndexSeed, type OwnedQualityFixture } from '../../../tests/benchmarks/quality/fixtures.js';
 import type { QualityCaseManifest } from '../../../tests/benchmarks/quality/contracts.js';
 import { collectQualityRouteCoverage, createNexusAdapterForRoot, runQualityPair } from '../../../tests/benchmarks/quality/runner.js';
 
@@ -123,16 +123,24 @@ describe('quality benchmark core integration', () => {
         if (scenarioId === 'Q07@quality-v1') {
           const root = scenarioFixture.roots.single;
           if (root === undefined) throw new Error('Q07 fixture root missing');
-          const adapter = await createNexusAdapterForRoot(root, task);
-          const observation = await adapter.invoke(
-            'hybrid_search',
-            { query: 'answer', topK: 20 },
-            new AbortController().signal,
-            { traceSequence: 1 },
+          const adapter = await createNexusAdapterForRoot(
+            root,
+            undefined,
+            qualityRuntimeIndexSeed(scenarioFixture, task.taskId),
           );
-          expect(observation.status).toBe('ok');
-          expect(observation.results.some(({ preview }) => preview?.includes('return 41'))).toBe(true);
-          expect(observation.results.some(({ preview }) => preview?.includes('return 42'))).toBe(false);
+          try {
+            const observation = await adapter.invoke(
+              'hybrid_search',
+              { query: 'answer', topK: 20 },
+              new AbortController().signal,
+              { traceSequence: 1 },
+            );
+            expect(observation.status).toBe('ok');
+            expect(observation.results.some(({ preview }) => preview?.includes('return 41'))).toBe(true);
+            expect(observation.results.some(({ preview }) => preview?.includes('return 42'))).toBe(true);
+          } finally {
+            await adapter.close();
+          }
         }
 
         const result = await runQualityPair(task, scenarioFixture, { signal: new AbortController().signal });

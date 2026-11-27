@@ -65,11 +65,11 @@ describe('buildQualityReport integration', () => {
     const metadata: QualityReportMetadata = {
       rgVersion: '13.0.0',
       rgExecutableIdentity: sha256('rg:13.0.0'),
-      rgFlags: Object.freeze([...sanitizedRgArgv('<public-query>')]),
+      rgFlags: Object.freeze([...sanitizedRgArgv()]),
       rgExclusions: Object.freeze([...rgExclusions]),
       rgSearchScope: '.',
       rgReadMaxBytesPerCall: 4096,
-      rgExecutionContractDigest: sha256(JSON.stringify({ flags: sanitizedRgArgv('<public-query>'), exclusions: rgExclusions })),
+      rgExecutionContractDigest: sha256(JSON.stringify({ flags: sanitizedRgArgv(), exclusions: rgExclusions })),
       recallK: 10,
       nexusCommit: null,
       nexusConfigDigest: sha256('config'),
