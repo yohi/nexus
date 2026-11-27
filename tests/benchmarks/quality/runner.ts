@@ -515,13 +515,17 @@ async function runSingleArm(
   const capturePublication = (event: Parameters<QualityPolicyObserver['onAdoptionPublished']>[0]): Promise<void> => {
     const existing = observerWork.get(event.sequence);
     if (existing !== undefined) return existing;
+    if (signal.aborted) return Promise.resolve();
     const work = (async () => {
+      if (signal.aborted) return;
       await applyQualityMutation(fixture, task.taskId, 'before_publication');
+      if (signal.aborted) return;
       const snapshot = await captureOracleSnapshot(
         { root: dirname(canonicalRoot), roots: { [rootKey]: canonicalRoot }, publicTasks: [], oracleCases: [task], dispose: async () => {} } as OwnedQualityFixture,
         rootKey,
         task.taskId,
       );
+      if (signal.aborted) return;
       publications.push(
         Object.freeze({
           adoptionSequence: event.sequence,

@@ -2,13 +2,13 @@ import { createHash } from 'node:crypto';
 import { readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import {
   applyQualityMutation,
   createQualityFixture,
 } from '../../../../tests/benchmarks/quality/fixtures.js';
 import { canonicalJson } from '../../../../tests/benchmarks/quality/canonical-json.js';
-import { captureOracleSnapshot } from '../../../../tests/benchmarks/quality/oracle.js';
+import * as oracle from '../../../../tests/benchmarks/quality/oracle.js';
 import {
   collectQualityRouteCoverage,
   createNexusAdapterForRoot,
@@ -113,7 +113,7 @@ describe('quality route coverage', () => {
       }
       const oldContent = 'export function answer(): number { return 42; }';
       await writeFile(join(root, filePath), 'export function answer(): number { return 99; }\n');
-      const currentSnapshot = await captureOracleSnapshot(fixture, 'single', task.taskId);
+      const currentSnapshot = await oracle.captureOracleSnapshot(fixture, 'single', task.taskId);
       const observation = {
         status: 'ok',
         results: [],
@@ -336,6 +336,51 @@ describe('quality route coverage', () => {
       expect(result.outcomes.R.adoptionHistory[0]?.publicationSnapshotDigest).not.toBeNull();
       expect(result.outcomes.N.adoptionHistory[0]?.publicationSnapshotDigest).not.toBeNull();
     } finally {
+      await fixture.dispose();
+    }
+  });
+
+  it('excludes an observer publication that completes after request abort', async () => {
+    const fixture = await createQualityFixture(['Q01@quality-v1'], new AbortController().signal);
+    let releaseSnapshot: (() => void) | undefined;
+    let announceSnapshotStart: (() => void) | undefined;
+    let delayNextSnapshot = true;
+    const snapshotGate = new Promise<void>((resolve) => { releaseSnapshot = resolve; });
+    const snapshotStarted = new Promise<void>((resolve) => { announceSnapshotStart = resolve; });
+    const originalCapture = oracle.captureOracleSnapshot;
+    const captureSpy = vi.spyOn(oracle, 'captureOracleSnapshot').mockImplementation(async (current, rootKey, taskId) => {
+      if (delayNextSnapshot) {
+        delayNextSnapshot = false;
+        announceSnapshotStart?.();
+        await snapshotGate;
+      }
+      return originalCapture(current, rootKey, taskId);
+    });
+
+    try {
+      const task = fixture.oracleCases[0];
+      if (task === undefined) throw new Error('Q01 fixture missing');
+      const controller = new AbortController();
+      let returned = false;
+      const resultPromise = runQualityPair(task, fixture, { signal: controller.signal }).then((result) => {
+        returned = true;
+        return result;
+      });
+
+      await snapshotStarted;
+      controller.abort();
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(returned).toBe(false);
+
+      releaseSnapshot?.();
+      const result = await resultPromise;
+
+      expect(result.outcomes.R.policy?.adoptionEvents).toHaveLength(1);
+      expect(result.outcomes.R.adoptionHistory[0]?.publicationSnapshotDigest).toBeNull();
+      expect(result.outcomes.R.observation).toBe('INCONCLUSIVE');
+    } finally {
+      releaseSnapshot?.();
+      captureSpy.mockRestore();
       await fixture.dispose();
     }
   });
