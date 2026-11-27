@@ -734,7 +734,9 @@ const sourceExposureBytesFromText = (text: string, duplicateOf: unknown): number
   try {
     const parsed: unknown = JSON.parse(text);
     if (isDeepStrictEqual(parsed, duplicateOf)) return 0;
-    if (typeof parsed === 'string') return countUnmatchedTexts([parsed]);
+    if (typeof parsed === 'string') {
+      return sourceLikeText(parsed) ? countUnmatchedTexts([parsed]) : 0;
+    }
     const parsedExposureTexts = sourceExposureTexts(parsed);
     return parsedExposureTexts.length === 0
       ? 0

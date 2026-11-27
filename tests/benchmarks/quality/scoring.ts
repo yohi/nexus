@@ -206,6 +206,54 @@ const REFUSAL_STATUSES = new Set<QualityTraceEvent['resultStatus']>([
 
 const EXECUTION_FAILURE_STATUSES = new Set<QualityTraceEvent['resultStatus']>(['error', 'timeout']);
 
+function expectedSymbolTargets(task: QualityCaseManifest): readonly string[] {
+  const fromClues = task.initialClues.flatMap((clue) => {
+    const match = /^(?:id|symbol):(.+)$/.exec(clue);
+    return match?.[1] === undefined ? [] : [match[1]];
+  });
+  return fromClues.length > 0 ? fromClues : task.expectedSymbols.map(({ name }) => name);
+}
+
+function refusalTargetsExpectedTask(
+  event: QualityTraceEvent,
+  task: QualityCaseManifest,
+): boolean {
+  const args = event.normalizedPublicArgs;
+  switch (event.tool) {
+    case 'get_symbol_source':
+    case 'get_symbol_context':
+      return typeof args.symbolId === 'string' &&
+        expectedSymbolTargets(task).includes(args.symbolId);
+    case 'get_definition':
+    case 'get_references':
+    case 'get_implementations':
+      if (typeof args.symbolId === 'string') {
+        if (!expectedSymbolTargets(task).includes(args.symbolId)) return false;
+        const expectedSymbol = task.expectedSymbols.find(({ name }) => name === args.symbolId);
+        return args.filePath === undefined ||
+          (expectedSymbol !== undefined && args.filePath === expectedSymbol.filePath);
+      }
+      return task.expectedLocations.some((location) =>
+        args.filePath === location.filePath &&
+        args.line === location.line &&
+        args.character === location.character,
+      );
+    case 'read_file':
+    case 'get_context':
+    case 'get_file_outline': {
+      if (typeof args.filePath !== 'string' || !task.expectedFiles.includes(args.filePath)) {
+        return false;
+      }
+      return typeof args.symbolName !== 'string' ||
+        expectedSymbolTargets(task).includes(args.symbolName);
+    }
+    default:
+      // Search terms are intentionally redacted from normalized arguments, so their target
+      // cannot be proven from the public trace.
+      return false;
+  }
+}
+
 function recordAdoptionObservation(
   state: AdoptionGradingState,
   observation: ObservationKind,
@@ -241,10 +289,11 @@ function resolveFinalObservation(
   }
   const expectedRefusal = new Set(task.expectedRefusalConditions);
   const refusalEvents = policyResult.trace.filter((event) => REFUSAL_STATUSES.has(event.resultStatus));
-  const refusedForExpectedReason = refusalEvents.some((event) =>
+  const refusedForExpectedReason = expectedRefusal.size > 0 && refusalEvents.some((event) =>
     event.reasonCode !== null &&
     expectedRefusal.has(event.reasonCode) &&
-    event.exposedBytes === 0,
+    event.exposedBytes === 0 &&
+    refusalTargetsExpectedTask(event, task),
   );
   if (refusedForExpectedReason) return 'CORRECT_REFUSAL';
   if (refusalEvents.length > 0) return 'FALSE_REFUSAL';
@@ -404,8 +453,7 @@ function summarizeDiscoveryAdoptions(
 ): DiscoveryAdoptionSummary {
   const relevantFiles = new Set(task.expectedFiles);
   const relevantSymbols = task.expectedSymbols;
-  const seenRelevantKeys = new Set<string>();
-  const seenIrrelevantKeys = new Set<string>();
+  const seenCandidateClassifications = new Map<string, 'relevant' | 'irrelevant'>();
   const summary: DiscoveryAdoptionSummary = {
     labeledUniqueCandidates: 0,
     irrelevantUniqueCandidates: 0,
@@ -427,17 +475,18 @@ function summarizeDiscoveryAdoptions(
     const candidateRelevant = symbolRelevant || (fileRelevant && !eligibleSymbolTask);
     const candidateKey = `${source.filePath}\0${source.startByte}\0${source.endByte}`;
     if (!candidateRelevant) {
-      if (!seenIrrelevantKeys.has(candidateKey)) {
-        seenIrrelevantKeys.add(candidateKey);
+      if (!seenCandidateClassifications.has(candidateKey)) {
+        seenCandidateClassifications.set(candidateKey, 'irrelevant');
         summary.irrelevantUniqueCandidates += 1;
       }
       if (fileRelevant) summary.fileFound = true;
       continue;
     }
 
-    const relevantKey = candidateKey;
-    if (!seenRelevantKeys.has(relevantKey)) {
-      seenRelevantKeys.add(relevantKey);
+    const previousClassification = seenCandidateClassifications.get(candidateKey);
+    if (previousClassification !== 'relevant') {
+      if (previousClassification === 'irrelevant') summary.irrelevantUniqueCandidates -= 1;
+      seenCandidateClassifications.set(candidateKey, 'relevant');
       summary.labeledUniqueCandidates += 1;
     }
     if (summary.firstRelevantRank === null && event.candidateRank !== undefined) {

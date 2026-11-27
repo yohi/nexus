@@ -846,7 +846,7 @@ export function isProbeCovered(
         observation.status === 'stale_identity' ||
         observation.status === 'unavailable' ||
         observation.status === 'unsupported';
-      const expectedReason = task.expectedRefusalConditions.length === 0 ||
+      const expectedReason = task.expectedRefusalConditions.length > 0 &&
         (observation.reasonCode !== undefined &&
           task.expectedRefusalConditions.includes(observation.reasonCode));
       return refusalStatus && expectedReason &&

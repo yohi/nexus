@@ -1264,6 +1264,49 @@ describe('createNexusAdapter', () => {
     expect(observation.exposedBytes).toBe(0);
   });
 
+  it('does not count a JSON-encoded source-free refusal string as source exposure', async () => {
+    const message = 'Symbol was not found';
+    const adapter = createNexusAdapter(handlersFor({
+      get_symbol_source: handler({
+        content: [{ type: 'text', text: JSON.stringify(message) }],
+        structuredContent: {
+          status: 'not_found',
+          reasonCode: 'SYMBOL_NOT_FOUND',
+          message,
+        },
+      }),
+    }));
+
+    const observation = await adapter.invoke(
+      'get_symbol_source',
+      { symbolId: 'missing-id' },
+      new AbortController().signal,
+      ctx(1),
+    );
+
+    expect(observation.status).toBe('not_found');
+    expect(observation.exposedBytes).toBe(0);
+  });
+
+  it('counts source-like text in a JSON-encoded refusal string as source exposure', async () => {
+    const source = 'export function secret() {}';
+    const adapter = createNexusAdapter(handlersFor({
+      get_symbol_source: handler({
+        content: [{ type: 'text', text: JSON.stringify(source) }],
+        structuredContent: { status: 'not_found', reasonCode: 'SYMBOL_NOT_FOUND' },
+      }),
+    }));
+
+    const observation = await adapter.invoke(
+      'get_symbol_source',
+      { symbolId: 'missing-id' },
+      new AbortController().signal,
+      ctx(1),
+    );
+
+    expect(observation.exposedBytes).toBe(Buffer.byteLength(source, 'utf8'));
+  });
+
   it('detects source in an unrecognized field of duplicate refusal JSON text', async () => {
     const structuredContent = {
       status: 'stale_identity',

@@ -108,7 +108,11 @@ const runSymbolSourceAttempt = async (
     QUALITY_BUDGETS_V1,
     options.signal ?? new AbortController().signal,
   );
-  const task = { ...baseTask, expectedRefusalConditions: ['SYMBOL_NOT_FOUND'] };
+  const task = {
+    ...baseTask,
+    initialClues: refusalClues.initialClues,
+    expectedRefusalConditions: ['SYMBOL_NOT_FOUND'],
+  };
   const graded = gradeQualityArm(task, snapshot, policy, []);
   return { calls, policy, graded };
 };
@@ -260,6 +264,33 @@ describe('gradeQualityArm', () => {
     expect(graded.reasonCode).toBe('UNEXPECTED_REFUSAL');
   });
 
+  it.each([
+    ['get_symbol_source', { symbolId: 'different-symbol' }],
+    ['get_context', { filePath: 'src/other.ts', startLine: 1, endLine: 2 }],
+  ] as const)(
+    'does not score a refusal for an unrelated target (%s)',
+    (tool, normalizedPublicArgs) => {
+      const task = {
+        ...baseTask,
+        initialClues: ['id:answer'],
+        expectedRefusalConditions: ['SYMBOL_NOT_FOUND'],
+      };
+      const policy: QualityPolicyResult = {
+        ...emptyPolicy,
+        trace: [{
+          ...makeTraceEvent(tool, 'not_found', 0),
+          normalizedPublicArgs,
+          reasonCode: 'SYMBOL_NOT_FOUND',
+        }],
+      };
+
+      const graded = gradeQualityArm(task, snapshot, policy, []);
+
+      expect(graded.observation).toBe('FALSE_REFUSAL');
+      expect(graded.reasonCode).toBe('UNEXPECTED_REFUSAL');
+    },
+  );
+
   it('returns INCONCLUSIVE when policy exhausts without any adoption or refusal evidence', () => {
     const result = gradeQualityArm(baseTask, snapshot, emptyPolicy, []);
     expect(result.observation).toBe('INCONCLUSIVE');
@@ -384,6 +415,30 @@ describe('gradeDiscovery', () => {
     };
     const result = gradeDiscovery(baseTask, 'N', policy);
     expect(result.labeledUniqueCandidates).toBe(1);
+    expect(result.hitsAtK).toBe(1);
+  });
+
+  it('counts one file range once when an initially irrelevant adoption is later correctly classified', () => {
+    const wrongContent = 'export function other(): number { return 42; }\n';
+    const firstAdoption = makeAdoptionEvent('src/answer.ts', wrongContent);
+    const policy: QualityPolicyResult = {
+      ...emptyPolicy,
+      status: 'COMPLETE',
+      trace: [makeTraceEvent('grep_search', 'ok', 2)],
+      adoptionEvents: [
+        {
+          ...firstAdoption,
+          source: { ...firstAdoption.source, startByte: 0, endByte: bytes.length },
+        },
+        { ...makeAdoptionEvent('src/answer.ts', source), sequence: 2 },
+      ],
+    };
+
+    const result = gradeDiscovery(baseTask, 'N', policy);
+
+    expect(result.irrelevantUniqueCandidates).toBe(0);
+    expect(result.labeledUniqueCandidates).toBe(1);
+    expect(result.symbolFound).toBe(true);
     expect(result.hitsAtK).toBe(1);
   });
 

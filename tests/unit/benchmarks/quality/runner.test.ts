@@ -170,6 +170,47 @@ describe('quality route coverage', () => {
     }
   });
 
+  it.each([
+    ['Q03@quality-v1', 'get_symbol_source', 'stale_identity', 'SYMBOL_RETIRED'],
+    ['Q14@quality-v1', 'get_definition', 'unavailable', 'LSP_NOT_CONFIGURED'],
+  ] as const)(
+    'requires the expected refusal reason for %s route coverage',
+    async (scenarioId, tool, status, expectedReason) => {
+      const fixture = await createQualityFixture([scenarioId], new AbortController().signal);
+      try {
+        const task = fixture.oracleCases[0];
+        if (task === undefined) throw new Error(`${scenarioId} fixture missing`);
+        const probe = {
+          probeId: `${task.taskId}-safe-refusal`,
+          taskId: task.taskId,
+          rootKey: task.worktreeIdentity.rootKey,
+          tool,
+          expectedAction: 'safe_refusal',
+        } as const;
+        const observation = (reasonCode?: string) => ({
+          status,
+          results: [],
+          exposedBytes: 0,
+          sourceAdoptions: [],
+          rawDigest: 'safe-refusal',
+          normalizedPublicArgs: {},
+          ...(reasonCode === undefined ? {} : { reasonCode }),
+        });
+
+        expect(isProbeCovered(probe, task, observation())).toBe(false);
+        expect(isProbeCovered(probe, task, observation('UNEXPECTED_REASON'))).toBe(false);
+        expect(isProbeCovered(probe, task, observation(expectedReason))).toBe(true);
+        expect(isProbeCovered(
+          probe,
+          { ...task, expectedRefusalConditions: [] },
+          observation(expectedReason),
+        )).toBe(false);
+      } finally {
+        await fixture.dispose();
+      }
+    },
+  );
+
   it('records a trace for each invoked Q01 probe with its sequence and normalized public arguments', async () => {
     const fixture = await createQualityFixture(['Q01@quality-v1'], new AbortController().signal);
     try {
@@ -220,6 +261,7 @@ describe('quality route coverage', () => {
     try {
       const task = fixture.oracleCases[0];
       if (task === undefined) throw new Error('Q03 fixture missing');
+      expect(task.expectedRefusalConditions).toEqual(['SYMBOL_RETIRED']);
 
       const [route] = await collectQualityRouteCoverage(task, fixture, {
         signal: new AbortController().signal,
@@ -233,6 +275,40 @@ describe('quality route coverage', () => {
       expect(currentIdentity?.observedStatus).toBe('ok');
       expect(currentIdentity?.status).toBe('COVERED');
       expect(route?.status).toBe('COVERED');
+    } finally {
+      await fixture.dispose();
+    }
+  });
+
+  it('covers Q14 navigation probes only for the configured-LSP refusal reason', async () => {
+    const fixture = await createQualityFixture(['Q14@quality-v1'], new AbortController().signal);
+    try {
+      const task = fixture.oracleCases[0];
+      if (task === undefined) throw new Error('Q14 fixture missing');
+      expect(task.expectedRefusalConditions).toEqual(['LSP_NOT_CONFIGURED']);
+
+      const [route] = await collectQualityRouteCoverage(task, fixture, {
+        signal: new AbortController().signal,
+      });
+
+      expect(route?.status).toBe('COVERED');
+      expect(route?.probes.filter(({ expectedAction }) => expectedAction === 'safe_refusal')).toEqual([
+        expect.objectContaining({
+          observedStatus: 'unavailable',
+          reasonCode: 'LSP_NOT_CONFIGURED',
+          status: 'COVERED',
+        }),
+        expect.objectContaining({
+          observedStatus: 'unavailable',
+          reasonCode: 'LSP_NOT_CONFIGURED',
+          status: 'COVERED',
+        }),
+        expect.objectContaining({
+          observedStatus: 'unavailable',
+          reasonCode: 'LSP_NOT_CONFIGURED',
+          status: 'COVERED',
+        }),
+      ]);
     } finally {
       await fixture.dispose();
     }
