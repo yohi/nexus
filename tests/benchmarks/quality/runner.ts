@@ -1078,3 +1078,4 @@ export function createLspStubAdapter(
     },
   };
 }
+export { findRgExecutable };
