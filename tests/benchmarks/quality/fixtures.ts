@@ -50,7 +50,7 @@ const declarationRange = (path: string, source: string, expectedName: string): R
 };
 
 function sourceFor(name: string, value = 42): string {
-  return `export function ${name}(): number { return ${value}; }\n`;
+  return `export function ${name}(): number { return ${value}; }`;
 }
 
 function scenarioShape(task: QualityCaseManifest): ScenarioShape {
@@ -78,6 +78,12 @@ function scenarioShape(task: QualityCaseManifest): ScenarioShape {
           { phase: 'during_request', operation: 'delete', target: `${prefix}src/recreated.ts` },
           { phase: 'before_publication', operation: 'recreate', target: `${prefix}src/recreated.ts` },
         ] };
+    case 'Q08@quality-v1':
+      return { ...one('src/answer.ts', 'answer', sourceFor('answer')),
+        mutations: [
+          { phase: 'during_request', operation: 'delete', target: `${prefix}src/answer.ts` },
+          { phase: 'before_publication', operation: 'recreate', target: `${prefix}src/answer.ts` },
+        ] };
     case 'Q10@quality-v1':
       return { targetPath: `${prefix}scope-a.ts`, targetName: 'lookup', mutations: [], files: [
         { path: `${prefix}scope-a.ts`, source: sourceFor('lookup') },
@@ -93,9 +99,9 @@ function scenarioShape(task: QualityCaseManifest): ScenarioShape {
         files: [...one('answer.ts', 'answer', sourceFor('answer')).files,
           { path: `${prefix}helper.py`, source: 'def helper():\n    return "quality"\n' }] };
     case 'Q01@quality-v1':
+      return one('src/answer.ts', 'answer', `${sourceFor('answer')}\n`);
     case 'Q02@quality-v1':
     case 'Q07@quality-v1':
-    case 'Q08@quality-v1':
     case 'Q09@quality-v1':
     case 'Q12@quality-v1':
     case 'Q13@quality-v1':
