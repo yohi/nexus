@@ -1,12 +1,14 @@
 import { createHash } from 'node:crypto';
+import { execFile } from 'node:child_process';
 import { realpath, writeFile, mkdir } from 'node:fs/promises';
-import { join, resolve } from 'node:path';
+import { basename, join, resolve } from 'node:path';
 import {
   runQualityPair,
   collectQualityRouteCoverage,
   classifyCapabilityEvidence,
 } from './runner.js';
 import { createQualityFixture, createPrimaryLinkedQualityFixture } from './fixtures.js';
+import type { OwnedQualityFixture } from './fixtures.js';
 import type { QualityCaseManifest, QualityArm, QualityProfile, ObservationKind } from './contracts.js';
 import type {
   PairedQualityResult,
@@ -225,6 +227,7 @@ function toPublicPairedResult(pair: PairedQualityResult): PublicPairedQualityRes
     profile: pair.profile,
     rootKey: pair.rootKey,
     fixtureDigest: pair.fixtureDigest,
+    armFixtureDigests: pair.armFixtureDigests,
     policyVersion: pair.policyVersion,
     baselineRgExecution: pair.baselineRgExecution,
     outcomes: {
@@ -299,6 +302,7 @@ function buildGate1(
 
   let executed = 0;
   let safetyFail = false;
+  let unexecutedArm = false;
   let currentSourceNumerator = 0;
   let currentSourceDenominator = 0;
   let symbolNumerator = 0;
@@ -320,6 +324,7 @@ function buildGate1(
     for (const arm of ['R', 'N'] as QualityArm[]) {
       const outcome = pair.outcomes[arm];
       if (outcome === undefined) continue;
+      if (outcome.executionStatus !== 'executed') unexecutedArm = true;
       if (outcome.observation !== null) {
         executed += 1;
         outcomeCounts[outcome.observation] += 1;
@@ -370,6 +375,7 @@ function buildGate1(
   } else if (
     missingCoverageIds.length > 0 ||
     pairs.length < expected.length ||
+    unexecutedArm ||
     !allExpectedCovered ||
     requiredExpectedProbeIds.length > 0
   ) {
@@ -415,9 +421,12 @@ function buildGate2Arm(pairs: readonly PairedQualityResult[], arm: QualityArm): 
   for (const ev of evaluated) {
     if (ev.evidenceStatus === 'EVALUATED') {
       evaluatedQueries += 1;
-      recallEligibleQueries += 1;
+      // Queries with no known relevant targets have undefined recall and are excluded.
+      if (ev.expectedRelevantTargets !== null && ev.expectedRelevantTargets > 0) {
+        recallEligibleQueries += 1;
+        recallSum += (ev.hitsAtK ?? 0) / ev.expectedRelevantTargets;
+      }
       mrrEligibleQueries += 1;
-      recallSum += ev.hitsAtK ?? 0;
       mrrSum += ev.reciprocalRank === null || !Number.isFinite(ev.reciprocalRank) ? 0 : ev.reciprocalRank;
     }
     if (ev.eligibleFileTask) {
@@ -470,7 +479,7 @@ function buildGate2Arm(pairs: readonly PairedQualityResult[], arm: QualityArm): 
   };
 }
 
-function buildGate3(pairs: readonly PairedQualityResult[]): GateAgentLoopReport {
+function buildGate3(expected: readonly string[], pairs: readonly PairedQualityResult[]): GateAgentLoopReport {
   let bothSuccess = 0;
   let baselineOnly = 0;
   let nexusOnly = 0;
@@ -501,7 +510,8 @@ function buildGate3(pairs: readonly PairedQualityResult[]): GateAgentLoopReport 
     nAll.push(n);
   }
 
-  const effectiveExpected = pairs.length;
+  const effectiveExpected = expected.length;
+  const hasMissingExpectedTask = expected.some((taskId) => !pairs.some((pair) => pair.taskId === taskId));
 
   function armMetrics(all: QualityArmResult[]): QualityArmLoopMetrics {
     const completedTasks = all.filter((a) => a.correctSourceReached).length;
@@ -521,7 +531,7 @@ function buildGate3(pairs: readonly PairedQualityResult[]): GateAgentLoopReport 
   }
 
   return {
-    status: pairs.length > 0 ? 'MEASURED' : 'INCOMPLETE',
+    status: pairs.length > 0 && !hasMissingExpectedTask ? 'MEASURED' : 'INCOMPLETE',
     bothSuccess,
     baselineOnly,
     nexusOnly,
@@ -564,7 +574,7 @@ export function buildQualityReport(
   const gate1 = buildGate1(expected, pairs, routeCoverage);
   const gate2R = buildGate2Arm(pairs, 'R');
   const gate2N = buildGate2Arm(pairs, 'N');
-  const gate3 = buildGate3(pairs);
+  const gate3 = buildGate3(expected, pairs);
 
   const limitations: string[] = [...metadataIssues];
   if (missingTaskIds.length > 0) limitations.push(`MISSING_TASKS:${missingTaskIds.join(',')}`);
@@ -683,12 +693,33 @@ function rgExecutableIdentity(rgExecutable: string, rgVersion: string): string {
   return digest({ name: rgExecutable.split(/[\\/]/).pop() ?? rgExecutable, version: rgVersion });
 }
 
+function readRgVersion(rgExecutable: string, signal: AbortSignal): Promise<string> {
+  return new Promise((resolveVersion) => {
+    execFile(rgExecutable, ['--version'], { encoding: 'utf8', signal }, (error, stdout) => {
+      const version = stdout.split(/\r?\n/, 1)[0]?.trim();
+      resolveVersion(error === null && version ? version : 'VERSION_UNAVAILABLE');
+    });
+  });
+}
+
 export async function runQualitySuite(options: Readonly<{
   suiteId: 'quality-issue320-v1';
   outputRoot: string;
   rgExecutable: string;
   signal: AbortSignal;
 }>): Promise<QualitySuiteResult> {
+  const ownedFixtures: OwnedQualityFixture[] = [];
+  try {
+    return await runQualitySuiteWithFixtures(options, ownedFixtures);
+  } finally {
+    await Promise.all(ownedFixtures.map((fixture) => fixture.dispose()));
+  }
+}
+
+async function runQualitySuiteWithFixtures(
+  options: Parameters<typeof runQualitySuite>[0],
+  ownedFixtures: OwnedQualityFixture[],
+): Promise<QualitySuiteResult> {
   if (options.suiteId !== 'quality-issue320-v1') throw new Error('unsupported_suite_id');
 
   const resolvedOutputRoot = await realpath(resolve(options.outputRoot)).catch(() => null);
@@ -723,8 +754,15 @@ export async function runQualitySuite(options: Readonly<{
   const startedAt = new Date().toISOString();
 
   const coreFixture = await createQualityFixture(coreTaskIds.map((id) => `${id}@quality-v1`), options.signal);
+  ownedFixtures.push(coreFixture);
   const primaryLinkedFixture = await createPrimaryLinkedQualityFixture(options.signal);
+  ownedFixtures.push(primaryLinkedFixture);
+  const q12RFixture = await createPrimaryLinkedQualityFixture(options.signal);
+  ownedFixtures.push(q12RFixture);
+  const q12NFixture = await createPrimaryLinkedQualityFixture(options.signal);
+  ownedFixtures.push(q12NFixture);
   const lspFixture = await createQualityFixture(['Q13@quality-v1'], options.signal);
+  ownedFixtures.push(lspFixture);
 
   const taskManifests = new Map<string, QualityCaseManifest>();
   for (const task of coreFixture.oracleCases) taskManifests.set(task.taskId, task);
@@ -743,7 +781,11 @@ export async function runQualitySuite(options: Readonly<{
         ? lspFixture
         : coreFixture;
     try {
-      const pair = await runQualityPair(task, fixture, { signal: options.signal, rgExecutable: options.rgExecutable });
+      const pair = await runQualityPair(task, fixture, {
+        signal: options.signal,
+        rgExecutable: options.rgExecutable,
+        ...(taskId.startsWith('Q12') ? { armFixtures: { R: q12RFixture, N: q12NFixture } } : {}),
+      });
       pairs.push(pair);
     } catch {
       // The profile report derives missing tasks from expected IDs and collected pairs.
@@ -756,7 +798,7 @@ export async function runQualitySuite(options: Readonly<{
     }
   }
 
-  const rgVersion = options.rgExecutable;
+  const rgVersion = await readRgVersion(options.rgExecutable, options.signal);
   const rgExecutableIdentityValue = rgExecutableIdentity(options.rgExecutable, rgVersion);
   const rgFlags = [...sanitizedRgArgv('<public-query>')];
   const rgExclusionsList = [...rgExclusions];
@@ -862,7 +904,15 @@ export async function runQualitySuite(options: Readonly<{
     outputPaths: { json: jsonPath, markdown: mdPath, sha256sums: shaPath },
   };
 
-  const jsonBytes = utf8Bytes(JSON.stringify(suiteResult, null, 2));
+  const serializedSuiteResult: QualitySuiteResult = {
+    ...suiteResult,
+    outputPaths: {
+      json: basename(jsonPath),
+      markdown: basename(mdPath),
+      sha256sums: basename(shaPath),
+    },
+  };
+  const jsonBytes = utf8Bytes(JSON.stringify(serializedSuiteResult, null, 2));
   await writeFile(jsonPath, jsonBytes);
   const mdContent = Object.values(reports).map((r) => r === undefined ? '' : renderQualityMarkdown(r)).join('\n---\n');
   const mdBytes = utf8Bytes(mdContent);

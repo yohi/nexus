@@ -66,6 +66,7 @@ function makePair(overrides: Partial<PairedQualityResult> = {}): PairedQualityRe
     profile: 'quality-core-v1' as const,
     rootKey: 'single' as const,
     fixtureDigest: 'fixture',
+    armFixtureDigests: Object.freeze({ R: 'fixture-r', N: 'fixture-n' }),
     policyVersion: 'quality-policy-v1' as const,
     baselineRgExecution: Object.freeze({
       initializedContractDigest: 'rg-contract',
@@ -145,6 +146,29 @@ describe('buildQualityReport', () => {
     const route = makeRoute('Q01');
     const report = buildQualityReport(['Q01'], [pair], [route], baseMetadata);
     expect(report.gate1.status).toBe('SAFETY_FAIL');
+  });
+
+  it('marks Gate 1 incomplete when an arm was not executed', () => {
+    const pair = makePair({
+      outcomes: Object.freeze({
+        R: { ...makePair().outcomes.R, executionStatus: 'not_run' as const },
+        N: makePair().outcomes.N,
+      }),
+    });
+    const report = buildQualityReport(['Q01'], [pair], [makeRoute('Q01')], baseMetadata);
+    expect(report.gate1.status).toBe('INCOMPLETE');
+  });
+
+  it('uses required task count for Gate 3 denominator and incomplete status', () => {
+    const report = buildQualityReport(['Q01', 'Q02'], [makePair()], [makeRoute('Q01')], baseMetadata);
+    expect(report.gate3.status).toBe('INCOMPLETE');
+    expect(report.gate3.byArm.R.expectedTasks).toBe(2);
+    expect(report.gate3.byArm.R.completionRate.value).toBe(0.5);
+  });
+
+  it('publishes both arm fixture digests', () => {
+    const report = buildQualityReport(['Q01'], [makePair()], [makeRoute('Q01')], baseMetadata);
+    expect(report.pairs[0]?.armFixtureDigests).toEqual({ R: 'fixture-r', N: 'fixture-n' });
   });
 
   it('includes single-arm successes in each arm first-correct-source cost', () => {
@@ -247,6 +271,30 @@ describe('buildQualityReport', () => {
     expect(report.gate2.R.expectedSymbolDiscoveryRate).toBe(0);
     expect(report.gate2.R.irrelevantCandidateRate).toBeNull();
     expect(report.gate2.R.metricReasons.irrelevantCandidateRate).toBe('NO_LABELED_CANDIDATES');
+  });
+
+  it('averages per-query Recall@10 ratios and excludes queries with no relevant targets', () => {
+    const relevant = Object.freeze({
+      ...makePair().discovery.R,
+      expectedRelevantTargets: 2,
+      hitsAtK: 1,
+    });
+    const noRelevantTargets = Object.freeze({
+      ...makePair().discovery.R,
+      expectedRelevantTargets: 0,
+      hitsAtK: 0,
+    });
+    const report = buildQualityReport(
+      ['Q01', 'Q02'],
+      [
+        makePair({ discovery: Object.freeze({ R: relevant, N: relevant }) }),
+        makePair({ taskId: 'Q02', discovery: Object.freeze({ R: noRelevantTargets, N: noRelevantTargets }) }),
+      ],
+      [makeRoute('Q01'), makeRoute('Q02')],
+      baseMetadata,
+    );
+    expect(report.gate2.R.recallAtK).toBe(0.5);
+    expect(report.gate2.R.recallEligibleQueries).toBe(1);
   });
 
   it('validates metadata and records issues in limitations', () => {

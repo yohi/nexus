@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import { createHash } from 'node:crypto';
 import { buildQualityReport, renderQualityMarkdown } from '../../benchmarks/quality/report.js';
 import { createQualityFixture, createPrimaryLinkedQualityFixture } from '../../benchmarks/quality/fixtures.js';
+import type { OwnedQualityFixture } from '../../benchmarks/quality/fixtures.js';
 import { collectQualityRouteCoverage, runQualityPair } from '../../benchmarks/quality/runner.js';
 import { QUALITY_CASES_V1 } from '../../benchmarks/quality/manifest.js';
 import { sanitizedRgArgv, rgExclusions } from '../../benchmarks/quality/adapters.js';
@@ -37,21 +38,27 @@ describe('buildQualityReport integration', () => {
       'Q13-definition', 'Q13-references', 'Q13-implementations',
     ];
 
-    const coreFixture = await createQualityFixture(coreTaskIds.map((id) => `${id}@quality-v1`), signal);
-    const linkedFixture = await createPrimaryLinkedQualityFixture(signal);
-    const lspFixture = await createQualityFixture(['Q13@quality-v1'], signal);
-
-    const taskMap = new Map(QUALITY_CASES_V1.map((t) => [t.taskId, t]));
-
+    const ownedFixtures: OwnedQualityFixture[] = [];
     const pairs = [];
     const coverage = [];
+    try {
+      const coreFixture = await createQualityFixture(coreTaskIds.map((id) => `${id}@quality-v1`), signal);
+      ownedFixtures.push(coreFixture);
+      const linkedFixture = await createPrimaryLinkedQualityFixture(signal);
+      ownedFixtures.push(linkedFixture);
+      const lspFixture = await createQualityFixture(['Q13@quality-v1'], signal);
+      ownedFixtures.push(lspFixture);
 
-    for (const taskId of expectedIds) {
-      const task = taskMap.get(taskId);
-      if (task === undefined) continue;
-      const fixture = taskId.startsWith('Q12') ? linkedFixture : taskId.startsWith('Q13') ? lspFixture : coreFixture;
-      pairs.push(await runQualityPair(task, fixture, { signal }));
-      coverage.push(...(await collectQualityRouteCoverage(task, fixture, { signal })));
+      const taskMap = new Map(QUALITY_CASES_V1.map((t) => [t.taskId, t]));
+      for (const taskId of expectedIds) {
+        const task = taskMap.get(taskId);
+        if (task === undefined) continue;
+        const fixture = taskId.startsWith('Q12') ? linkedFixture : taskId.startsWith('Q13') ? lspFixture : coreFixture;
+        pairs.push(await runQualityPair(task, fixture, { signal }));
+        coverage.push(...(await collectQualityRouteCoverage(task, fixture, { signal })));
+      }
+    } finally {
+      await Promise.all(ownedFixtures.map((fixture) => fixture.dispose()));
     }
 
     const resolvedOutput = await realpath(outputRoot);

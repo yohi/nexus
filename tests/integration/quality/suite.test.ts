@@ -1,17 +1,21 @@
 import { describe, it, expect } from 'vitest';
 import { tmpdir } from 'node:os';
-import { mkdtemp, rm, realpath } from 'node:fs/promises';
-import { join } from 'node:path';
+import { mkdtemp, readFile, rm, realpath } from 'node:fs/promises';
+import { basename, join } from 'node:path';
 import { runQualitySuite } from '../../benchmarks/quality/report.js';
 
 describe('runQualitySuite integration', () => {
   it('runs the quality-issue320-v1 suite and writes JSON/Markdown/SHA256SUMS', async () => {
-    const outputRoot = await mkdtemp(join(tmpdir(), 'nexus-quality-suite-'));
+    const configuredSuite = process.env.NEXUS_QUALITY_SUITE ?? 'quality-issue320-v1';
+    if (configuredSuite !== 'quality-issue320-v1') throw new Error('unsupported_suite_id');
+    const configuredOutputRoot = process.env.NEXUS_QUALITY_OUTPUT_ROOT;
+    const ownsOutputRoot = configuredOutputRoot === undefined;
+    const outputRoot = configuredOutputRoot ?? await mkdtemp(join(tmpdir(), 'nexus-quality-suite-'));
     const controller = new AbortController();
 
     try {
       const result = await runQualitySuite({
-        suiteId: 'quality-issue320-v1',
+        suiteId: configuredSuite,
         outputRoot,
         rgExecutable: 'rg',
         signal: controller.signal,
@@ -39,6 +43,24 @@ describe('runQualitySuite integration', () => {
       expect(result.outputPaths.markdown.startsWith(resolvedOutput)).toBe(true);
       expect(result.outputPaths.sha256sums.startsWith(resolvedOutput)).toBe(true);
 
+      const stored = JSON.parse(await readFile(result.outputPaths.json, 'utf8')) as {
+        outputPaths: { json: string; markdown: string; sha256sums: string };
+        reports: Record<string, { rgVersion: string; pairs: Array<{ armFixtureDigests: { R: string; N: string } }> }>;
+      };
+      expect(stored.outputPaths).toEqual({
+        json: basename(result.outputPaths.json),
+        markdown: basename(result.outputPaths.markdown),
+        sha256sums: basename(result.outputPaths.sha256sums),
+      });
+      expect(JSON.stringify(stored)).not.toContain(resolvedOutput);
+      for (const report of Object.values(stored.reports)) {
+        expect(report.rgVersion).toMatch(/^ripgrep \d/);
+      }
+      for (const pair of stored.reports['quality-worktree-v1']?.pairs ?? []) {
+        expect(pair.armFixtureDigests.R).toBeTruthy();
+        expect(pair.armFixtureDigests.N).toBeTruthy();
+      }
+
       expect(['SAFETY_PASS', 'SAFETY_FAIL', 'INCOMPLETE']).toContain(result.aggregateStatus);
 
       for (const report of Object.values(result.reports)) {
@@ -54,7 +76,7 @@ describe('runQualitySuite integration', () => {
       }
     } finally {
       controller.abort();
-      await rm(outputRoot, { recursive: true, force: true });
+      if (ownsOutputRoot) await rm(outputRoot, { recursive: true, force: true });
     }
   }, 180_000);
 });

@@ -58,6 +58,11 @@ NEXUS_QUALITY_SUITE=quality-issue320-v1 NEXUS_QUALITY_OUTPUT_ROOT="$OUT" \
   npx vitest run tests/integration/quality/suite.test.ts --coverage.enabled=false
 ```
 
+When `NEXUS_QUALITY_OUTPUT_ROOT` is set, the integration entry point writes the
+artifacts there and leaves them in place. Without it, the test creates and
+removes its own temporary output directory. The configured output directory
+must already exist and be inside the system temporary directory.
+
 ## Redaction and safety
 
 The JSON report contains no source text, no absolute host paths, and no credentials. The `metadata.rgExecutableIdentity` is a digest of public executable identity, not a physical path.
