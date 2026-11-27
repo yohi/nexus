@@ -1,4 +1,3 @@
-import { createHash } from 'node:crypto';
 import { readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -7,7 +6,6 @@ import {
   applyQualityMutation,
   createQualityFixture,
 } from '../../../../tests/benchmarks/quality/fixtures.js';
-import { canonicalJson } from '../../../../tests/benchmarks/quality/canonical-json.js';
 import * as oracle from '../../../../tests/benchmarks/quality/oracle.js';
 import {
   collectQualityRouteCoverage,
@@ -18,9 +16,6 @@ import {
   normalizeProbeArgs,
   runQualityPair,
 } from '../../../../tests/benchmarks/quality/runner.js';
-
-const sha256 = (content: string | Uint8Array): string =>
-  createHash('sha256').update(content).digest('hex');
 
 describe('quality route coverage', () => {
   it('returns immediately for an empty grep query without traversing the root', async () => {
@@ -170,8 +165,48 @@ describe('quality route coverage', () => {
     }
   });
 
+  it('does not cover navigation with a non-oracle location set', async () => {
+    const fixture = await createQualityFixture(['Q13@quality-v1'], new AbortController().signal);
+    try {
+      const task = fixture.oracleCases.find(({ taskId }) => taskId === 'Q13-definition');
+      const expected = task?.expectedLocations[0];
+      if (task === undefined || expected === undefined) throw new Error('Q13 fixture missing');
+      const probe = {
+        probeId: 'Q13-definition',
+        taskId: task.taskId,
+        rootKey: task.worktreeIdentity.rootKey,
+        tool: 'get_definition',
+        expectedAction: 'navigation_locations',
+      } as const;
+      const observation = {
+        status: 'ok',
+        results: [],
+        exposedBytes: 0,
+        sourceAdoptions: [],
+        rawDigest: 'wrong-location',
+        normalizedPublicArgs: {},
+        navigation: {
+          capability: 'supported',
+          locations: [{
+            filePath: 'other.ts',
+            startLine: expected.line,
+            startCharacter: expected.character,
+            endLine: expected.line,
+            endCharacter: expected.character + 6,
+          }],
+          truncated: false,
+          sourceValidation: 'verified',
+        },
+      } as const;
+
+      expect(isProbeCovered(probe, task, observation)).toBe(false);
+    } finally {
+      await fixture.dispose();
+    }
+  });
+
   it.each([
-    ['Q03@quality-v1', 'get_symbol_source', 'stale_identity', 'SYMBOL_RETIRED'],
+    ['Q03@quality-v1', 'get_symbol_source', 'stale', 'SYMBOL_RETIRED'],
     ['Q14@quality-v1', 'get_definition', 'unavailable', 'LSP_NOT_CONFIGURED'],
   ] as const)(
     'requires the expected refusal reason for %s route coverage',
@@ -222,38 +257,55 @@ describe('quality route coverage', () => {
       });
 
       expect(route?.status).toBe('COVERED');
-      expect(route?.probes.map(({ traceSequence }) => traceSequence)).toEqual([1, 2]);
-      expect(route?.probeTrace.map(({ sequence }) => sequence)).toEqual([1, 2]);
-      expect(route?.probeTrace.map(({ resultStatus }) => resultStatus)).toEqual(
-        route?.probes.map(({ observedStatus }) => observedStatus),
+      expect(route?.probes.map(({ traceSequence }) => traceSequence)).toEqual([2, 3]);
+      expect(route?.probeTrace.filter(({ state }) => state !== 'SETUP').map(({ sequence }) => sequence)).toEqual([2, 3]);
+      const contractTrace = route?.probeTrace.filter(({ state }) => state !== 'SETUP') ?? [];
+      expect(contractTrace.map(({ argsDigest }) => argsDigest)).toEqual(
+        route?.probes.map(({ publicArgsDigest }) => publicArgsDigest),
       );
-      expect(route?.probes[1]?.publicArgsDigest).toBe(
-        sha256(canonicalJson({ maxResults: 20 })),
+      expect(contractTrace.map(({ resultStatus }) => resultStatus)).toEqual(
+        route?.probes.map(({ observedStatus }) => observedStatus),
       );
     } finally {
       await fixture.dispose();
     }
   });
 
-  it('uses a verified source-reading handler for mandatory current-source route probes', async () => {
-    const fixture = await createQualityFixture(['Q02@quality-v1'], new AbortController().signal);
+  it.each([
+    ['Q02@quality-v1', ['Q02-index_status', 'Q02-dirty-source'], 'COVERED', 'CORRECT_CURRENT'],
+    ['Q06@quality-v1', ['Q06-index_status', 'Q06-recreated-source'], 'INCOMPLETE', 'FALSE_FRESH'],
+    ['Q11@quality-v1', ['Q11-index_status', 'Q11-declaration-source'], 'COVERED', 'CORRECT_CURRENT'],
+  ] as const)(
+    'uses the frozen get_symbol_source route for %s',
+    async (scenarioId, expectedProbeIds, expectedCoverage, expectedVerdict) => {
+    const fixture = await createQualityFixture([scenarioId], new AbortController().signal);
     try {
       const task = fixture.oracleCases[0];
-      if (task === undefined) throw new Error('Q02 fixture missing');
+      if (task === undefined) throw new Error(`${scenarioId} fixture missing`);
       const [route] = await collectQualityRouteCoverage(task, fixture, {
         signal: new AbortController().signal,
       });
-      expect(route?.status).toBe('COVERED');
-      expect(route?.probes[1]?.tool).toBe('get_context');
-      expect(route?.probes[1]?.expectedAction).toBe('current_source');
+      expect(route?.status).toBe(expectedCoverage);
+      expect(route?.probes.map(({ probeId }) => probeId)).toEqual(expectedProbeIds);
+      const sourceProbe = route?.probes.find(({ expectedAction }) => expectedAction === 'current_source');
+      expect(sourceProbe?.tool).toBe('get_symbol_source');
+      expect(sourceProbe?.observedStatus).toBe('ok');
+      expect(sourceProbe?.oracleVerdict).toBe(expectedVerdict);
+      const sourceTrace = route?.probeTrace.find(({ sequence }) => sequence === sourceProbe?.traceSequence);
+      expect(sourceTrace?.normalizedPublicArgs.symbolId).not.toBe(task.expectedSymbols[0]?.name);
     } finally {
       await fixture.dispose();
     }
-  });
+    },
+  );
 
-  it.each(['Q07@quality-v1', 'Q08@quality-v1', 'Q10@quality-v1'])(
-    'covers fixture-backed search/source routes for %s',
-    async (scenarioId) => {
+  it.each([
+    ['Q07@quality-v1', 'COVERED', ['Q07-index_status', 'Q07-hybrid']],
+    ['Q08@quality-v1', 'INCOMPLETE', ['Q08-index_status', 'Q08-generation-race']],
+    ['Q10@quality-v1', 'COVERED', ['Q10-index_status', 'Q10-outline', 'Q10-scoped-source']],
+  ] as const)(
+    'records fixture-backed search/source routes for %s',
+    async (scenarioId, expectedCoverage, expectedProbeIds) => {
       const fixture = await createQualityFixture([scenarioId], new AbortController().signal);
       try {
         const task = fixture.oracleCases[0];
@@ -262,17 +314,20 @@ describe('quality route coverage', () => {
         const [route] = await collectQualityRouteCoverage(task, fixture, {
           signal: new AbortController().signal,
         });
-
-        expect(route?.status).toBe('COVERED');
-        expect(route?.probes.every(({ status }) => status === 'COVERED')).toBe(true);
-        expect(route?.probeTrace).toHaveLength(route?.probes.length ?? 0);
+        expect(route?.status).toBe(expectedCoverage);
+        expect(route?.requiredProbeIds).toEqual(expectedProbeIds);
+        expect(route?.probes[0]).toMatchObject({
+          probeId: `${task.taskId}-index_status`,
+          status: 'COVERED',
+        });
+        expect(route?.probeTrace.filter(({ state }) => state !== 'SETUP')).toHaveLength(route?.probes.length ?? 0);
       } finally {
         await fixture.dispose();
       }
     },
   );
 
-  it('preserves the Q03 indexed symbol-ID mismatch as incomplete route evidence', async () => {
+  it('covers the retired and current Q03 identities through indexed symbol IDs', async () => {
     const fixture = await createQualityFixture(['Q03@quality-v1'], new AbortController().signal);
     try {
       const task = fixture.oracleCases[0];
@@ -285,13 +340,75 @@ describe('quality route coverage', () => {
 
       const oldIdentity = route?.probes.find(({ expectedAction }) => expectedAction === 'safe_refusal');
       const currentIdentity = route?.probes.find(({ expectedAction }) => expectedAction === 'current_source');
-      expect(oldIdentity?.observedStatus).toBe('not_found');
-      expect(oldIdentity?.reasonCode).toBe('SYMBOL_NOT_FOUND');
-      expect(oldIdentity?.status).toBe('INCOMPLETE');
-      expect(currentIdentity?.observedStatus).toBe('not_found');
-      expect(currentIdentity?.reasonCode).toBe('SYMBOL_NOT_FOUND');
-      expect(currentIdentity?.status).toBe('INCOMPLETE');
+      expect(route?.requiredProbeIds).toEqual([
+        'Q03-index_status',
+        'Q03-old-identity-refusal',
+        'Q03-new-identity-source',
+      ]);
+      expect(oldIdentity).toMatchObject({
+        tool: 'get_symbol_source',
+        observedStatus: 'stale',
+        reasonCode: 'INDEX_FILE_MISSING',
+        oracleVerdict: 'INCONCLUSIVE',
+        status: 'INCOMPLETE',
+      });
+      expect(currentIdentity).toMatchObject({
+        tool: 'get_symbol_source',
+        observedStatus: 'ok',
+        oracleVerdict: 'CORRECT_CURRENT',
+        status: 'COVERED',
+      });
       expect(route?.status).toBe('INCOMPLETE');
+    } finally {
+      await fixture.dispose();
+    }
+  });
+
+  it('records Q05 as unsafe when the retired identity remains available before publication', async () => {
+    const fixture = await createQualityFixture(['Q05@quality-v1'], new AbortController().signal);
+    try {
+      const task = fixture.oracleCases[0];
+      if (task === undefined) throw new Error('Q05 fixture missing');
+      expect(task.mutationSchedule).toEqual([
+        expect.objectContaining({ phase: 'before_publication', operation: 'delete' }),
+      ]);
+      expect(task.expectedRefusalConditions).toEqual([]);
+
+      const [route] = await collectQualityRouteCoverage(task, fixture, {
+        signal: new AbortController().signal,
+      });
+
+      expect(route?.status).toBe('INCOMPLETE');
+      expect(route?.probes.at(-1)).toMatchObject({
+        probeId: 'Q05-retired-refusal',
+        tool: 'get_symbol_source',
+        observedStatus: 'ok',
+        oracleVerdict: 'WRONG_SOURCE',
+        status: 'INCOMPLETE',
+      });
+    } finally {
+      await fixture.dispose();
+    }
+  });
+
+  it('grades the Q06 request-time source against the later recreated publication snapshot', async () => {
+    const fixture = await createQualityFixture(['Q06@quality-v1'], new AbortController().signal);
+    try {
+      const task = fixture.oracleCases[0];
+      if (task === undefined) throw new Error('Q06 fixture missing');
+
+      const [route] = await collectQualityRouteCoverage(task, fixture, {
+        signal: new AbortController().signal,
+      });
+      const probe = route?.probes.find(({ probeId }) => probeId === 'Q06-recreated-source');
+      const trace = route?.probeTrace.find(({ sequence }) => sequence === probe?.traceSequence);
+
+      expect(probe?.setupProofDigest).toBe(route?.setupProofDigest);
+      expect(trace?.requestSnapshotDigest).toMatch(/^[a-f0-9]{64}$/);
+      expect(probe?.publicationSnapshotDigest).toMatch(/^[a-f0-9]{64}$/);
+      expect(trace?.requestSnapshotDigest).not.toBe(probe?.publicationSnapshotDigest);
+      expect(probe?.oracleVerdict).toBe('FALSE_FRESH');
+      expect(probe?.status).toBe('INCOMPLETE');
     } finally {
       await fixture.dispose();
     }
@@ -309,18 +426,30 @@ describe('quality route coverage', () => {
       });
 
       expect(route?.status).toBe('COVERED');
+      expect(route?.requiredProbeIds).toEqual([
+        'Q14-index_status',
+        'Q14-definition',
+        'Q14-references',
+        'Q14-implementations',
+      ]);
       expect(route?.probes.filter(({ expectedAction }) => expectedAction === 'safe_refusal')).toEqual([
         expect.objectContaining({
+          tool: 'get_definition',
+          expectedAction: 'safe_refusal',
           observedStatus: 'unavailable',
           reasonCode: 'LSP_NOT_CONFIGURED',
           status: 'COVERED',
         }),
         expect.objectContaining({
+          tool: 'get_references',
+          expectedAction: 'safe_refusal',
           observedStatus: 'unavailable',
           reasonCode: 'LSP_NOT_CONFIGURED',
           status: 'COVERED',
         }),
         expect.objectContaining({
+          tool: 'get_implementations',
+          expectedAction: 'safe_refusal',
           observedStatus: 'unavailable',
           reasonCode: 'LSP_NOT_CONFIGURED',
           status: 'COVERED',
@@ -412,23 +541,31 @@ describe('quality route coverage', () => {
       }
       const adapter = await createNexusAdapterForRoot(root);
       try {
-        await applyQualityMutation(fixture, task.taskId, 'before_publication');
-
         const outline = await adapter.invoke(
           'get_file_outline',
           { filePath },
           new AbortController().signal,
           { traceSequence: 1 },
         );
+        const symbolId = outline.results.find(({ preview }) => preview === symbol.name)?.symbolId;
+        if (symbolId === undefined) throw new Error('Q05 indexed symbol missing');
+        await applyQualityMutation(fixture, task.taskId, 'before_publication');
         const source = await adapter.invoke(
           'get_symbol_source',
-          { symbolId: symbol.name },
+          { symbolId },
           new AbortController().signal,
           { traceSequence: 2 },
         );
+        const staleOutline = await adapter.invoke(
+          'get_file_outline',
+          { filePath },
+          new AbortController().signal,
+          { traceSequence: 3 },
+        );
 
-        expect(outline).toMatchObject({ status: 'stale', reasonCode: 'INDEX_FILE_MISSING' });
-      expect(source).toMatchObject({ status: 'not_found', reasonCode: 'SYMBOL_NOT_FOUND' });
+        expect(outline.status).toBe('ok');
+        expect(source).toMatchObject({ status: 'stale', reasonCode: 'INDEX_FILE_MISSING' });
+        expect(staleOutline).toMatchObject({ status: 'stale', reasonCode: 'INDEX_FILE_MISSING' });
       } finally {
         await adapter.close();
       }
@@ -485,13 +622,13 @@ describe('quality route coverage', () => {
     const fixture = await createQualityFixture(['Q01@quality-v1'], new AbortController().signal);
     let releaseSnapshot: (() => void) | undefined;
     let announceSnapshotStart: (() => void) | undefined;
-    let delayNextSnapshot = true;
+    let snapshotCaptureCount = 0;
     const snapshotGate = new Promise<void>((resolve) => { releaseSnapshot = resolve; });
     const snapshotStarted = new Promise<void>((resolve) => { announceSnapshotStart = resolve; });
     const originalCapture = oracle.captureOracleSnapshot;
     const captureSpy = vi.spyOn(oracle, 'captureOracleSnapshot').mockImplementation(async (current, rootKey, taskId) => {
-      if (delayNextSnapshot) {
-        delayNextSnapshot = false;
+      snapshotCaptureCount += 1;
+      if (snapshotCaptureCount === 3) {
         announceSnapshotStart?.();
         await snapshotGate;
       }

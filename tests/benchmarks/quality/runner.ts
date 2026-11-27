@@ -12,7 +12,7 @@ import type {
   GrepParams,
 } from '../../../src/types/index.js';
 import { createBenchmarkRuntimeFactory } from '../performance/runtime.js';
-import { QUALITY_BUDGETS_V1 } from './contracts.js';
+import { QUALITY_BUDGETS_V1, type ObservationKind } from './contracts.js';
 import {
   runQualityPolicy,
   type QualityPolicyObserver,
@@ -34,6 +34,7 @@ import { publicTask, type QualityCaseManifest, type QualityArm, type QualityRoot
 import {
   captureOracleSnapshot,
   checkSourceFreshness,
+  gradeTaskSource,
   type SourceSnapshot,
   type SourceProvenance,
 } from './oracle.js';
@@ -342,11 +343,17 @@ async function runSingleArm(
   const canonicalRoot = await realpath(root);
   const provenance = buildProvenance(rootKey, canonicalRoot);
   const observerWork = new Map<number, Promise<void>>();
+  const requestSnapshots = new Map<number, string>();
   let duringRequestApplied = false;
+  let beforePublicationWork: Promise<void> | undefined;
+  const applyBeforePublication = (): Promise<void> =>
+    beforePublicationWork ??= applyQualityMutation(fixture, task.taskId, 'before_publication');
 
   const armAdapter: QualityAdapter = {
     arm: adapter.arm,
     invoke: async (tool, args, invocationSignal, context) => {
+      const requestSnapshot = await captureOracleSnapshot(fixture, rootKey, task.taskId);
+      requestSnapshots.set(context.traceSequence, requestSnapshot.snapshotDigest);
       const observation = await adapter.invoke(tool, args, invocationSignal, context);
       if (
         !duringRequestApplied &&
@@ -365,7 +372,7 @@ async function runSingleArm(
     if (signal.aborted) return Promise.resolve();
     const work = (async () => {
       if (signal.aborted) return;
-      await applyQualityMutation(fixture, task.taskId, 'before_publication');
+       await applyBeforePublication();
       if (signal.aborted) return;
       const snapshot = await captureOracleSnapshot(
         { root: dirname(canonicalRoot), roots: { [rootKey]: canonicalRoot }, publicTasks: [], oracleCases: [task], dispose: async () => {} } as OwnedQualityFixture,
@@ -390,17 +397,27 @@ async function runSingleArm(
     onAdoptionPublished: capturePublication,
   };
 
-  const policyResult = await runQualityPolicy(
+  const observedPolicyResult = await runQualityPolicy(
     publicTask(task),
     armAdapter,
     QUALITY_BUDGETS_V1,
     signal,
     observer,
   );
+  const policyResult: QualityPolicyResult = Object.freeze({
+    ...observedPolicyResult,
+    trace: Object.freeze(observedPolicyResult.trace.map((event) => {
+      const requestSnapshotDigest = requestSnapshots.get(event.sequence);
+      return requestSnapshotDigest === undefined
+        ? event
+        : Object.freeze({ ...event, requestSnapshotDigest });
+    })),
+  });
 
   await Promise.allSettled(
     policyResult.adoptionEvents.map((event) => capturePublication(event)),
   );
+  if (!signal.aborted) await applyBeforePublication();
 
   const finalSnapshot = await captureOracleSnapshot(
     { root: dirname(canonicalRoot), roots: { [rootKey]: canonicalRoot }, publicTasks: [], oracleCases: [task], dispose: async () => {} } as OwnedQualityFixture,
@@ -576,7 +593,7 @@ function requiredProbesForScenario(
     case 'Q01@quality-v1':
       return [
         ...base,
-        { probeId: `${task.taskId}-grep`, taskId: task.taskId, rootKey: task.worktreeIdentity.rootKey, tool: 'grep_search', expectedAction: 'discovery_current' },
+        { probeId: `${task.taskId}-source`, taskId: task.taskId, rootKey: task.worktreeIdentity.rootKey, tool: 'get_symbol_source', expectedAction: 'current_source' },
       ];
     case 'Q03@quality-v1':
       return [
@@ -585,16 +602,30 @@ function requiredProbesForScenario(
         { probeId: `${task.taskId}-new-identity-source`, taskId: task.taskId, rootKey: task.worktreeIdentity.rootKey, tool: 'get_symbol_source', expectedAction: 'current_source' },
       ];
     case 'Q07@quality-v1':
-    case 'Q08@quality-v1':
       return [
         ...base,
         { probeId: `${task.taskId}-hybrid`, taskId: task.taskId, rootKey: task.worktreeIdentity.rootKey, tool: 'hybrid_search', expectedAction: 'discovery_current' },
+      ];
+    case 'Q05@quality-v1':
+      return [
+        ...base,
+        { probeId: `${task.taskId}-retired-refusal`, taskId: task.taskId, rootKey: task.worktreeIdentity.rootKey, tool: 'get_symbol_source', expectedAction: 'safe_refusal' },
+      ];
+    case 'Q06@quality-v1':
+      return [
+        ...base,
+        { probeId: `${task.taskId}-recreated-source`, taskId: task.taskId, rootKey: task.worktreeIdentity.rootKey, tool: 'get_symbol_source', expectedAction: 'current_source' },
+      ];
+    case 'Q08@quality-v1':
+      return [
+        ...base,
+        { probeId: `${task.taskId}-generation-race`, taskId: task.taskId, rootKey: task.worktreeIdentity.rootKey, tool: 'get_symbol_source', expectedAction: 'current_source' },
       ];
     case 'Q10@quality-v1':
       return [
         ...base,
         { probeId: `${task.taskId}-outline`, taskId: task.taskId, rootKey: task.worktreeIdentity.rootKey, tool: 'get_file_outline', expectedAction: 'discovery_current' },
-        { probeId: `${task.taskId}-scoped-source`, taskId: task.taskId, rootKey: task.worktreeIdentity.rootKey, tool: 'get_context', expectedAction: 'current_source' },
+        { probeId: `${task.taskId}-scoped-source`, taskId: task.taskId, rootKey: task.worktreeIdentity.rootKey, tool: 'get_symbol_source', expectedAction: 'current_source' },
       ];
     case 'Q13@quality-v1':
       return [
@@ -602,6 +633,31 @@ function requiredProbesForScenario(
         { probeId: `${task.taskId}-definition`, taskId: task.taskId, rootKey: task.worktreeIdentity.rootKey, tool: 'get_definition', expectedAction: 'navigation_locations' },
         { probeId: `${task.taskId}-references`, taskId: task.taskId, rootKey: task.worktreeIdentity.rootKey, tool: 'get_references', expectedAction: 'navigation_locations' },
         { probeId: `${task.taskId}-implementations`, taskId: task.taskId, rootKey: task.worktreeIdentity.rootKey, tool: 'get_implementations', expectedAction: 'navigation_locations' },
+      ];
+    case 'Q02@quality-v1':
+      return [
+        ...base,
+        { probeId: `${task.taskId}-dirty-source`, taskId: task.taskId, rootKey: task.worktreeIdentity.rootKey, tool: 'get_symbol_source', expectedAction: 'current_source' },
+      ];
+    case 'Q04@quality-v1':
+      return [
+        ...base,
+        { probeId: `${task.taskId}-moved-source`, taskId: task.taskId, rootKey: task.worktreeIdentity.rootKey, tool: 'get_symbol_source', expectedAction: 'current_source' },
+      ];
+    case 'Q09@quality-v1':
+      return [
+        ...base,
+        { probeId: `${task.taskId}-parser-capability`, taskId: task.taskId, rootKey: task.worktreeIdentity.rootKey, tool: 'get_file_outline', expectedAction: 'capability_status' },
+      ];
+    case 'Q11@quality-v1':
+      return [
+        ...base,
+        { probeId: `${task.taskId}-declaration-source`, taskId: task.taskId, rootKey: task.worktreeIdentity.rootKey, tool: 'get_symbol_source', expectedAction: 'current_source' },
+      ];
+    case 'Q12@quality-v1':
+      return [
+        ...base,
+        { probeId: `${task.taskId}-source`, taskId: task.taskId, rootKey: task.worktreeIdentity.rootKey, tool: 'get_symbol_source', expectedAction: 'current_source' },
       ];
     case 'Q14@quality-v1':
       return [
@@ -613,7 +669,7 @@ function requiredProbesForScenario(
     default:
       return [
         ...base,
-        { probeId: `${task.taskId}-exact`, taskId: task.taskId, rootKey: task.worktreeIdentity.rootKey, tool: 'get_context', expectedAction: 'current_source' },
+        { probeId: `${task.taskId}-source`, taskId: task.taskId, rootKey: task.worktreeIdentity.rootKey, tool: 'get_symbol_source', expectedAction: 'current_source' },
       ];
   }
 }
@@ -622,6 +678,7 @@ function probeArgsForTool(
   tool: AdapterQualityTool,
   task: QualityCaseManifest,
   probeId?: string,
+  resolvedSymbolId?: string,
 ): Record<string, unknown> {
   switch (tool) {
     case 'index_status':
@@ -650,11 +707,7 @@ function probeArgsForTool(
     }
     case 'get_symbol_source':
     case 'get_symbol_context': {
-      const symbol = task.expectedSymbols[0];
-      if (task.scenarioId === 'Q03@quality-v1' && probeId?.endsWith('-old-identity-refusal')) {
-        return { symbolId: 'oldAnswer', tokenBudget: 1024 };
-      }
-      return symbol === undefined ? {} : { symbolId: symbol.name, tokenBudget: 1024 };
+      return resolvedSymbolId === undefined ? {} : { symbolId: resolvedSymbolId, tokenBudget: 1024 };
     }
     case 'get_definition':
     case 'get_references':
@@ -715,6 +768,7 @@ export function isProbeCovered(
     case 'safe_refusal': {
       const refusalStatus = observation.status === 'not_found' ||
         observation.status === 'stale_identity' ||
+        observation.status === 'stale' ||
         observation.status === 'unavailable' ||
         observation.status === 'unsupported';
       const expectedReason = task.expectedRefusalConditions.length > 0 &&
@@ -728,8 +782,56 @@ export function isProbeCovered(
         observation.navigation?.capability === 'supported' &&
         !observation.navigation.truncated &&
         observation.navigation.sourceValidation === 'verified' &&
-        observation.navigation.locations.length > 0;
+        observation.navigation.locations.length === task.expectedLocations.length &&
+        task.expectedLocations.every((expected) =>
+          observation.navigation?.locations.some((actual) =>
+            actual.filePath === expected.filePath &&
+            actual.startLine === expected.line &&
+            actual.startCharacter === expected.character,
+          ) === true,
+        );
   }
+}
+
+function oracleVerdictForProbe(
+  probe: QualityRequiredProbe,
+  task: QualityCaseManifest,
+  observation: QualityObservation,
+  sourceSnapshot?: SourceSnapshot,
+): ObservationKind {
+  if (probe.expectedAction === 'current_source') {
+    const adoption = observation.sourceAdoptions.find((source) => source.sourceValidation === 'verified');
+    if (adoption === undefined || sourceSnapshot === undefined || sourceSnapshot.rootKey !== probe.rootKey) {
+      return observation.status === 'not_found' ? 'MISSING' : 'INCONCLUSIVE';
+    }
+    return gradeTaskSource(
+      task,
+      sourceSnapshot,
+      adoption,
+      buildProvenance(probe.rootKey, sourceSnapshot.canonicalProjectRoot),
+    );
+  }
+  if (isProbeCovered(probe, task, observation, sourceSnapshot)) {
+    return probe.expectedAction === 'safe_refusal' ? 'CORRECT_REFUSAL' : 'CORRECT_CURRENT';
+  }
+  if (probe.expectedAction === 'navigation_locations' && observation.status === 'ok') {
+    if (observation.navigation?.truncated ||
+      observation.navigation?.capability !== 'supported' ||
+      observation.navigation.sourceValidation !== 'verified') return 'INCONCLUSIVE';
+    return 'WRONG_SOURCE';
+  }
+  if (probe.expectedAction === 'safe_refusal' &&
+    (observation.exposedBytes > 0 || observation.sourceAdoptions.length > 0)) return 'WRONG_SOURCE';
+  if (probe.expectedAction === 'safe_refusal' &&
+    (observation.status === 'not_found' || observation.status === 'stale' ||
+      observation.status === 'stale_identity' || observation.status === 'unavailable' ||
+      observation.status === 'unsupported')) return 'INCONCLUSIVE';
+  if (observation.status === 'not_found' || observation.status === 'stale' ||
+    observation.status === 'stale_identity' || observation.status === 'unavailable' ||
+    observation.status === 'unsupported') return 'FALSE_REFUSAL';
+  return observation.status === 'error' || observation.status === 'timeout'
+    ? 'UNAVAILABLE'
+    : 'MISSING';
 }
 
 export async function collectQualityRouteCoverage(
@@ -780,31 +882,101 @@ export async function collectQualityRouteCoverage(
         })),
       }
     : undefined;
+  const sourceMutations = task.mutationSchedule.some(({ phase }) =>
+    phase === 'before_request' || phase === 'during_request' || phase === 'before_publication',
+  );
+  const ownedProbeFixture = options.adapter === undefined && sourceMutations
+    ? await createQualityFixture([task.scenarioId], new AbortController().signal)
+    : undefined;
+  const probeTask = ownedProbeFixture?.oracleCases.find(({ taskId }) => taskId === task.taskId) ?? task;
+  const probeRoot = ownedProbeFixture?.roots[rootKey] ?? root;
+  const probeFixture = ownedProbeFixture ?? fixture;
   const adapter = options.adapter ?? (await createNexusAdapterForRoot(
-    root,
+    probeRoot,
     lspStubLocations,
-    qualityRuntimeIndexSeed(fixture, task.taskId),
+    qualityRuntimeIndexSeed(probeFixture, task.taskId),
   ));
   const ownsAdapter = options.adapter === undefined;
-  const requiredProbes = requiredProbesForScenario(task);
+  const requiredProbes = requiredProbesForScenario(probeTask);
   const requiredProbeIds = Object.freeze(requiredProbes.map((p) => p.probeId));
   const probes: QualityProbeEvidence[] = [];
   const probeTrace: QualityTraceEvent[] = [];
-  const canonicalRoot = await realpath(root);
-  const setupProofDigest = sha256(utf8Bytes(`quality-route-coverage-v1\0${canonicalRoot}\0${task.scenarioId}`));
+  const canonicalRoot = await realpath(probeRoot);
 
   try {
     let sequence = 0;
+    const indexedSymbols: Array<Readonly<{ filePath: string; symbolId: string; name: string }>> = [];
+    for (const { filePath } of (options.signal.aborted ? [] : await fixtureFiles(probeRoot))) {
+      sequence += 1;
+      const requestSnapshot = await captureOracleSnapshot(probeFixture, rootKey, probeTask.taskId);
+      const args = { filePath };
+      const observation = await adapter.invoke('get_file_outline', args, options.signal, { traceSequence: sequence });
+      probeTrace.push(Object.freeze({
+        sequence,
+        state: 'SETUP',
+        tool: 'get_file_outline',
+        normalizedPublicArgs: observation.normalizedPublicArgs,
+        argsDigest: digest(observation.normalizedPublicArgs),
+        queryDigest: null,
+        resultDigest: observation.rawDigest,
+        resultStatus: observation.status,
+        reasonCode: observation.reasonCode ?? null,
+        resultCount: observation.results.length,
+        exposedBytes: observation.exposedBytes,
+        requestSnapshotDigest: requestSnapshot.snapshotDigest,
+        logicalOperations: 1,
+        invocationCount: 1,
+        retries: 0,
+        fallback: false,
+      }));
+      for (const candidate of observation.results) {
+        if (candidate.symbolId === undefined || candidate.preview === undefined) continue;
+        indexedSymbols.push({ filePath: candidate.filePath, symbolId: candidate.symbolId, name: candidate.preview });
+      }
+    }
+    if (ownedProbeFixture !== undefined) {
+      await applyQualityMutation(ownedProbeFixture, probeTask.taskId, 'before_request');
+    }
+    const setupProofDigest = digest({
+      version: 'quality-route-coverage-v2',
+      canonicalRoot,
+      scenarioId: probeTask.scenarioId,
+      setupTrace: probeTrace.map(({ argsDigest, resultDigest, resultStatus, requestSnapshotDigest }) =>
+        ({ argsDigest, resultDigest, resultStatus, requestSnapshotDigest })),
+    });
+    const clueFile = probeTask.initialClues
+      .map((clue) => /^file:(.+)$/.exec(clue)?.[1])
+      .find((filePath): filePath is string => filePath !== undefined);
+    const clueIdentity = probeTask.initialClues
+      .map((clue) => /^(?:id|symbol):(.+)$/.exec(clue)?.[1])
+      .find((identity): identity is string => identity !== undefined);
+    const resolveSymbolId = (probe: QualityRequiredProbe): string | undefined => {
+      const candidates = indexedSymbols.filter((candidate) =>
+        clueFile === undefined || candidate.filePath === clueFile,
+      );
+      if (probe.expectedAction === 'safe_refusal' && clueIdentity !== undefined) {
+        return indexedSymbols.find(({ name }) => name === clueIdentity)?.symbolId;
+      }
+      if (probe.expectedAction === 'current_source' && probeTask.scenarioId === 'Q03@quality-v1' && clueIdentity !== undefined) {
+        return indexedSymbols.find(({ name }) => name !== clueIdentity)?.symbolId;
+      }
+      if (clueIdentity !== undefined) {
+        return candidates.find(({ name }) => name === clueIdentity)?.symbolId;
+      }
+      return candidates[0]?.symbolId;
+    };
     for (const probe of requiredProbes) {
     if (options.signal.aborted) {
       probes.push(
         Object.freeze({
-          ...probe,
-          publicArgsDigest: null,
+        ...probe,
+        setupProofDigest,
+        publicArgsDigest: null,
           traceSequence: null,
           observedStatus: 'cancelled',
           reasonCode: 'REQUEST_CANCELLED',
           oracleVerdict: null,
+          publicationSnapshotDigest: null,
           resultDigest: null,
           locationSetDigest: null,
           status: 'BLOCKED',
@@ -814,8 +986,9 @@ export async function collectQualityRouteCoverage(
     }
 
     sequence += 1;
-    const args = probeArgsForTool(probe.tool, task, probe.probeId);
+    const args = probeArgsForTool(probe.tool, probeTask, probe.probeId, resolveSymbolId(probe));
     const context: QualityInvocationContext = { traceSequence: sequence };
+    const requestSnapshot = await captureOracleSnapshot(probeFixture, rootKey, probeTask.taskId);
     let observation: QualityObservation;
     try {
       // Probe order determines traceSequence and abort behavior; keep invocations sequential.
@@ -833,13 +1006,17 @@ export async function collectQualityRouteCoverage(
       };
     }
 
+    if (probe.expectedAction === 'current_source' && ownedProbeFixture !== undefined) {
+      await applyQualityMutation(ownedProbeFixture, probeTask.taskId, 'during_request');
+      await applyQualityMutation(ownedProbeFixture, probeTask.taskId, 'before_publication');
+    }
     const locationDigest = locationSetDigest(observation);
     const sourceSnapshot = probe.expectedAction === 'current_source'
-      ? await captureOracleSnapshot(fixture, rootKey, task.taskId)
+      ? await captureOracleSnapshot(probeFixture, rootKey, probeTask.taskId)
       : undefined;
     probeTrace.push(Object.freeze({
       sequence,
-      state: 'ROUTE_PROBE',
+      state: 'CONTRACT_PROBE',
       tool: probe.tool,
       normalizedPublicArgs: observation.normalizedPublicArgs,
       argsDigest: digest(observation.normalizedPublicArgs),
@@ -849,6 +1026,7 @@ export async function collectQualityRouteCoverage(
       reasonCode: observation.reasonCode ?? null,
       resultCount: observation.results.length,
       exposedBytes: observation.exposedBytes,
+      requestSnapshotDigest: requestSnapshot.snapshotDigest,
       logicalOperations: 1,
       invocationCount: 1,
       retries: 0,
@@ -858,14 +1036,16 @@ export async function collectQualityRouteCoverage(
     probes.push(
       Object.freeze({
         ...probe,
+        setupProofDigest,
         publicArgsDigest: digest(observation.normalizedPublicArgs),
         traceSequence: sequence,
         observedStatus: observation.status,
         reasonCode: observation.reasonCode ?? null,
-        oracleVerdict: null,
+        oracleVerdict: oracleVerdictForProbe(probe, probeTask, observation, sourceSnapshot),
+        publicationSnapshotDigest: sourceSnapshot?.snapshotDigest ?? null,
         resultDigest: observation.rawDigest,
         locationSetDigest: locationDigest,
-        status: isProbeCovered(probe, task, observation, sourceSnapshot) ? 'COVERED' : 'INCOMPLETE',
+        status: isProbeCovered(probe, probeTask, observation, sourceSnapshot) ? 'COVERED' : 'INCOMPLETE',
       }),
     );
     }
@@ -875,7 +1055,7 @@ export async function collectQualityRouteCoverage(
     return Object.freeze([
       Object.freeze({
         taskId: task.taskId,
-        scenarioId: task.scenarioId,
+        scenarioId: probeTask.scenarioId,
         rootKey,
         requiredProbeIds,
         probes: Object.freeze(probes),
@@ -889,6 +1069,7 @@ export async function collectQualityRouteCoverage(
     if (ownsAdapter && 'close' in adapter && typeof adapter.close === 'function') {
       await adapter.close();
     }
+    if (ownedProbeFixture !== undefined) await ownedProbeFixture.dispose();
   }
 }
 

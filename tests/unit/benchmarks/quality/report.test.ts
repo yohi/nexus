@@ -101,6 +101,8 @@ function makeRoute(taskId: string): QualityRouteCoverage {
       observedStatus: 'ok' as const,
       reasonCode: null,
       oracleVerdict: null,
+      setupProofDigest: 'setup-digest',
+      publicationSnapshotDigest: null,
       resultDigest: null,
       locationSetDigest: null,
       status: 'COVERED' as const,

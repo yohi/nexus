@@ -646,6 +646,14 @@ export function renderQualityMarkdown(report: QualityReport): string {
     `- Missing: ${rateText(report.gate1.missingRate)}`,
     `- Unavailable: ${rateText(report.gate1.unavailableRate)}`,
     '',
+    '### Mandatory route coverage',
+    '',
+    '| Task | Probe | Tool | Sequence | Setup proof | Args digest | Request snapshot | Publication snapshot | Observed | Reason | Oracle | Coverage |',
+    '|---|---|---|---:|---|---|---|---|---|---|---|---|',
+    ...report.routeCoverage.flatMap((route) => route.probes.map((probe) =>
+      `| ${route.taskId} | ${probe.probeId} | ${probe.tool} | ${probe.traceSequence ?? '—'} | ${probe.setupProofDigest} | ${probe.publicArgsDigest ?? '—'} | ${route.probeTrace.find(({ sequence }) => sequence === probe.traceSequence)?.requestSnapshotDigest ?? '—'} | ${probe.publicationSnapshotDigest ?? '—'} | ${probe.observedStatus ?? '—'} | ${probe.reasonCode ?? '—'} | ${probe.oracleVerdict ?? '—'} | ${probe.status} |`,
+    )),
+    '',
     '## Gate 2 — Discovery',
     '',
   );

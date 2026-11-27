@@ -69,9 +69,11 @@ function scenarioShape(task: QualityCaseManifest): ScenarioShape {
   });
   switch (task.scenarioId) {
     case 'Q03@quality-v1':
-      return { targetPath: `${prefix}new-name.ts`, targetName: 'renamedAnswer', mutations: [], files: [
+      return { targetPath: `${prefix}new-name.ts`, targetName: 'renamedAnswer', files: [
         { path: `${prefix}old-name.ts`, source: sourceFor('oldAnswer') },
         { path: `${prefix}new-name.ts`, source: sourceFor('renamedAnswer') },
+      ], mutations: [
+        { phase: 'before_request', operation: 'delete', target: `${prefix}old-name.ts` },
       ] };
     case 'Q04@quality-v1':
       return { targetPath: `${prefix}moved.ts`, targetName: 'calculate', mutations: [], files: [

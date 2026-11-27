@@ -53,6 +53,7 @@ export interface QualityTraceEvent {
   readonly reasonCode: string | null;
   readonly resultCount: number;
   readonly exposedBytes: number;
+  readonly requestSnapshotDigest?: string;
   readonly logicalOperations: number;
   readonly invocationCount: number;
   readonly retries: number;

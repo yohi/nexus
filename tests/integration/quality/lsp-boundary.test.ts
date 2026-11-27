@@ -41,6 +41,7 @@ describe('Q13 LSP boundary coverage', () => {
         const relevant = coverage.probes.find((probe) => probe.probeId.endsWith(taskId.split('-')[1] ?? ''));
         expect(relevant?.status).toBe('COVERED');
         expect(relevant?.observedStatus).toBe('ok');
+        expect(relevant?.oracleVerdict).toBe('CORRECT_CURRENT');
       }
     } finally {
       await fixture.dispose();
