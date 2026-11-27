@@ -737,7 +737,7 @@ const sourceExposureBytesFromText = (text: string, duplicateOf: unknown): number
     if (typeof parsed === 'string') return countUnmatchedTexts([parsed]);
     const parsedExposureTexts = sourceExposureTexts(parsed);
     return parsedExposureTexts.length === 0
-      ? Buffer.byteLength(text, 'utf8')
+      ? 0
       : countUnmatchedTexts(parsedExposureTexts);
   } catch {
     // Unstructured refusal text cannot be proven source-free.

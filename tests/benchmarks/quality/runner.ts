@@ -97,7 +97,7 @@ function matchGlob(filePath: string, glob?: string[]): boolean {
   if (glob === undefined || glob.length === 0) {
     return true;
   }
-  let included = false;
+  let included = !glob.some((pattern) => !pattern.startsWith('!'));
   for (const pattern of glob) {
     const negative = pattern.startsWith('!');
     const raw = negative ? pattern.slice(1) : pattern;
@@ -223,7 +223,13 @@ function fixtureSymbolRetrievalService(
 ): NonNullable<NexusServerOptions['symbolRetrievalService']> {
   const parseDeclarations = async (filePath: string) => {
     const safePath = sanitizer.validateProjectRelative(filePath);
-    const content = await readFile(resolvePath(root, safePath), 'utf8');
+    let content: string;
+    try {
+      content = await readFile(resolvePath(root, safePath), 'utf8');
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
+      throw error;
+    }
     const sourceFile = ts.createSourceFile(safePath, content, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
     const declarations: Array<{
       name: string;
@@ -257,7 +263,17 @@ function fixtureSymbolRetrievalService(
   };
 
   const getFileOutline = async ({ filePath }: { filePath: string }) => {
-    const { declarations } = await parseDeclarations(filePath);
+    const parsed = await parseDeclarations(filePath);
+    if (parsed === null) {
+      return {
+        status: 'not_found',
+        freshness: 'unknown',
+        reindexRequired: false,
+        reasonCode: 'FILE_NOT_FOUND',
+        request: { filePath },
+      };
+    }
+    const { declarations } = parsed;
     return {
       status: 'ok',
       freshness: 'fresh',
@@ -279,7 +295,17 @@ function fixtureSymbolRetrievalService(
   const getSymbolSource = async ({ symbolId }: { symbolId: string }) => {
     for (const symbol of task.expectedSymbols) {
       if (symbol.name !== symbolId) continue;
-      const { content, declarations } = await parseDeclarations(symbol.filePath);
+      const parsed = await parseDeclarations(symbol.filePath);
+      if (parsed === null) {
+        return {
+          status: 'not_found',
+          freshness: 'unknown',
+          reindexRequired: false,
+          reasonCode: 'SYMBOL_NOT_FOUND',
+          request: { symbolId },
+        };
+      }
+      const { content, declarations } = parsed;
       const declaration = declarations.find((candidate) => candidate.name === symbol.name);
       if (declaration === undefined) break;
       return {
@@ -294,7 +320,9 @@ function fixtureSymbolRetrievalService(
       };
     }
     for (const file of await fixtureFiles(root)) {
-      const { declarations } = await parseDeclarations(file.filePath);
+      const parsed = await parseDeclarations(file.filePath);
+      if (parsed === null) continue;
+      const { declarations } = parsed;
       if (declarations.some((declaration) => declaration.name === symbolId)) {
         return {
           status: 'stale_identity',
@@ -395,8 +423,7 @@ export async function createNexusAdapterForRoot(root: string, task: QualityCaseM
       if (params.abortSignal?.aborted) return [];
       const files = await fixtureFiles(root);
       return files
-        .filter(({ filePath }) => params.filePatterns === undefined || params.filePatterns.length === 0 ||
-          params.filePatterns.some((pattern) => simpleGlobMatch(filePath, pattern.replace(/^!/, '')))
+        .filter(({ filePath }) => matchGlob(filePath, params.filePatterns)
         )
         .slice(0, params.topK ?? 20)
         .map(({ filePath, content: currentContent }) => {
@@ -550,7 +577,9 @@ export async function runQualityPair(
   const rgExecutable = options.rgExecutable ?? findRgExecutable();
   const signal = options.signal;
   const makeArm = async (arm: QualityArm) => {
-    const armFixture = await createQualityFixture([task.scenarioId], signal);
+    // Request cancellation controls policy execution, not the deterministic setup/cleanup
+    // needed to return a NOT_STARTED result for an arm.
+    const armFixture = await createQualityFixture([task.scenarioId], new AbortController().signal);
     try {
       const root = armFixture.roots[rootKey];
       if (root === undefined) throw new Error('quality_root_key_missing');
@@ -561,7 +590,7 @@ export async function runQualityPair(
         ? createRipgrepAdapter(root, rgExecutable, { rootKey })
         : await createNexusAdapterForRoot(root, armTask);
       const result = await runSingleArm(armTask, rootKey, root, adapter, armFixture, signal);
-      return { ...result, adapter };
+      return { ...result, adapter, task: armTask };
     } finally {
       await armFixture.dispose();
     }
@@ -570,8 +599,8 @@ export async function runQualityPair(
   const rArm = await makeArm('R');
   const nArm = await makeArm('N');
 
-  const rResult = gradeQualityArm(task, rArm.finalSnapshot, rArm.policyResult, rArm.publications);
-  const nResult = gradeQualityArm(task, nArm.finalSnapshot, nArm.policyResult, nArm.publications);
+  const rResult = gradeQualityArm(rArm.task, rArm.finalSnapshot, rArm.policyResult, rArm.publications);
+  const nResult = gradeQualityArm(nArm.task, nArm.finalSnapshot, nArm.policyResult, nArm.publications);
 
   const baselineRgExecution = buildBaselineRgExecutionEvidence(
     (rArm.adapter as RipgrepQualityAdapter).snapshotRgExecution(),
@@ -584,8 +613,8 @@ export async function runQualityPair(
   });
 
   const discovery: Record<QualityArm, ReturnType<typeof gradeDiscovery>> = Object.freeze({
-    R: gradeDiscovery(task, 'R', rArm.policyResult),
-    N: gradeDiscovery(task, 'N', nArm.policyResult),
+    R: gradeDiscovery(rArm.task, 'R', rArm.policyResult),
+    N: gradeDiscovery(nArm.task, 'N', nArm.policyResult),
   });
 
   const fixtureDigest = rArm.finalSnapshot.snapshotDigest;
@@ -608,45 +637,48 @@ export async function runQualityPair(
   });
 }
 
-function normalizeProbeArgs(tool: AdapterQualityTool, args: Record<string, unknown>): Record<string, unknown> {
-  switch (tool) {
-    case 'rg_search':
-      return {};
-    case 'grep_search':
-      return {
-        filePattern: args.filePattern,
-        filePatterns: args.filePatterns,
-        caseSensitive: args.caseSensitive,
-        maxResults: args.maxResults,
-      };
-    case 'semantic_search':
-      return { topK: args.topK, filePatterns: args.filePatterns, language: args.language };
-    case 'hybrid_search':
-      return {
-        topK: args.topK,
-        filePatterns: args.filePatterns,
-        language: args.language,
-        includeSnippet: args.includeSnippet,
-        contextLines: args.contextLines,
-      };
-    case 'read_file':
-      return { filePath: args.filePath };
-    case 'get_context':
-      return { filePath: args.filePath, startLine: args.startLine, endLine: args.endLine, mode: args.mode };
-    case 'get_file_outline':
-      return { filePath: args.filePath };
-    case 'get_symbol_source':
-    case 'get_symbol_context':
-      return { symbolId: args.symbolId };
-    case 'get_definition':
-    case 'get_references':
-    case 'get_implementations':
-      return { filePath: args.filePath, line: args.line, character: args.character, symbolId: args.symbolId };
-    case 'index_status':
-      return {};
-    default:
-      return {};
-  }
+export function normalizeProbeArgs(tool: AdapterQualityTool, args: Record<string, unknown>): Record<string, unknown> {
+  const normalized: Record<string, unknown> = (() => {
+    switch (tool) {
+      case 'rg_search':
+        return {};
+      case 'grep_search':
+        return {
+          filePattern: args.filePattern,
+          filePatterns: args.filePatterns,
+          caseSensitive: args.caseSensitive,
+          maxResults: args.maxResults,
+        };
+      case 'semantic_search':
+        return { topK: args.topK, filePatterns: args.filePatterns, language: args.language };
+      case 'hybrid_search':
+        return {
+          topK: args.topK,
+          filePatterns: args.filePatterns,
+          language: args.language,
+          includeSnippet: args.includeSnippet,
+          contextLines: args.contextLines,
+        };
+      case 'read_file':
+        return { filePath: args.filePath };
+      case 'get_context':
+        return { filePath: args.filePath, startLine: args.startLine, endLine: args.endLine, mode: args.mode };
+      case 'get_file_outline':
+        return { filePath: args.filePath };
+      case 'get_symbol_source':
+      case 'get_symbol_context':
+        return { symbolId: args.symbolId };
+      case 'get_definition':
+      case 'get_references':
+      case 'get_implementations':
+        return { filePath: args.filePath, line: args.line, character: args.character, symbolId: args.symbolId };
+      case 'index_status':
+        return {};
+      default:
+        return {};
+    }
+  })();
+  return Object.fromEntries(Object.entries(normalized).filter(([, value]) => value !== undefined));
 }
 
 function locationSetDigest(observation: QualityObservation): string | null {

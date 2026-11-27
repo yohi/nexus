@@ -15,6 +15,7 @@ import {
   getLineSubmatches,
   isProbeCovered,
   LocalGrepEngine,
+  normalizeProbeArgs,
   runQualityPair,
 } from '../../../../tests/benchmarks/quality/runner.js';
 
@@ -262,6 +263,46 @@ describe('quality route coverage', () => {
     }
   });
 
+  it('returns not_found for outline and symbol requests after a fixture file is deleted', async () => {
+    const fixture = await createQualityFixture(['Q05@quality-v1'], new AbortController().signal);
+    try {
+      const task = fixture.oracleCases[0];
+      const root = fixture.roots.single;
+      const filePath = task?.expectedFiles[0];
+      const symbol = task?.expectedSymbols[0];
+      if (task === undefined || root === undefined || filePath === undefined || symbol === undefined) {
+        throw new Error('Q05 fixture missing');
+      }
+      const adapter = await createNexusAdapterForRoot(root, task);
+      await applyQualityMutation(fixture, task.taskId, 'before_publication');
+
+      const outline = await adapter.invoke(
+        'get_file_outline',
+        { filePath },
+        new AbortController().signal,
+        { traceSequence: 1 },
+      );
+      const source = await adapter.invoke(
+        'get_symbol_source',
+        { symbolId: symbol.name },
+        new AbortController().signal,
+        { traceSequence: 2 },
+      );
+
+      expect(outline).toMatchObject({ status: 'not_found', reasonCode: 'FILE_NOT_FOUND' });
+      expect(source).toMatchObject({ status: 'not_found', reasonCode: 'SYMBOL_NOT_FOUND' });
+    } finally {
+      await fixture.dispose();
+    }
+  });
+
+  it('omits undefined keys from fallback probe arguments', () => {
+    const normalizedArgs = normalizeProbeArgs('grep_search', { maxResults: 20 });
+
+    expect(Object.keys(normalizedArgs)).toEqual(['maxResults']);
+    expect(normalizedArgs.maxResults).toBe(20);
+  });
+
   it('does not invoke or trace any probe when already aborted', async () => {
     const fixture = await createQualityFixture(['Q01@quality-v1'], new AbortController().signal);
     try {
@@ -294,6 +335,47 @@ describe('quality route coverage', () => {
       expect(result.outcomes.N.policy?.adoption?.content).toContain('return 42');
       expect(result.outcomes.R.adoptionHistory[0]?.publicationSnapshotDigest).not.toBeNull();
       expect(result.outcomes.N.adoptionHistory[0]?.publicationSnapshotDigest).not.toBeNull();
+    } finally {
+      await fixture.dispose();
+    }
+  });
+
+  it('returns not_run for both arms when cancellation precedes fixture setup', async () => {
+    const fixture = await createQualityFixture(['Q01@quality-v1'], new AbortController().signal);
+    try {
+      const task = fixture.oracleCases[0];
+      if (task === undefined) throw new Error('Q01 fixture missing');
+
+      const result = await runQualityPair(task, fixture, { signal: AbortSignal.abort() });
+
+      expect(result.outcomes.R).toMatchObject({ executionStatus: 'not_run', reasonCode: 'REQUEST_CANCELLED' });
+      expect(result.outcomes.N).toMatchObject({ executionStatus: 'not_run', reasonCode: 'REQUEST_CANCELLED' });
+    } finally {
+      await fixture.dispose();
+    }
+  });
+
+  it('grades against the generated task when the caller passes a public manifest entry', async () => {
+    const fixture = await createQualityFixture(['Q01@quality-v1'], new AbortController().signal);
+    try {
+      const generatedTask = fixture.oracleCases[0];
+      if (generatedTask === undefined) throw new Error('Q01 fixture missing');
+      const publicManifest = {
+        ...generatedTask,
+        expectedFiles: [],
+        expectedSymbols: [],
+        expectedSourceHashes: {},
+      };
+
+      const result = await runQualityPair(publicManifest, fixture, { signal: new AbortController().signal });
+
+      expect(result.discovery.N).toMatchObject({
+        eligibleFileTask: true,
+        eligibleSymbolTask: true,
+        fileFound: true,
+        symbolFound: true,
+        hitsAtK: 1,
+      });
     } finally {
       await fixture.dispose();
     }

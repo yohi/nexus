@@ -1,4 +1,4 @@
-const compareCodeUnitStrings = (left: string, right: string): number => {
+export const compareCodeUnitStrings = (left: string, right: string): number => {
   if (left < right) return -1;
   if (left > right) return 1;
   return 0;
@@ -13,6 +13,7 @@ export const canonicalJson = (value: unknown): string => {
   }
 
   const entries = Object.entries(value as Readonly<Record<string, unknown>>)
+    .filter(([, nestedValue]) => nestedValue !== undefined)
     .sort(([left], [right]) => compareCodeUnitStrings(left, right));
   return `{${entries.map(([key, nestedValue]) =>
     `${JSON.stringify(key)}:${canonicalJson(nestedValue)}`).join(',')}}`;

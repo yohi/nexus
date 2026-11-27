@@ -12,6 +12,9 @@ import {
 } from './adapters.js';
 import type { PublicQualityTask, QualityArm, QualityBudgets } from './contracts.js';
 import type { SourceAdoption } from './oracle.js';
+import { canonicalJson, compareCodeUnitStrings } from './canonical-json.js';
+
+export { canonicalJson } from './canonical-json.js';
 
 export interface QualityCumulativeCost {
   readonly logicalOperations: number;
@@ -79,25 +82,6 @@ const sha256 = (content: string | Uint8Array): string =>
   createHash('sha256').update(content).digest('hex');
 
 const utf8Bytes = (text: string): Uint8Array => new TextEncoder().encode(text);
-
-const compareCodeUnitStrings = (left: string, right: string): number => {
-  if (left < right) return -1;
-  if (left > right) return 1;
-  return 0;
-};
-
-export const canonicalJson = (value: NormalizedPublicArgs[string]): string => {
-  if (value === null || typeof value !== 'object') {
-    return JSON.stringify(value) ?? 'null';
-  }
-  if (Array.isArray(value)) {
-    return `[${value.map(canonicalJson).join(',')}]`;
-  }
-
-  const entries = Object.entries(value as Readonly<Record<string, NormalizedPublicArgs[string]>>)
-    .sort(([left], [right]) => compareCodeUnitStrings(left, right));
-  return `{${entries.map(([key, nestedValue]) => `${JSON.stringify(key)}:${canonicalJson(nestedValue)}`).join(',')}}`;
-};
 
 const tokenEncoder = (() => {
   try {

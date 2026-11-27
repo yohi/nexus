@@ -448,8 +448,8 @@ function summarizeDiscoveryAdoptions(
   }
 
   if (observedCandidateCount === 0 && hasEmptyCompletedResult) {
-    summary.fileFound = false;
-    summary.symbolFound = false;
+    if (summary.fileFound === null && eligibleFileTask) summary.fileFound = false;
+    if (summary.symbolFound === null && eligibleSymbolTask) summary.symbolFound = false;
   } else if (observedCandidateCount > 0) {
     if (summary.fileFound === null && eligibleFileTask) summary.fileFound = false;
     if (summary.symbolFound === null && eligibleSymbolTask) summary.symbolFound = false;

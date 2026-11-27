@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import { canonicalJson } from '../../../../tests/benchmarks/quality/canonical-json.js';
+import { canonicalJson as policyCanonicalJson } from '../../../../tests/benchmarks/quality/policy.js';
 
 describe('canonicalJson', () => {
   it('sorts nested object keys independently using locale-independent order', () => {
@@ -17,5 +18,13 @@ describe('canonicalJson', () => {
     const right = { other: 'value', outer: { a: 2, z: 1 } };
 
     expect(canonicalJson(left)).toBe(canonicalJson(right));
+  });
+
+  it('omits undefined object fields like JSON serialization does', () => {
+    expect(canonicalJson({ present: 1, omitted: undefined })).toBe('{"present":1}');
+  });
+
+  it('omits undefined object fields when policy arguments are canonicalized', () => {
+    expect(policyCanonicalJson({ present: 1, omitted: undefined })).toBe('{"present":1}');
   });
 });

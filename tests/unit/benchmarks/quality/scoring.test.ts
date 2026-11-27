@@ -301,6 +301,36 @@ describe('gradeDiscovery', () => {
     expect(result.reciprocalRank).toBe(1);
   });
 
+  it('preserves successful adoptions when a completed discovery query was empty', () => {
+    const policy: QualityPolicyResult = {
+      ...emptyPolicy,
+      status: 'COMPLETE',
+      trace: [makeTraceEvent('grep_search', 'ok', 0)],
+      adoptionEvents: [{ ...makeAdoptionEvent('src/answer.ts', source), candidateRank: 1 }],
+    };
+
+    const result = gradeDiscovery(baseTask, 'N', policy);
+
+    expect(result.fileFound).toBe(true);
+    expect(result.symbolFound).toBe(true);
+    expect(result.hitsAtK).toBe(1);
+  });
+
+  it('leaves symbol discovery ineligible for file-only tasks after an empty query', () => {
+    const fileOnlyTask = { ...baseTask, expectedSymbols: [] };
+    const policy: QualityPolicyResult = {
+      ...emptyPolicy,
+      status: 'COMPLETE',
+      trace: [makeTraceEvent('grep_search', 'ok', 0)],
+      adoptionEvents: [makeAdoptionEvent('src/answer.ts', source)],
+    };
+
+    const result = gradeDiscovery(fileOnlyTask, 'N', policy);
+
+    expect(result.fileFound).toBe(true);
+    expect(result.symbolFound).toBeNull();
+  });
+
   it('marks fileFound false when discovery succeeds but no expected target is adopted', () => {
     const policy: QualityPolicyResult = {
       ...emptyPolicy,

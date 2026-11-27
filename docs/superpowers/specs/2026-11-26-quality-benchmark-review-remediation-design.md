@@ -2,11 +2,12 @@
 
 ## 目的
 
-品質ベンチマークのfixture、実行runner、採点処理、統合テストが、公開されたプローブ結果と実際のfixture状態を正しく反映するようにする。変更範囲は `tests/benchmarks/quality` と `tests/integration/quality` に限定し、プロダクトの検索・取得API自体は変更しない。
+品質ベンチマークのfixture、実行runner、採点処理、統合テストが、公開されたプローブ結果と実際のfixture状態を正しく反映するようにする。実装変更は `tests/benchmarks/quality`、回帰テストは `tests/unit/benchmarks/quality` と `tests/integration/quality` に限定し、プロダクトの検索・取得API自体は変更しない。
 
 ## 要件
 
 - 呼び出し前に中止されたプローブにはtraceを作らず、実行済みのQ01 `index_status` / `grep_search` には同じsequenceと実際のobservationを対応づける。
+- request signalのabortはpolicy実行を中止するが、`runQualityPair` のarm fixture準備・後始末を中断しない。事前abortでも両armのfixture setup/disposeを完了し、`NOT_STARTED` 結果を返す。probe invocation、trace、publicationは発生させない。
 - COVEREDは単なる成功statusではなく、期待アクションごとの結果（候補、公開ソース証拠、妥当な拒否、能力状態）が確認できる場合に限る。
 - 公開引数の記録はアダプターが正規化した引数を使い、検索語を公開せずに公開パラメーターを保持する。
 - Q03では旧宣言IDの拒否と新宣言の取得を別々に検証する。Q10のoutline取得、Q07/Q08のhybrid検索はローカルfixtureで再現可能にする。
@@ -26,7 +27,7 @@
 ## 検証
 
 - 変更したquality benchmarkのunit testsと `tests/integration/quality/core.test.ts` を実行する。
-- TypeScript型検査および関連lintを実行する。
+- TypeScript型検査、`npm run lint`、quality harness/test filesへの個別ESLint、および差分検査を実行する。root lint scriptがquality harnessを含まないことを前提に、個別ESLintを省略しない。
 - 失敗があれば修正後に該当テストを再実行し、最終差分を確認する。
 
 ## 非目標
