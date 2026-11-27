@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import { spawn } from 'node:child_process';
 import { lstat, open, realpath } from 'node:fs/promises';
 import { isAbsolute, relative, resolve, sep } from 'node:path';
+import { isDeepStrictEqual } from 'node:util';
 import type { QualityArm, QualityRootKey } from './contracts.js';
 import type { SourceAdoption } from './oracle.js';
 import type { buildToolHandlers } from '../../../src/server/tools/tool-support.js';
@@ -699,28 +700,48 @@ const rankCandidates = (candidates: CandidateSeed[]): readonly PublicCandidate[]
 const exposedBytes = (candidates: readonly PublicCandidate[]): number =>
   candidates.reduce((total, candidate) => total + Buffer.byteLength(candidate.preview ?? '', 'utf8'), 0);
 
-const sourceExposureBytes = (value: unknown): number => {
-  if (Array.isArray(value)) {
-    return (value as unknown[]).reduce<number>((total, item) => total + sourceExposureBytes(item), 0);
+const sourceLikeText = (text: string): boolean =>
+  /\bexport\s+(?:default\s+)?(?:async\s+)?(?:function|class|const|let|var|interface|type|enum)\b|\b(?:async\s+)?function\s+[\w$]+\s*\(|\b(?:const|let|var)\s+[\w$]+\s*=|\b(?:class|interface|struct|enum|type)\s+[\w$]+\s*(?:\{|=|extends|implements)|\bdef\s+\w+\s*\(|\bfn\s+\w+\s*\(|#include\s+[<"]|=>\s*(?:\{|[^\s,;]+)|^\s*\{\s*"[^"]+"\s*:/m.test(text);
+
+const sourceExposureTexts = (value: unknown, carriesSource = false): string[] => {
+  if (typeof value === 'string') {
+    return carriesSource || sourceLikeText(value) ? [value] : [];
   }
-  if (value === null || typeof value !== 'object') return 0;
-  return Object.entries(value as Record<string, unknown>).reduce((total, [key, item]) => {
-    const carriesSource = ['source', 'context', 'preview', 'snippet', 'content'].includes(key.toLowerCase());
-    const ownBytes = carriesSource && typeof item === 'string' ? Buffer.byteLength(item, 'utf8') : 0;
-    return total + ownBytes + (typeof item === 'object' && item !== null ? sourceExposureBytes(item) : 0);
-  }, 0);
+  if (Array.isArray(value)) {
+    return value.flatMap((item) => sourceExposureTexts(item, carriesSource));
+  }
+  if (value === null || typeof value !== 'object') return [];
+  return Object.entries(value as Record<string, unknown>).flatMap(([key, item]) => {
+    const keyCarriesSource = ['source', 'context', 'preview', 'snippet', 'content'].includes(key.toLowerCase());
+    return sourceExposureTexts(item, carriesSource || keyCarriesSource);
+  });
 };
 
-const sourceExposureBytesFromText = (text: string): number => {
+const sourceExposureBytes = (value: unknown): number =>
+  sourceExposureTexts(value).reduce((total, text) => total + Buffer.byteLength(text, 'utf8'), 0);
+
+const sourceExposureBytesFromText = (text: string, duplicateOf: unknown): number => {
   if (text.length === 0) return 0;
+  const duplicateTexts = sourceExposureTexts(duplicateOf);
+  const countUnmatchedTexts = (texts: string[]): number =>
+    texts.reduce((total, exposure) => {
+      const duplicateIndex = duplicateTexts.indexOf(exposure);
+      if (duplicateIndex === -1) return total + Buffer.byteLength(exposure, 'utf8');
+      duplicateTexts.splice(duplicateIndex, 1);
+      return total;
+    }, 0);
+
   try {
     const parsed: unknown = JSON.parse(text);
-    return typeof parsed === 'string'
-      ? Buffer.byteLength(parsed, 'utf8')
-      : sourceExposureBytes(parsed);
+    if (isDeepStrictEqual(parsed, duplicateOf)) return 0;
+    if (typeof parsed === 'string') return countUnmatchedTexts([parsed]);
+    const parsedExposureTexts = sourceExposureTexts(parsed);
+    return parsedExposureTexts.length === 0
+      ? Buffer.byteLength(text, 'utf8')
+      : countUnmatchedTexts(parsedExposureTexts);
   } catch {
     // Unstructured refusal text cannot be proven source-free.
-    return Buffer.byteLength(text, 'utf8');
+    return countUnmatchedTexts([text]);
   }
 };
 
@@ -1823,7 +1844,7 @@ export const createNexusAdapter = (handlers: ToolHandlers): QualityAdapter => {
       : (Array.isArray(result.content) ? result.content : []).reduce((total, item) => {
           if (item === null || typeof item !== 'object') return total;
           const contentText = asString((item as { text?: unknown }).text);
-          return total + (contentText === undefined ? 0 : sourceExposureBytesFromText(contentText));
+          return total + (contentText === undefined ? 0 : sourceExposureBytesFromText(contentText, envelope));
         }, 0);
     if (status === 'ok') {
       const validation = validateSearchEnvelope(tool, envelope);
@@ -1853,7 +1874,7 @@ export const createNexusAdapter = (handlers: ToolHandlers): QualityAdapter => {
       sourceAdoptions,
       reasonCode,
       navigation,
-      status === 'ok' ? undefined : Math.max(sourceExposureBytes(envelope), refusalTextExposure),
+      status === 'ok' ? undefined : sourceExposureBytes(envelope) + refusalTextExposure,
     );
   };
 

@@ -1244,6 +1244,102 @@ describe('createNexusAdapter', () => {
     expect(observation.exposedBytes).toBeGreaterThan(0);
   });
 
+  it('detects source in an unrecognized field of duplicate refusal JSON text', async () => {
+    const structuredContent = {
+      status: 'stale_identity',
+      reasonCode: 'SYMBOL_RETIRED',
+      message: 'export function secret() {}',
+    };
+    const adapter = createNexusAdapter(handlersFor({
+      get_symbol_source: handler({
+        content: [{ type: 'text', text: JSON.stringify(structuredContent) }],
+        structuredContent,
+      }),
+    }));
+
+    const observation = await adapter.invoke(
+      'get_symbol_source',
+      { symbolId: 'retired-id' },
+      new AbortController().signal,
+      ctx(1),
+    );
+
+    expect(observation.exposedBytes).toBeGreaterThan(0);
+  });
+
+  it('adds distinct source exposure from refusal text and structured content', async () => {
+    const structuredSource = 'export function structuredSecret() {}';
+    const textSource = 'export function textSecret() {}';
+    const adapter = createNexusAdapter(handlersFor({
+      get_symbol_source: handler({
+        content: [{ type: 'text', text: textSource }],
+        structuredContent: {
+          status: 'stale_identity',
+          reasonCode: 'SYMBOL_RETIRED',
+          source: structuredSource,
+        },
+      }),
+    }));
+
+    const observation = await adapter.invoke(
+      'get_symbol_source',
+      { symbolId: 'retired-id' },
+      new AbortController().signal,
+      ctx(1),
+    );
+
+    expect(observation.exposedBytes).toBe(
+      Buffer.byteLength(structuredSource, 'utf8') + Buffer.byteLength(textSource, 'utf8'),
+    );
+  });
+
+  it('does not double-count refusal text that duplicates structured content', async () => {
+    const source = 'export function retiredSecret() {}';
+    const structuredContent = {
+      status: 'stale_identity',
+      reasonCode: 'SYMBOL_RETIRED',
+      source,
+    };
+    const adapter = createNexusAdapter(handlersFor({
+      get_symbol_source: handler({
+        content: [{ type: 'text', text: JSON.stringify(structuredContent) }],
+        structuredContent,
+      }),
+    }));
+
+    const observation = await adapter.invoke(
+      'get_symbol_source',
+      { symbolId: 'retired-id' },
+      new AbortController().signal,
+      ctx(1),
+    );
+
+    expect(observation.exposedBytes).toBe(Buffer.byteLength(source, 'utf8'));
+  });
+
+  it('does not double-count source text duplicated across refusal channels', async () => {
+    const source = 'export function retiredSecret() {}';
+    const adapter = createNexusAdapter(handlersFor({
+      get_symbol_source: handler({
+        content: [{ type: 'text', text: source }],
+        structuredContent: {
+          status: 'stale_identity',
+          reasonCode: 'SYMBOL_RETIRED',
+          source,
+        },
+      }),
+    }));
+
+    const observation = await adapter.invoke(
+      'get_symbol_source',
+      { symbolId: 'retired-id' },
+      new AbortController().signal,
+      ctx(1),
+    );
+
+    expect(observation.exposedBytes).toBe(Buffer.byteLength(source, 'utf8'));
+  });
+
   it('leaves read previews unverified when the requested path or range cannot be validated', async () => {
     const adapter = createNexusAdapter(handlersFor({
       get_context: handler({
