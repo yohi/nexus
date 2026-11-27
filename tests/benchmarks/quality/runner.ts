@@ -35,6 +35,7 @@ import {
   type QualityInvocationContext,
   type QualityTool as AdapterQualityTool,
   type PublicJsonValue,
+  type PublicSourceLocation,
 } from './adapters.js';
 import { publicTask, type QualityCaseManifest, type QualityArm, type QualityRootKey } from './contracts.js';
 import {
@@ -572,7 +573,11 @@ function findRgExecutable(): string {
 export async function runQualityPair(
   task: QualityCaseManifest,
   fixture: OwnedQualityFixture,
-  options: Readonly<{ signal: AbortSignal; rgExecutable?: string }>,
+  options: Readonly<{
+    signal: AbortSignal;
+    rgExecutable?: string;
+    armFixtures?: Readonly<Record<QualityArm, OwnedQualityFixture>>;
+  }>,
 ): Promise<PairedQualityResult> {
   const rootKey = task.worktreeIdentity.rootKey;
   if (fixture.roots[rootKey] === undefined) {
@@ -583,11 +588,15 @@ export async function runQualityPair(
   const makeArm = async (arm: QualityArm) => {
     // Request cancellation controls policy execution, not the deterministic setup/cleanup
     // needed to return a NOT_STARTED result for an arm.
-    const armFixture = await createQualityFixture([task.scenarioId], new AbortController().signal);
+    const providedFixture = options.armFixtures?.[arm];
+    const armFixture = providedFixture ?? await createQualityFixture([task.scenarioId], new AbortController().signal);
     try {
       const root = armFixture.roots[rootKey];
       if (root === undefined) throw new Error('quality_root_key_missing');
       const generatedTask = armFixture.oracleCases.find(({ taskId }) => taskId === task.taskId);
+      if (providedFixture !== undefined && generatedTask === undefined) {
+        throw new Error('quality_task_not_found');
+      }
       const armTask = generatedTask ?? task;
       await applyQualityMutation(armFixture, task.taskId, 'before_request');
       const adapter = arm === 'R'
@@ -596,7 +605,7 @@ export async function runQualityPair(
       const result = await runSingleArm(armTask, rootKey, root, adapter, armFixture, signal);
       return { ...result, adapter, task: armTask };
     } finally {
-      await armFixture.dispose();
+      if (providedFixture === undefined) await armFixture.dispose();
     }
   };
 
@@ -621,7 +630,11 @@ export async function runQualityPair(
     N: gradeDiscovery(nArm.task, 'N', nArm.policyResult),
   });
 
-  const fixtureDigest = rArm.finalSnapshot.snapshotDigest;
+  const armFixtureDigests: Record<QualityArm, string> = Object.freeze({
+    R: rArm.finalSnapshot.snapshotDigest,
+    N: nArm.finalSnapshot.snapshotDigest,
+  });
+  const fixtureDigest = armFixtureDigests.R;
   const profile =
     task.evaluationEligibility === 'conditional_worktree'
       ? 'quality-worktree-v1'
@@ -634,6 +647,7 @@ export async function runQualityPair(
     profile,
     rootKey,
     fixtureDigest,
+    armFixtureDigests,
     policyVersion: 'quality-policy-v1' as const,
     baselineRgExecution,
     outcomes,
@@ -731,6 +745,13 @@ function requiredProbesForScenario(
         ...base,
         { probeId: `${task.taskId}-outline`, taskId: task.taskId, rootKey: task.worktreeIdentity.rootKey, tool: 'get_file_outline', expectedAction: 'discovery_current' },
         { probeId: `${task.taskId}-scoped-source`, taskId: task.taskId, rootKey: task.worktreeIdentity.rootKey, tool: 'get_context', expectedAction: 'current_source' },
+      ];
+    case 'Q13@quality-v1':
+      return [
+        ...base,
+        { probeId: `${task.taskId}-definition`, taskId: task.taskId, rootKey: task.worktreeIdentity.rootKey, tool: 'get_definition', expectedAction: 'navigation_locations' },
+        { probeId: `${task.taskId}-references`, taskId: task.taskId, rootKey: task.worktreeIdentity.rootKey, tool: 'get_references', expectedAction: 'navigation_locations' },
+        { probeId: `${task.taskId}-implementations`, taskId: task.taskId, rootKey: task.worktreeIdentity.rootKey, tool: 'get_implementations', expectedAction: 'navigation_locations' },
       ];
     case 'Q14@quality-v1':
       return [
@@ -855,6 +876,7 @@ export function isProbeCovered(
     case 'navigation_locations':
       return observation.status === 'ok' &&
         observation.navigation?.capability === 'supported' &&
+        !observation.navigation.truncated &&
         observation.navigation.sourceValidation === 'verified' &&
         observation.navigation.locations.length > 0;
   }
@@ -863,7 +885,7 @@ export function isProbeCovered(
 export async function collectQualityRouteCoverage(
   task: QualityCaseManifest,
   fixture: OwnedQualityFixture,
-  options: Readonly<{ signal: AbortSignal }>,
+  options: Readonly<{ signal: AbortSignal; adapter?: QualityAdapter }>,
 ): Promise<readonly QualityRouteCoverage[]> {
   const rootKey = task.worktreeIdentity.rootKey;
   const root = fixture.roots[rootKey];
@@ -883,7 +905,7 @@ export async function collectQualityRouteCoverage(
     ]);
   }
 
-  const adapter = await createNexusAdapterForRoot(root, task);
+  const adapter = options.adapter ?? (await createNexusAdapterForRoot(root, task));
   const requiredProbes = requiredProbesForScenario(task);
   const requiredProbeIds = Object.freeze(requiredProbes.map((p) => p.probeId));
   const probes: QualityProbeEvidence[] = [];
@@ -982,4 +1004,77 @@ export async function collectQualityRouteCoverage(
       reasonCode: allCovered ? undefined : 'MISSING_REQUIRED_PROBE',
     }),
   ]);
+}
+
+export type CapabilityEvidenceClass =
+  | 'FUNCTIONAL_ONLY'
+  | 'RELEVANCE_ELIGIBLE'
+  | 'CONTRACT_ONLY'
+  | 'REAL_LSP_ELIGIBLE'
+  | 'NOT_RUN';
+
+export function classifyCapabilityEvidence(value: Readonly<{
+  route: 'synthetic' | 'pinned_embedding' | 'lsp_stub' | 'lsp_real';
+  executed: boolean;
+  ownerApproved: boolean;
+}>): CapabilityEvidenceClass {
+  if (!value.executed) return 'NOT_RUN';
+  switch (value.route) {
+    case 'synthetic':
+      return 'FUNCTIONAL_ONLY';
+    case 'pinned_embedding':
+      return value.ownerApproved ? 'RELEVANCE_ELIGIBLE' : 'FUNCTIONAL_ONLY';
+    case 'lsp_stub':
+      return 'CONTRACT_ONLY';
+    case 'lsp_real':
+      return value.ownerApproved ? 'REAL_LSP_ELIGIBLE' : 'NOT_RUN';
+    default:
+      return 'NOT_RUN';
+  }
+}
+
+export interface LspStubLocations {
+  readonly definition: readonly PublicSourceLocation[];
+  readonly references: readonly PublicSourceLocation[];
+  readonly implementations: readonly PublicSourceLocation[];
+}
+
+export function createLspStubAdapter(
+  locations: LspStubLocations,
+  options: Readonly<{ truncated?: boolean }> = {},
+): QualityAdapter {
+  return {
+    arm: 'N',
+    async invoke(tool): Promise<QualityObservation> {
+      const kind: 'definition' | 'references' | 'implementations' | null = (tool === 'get_definition' || tool === 'get_references' || tool === 'get_implementations')
+        ? tool.slice(4) as 'definition' | 'references' | 'implementations'
+        : null;
+      if (kind === null) {
+        return {
+          status: 'unavailable',
+          results: Object.freeze([]),
+          exposedBytes: 0,
+          sourceAdoptions: Object.freeze([]),
+          rawDigest: digest({ reason: 'lsp_stub_tool_unavailable', tool }),
+          normalizedPublicArgs: Object.freeze({}),
+          reasonCode: 'lsp_stub_tool_unavailable',
+        };
+      }
+      const selected = locations[kind];
+      return {
+        status: 'ok',
+        results: Object.freeze([]),
+        exposedBytes: 0,
+        sourceAdoptions: Object.freeze([]),
+        rawDigest: digest({ kind, locations: selected, truncated: options.truncated ?? false }),
+        normalizedPublicArgs: Object.freeze({}),
+        navigation: Object.freeze({
+          locations: Object.freeze([...selected]),
+          truncated: options.truncated ?? false,
+          sourceValidation: 'verified',
+          capability: 'supported',
+        }),
+      };
+    },
+  };
 }

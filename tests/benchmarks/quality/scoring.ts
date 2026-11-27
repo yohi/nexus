@@ -105,6 +105,7 @@ export interface PairedQualityResult {
   readonly profile: QualityProfile;
   readonly rootKey: QualityRootKey;
   readonly fixtureDigest: string;
+  readonly armFixtureDigests: Readonly<Record<QualityArm, string>>;
   readonly policyVersion: 'quality-policy-v1';
   readonly baselineRgExecution: BaselineRgExecutionEvidence;
   readonly outcomes: Readonly<Record<QualityArm, QualityArmResult>>;

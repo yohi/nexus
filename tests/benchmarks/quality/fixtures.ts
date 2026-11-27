@@ -3,6 +3,9 @@ import { tmpdir } from 'node:os';
 import { dirname, join, relative, resolve, sep } from 'node:path';
 import ts from 'typescript';
 import { sha256 } from '../performance/fixture-recipe.js';
+import { createOwnedGitWorkspace } from '../performance/git-fixture.js';
+import { runGit, gitEnvironment } from '../performance/git-command.js';
+import type { GitCommandResult } from '../performance/git-command.js';
 import type { QualityCaseManifest, QualityRootKey, PublicQualityTask } from './contracts.js';
 import { validateQualityCases } from './contracts.js';
 import { QUALITY_CASES_V1 } from './manifest.js';
@@ -18,12 +21,11 @@ export interface OwnedQualityFixture {
 export class QualitySetupError extends Error {
   readonly status = 'setup_incomplete' as const;
 
-  constructor(readonly code: 'scenario_empty' | 'scenario_duplicate' | 'scenario_unknown') {
+  constructor(readonly code: 'scenario_empty' | 'scenario_duplicate' | 'scenario_unknown' | 'git_unavailable' | 'git_command_failed') {
     super(code);
     this.name = 'QualitySetupError';
   }
 }
-
 type FixtureFileSpec = Readonly<{ path: string; source: string }>;
 type ScenarioShape = Readonly<{
   readonly targetPath: string;
@@ -122,6 +124,87 @@ function sortedDigest(entries: readonly (readonly [string, string])[]): string {
     .map(([path, digest]) => `${path}\0${digest}`).join('\n'));
 }
 
+const gitSuccess = (result: GitCommandResult): boolean => result.status === 'exited' && result.exitCode === 0;
+
+async function initGitRepository(root: string, signal: AbortSignal): Promise<void> {
+  const env = gitEnvironment();
+  const context = { cwd: root, env, signal };
+  const version = await runGit(['--version'], context);
+  if (version.status === 'unavailable') throw new QualitySetupError('git_unavailable');
+  if (!gitSuccess(version)) throw new QualitySetupError('git_command_failed');
+  const configPath = join(root, '..', 'git-config');
+  await writeFile(configPath, '', 'utf8');
+  const identity = ['-c', 'user.name=Nexus Benchmark Fixture', '-c', 'user.email=benchmark@nexus.invalid', '-c', 'commit.gpgsign=false', '-c', 'core.autocrlf=false', '-c', `core.attributesFile=${configPath}`];
+  const command = (args: readonly string[], input?: string) => runGit([...identity, ...args], { ...context, ...(input === undefined ? {} : { input }) });
+  if (!gitSuccess(await command(['init', '--quiet', '--initial-branch=fixture']))) throw new QualitySetupError('git_command_failed');
+  const top = await command(['rev-parse', '--show-toplevel']);
+  if (!gitSuccess(top) || await realpath(top.stdout.trim()) !== root) throw new QualitySetupError('git_command_failed');
+}
+
+export async function createPrimaryLinkedQualityFixture(signal: AbortSignal): Promise<OwnedQualityFixture> {
+  signal.throwIfAborted();
+  const workspace = await createOwnedGitWorkspace();
+  const primaryRoot = join(workspace.root, 'primary');
+  const linkedRoot = join(workspace.root, 'linked');
+  const sourcePrimary = sourceFor('answer', 42);
+  const sourceLinked = sourceFor('answer', 43);
+  const targetPath = 'src/answer.ts';
+  const targetName = 'answer';
+  try {
+    await mkdir(primaryRoot, { recursive: true });
+    await initGitRepository(primaryRoot, signal);
+    const primaryFile = join(primaryRoot, targetPath);
+    await mkdir(dirname(primaryFile), { recursive: true });
+    await writeFile(primaryFile, sourcePrimary, 'utf8');
+    const env = gitEnvironment();
+    const configPath = join(workspace.root, 'git-config');
+    const identity = ['-c', 'user.name=Nexus Benchmark Fixture', '-c', 'user.email=benchmark@nexus.invalid', '-c', 'commit.gpgsign=false', '-c', 'core.autocrlf=false', '-c', `core.attributesFile=${configPath}`];
+    const command = (args: readonly string[], input?: string) => runGit([...identity, ...args], { cwd: primaryRoot, env, signal, ...(input === undefined ? {} : { input }) });
+    if (!gitSuccess(await command(['add', targetPath]))) throw new QualitySetupError('git_command_failed');
+    if (!gitSuccess(await command(['commit', '--quiet', '-m', 'initial']))) throw new QualitySetupError('git_command_failed');
+    if (!gitSuccess(await command(['worktree', 'add', '--detach', '--quiet', linkedRoot]))) throw new QualitySetupError('git_command_failed');
+    const linkedFile = join(linkedRoot, targetPath);
+    await writeFile(linkedFile, sourceLinked, 'utf8');
+  } catch (error) {
+    await workspace.dispose();
+    throw error;
+  }
+  const roots: Partial<Record<QualityRootKey, string>> = Object.freeze({ primary: primaryRoot, linked: linkedRoot });
+  const primaryHash = sha256(new TextEncoder().encode(sourcePrimary));
+  const linkedHash = sha256(new TextEncoder().encode(sourceLinked));
+  const primarySnapshotDigest = sortedDigest([[targetPath, primaryHash]]);
+  const linkedSnapshotDigest = sortedDigest([[targetPath, linkedHash]]);
+  const buildCase = (taskId: 'Q12-primary' | 'Q12-linked', source: string, snapshotDigest: string): QualityCaseManifest => {
+    const sourceBytes = new TextEncoder().encode(source);
+    const base = QUALITY_CASES_V1.find((item) => item.taskId === taskId);
+    if (base === undefined) throw new QualitySetupError('scenario_unknown');
+    return {
+      ...base,
+      sourceSnapshotDigest: snapshotDigest,
+      expectedFiles: [targetPath],
+      expectedSymbols: [{ filePath: targetPath, name: targetName, startByte: 0, endByte: sourceBytes.length }],
+      expectedSourceHashes: { [targetPath]: sha256(sourceBytes) },
+      expectedLocations: [{ filePath: targetPath, line: 1, character: 0 }],
+      initialClues: ['file:src/answer.ts'],
+    };
+  };
+  const primaryCase = buildCase('Q12-primary', sourcePrimary, primarySnapshotDigest);
+  const linkedCase = buildCase('Q12-linked', sourceLinked, linkedSnapshotDigest);
+  const oracleCases = validateQualityCases([primaryCase, linkedCase]);
+  let disposal: Promise<void> | undefined;
+  const fixture: OwnedQualityFixture = Object.freeze({
+    root: workspace.root,
+    roots,
+    publicTasks: Object.freeze(oracleCases.map(({ taskDescription, initialClues }) => Object.freeze({ taskDescription, initialClues }))),
+    oracleCases,
+    dispose: () => disposal ??= (async () => {
+      await runGit(['worktree', 'remove', '--force', linkedRoot], { cwd: primaryRoot, env: gitEnvironment(), signal: new AbortController().signal });
+      await workspace.dispose();
+    })(),
+  });
+  owned.add(fixture);
+  return fixture;
+}
 export async function createQualityFixture(scenarioIds: readonly string[], signal: AbortSignal): Promise<OwnedQualityFixture> {
   signal.throwIfAborted();
   if (scenarioIds.length === 0) throw new QualitySetupError('scenario_empty');
