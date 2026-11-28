@@ -1,0 +1,63 @@
+
+ RUN  v3.2.7 <redacted-path>
+
+[2026-11-28T17:16:21Z WARN  lance::dataset::write::insert] No existing dataset at <redacted-path> it will be created
+[2026-11-28T17:16:21Z WARN  lance::dataset::write::insert] No existing dataset at <redacted-path> it will be created
+[2026-11-28T17:16:21Z WARN  lance::dataset::write::insert] No existing dataset at <redacted-path> it will be created
+[2026-11-28T17:16:22Z WARN  lance::dataset::write::insert] No existing dataset at <redacted-path> it will be created
+[2026-11-28T17:16:22Z WARN  lance::dataset::write::insert] No existing dataset at <redacted-path> it will be created
+[2026-11-28T17:16:22Z WARN  lance::dataset::write::insert] No existing dataset at <redacted-path> it will be created
+[2026-11-28T17:16:23Z WARN  lance::dataset::write::insert] No existing dataset at <redacted-path> it will be created
+[2026-11-28T17:16:23Z WARN  lance::dataset::write::insert] No existing dataset at <redacted-path> it will be created
+[2026-11-28T17:16:23Z WARN  lance::dataset::write::insert] No existing dataset at <redacted-path> it will be created
+[2026-11-28T17:16:23Z WARN  lance::dataset::write::insert] No existing dataset at <redacted-path> it will be created
+[2026-11-28T17:16:24Z WARN  lance::dataset::write::insert] No existing dataset at <redacted-path> it will be created
+[2026-11-28T17:16:24Z WARN  lance::dataset::write::insert] No existing dataset at <redacted-path> it will be created
+[2026-11-28T17:16:25Z WARN  lance::dataset::write::insert] No existing dataset at <redacted-path> it will be created
+[2026-11-28T17:16:25Z WARN  lance::dataset::write::insert] No existing dataset at <redacted-path> it will be created
+stderr | tests/integration/quality/suite.test.ts > runQualitySuite integration > runs the quality-issue320-v1 suite and writes JSON/Markdown/SHA256SUMS
+[Nexus Server Error] Internal server error (potential path leak prevented)
+
+[2026-11-28T17:16:25Z WARN  lance::dataset::write::insert] No existing dataset at <redacted-path> it will be created
+[2026-11-28T17:16:25Z WARN  lance::dataset::write::insert] No existing dataset at <redacted-path> it will be created
+[2026-11-28T17:16:26Z WARN  lance::dataset::write::insert] No existing dataset at <redacted-path> it will be created
+[2026-11-28T17:16:26Z WARN  lance::dataset::write::insert] No existing dataset at <redacted-path> it will be created
+[2026-11-28T17:16:26Z WARN  lance::dataset::write::insert] No existing dataset at <redacted-path> it will be created
+[2026-11-28T17:16:26Z WARN  lance::dataset::write::insert] No existing dataset at <redacted-path> it will be created
+[2026-11-28T17:16:26Z WARN  lance::dataset::write::insert] No existing dataset at <redacted-path> it will be created
+[2026-11-28T17:16:26Z WARN  lance::dataset::write::insert] No existing dataset at <redacted-path> it will be created
+[2026-11-28T17:16:28Z WARN  lance::dataset::write::insert] No existing dataset at <redacted-path> it will be created
+[2026-11-28T17:16:28Z WARN  lance::dataset::write::insert] No existing dataset at <redacted-path> it will be created
+[2026-11-28T17:16:28Z WARN  lance::dataset::write::insert] No existing dataset at <redacted-path> it will be created
+[2026-11-28T17:16:28Z WARN  lance::dataset::write::insert] No existing dataset at <redacted-path> it will be created
+[2026-11-28T17:16:28Z WARN  lance::dataset::write::insert] No existing dataset at <redacted-path> it will be created
+[2026-11-28T17:16:28Z WARN  lance::dataset::write::insert] No existing dataset at <redacted-path> it will be created
+[2026-11-28T17:16:30Z WARN  lance::dataset::write::insert] No existing dataset at <redacted-path> it will be created
+[2026-11-28T17:16:30Z WARN  lance::dataset::write::insert] No existing dataset at <redacted-path> it will be created
+[2026-11-28T17:16:31Z WARN  lance::dataset::write::insert] No existing dataset at <redacted-path> it will be created
+[2026-11-28T17:16:31Z WARN  lance::dataset::write::insert] No existing dataset at <redacted-path> it will be created
+[2026-11-28T17:16:33Z WARN  lance::dataset::write::insert] No existing dataset at <redacted-path> it will be created
+[2026-11-28T17:16:33Z WARN  lance::dataset::write::insert] No existing dataset at <redacted-path> it will be created
+[2026-11-28T17:16:34Z WARN  lance::dataset::write::insert] No existing dataset at <redacted-path> it will be created
+[2026-11-28T17:16:34Z WARN  lance::dataset::write::insert] No existing dataset at <redacted-path> it will be created
+[2026-11-28T17:16:35Z WARN  lance::dataset::write::insert] No existing dataset at <redacted-path> it will be created
+[2026-11-28T17:16:35Z WARN  lance::dataset::write::insert] No existing dataset at <redacted-path> it will be created
+[2026-11-28T17:16:35Z WARN  lance::dataset::write::insert] No existing dataset at <redacted-path> it will be created
+[2026-11-28T17:16:35Z WARN  lance::dataset::write::insert] No existing dataset at <redacted-path> it will be created
+[2026-11-28T17:16:35Z WARN  lance::dataset::write::insert] No existing dataset at <redacted-path> it will be created
+[2026-11-28T17:16:35Z WARN  lance::dataset::write::insert] No existing dataset at <redacted-path> it will be created
+[2026-11-28T17:16:35Z WARN  lance::dataset::write::insert] No existing dataset at <redacted-path> it will be created
+[2026-11-28T17:16:35Z WARN  lance::dataset::write::insert] No existing dataset at <redacted-path> it will be created
+[2026-11-28T17:16:35Z WARN  lance::dataset::write::insert] No existing dataset at <redacted-path> it will be created
+[2026-11-28T17:16:35Z WARN  lance::dataset::write::insert] No existing dataset at <redacted-path> it will be created
+[2026-11-28T17:16:35Z WARN  lance::dataset::write::insert] No existing dataset at <redacted-path> it will be created
+[2026-11-28T17:16:35Z WARN  lance::dataset::write::insert] No existing dataset at <redacted-path> it will be created
+[2026-11-28T17:16:36Z WARN  lance::dataset::write::insert] No existing dataset at <redacted-path> it will be created
+[2026-11-28T17:16:36Z WARN  lance::dataset::write::insert] No existing dataset at <redacted-path> it will be created
+ ✓ tests/integration/quality/suite.test.ts (1 test) 16015ms
+   ✓ runQualitySuite integration > runs the quality-issue320-v1 suite and writes JSON/Markdown/SHA256SUMS  16010ms
+
+ Test Files  1 passed (1)
+      Tests  1 passed (1)
+   Start at  02:16:18
+   Duration  18.71s (transform 1.09s, setup 127ms, collect 2.25s, tests 16.02s, environment 0ms, prepare 79ms)

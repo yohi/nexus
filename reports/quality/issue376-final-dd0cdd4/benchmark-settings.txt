@@ -1,0 +1,2 @@
+NEXUS_QUALITY_SUITE=quality-issue320-v1
+coverage.enabled=false
