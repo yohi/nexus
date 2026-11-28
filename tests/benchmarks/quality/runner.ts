@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { readFile, readdir, realpath, writeFile } from 'node:fs/promises';
+import { lstat, readFile, readdir, realpath, writeFile } from 'node:fs/promises';
 import { resolve as resolvePath, relative, dirname, isAbsolute } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import type { Location } from 'vscode-languageserver-protocol';
@@ -218,7 +218,6 @@ export async function createNexusAdapterForRoot(
   root: string,
   lspStubLocations?: Readonly<Record<'definition' | 'references' | 'implementations', readonly PublicSourceLocation[]>>,
   indexSeed: readonly QualityRuntimeIndexSeed[] = [],
-  afterSourceRead?: () => Promise<void>,
 ): Promise<RuntimeQualityAdapter> {
   const assembly = await createBenchmarkRuntimeFactory(root)(new AbortController().signal);
   let originals: Array<{ filePath: string; source: string }> = [];
@@ -299,28 +298,7 @@ export async function createNexusAdapterForRoot(
         },
       });
     }
-    const handlers = buildToolHandlers(assembly.options, assembly.runtime.initialize.bind(assembly.runtime));
-    let sourceReadHookApplied = false;
-    const withSourceReadHook = <T extends (...args: never[]) => Promise<unknown>>(handler: T): T => {
-      if (afterSourceRead === undefined) return handler;
-      return (async (...args: Parameters<T>) => {
-        const result = await handler(...args);
-        if (!sourceReadHookApplied) {
-          sourceReadHookApplied = true;
-          await afterSourceRead();
-        }
-        return result;
-      }) as T;
-    };
-    const instrumentedHandlers = afterSourceRead === undefined
-      ? handlers
-      : {
-          ...handlers,
-          get_symbol_source: withSourceReadHook(handlers.get_symbol_source),
-          get_symbol_context: withSourceReadHook(handlers.get_symbol_context),
-          get_context: withSourceReadHook(handlers.get_context),
-        };
-    const adapter = createNexusAdapter(instrumentedHandlers);
+    const adapter = createNexusAdapter(buildToolHandlers(assembly.options, assembly.runtime.initialize.bind(assembly.runtime)));
     const normalizePath = (filePath: string): string => {
       if (!isAbsolute(filePath)) return filePath;
       const pathFromRoot = relative(root, filePath).replaceAll('\\', '/');
@@ -387,8 +365,21 @@ async function runSingleArm(
   const requestSnapshots = new Map<number, string>();
   let duringRequestApplied = false;
   let beforePublicationWork: Promise<void> | undefined;
-  const applyBeforePublication = (): Promise<void> =>
-    beforePublicationWork ??= applyQualityMutation(fixture, task.taskId, 'before_publication');
+  const applyBeforePublication = (): Promise<void> => beforePublicationWork ??= (async () => {
+    if (task.scenarioId === 'Q08@quality-v1') {
+      const deletion = task.mutationSchedule.find(({ phase, operation }) =>
+        phase === 'during_request' && operation === 'delete',
+      );
+      if (deletion === undefined) return;
+      try {
+        await lstat(resolvePath(root, deletion.target));
+        return;
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+      }
+    }
+    await applyQualityMutation(fixture, task.taskId, 'before_publication');
+  })();
 
   const armAdapter: QualityAdapter = {
     arm: adapter.arm,
@@ -397,7 +388,7 @@ async function runSingleArm(
       requestSnapshots.set(context.traceSequence, requestSnapshot.snapshotDigest);
       const observation = await adapter.invoke(tool, args, invocationSignal, context);
       if (
-        !(task.scenarioId === 'Q08@quality-v1' && adapter.arm === 'N') &&
+        task.scenarioId !== 'Q08@quality-v1' &&
         !duringRequestApplied &&
         ['hybrid_search', 'read_file', 'get_context', 'get_symbol_source', 'get_symbol_context'].includes(tool)
       ) {
@@ -459,7 +450,7 @@ async function runSingleArm(
   await Promise.allSettled(
     policyResult.adoptionEvents.map((event) => capturePublication(event)),
   );
-  if (!signal.aborted) await applyBeforePublication();
+  if (!signal.aborted && task.scenarioId !== 'Q08@quality-v1') await applyBeforePublication();
 
   const finalSnapshot = await captureOracleSnapshot(
     { root: dirname(canonicalRoot), roots: { [rootKey]: canonicalRoot }, publicTasks: [], oracleCases: [task], dispose: async () => {} } as OwnedQualityFixture,
@@ -503,20 +494,12 @@ export async function runQualityPair(
         throw new Error('quality_task_not_found');
       }
       const armTask = generatedTask ?? task;
-      let duringRequestApplied = false;
       const adapter = arm === 'R'
         ? createRipgrepAdapter(root, rgExecutable, { rootKey })
         : await createNexusAdapterForRoot(
             root,
             undefined,
             qualityRuntimeIndexSeed(armFixture, task.taskId),
-            task.scenarioId === 'Q08@quality-v1'
-              ? async () => {
-                  if (duringRequestApplied) return;
-                  duringRequestApplied = true;
-                  await applyQualityMutation(armFixture, task.taskId, 'during_request');
-                }
-              : undefined,
           );
       try {
         await applyQualityMutation(armFixture, task.taskId, 'before_request');
@@ -949,9 +932,6 @@ export async function collectQualityRouteCoverage(
         probeRoot,
         lspStubLocations,
         qualityRuntimeIndexSeed(probeFixture, task.taskId),
-        task.scenarioId === 'Q08@quality-v1'
-          ? async () => applyQualityMutation(probeFixture, probeTask.taskId, 'during_request')
-          : undefined,
       );
     }
     const requiredProbes = requiredProbesForScenario(probeTask);
@@ -1082,8 +1062,8 @@ export async function collectQualityRouteCoverage(
     if (probe.expectedAction === 'current_source' && ownedProbeFixture !== undefined) {
       if (probeTask.scenarioId !== 'Q08@quality-v1') {
         await applyQualityMutation(ownedProbeFixture, probeTask.taskId, 'during_request');
+        await applyQualityMutation(ownedProbeFixture, probeTask.taskId, 'before_publication');
       }
-      await applyQualityMutation(ownedProbeFixture, probeTask.taskId, 'before_publication');
     }
     const locationDigest = locationSetDigest(observation);
     const sourceSnapshot = probe.expectedAction === 'current_source'

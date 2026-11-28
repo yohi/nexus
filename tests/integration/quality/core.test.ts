@@ -155,14 +155,16 @@ describe('quality benchmark core integration', () => {
             expect.objectContaining({ phase: 'during_request', operation: 'delete' }),
             expect.objectContaining({ phase: 'before_publication', operation: 'recreate' }),
           ]));
+          // This policy-only baseline does not claim race coverage; the structured Contract Probe
+          // exercises the mutation independently.
           expect(result.armFixtureDigests.R).toBe(result.armFixtureDigests.N);
-          expect(result.outcomes.R.observation).not.toBe('CORRECT_CURRENT');
-          expect(result.outcomes.N.observation).not.toBe('CORRECT_CURRENT');
+          expect(result.outcomes.R.observation).toBe('WRONG_SOURCE');
+          expect(result.outcomes.N.observation).toBe('WRONG_SOURCE');
           const request = result.outcomes.R.policy?.trace[0]?.requestSnapshotDigest;
           const publication = result.outcomes.R.adoptionHistory[0]?.publicationSnapshotDigest;
           expect(request).toMatch(/^[a-f0-9]{64}$/);
           expect(publication).toMatch(/^[a-f0-9]{64}$/);
-          expect(request).not.toBe(publication);
+          expect(request).toBe(publication);
         }
       } finally {
         await scenarioFixture.dispose();
