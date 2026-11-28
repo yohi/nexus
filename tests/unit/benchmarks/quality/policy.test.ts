@@ -388,6 +388,31 @@ describe('runQualityPolicy', () => {
     expect(result.adoption?.content).toBe(answerDeclaration);
   });
 
+  it('does not read after outline discovery consumes the logical-operation budget', async () => {
+    const calls: QualityTool[] = [];
+    const adapter = fakeAdapter('N', (tool) => {
+      calls.push(tool);
+      if (tool === 'hybrid_search') {
+        return okObservation([{ filePath: 'src/answer.ts', line: 1, preview: 'answer', rank: 1 }]);
+      }
+      if (tool === 'get_file_outline') {
+        return okObservation([{ filePath: 'src/answer.ts', preview: 'answer', rank: 1, symbolId: 'symbol-answer' }]);
+      }
+      throw new Error(`Unexpected tool invocation: ${tool}`);
+    });
+
+    const result = await runQualityPolicy(
+      makeTask(['concept:answer']),
+      adapter,
+      { ...QUALITY_BUDGETS_V1, maxLogicalOperations: 2 } as unknown as QualityBudgets,
+      new AbortController().signal,
+    );
+
+    expect(calls).toEqual(['hybrid_search', 'get_file_outline']);
+    expect(result.status).toBe('EXHAUSTED');
+    expect(result.logicalOperations).toBe(2);
+  });
+
   it('selects the declaration matching a public concept on R', async () => {
     const answerDeclaration = 'export function answer(): number { return 42; }';
     const fileSource = `export function secondary(): number { return 2; }\n${answerDeclaration}\n`;

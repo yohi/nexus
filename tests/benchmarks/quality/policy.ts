@@ -824,6 +824,7 @@ export async function runQualityPolicy(
         ? buildRReadArgs(candidate)
         : await readSpecForCandidate(candidate, currentClues, fallback);
       if (readSpec === null) return false;
+      if (!canContinue()) return false;
       const readObservation = await invokeTool('READ', readSpec.tool, readSpec.args, null, fallback, 0);
       accountObservation(readObservation);
       if (signal.aborted || contextBudgetExceeded) return false;
