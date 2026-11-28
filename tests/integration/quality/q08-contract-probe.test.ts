@@ -1,15 +1,14 @@
-import { lstat, realpath } from 'node:fs/promises';
-import { join, relative } from 'node:path';
+import { lstat } from 'node:fs/promises';
+import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createQualityFixture, applyQualityMutation, type OwnedQualityFixture } from '../../../tests/benchmarks/quality/fixtures.js';
-import { captureOracleSnapshot, gradeTaskSource } from '../../../tests/benchmarks/quality/oracle.js';
+import { captureOracleSnapshot } from '../../../tests/benchmarks/quality/oracle.js';
 import { createNexusAdapter } from '../../../tests/benchmarks/quality/adapters.js';
 import { runQualityPair } from '../../../tests/benchmarks/quality/runner.js';
 import { createBenchmarkRuntimeFactory } from '../../../tests/benchmarks/performance/runtime.js';
 import { buildToolHandlers } from '../../../src/server/tools/tool-support.js';
 import type { IStructuredCatalog } from '../../../src/storage/interfaces/structured-catalog.js';
 import type { readCanonicalSource as ReadCanonicalSource } from '../../../src/lsp/target-resolver.js';
-import { sha256 } from '../../../tests/benchmarks/performance/fixture-recipe.js';
 
 type TargetResolverModule = Record<string, unknown> & {
   readonly readCanonicalSource: typeof ReadCanonicalSource;
@@ -46,7 +45,7 @@ describe('Q08 structured retrieval contract probe', () => {
     fixture = undefined;
   });
 
-  it('records the real in-request deletion and grades the returned source against the post-mutation snapshot', async () => {
+  it('rejects source after the real in-request deletion before the tool response', async () => {
     fixture = await createQualityFixture(['Q08@quality-v1'], new AbortController().signal);
     const task = fixture.oracleCases[0];
     const root = fixture.roots.single;
@@ -76,9 +75,16 @@ describe('Q08 structured retrieval contract probe', () => {
       await assembly.runtime.initialize();
       await assembly.runtime.reindex();
       await assembly.options.watcher.stop();
-      const adapter = createNexusAdapter(
-        buildToolHandlers(assembly.options, assembly.runtime.initialize.bind(assembly.runtime)),
-      );
+      const handlers = buildToolHandlers(assembly.options, assembly.runtime.initialize.bind(assembly.runtime));
+      let rawToolResponse: unknown;
+      const adapter = createNexusAdapter({
+        ...handlers,
+        get_symbol_source: async (...args) => {
+          const result = await handlers.get_symbol_source(...args);
+          rawToolResponse = result;
+          return result;
+        },
+      });
       const signal = new AbortController().signal;
       const outline = await adapter.invoke('get_file_outline', { filePath }, signal, { traceSequence: 1 });
       const symbolId = outline.results.find(({ preview }) => preview === expectedSymbol.name)?.symbolId;
@@ -109,16 +115,27 @@ describe('Q08 structured retrieval contract probe', () => {
         { traceSequence: 2 },
       );
       lifecycle.push('tool_response');
-      const adoption = response.sourceAdoptions[0];
-      expect(adoption).toBeDefined();
-      if (adoption === undefined || postMutationSnapshot === undefined) {
+      if (postMutationSnapshot === undefined) {
         throw new Error('Q08 contract evidence missing');
       }
-      expect(response.status).toBe('ok');
-      expect(adoption.content).toContain('return 42');
+      expect(response.status).toBe('stale');
+      expect(response.reasonCode).toBe('INDEX_FILE_MISSING');
+      expect(response.sourceAdoptions).toEqual([]);
+      expect(response.exposedBytes).toBe(0);
+      expect(rawToolResponse).toMatchObject({
+        structuredContent: {
+          status: 'stale',
+          freshness: 'stale',
+          reindexRequired: true,
+          reasonCode: 'INDEX_FILE_MISSING',
+        },
+      });
+      expect(JSON.stringify(rawToolResponse)).not.toContain('return 42');
       if (!lifecycle.includes('file_delete_completed')) {
         throw new Error('q08_mutation_coverage_missing');
       }
+      expect(postMutationSnapshot.sourceHashes[filePath]).toBeUndefined();
+      expect(postMutationSnapshot.sourceBytes[filePath]).toBeUndefined();
       expect(lifecycle).toEqual([
         'request_started',
         'request_snapshot',
@@ -130,13 +147,6 @@ describe('Q08 structured retrieval contract probe', () => {
         'tool_response',
       ]);
 
-      const canonicalRoot = await realpath(root);
-      const oracleAdoption = {
-        ...adoption,
-        filePath: adoption.filePath.startsWith(`${canonicalRoot}/`)
-          ? relative(canonicalRoot, adoption.filePath).replaceAll('\\', '/')
-          : adoption.filePath,
-      };
       lifecycle.push('publication_mutation_started');
       await applyQualityMutation(fixture, task.taskId, 'before_publication');
       lifecycle.push('publication_file_recreated');
@@ -146,20 +156,6 @@ describe('Q08 structured retrieval contract probe', () => {
       if (expectedPath === undefined) throw new Error('Q08 expected path missing');
       expect(publicationSnapshot.sourceHashes[expectedPath]).not.toBe(requestSnapshot.sourceHashes[expectedPath]);
       expect(new TextDecoder().decode(publicationSnapshot.sourceBytes[expectedPath])).toContain('return 43');
-
-      const oracleResult = gradeTaskSource(task, postMutationSnapshot, oracleAdoption, {
-        observedSourceRootKey: 'single',
-        canonicalSourceRoot: canonicalRoot,
-        sourceRootProofDigest: sha256(canonicalRoot),
-      });
-      lifecycle.push(`independent_oracle:${oracleResult}`);
-      expect(oracleResult).toBe('FALSE_FRESH');
-      expect(lifecycle.slice(-4)).toEqual([
-        'publication_mutation_started',
-        'publication_file_recreated',
-        'publication_snapshot',
-        'independent_oracle:FALSE_FRESH',
-      ]);
     } finally {
       catalog.getGeneration = originalGetGeneration;
       await assembly.runtime.close();
