@@ -33,9 +33,7 @@ import {
 import { publicTask, type QualityCaseManifest, type QualityArm, type QualityRootKey } from './contracts.js';
 import {
   captureOracleSnapshot,
-  checkSourceFreshness,
   gradeTaskSource,
-  type SourceAdoption,
   type SourceSnapshot,
   type SourceProvenance,
 } from './oracle.js';
@@ -220,7 +218,7 @@ export async function createNexusAdapterForRoot(
   root: string,
   lspStubLocations?: Readonly<Record<'definition' | 'references' | 'implementations', readonly PublicSourceLocation[]>>,
   indexSeed: readonly QualityRuntimeIndexSeed[] = [],
-  afterInvoke?: (tool: AdapterQualityTool) => Promise<void>,
+  afterSourceRead?: () => Promise<void>,
 ): Promise<RuntimeQualityAdapter> {
   const assembly = await createBenchmarkRuntimeFactory(root)(new AbortController().signal);
   let originals: Array<{ filePath: string; source: string }> = [];
@@ -302,7 +300,27 @@ export async function createNexusAdapterForRoot(
       });
     }
     const handlers = buildToolHandlers(assembly.options, assembly.runtime.initialize.bind(assembly.runtime));
-    const adapter = createNexusAdapter(handlers);
+    let sourceReadHookApplied = false;
+    const withSourceReadHook = <T extends (...args: never[]) => Promise<unknown>>(handler: T): T => {
+      if (afterSourceRead === undefined) return handler;
+      return (async (...args: Parameters<T>) => {
+        const result = await handler(...args);
+        if (!sourceReadHookApplied) {
+          sourceReadHookApplied = true;
+          await afterSourceRead();
+        }
+        return result;
+      }) as T;
+    };
+    const instrumentedHandlers = afterSourceRead === undefined
+      ? handlers
+      : {
+          ...handlers,
+          get_symbol_source: withSourceReadHook(handlers.get_symbol_source),
+          get_symbol_context: withSourceReadHook(handlers.get_symbol_context),
+          get_context: withSourceReadHook(handlers.get_context),
+        };
+    const adapter = createNexusAdapter(instrumentedHandlers);
     const normalizePath = (filePath: string): string => {
       if (!isAbsolute(filePath)) return filePath;
       const pathFromRoot = relative(root, filePath).replaceAll('\\', '/');
@@ -312,7 +330,6 @@ export async function createNexusAdapterForRoot(
       arm: adapter.arm,
       invoke: async (...args: Parameters<QualityAdapter['invoke']>) => {
         const observation = await adapter.invoke(...args);
-        await afterInvoke?.(args[0]);
         return Object.freeze({
           ...observation,
           results: Object.freeze(observation.results.map((candidate) =>
@@ -380,6 +397,7 @@ async function runSingleArm(
       requestSnapshots.set(context.traceSequence, requestSnapshot.snapshotDigest);
       const observation = await adapter.invoke(tool, args, invocationSignal, context);
       if (
+        !(task.scenarioId === 'Q08@quality-v1' && adapter.arm === 'N') &&
         !duringRequestApplied &&
         ['hybrid_search', 'read_file', 'get_context', 'get_symbol_source', 'get_symbol_context'].includes(tool)
       ) {
@@ -485,9 +503,21 @@ export async function runQualityPair(
         throw new Error('quality_task_not_found');
       }
       const armTask = generatedTask ?? task;
+      let duringRequestApplied = false;
       const adapter = arm === 'R'
         ? createRipgrepAdapter(root, rgExecutable, { rootKey })
-        : await createNexusAdapterForRoot(root, undefined, qualityRuntimeIndexSeed(armFixture, task.taskId));
+        : await createNexusAdapterForRoot(
+            root,
+            undefined,
+            qualityRuntimeIndexSeed(armFixture, task.taskId),
+            task.scenarioId === 'Q08@quality-v1'
+              ? async () => {
+                  if (duringRequestApplied) return;
+                  duringRequestApplied = true;
+                  await applyQualityMutation(armFixture, task.taskId, 'during_request');
+                }
+              : undefined,
+          );
       try {
         await applyQualityMutation(armFixture, task.taskId, 'before_request');
         const result = await runSingleArm(armTask, rootKey, root, adapter, armFixture, signal);
@@ -773,11 +803,7 @@ export function isProbeCovered(
         );
       });
     case 'current_source':
-      return observation.status === 'ok' &&
-        observation.exposedBytes > 0 &&
-        observation.sourceAdoptions.some((source) =>
-          isCurrentSourceAdoptionCovered(probe, task, source, sourceSnapshot),
-        );
+      return currentSourceVerdictForProbe(probe, task, observation, sourceSnapshot) === 'CORRECT_CURRENT';
     case 'safe_refusal': {
       const refusalStatus = observation.status === 'not_found' ||
         observation.status === 'stale_identity' ||
@@ -806,25 +832,23 @@ export function isProbeCovered(
   }
 }
 
-function isCurrentSourceAdoptionCovered(
+function currentSourceVerdictForProbe(
   probe: QualityRequiredProbe,
   task: QualityCaseManifest,
-  source: SourceAdoption,
+  observation: QualityObservation,
   sourceSnapshot?: SourceSnapshot,
-): boolean {
-  if (!task.expectedFiles.includes(source.filePath) || source.sourceValidation !== 'verified') return false;
-  if (sourceSnapshot === undefined ||
-    sourceSnapshot.rootKey !== probe.rootKey ||
-    checkSourceFreshness(sourceSnapshot, source) !== 'FRESH_BYTES') return false;
-  const expectedHash = task.expectedSourceHashes[source.filePath];
-  const expectedRange = task.expectedSymbols.find((symbol) => symbol.filePath === source.filePath);
-  if (expectedHash === undefined || expectedRange === undefined ||
-    source.startByte > expectedRange.startByte || source.endByte < expectedRange.endByte) return false;
-  const bytes = utf8Bytes(source.content);
-  const start = expectedRange.startByte - source.startByte;
-  const end = expectedRange.endByte - source.startByte;
-  return start >= 0 && end <= bytes.byteLength &&
-    sha256(bytes.subarray(start, end)) === expectedHash;
+): ObservationKind {
+  if (sourceSnapshot === undefined || sourceSnapshot.rootKey !== probe.rootKey) return 'INCONCLUSIVE';
+  const adoptions = observation.sourceAdoptions.filter((source) => source.sourceValidation === 'verified');
+  if (adoptions.length === 0) return observation.status === 'not_found' ? 'MISSING' : 'INCONCLUSIVE';
+
+  const provenance = buildProvenance(probe.rootKey, sourceSnapshot.canonicalProjectRoot);
+  const verdicts = adoptions.map((adoption) => gradeTaskSource(task, sourceSnapshot, adoption, provenance));
+  if (verdicts.includes('WRONG_SOURCE')) return 'WRONG_SOURCE';
+  if (verdicts.includes('FALSE_FRESH')) return 'FALSE_FRESH';
+  if (observation.status !== 'ok' || observation.exposedBytes <= 0) return 'INCONCLUSIVE';
+  if (verdicts.includes('CORRECT_CURRENT')) return 'CORRECT_CURRENT';
+  return verdicts[0] ?? 'INCONCLUSIVE';
 }
 
 function oracleVerdictForProbe(
@@ -834,32 +858,7 @@ function oracleVerdictForProbe(
   sourceSnapshot?: SourceSnapshot,
 ): ObservationKind {
   if (probe.expectedAction === 'current_source') {
-    const matchingAdoption = observation.sourceAdoptions.find((source) =>
-      isCurrentSourceAdoptionCovered(probe, task, source, sourceSnapshot),
-    );
-    if (matchingAdoption !== undefined && sourceSnapshot !== undefined) {
-      return gradeTaskSource(
-        task,
-        sourceSnapshot,
-        matchingAdoption,
-        buildProvenance(probe.rootKey, sourceSnapshot.canonicalProjectRoot),
-      );
-    }
-    const adoption = observation.sourceAdoptions.find((source) => source.sourceValidation === 'verified');
-    if (adoption === undefined || sourceSnapshot === undefined || sourceSnapshot.rootKey !== probe.rootKey) {
-      return observation.status === 'not_found' ? 'MISSING' : 'INCONCLUSIVE';
-    }
-    const adoptionVerdicts = observation.sourceAdoptions
-      .filter((source) => source.sourceValidation === 'verified')
-      .map((source) => gradeTaskSource(
-        task,
-        sourceSnapshot,
-        source,
-        buildProvenance(probe.rootKey, sourceSnapshot.canonicalProjectRoot),
-      ));
-    return adoptionVerdicts.includes('WRONG_SOURCE')
-      ? 'WRONG_SOURCE'
-      : gradeTaskSource(task, sourceSnapshot, adoption, buildProvenance(probe.rootKey, sourceSnapshot.canonicalProjectRoot));
+    return currentSourceVerdictForProbe(probe, task, observation, sourceSnapshot);
   }
   if (isProbeCovered(probe, task, observation, sourceSnapshot)) {
     return probe.expectedAction === 'safe_refusal' ? 'CORRECT_REFUSAL' : 'CORRECT_CURRENT';
@@ -951,9 +950,7 @@ export async function collectQualityRouteCoverage(
         lspStubLocations,
         qualityRuntimeIndexSeed(probeFixture, task.taskId),
         task.scenarioId === 'Q08@quality-v1'
-          ? async (tool) => tool === 'get_symbol_source'
-            ? applyQualityMutation(probeFixture, probeTask.taskId, 'during_request')
-            : Promise.resolve()
+          ? async () => applyQualityMutation(probeFixture, probeTask.taskId, 'during_request')
           : undefined,
       );
     }

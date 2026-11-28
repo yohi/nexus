@@ -5,6 +5,7 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   applyQualityMutation,
   createQualityFixture,
+  qualityRuntimeIndexSeed,
 } from '../../../../tests/benchmarks/quality/fixtures.js';
 import * as oracle from '../../../../tests/benchmarks/quality/oracle.js';
 import {
@@ -173,6 +174,65 @@ describe('quality route coverage', () => {
     }
   });
 
+  it('requires current-source coverage to use the exact range accepted by the Oracle', async () => {
+    const fixture = await createQualityFixture(['Q01@quality-v1'], new AbortController().signal);
+    try {
+      const task = fixture.oracleCases[0];
+      const root = fixture.roots.single;
+      const filePath = task?.expectedFiles[0];
+      if (task === undefined || root === undefined || filePath === undefined) {
+        throw new Error('Q01 fixture missing');
+      }
+      const content = await readFile(join(root, filePath), 'utf8');
+      const sourceAdoptions = [{
+        filePath,
+        startByte: 0,
+        endByte: Buffer.byteLength(content),
+        content,
+        sourceValidation: 'verified' as const,
+      }];
+      const snapshot = await oracle.captureOracleSnapshot(fixture, 'single', task.taskId);
+      const probe = {
+        probeId: 'Q01-whole-file-source',
+        taskId: task.taskId,
+        rootKey: task.worktreeIdentity.rootKey,
+        tool: 'get_symbol_source',
+        expectedAction: 'current_source',
+      } as const;
+      const observation = {
+        status: 'ok' as const,
+        results: [],
+        exposedBytes: Buffer.byteLength(content),
+        sourceAdoptions,
+        rawDigest: 'whole-file-source',
+        normalizedPublicArgs: {},
+      };
+      const adapter = {
+        arm: 'N' as const,
+        invoke: (tool: string) => Promise.resolve(tool === 'get_symbol_source' ? observation : {
+          status: 'ok' as const,
+          results: [],
+          exposedBytes: 0,
+          sourceAdoptions: [],
+          rawDigest: 'empty',
+          normalizedPublicArgs: {},
+        }),
+      };
+
+      expect(isProbeCovered(probe, task, observation, snapshot)).toBe(false);
+      const [route] = await collectQualityRouteCoverage(task, fixture, {
+        signal: new AbortController().signal,
+        adapter,
+      });
+      expect(route?.probes.find(({ expectedAction }) => expectedAction === 'current_source')).toMatchObject({
+        oracleVerdict: 'WRONG_SOURCE',
+        status: 'INCOMPLETE',
+      });
+    } finally {
+      await fixture.dispose();
+    }
+  });
+
   it('uses the same current-source adoption for the Oracle verdict and Gate 1 coverage', async () => {
     const fixture = await createQualityFixture(['Q01@quality-v1'], new AbortController().signal);
     try {
@@ -235,7 +295,7 @@ describe('quality route coverage', () => {
       const mixedProbe = mixedRoute?.probes.find(({ expectedAction }) => expectedAction === 'current_source');
       const wrongProbe = wrongRoute?.probes.find(({ expectedAction }) => expectedAction === 'current_source');
 
-      expect(mixedProbe).toMatchObject({ oracleVerdict: 'CORRECT_CURRENT', status: 'COVERED' });
+      expect(mixedProbe).toMatchObject({ oracleVerdict: 'FALSE_FRESH', status: 'INCOMPLETE' });
       expect(wrongProbe).toMatchObject({ oracleVerdict: 'WRONG_SOURCE', status: 'INCOMPLETE' });
     } finally {
       await fixture.dispose();
@@ -723,6 +783,62 @@ describe('quality route coverage', () => {
       expect(source.sourceAdoptions[0]?.content).toContain('return 42');
     } finally {
       await close?.();
+      await fixture.dispose();
+    }
+  });
+
+  it('runs the Q08 mutation after source bytes are read but before the public observation is finalized', async () => {
+    const fixture = await createQualityFixture(['Q08@quality-v1'], new AbortController().signal);
+    try {
+      const task = fixture.oracleCases[0];
+      const root = fixture.roots.single;
+      const filePath = task?.expectedFiles[0];
+      const symbol = task?.expectedSymbols[0];
+      if (task === undefined || root === undefined || filePath === undefined || symbol === undefined) {
+        throw new Error('Q08 fixture missing');
+      }
+      let hookCalls = 0;
+      const adapter = await createNexusAdapterForRoot(
+        root,
+        undefined,
+        qualityRuntimeIndexSeed(fixture, task.taskId),
+        async () => {
+          hookCalls += 1;
+          await applyQualityMutation(fixture, task.taskId, 'during_request');
+        },
+      );
+      try {
+        const signal = new AbortController().signal;
+        const outline = await adapter.invoke(
+          'get_file_outline',
+          { filePath },
+          signal,
+          { traceSequence: 1 },
+        );
+        const symbolId = outline.results.find(({ preview }) => preview === symbol.name)?.symbolId;
+        if (symbolId === undefined) throw new Error('Q08 indexed symbol missing');
+        expect(hookCalls).toBe(0);
+
+        const source = await adapter.invoke(
+          'get_symbol_source',
+          { symbolId },
+          signal,
+          { traceSequence: 2 },
+        );
+
+        expect(hookCalls).toBe(1);
+        expect(source.status).toBe('ok');
+        expect(source.sourceAdoptions[0]).toMatchObject({
+          filePath,
+          startByte: symbol.startByte,
+          endByte: symbol.endByte,
+        });
+        expect(source.sourceAdoptions[0]?.content).toContain('return 42');
+        await expect(readFile(join(root, filePath), 'utf8')).rejects.toMatchObject({ code: 'ENOENT' });
+      } finally {
+        await adapter.close();
+      }
+    } finally {
       await fixture.dispose();
     }
   });
