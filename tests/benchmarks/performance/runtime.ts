@@ -10,7 +10,12 @@ import type { RuntimeDiagnosticContext } from '../../../src/observability/diagno
 
 export type RuntimeFactory = (signal: AbortSignal) => Promise<RuntimeAssembly>;
 
-export function createBenchmarkRuntimeFactory(root: string, observer?: RuntimeObserver, diagnosticTraceContext?: RuntimeDiagnosticContext): RuntimeFactory {
+export function createBenchmarkRuntimeFactory(
+  root: string,
+  observer?: RuntimeObserver,
+  diagnosticTraceContext?: RuntimeDiagnosticContext,
+  afterCanonicalSourceRead?: (filePath: string) => void | Promise<void>,
+): RuntimeFactory {
   const storageRoot = join(dirname(root), `${basename(root)}.nexus-perf-state`);
   const config: Config = {
     projectRoot: root, projectName: 'nexus-performance', packageMode: false,
@@ -25,7 +30,12 @@ export function createBenchmarkRuntimeFactory(root: string, observer?: RuntimeOb
   };
   return async (signal) => {
     signal.throwIfAborted();
-    const assembly = await createRuntimeAssembly(config, { createEmbeddingProvider: createSyntheticProvider, observer, diagnosticTraceContext });
+    const assembly = await createRuntimeAssembly(config, {
+      createEmbeddingProvider: createSyntheticProvider,
+      observer,
+      diagnosticTraceContext,
+      ...(afterCanonicalSourceRead === undefined ? {} : { afterCanonicalSourceRead }),
+    });
     const initialize = assembly.runtime.initialize.bind(assembly.runtime);
     assembly.runtime.initialize = () => observeRuntimeWork(observer, 'initialization', initialize).catch(async (error: unknown) => {
       await assembly.runtime.close();

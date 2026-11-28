@@ -159,7 +159,7 @@ export interface PublicPairedQualityResult extends Omit<PairedQualityResult, 'ou
 }
 
 export interface QualityReport {
-  readonly schemaVersion: 1;
+  readonly schemaVersion: 2;
   readonly metadata: QualityReportMetadata;
   readonly profile: QualityProfile;
   readonly policyVersion: 'quality-policy-v1';
@@ -585,7 +585,7 @@ export function buildQualityReport(
   }
 
   return {
-    schemaVersion: 1,
+    schemaVersion: 2,
     metadata,
     profile: metadata.profile,
     policyVersion: metadata.policyVersion,
@@ -652,10 +652,10 @@ export function renderQualityMarkdown(report: QualityReport): string {
     '',
     '### Mandatory route coverage',
     '',
-    '| Task | Probe | Tool | Sequence | Setup proof | Args digest | Request snapshot | Publication snapshot | Observed | Reason | Oracle | Coverage |',
-    '|---|---|---|---:|---|---|---|---|---|---|---|---|',
+    '| Task | Probe | Tool | Sequence | Setup proof | Args digest | Request snapshot | Publication snapshot | Mutation applied | Observed | Reason | Oracle | Coverage |',
+    '|---|---|---|---:|---|---|---|---|---|---|---|---|---|',
     ...report.routeCoverage.flatMap((route) => route.probes.map((probe) =>
-      `| ${route.taskId} | ${probe.probeId} | ${probe.tool} | ${probe.traceSequence ?? '—'} | ${probe.setupProofDigest} | ${probe.publicArgsDigest ?? '—'} | ${route.probeTrace.find(({ sequence }) => sequence === probe.traceSequence)?.requestSnapshotDigest ?? '—'} | ${probe.publicationSnapshotDigest ?? '—'} | ${probe.observedStatus ?? '—'} | ${escapeMarkdownCell(probe.reasonCode ?? '—')} | ${probe.oracleVerdict ?? '—'} | ${probe.status} |`,
+      `| ${route.taskId} | ${probe.probeId} | ${probe.tool} | ${probe.traceSequence ?? '—'} | ${probe.setupProofDigest} | ${probe.publicArgsDigest ?? '—'} | ${route.probeTrace.find(({ sequence }) => sequence === probe.traceSequence)?.requestSnapshotDigest ?? '—'} | ${probe.publicationSnapshotDigest ?? '—'} | ${probe.requestMutationApplied === undefined ? '—' : probe.requestMutationApplied ? 'yes' : 'no'} | ${probe.observedStatus ?? '—'} | ${escapeMarkdownCell(probe.reasonCode ?? '—')} | ${probe.oracleVerdict ?? '—'} | ${probe.status} |`,
     )),
     '',
     '## Gate 2 — Discovery',

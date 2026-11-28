@@ -96,7 +96,7 @@ describe('buildQualityReport integration', () => {
 
     const report = buildQualityReport(expectedIds, pairs, coverage, metadata);
 
-    expect(report.schemaVersion).toBe(1);
+    expect(report.schemaVersion).toBe(2);
     expect(report.expectedTaskIds).toEqual(expectedIds);
     expect(report.missingTaskIds).toEqual([]);
     expect(report.pairs.length).toBe(expectedIds.length);

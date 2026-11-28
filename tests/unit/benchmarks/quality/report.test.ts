@@ -119,7 +119,7 @@ describe('buildQualityReport', () => {
     const route = makeRoute('Q01');
     const report = buildQualityReport(['Q01'], [pair], [route], baseMetadata);
 
-    expect(report.schemaVersion).toBe(1);
+    expect(report.schemaVersion).toBe(2);
     expect(report.profile).toBe('quality-core-v1');
     expect(report.gate1.status).toBe('SAFETY_PASS');
     expect(report.gate1.expected).toBe(1);

@@ -218,8 +218,14 @@ export async function createNexusAdapterForRoot(
   root: string,
   lspStubLocations?: Readonly<Record<'definition' | 'references' | 'implementations', readonly PublicSourceLocation[]>>,
   indexSeed: readonly QualityRuntimeIndexSeed[] = [],
+  afterCanonicalSourceRead?: (filePath: string) => void | Promise<void>,
 ): Promise<RuntimeQualityAdapter> {
-  const assembly = await createBenchmarkRuntimeFactory(root)(new AbortController().signal);
+  const assembly = await createBenchmarkRuntimeFactory(
+    root,
+    undefined,
+    undefined,
+    afterCanonicalSourceRead,
+  )(new AbortController().signal);
   let originals: Array<{ filePath: string; source: string }> = [];
   let seedWritesStarted = false;
   let originalsRestored = false;
@@ -656,7 +662,7 @@ function requiredProbesForScenario(
     case 'Q08@quality-v1':
       return [
         ...base,
-        { probeId: `${task.taskId}-generation-race`, taskId: task.taskId, rootKey: task.worktreeIdentity.rootKey, tool: 'get_symbol_source', expectedAction: 'current_source' },
+        { probeId: `${task.taskId}-generation-race`, taskId: task.taskId, rootKey: task.worktreeIdentity.rootKey, tool: 'get_symbol_source', expectedAction: 'stale_during_request' },
       ];
     case 'Q10@quality-v1':
       return [
@@ -787,6 +793,11 @@ export function isProbeCovered(
       });
     case 'current_source':
       return currentSourceVerdictForProbe(probe, task, observation, sourceSnapshot) === 'CORRECT_CURRENT';
+    case 'stale_during_request':
+      return observation.status === 'stale' &&
+        observation.reasonCode === 'INDEX_FILE_MISSING' &&
+        observation.sourceAdoptions.length === 0 &&
+        observation.exposedBytes === 0;
     case 'safe_refusal': {
       const refusalStatus = observation.status === 'not_found' ||
         observation.status === 'stale_identity' ||
@@ -839,9 +850,18 @@ function oracleVerdictForProbe(
   task: QualityCaseManifest,
   observation: QualityObservation,
   sourceSnapshot?: SourceSnapshot,
+  requestMutationApplied = false,
 ): ObservationKind {
   if (probe.expectedAction === 'current_source') {
     return currentSourceVerdictForProbe(probe, task, observation, sourceSnapshot);
+  }
+  if (probe.expectedAction === 'stale_during_request') {
+    if (!requestMutationApplied) return 'INCONCLUSIVE';
+    if (isProbeCovered(probe, task, observation, sourceSnapshot)) return 'CORRECT_REFUSAL';
+    if (observation.exposedBytes > 0 || observation.sourceAdoptions.length > 0) return 'FALSE_FRESH';
+    return observation.status === 'error' || observation.status === 'timeout'
+      ? 'UNAVAILABLE'
+      : 'INCONCLUSIVE';
   }
   if (isProbeCovered(probe, task, observation, sourceSnapshot)) {
     return probe.expectedAction === 'safe_refusal' ? 'CORRECT_REFUSAL' : 'CORRECT_CURRENT';
@@ -927,11 +947,26 @@ export async function collectQualityRouteCoverage(
     const probeTask = ownedProbeFixture?.oracleCases.find(({ taskId }) => taskId === task.taskId) ?? task;
     const probeRoot = ownedProbeFixture?.roots[rootKey] ?? root;
     const probeFixture = ownedProbeFixture ?? fixture;
+    let requestMutationArmed = false;
+    let requestMutationApplied = false;
+    const raceTarget = probeTask.expectedFiles[0];
+    const afterCanonicalSourceRead = async (filePath: string): Promise<void> => {
+      if (
+        !requestMutationArmed ||
+        requestMutationApplied ||
+        raceTarget === undefined ||
+        filePath !== raceTarget ||
+        ownedProbeFixture === undefined
+      ) return;
+      await applyQualityMutation(ownedProbeFixture, probeTask.taskId, 'during_request');
+      requestMutationApplied = true;
+    };
     if (adapter === undefined) {
       adapter = await createNexusAdapterForRoot(
         probeRoot,
         lspStubLocations,
         qualityRuntimeIndexSeed(probeFixture, task.taskId),
+        probeTask.scenarioId === 'Q08@quality-v1' ? afterCanonicalSourceRead : undefined,
       );
     }
     const requiredProbes = requiredProbesForScenario(probeTask);
@@ -987,7 +1022,7 @@ export async function collectQualityRouteCoverage(
       await applyQualityMutation(ownedProbeFixture, probeTask.taskId, 'before_request');
     }
     const setupProofDigest = digest({
-      version: 'quality-route-coverage-v2',
+      version: 'quality-route-coverage-v3',
       canonicalRoot,
       scenarioId: probeTask.scenarioId,
       setupTrace: probeTrace.map(({ argsDigest, resultDigest, resultStatus, requestSnapshotDigest }) =>
@@ -1028,6 +1063,7 @@ export async function collectQualityRouteCoverage(
           publicationSnapshotDigest: null,
           resultDigest: null,
           locationSetDigest: null,
+          ...(probe.expectedAction === 'stale_during_request' ? { requestMutationApplied: false } : {}),
           status: 'BLOCKED',
         }),
       );
@@ -1044,6 +1080,7 @@ export async function collectQualityRouteCoverage(
     }
     let observation: QualityObservation;
     try {
+      if (probe.expectedAction === 'stale_during_request') requestMutationArmed = true;
       // Probe order determines traceSequence and abort behavior; keep invocations sequential.
       observation = await adapter.invoke(probe.tool, args, options.signal, context);
     } catch (error) {
@@ -1057,8 +1094,17 @@ export async function collectQualityRouteCoverage(
         normalizedPublicArgs: Object.freeze(normalizeProbeArgs(probe.tool, args)) as Readonly<Record<string, PublicJsonValue>>,
         reasonCode: 'ADAPTER_INVOKE_FAILED',
       };
+    } finally {
+      requestMutationArmed = false;
     }
 
+    if (
+      probe.expectedAction === 'stale_during_request' &&
+      ownedProbeFixture !== undefined &&
+      requestMutationApplied
+    ) {
+      await applyQualityMutation(ownedProbeFixture, probeTask.taskId, 'before_publication');
+    }
     if (probe.expectedAction === 'current_source' && ownedProbeFixture !== undefined) {
       if (probeTask.scenarioId !== 'Q08@quality-v1') {
         await applyQualityMutation(ownedProbeFixture, probeTask.taskId, 'during_request');
@@ -1066,7 +1112,8 @@ export async function collectQualityRouteCoverage(
       }
     }
     const locationDigest = locationSetDigest(observation);
-    const sourceSnapshot = probe.expectedAction === 'current_source'
+    const sourceSnapshot = probe.expectedAction === 'current_source' ||
+      probe.expectedAction === 'stale_during_request'
       ? await captureOracleSnapshot(probeFixture, rootKey, probeTask.taskId)
       : undefined;
     probeTrace.push(Object.freeze({
@@ -1088,7 +1135,13 @@ export async function collectQualityRouteCoverage(
       fallback: false,
     }));
 
-    const oracleVerdict = oracleVerdictForProbe(probe, probeTask, observation, sourceSnapshot);
+    const oracleVerdict = oracleVerdictForProbe(
+      probe,
+      probeTask,
+      observation,
+      sourceSnapshot,
+      requestMutationApplied,
+    );
     probes.push(
       Object.freeze({
         ...probe,
@@ -1101,6 +1154,7 @@ export async function collectQualityRouteCoverage(
         publicationSnapshotDigest: sourceSnapshot?.snapshotDigest ?? null,
         resultDigest: observation.rawDigest,
         locationSetDigest: locationDigest,
+        ...(probe.expectedAction === 'stale_during_request' ? { requestMutationApplied } : {}),
         status: oracleVerdict === 'CORRECT_CURRENT' || oracleVerdict === 'CORRECT_REFUSAL'
           ? 'COVERED'
           : 'INCOMPLETE',

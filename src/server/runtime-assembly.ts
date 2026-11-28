@@ -169,6 +169,9 @@ async function createRuntimeAssemblyCore(config: Config,
     const symbolIgnoreMatcher = picomatch(normalizeIgnorePaths(ignorePaths), { windows: true });
     const symbolRetrievalService = new SymbolRetrievalService({
       catalog: metadataStore, sanitizer, isExcluded: (filePath) => symbolIgnoreMatcher(filePath),
+      ...(dependencies.afterCanonicalSourceRead === undefined
+        ? {}
+        : { afterCanonicalSourceRead: dependencies.afterCanonicalSourceRead }),
     });
     // Runtime-local LSP: lazy (no process until the first navigation), Owner approval is
     // re-resolved by the manager on every new launch, and failures stay LSP-local.

@@ -465,7 +465,7 @@ describe('quality route coverage', () => {
 
   it.each([
     ['Q07@quality-v1', 'INCOMPLETE', ['Q07-index_status', 'Q07-hybrid']],
-    ['Q08@quality-v1', 'INCOMPLETE', ['Q08-index_status', 'Q08-generation-race']],
+    ['Q08@quality-v1', 'COVERED', ['Q08-index_status', 'Q08-generation-race']],
     ['Q10@quality-v1', 'COVERED', ['Q10-index_status', 'Q10-outline', 'Q10-scoped-source']],
   ] as const)(
     'records fixture-backed search/source routes for %s',
@@ -484,12 +484,61 @@ describe('quality route coverage', () => {
           probeId: `${task.taskId}-index_status`,
           status: 'COVERED',
         });
+        if (scenarioId === 'Q08@quality-v1') {
+          expect(route?.probes[1]).toMatchObject({
+            expectedAction: 'stale_during_request',
+            requestMutationApplied: true,
+            observedStatus: 'stale',
+            reasonCode: 'INDEX_FILE_MISSING',
+            oracleVerdict: 'CORRECT_REFUSAL',
+            status: 'COVERED',
+          });
+        }
         expect(route?.probeTrace.filter(({ state }) => state !== 'SETUP')).toHaveLength(route?.probes.length ?? 0);
       } finally {
         await fixture.dispose();
       }
     },
   );
+
+  it('keeps the Q08 race probe incomplete when no in-request mutation was observed', async () => {
+    const fixture = await createQualityFixture(['Q08@quality-v1'], new AbortController().signal);
+    try {
+      const task = fixture.oracleCases[0];
+      if (task === undefined) throw new Error('Q08 fixture missing');
+      const adapter = {
+        arm: 'N' as const,
+        invoke(tool: string) {
+          return Promise.resolve({
+            status: tool === 'get_symbol_source' ? 'stale' as const : 'ok' as const,
+            results: [],
+            exposedBytes: 0,
+            sourceAdoptions: [],
+            rawDigest: 'result',
+            normalizedPublicArgs: {},
+            ...(tool === 'get_symbol_source' ? { reasonCode: 'INDEX_FILE_MISSING' } : {}),
+          });
+        },
+      };
+
+      const [route] = await collectQualityRouteCoverage(task, fixture, {
+        signal: new AbortController().signal,
+        adapter,
+      });
+
+      expect(route?.status).toBe('INCOMPLETE');
+      expect(route?.probes.at(-1)).toMatchObject({
+        expectedAction: 'stale_during_request',
+        requestMutationApplied: false,
+        observedStatus: 'stale',
+        reasonCode: 'INDEX_FILE_MISSING',
+        oracleVerdict: 'INCONCLUSIVE',
+        status: 'INCOMPLETE',
+      });
+    } finally {
+      await fixture.dispose();
+    }
+  });
 
   it('covers the retired and current Q03 identities through indexed symbol IDs', async () => {
     const fixture = await createQualityFixture(['Q03@quality-v1'], new AbortController().signal);

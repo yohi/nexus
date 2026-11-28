@@ -110,6 +110,7 @@ export interface SymbolRetrievalServiceOptions {
   sanitizer: PathSanitizer;
   isExcluded?: (filePath: string) => boolean | Promise<boolean>;
   isSupportedLanguage?: (language: string) => boolean;
+  afterCanonicalSourceRead?: (filePath: string) => void | Promise<void>;
 }
 
 export class SymbolRetrievalService {
@@ -712,6 +713,7 @@ export class SymbolRetrievalService {
         isExcluded: this.options.isExcluded ?? (() => false),
         signal,
       });
+      await this.options.afterCanonicalSourceRead?.(snapshot.filePath);
       return { status: 'ok', bytes: snapshot.bytes, identity: snapshot.identity };
     } catch (error) {
       if (error instanceof CanonicalSourceError) {
