@@ -141,6 +141,13 @@ describe('quality benchmark core integration', () => {
           } finally {
             await adapter.close();
           }
+
+          const [route] = await collectQualityRouteCoverage(task, scenarioFixture, {
+            signal: new AbortController().signal,
+          });
+          expect(route?.status).toBe('COVERED');
+          expect(route?.probes.find(({ probeId }) => probeId === 'Q07-hybrid')?.oracleVerdict)
+            .toBe('CORRECT_CURRENT');
         }
 
         const result = await runQualityPair(task, scenarioFixture, { signal: new AbortController().signal });
@@ -155,16 +162,19 @@ describe('quality benchmark core integration', () => {
             expect.objectContaining({ phase: 'during_request', operation: 'delete' }),
             expect.objectContaining({ phase: 'before_publication', operation: 'recreate' }),
           ]));
-          // This policy-only baseline does not claim race coverage; the structured Contract Probe
-          // exercises the mutation independently.
           expect(result.armFixtureDigests.R).toBe(result.armFixtureDigests.N);
-          expect(result.outcomes.R.observation).toBe('WRONG_SOURCE');
-          expect(result.outcomes.N.observation).toBe('WRONG_SOURCE');
-          const request = result.outcomes.R.policy?.trace[0]?.requestSnapshotDigest;
-          const publication = result.outcomes.R.adoptionHistory[0]?.publicationSnapshotDigest;
-          expect(request).toMatch(/^[a-f0-9]{64}$/);
-          expect(publication).toMatch(/^[a-f0-9]{64}$/);
-          expect(request).toBe(publication);
+          for (const arm of ['R', 'N'] as const) {
+            const policy = result.outcomes[arm].policy;
+            const initialRead = policy?.trace.find(({ state }) => state === 'READ');
+            const revalidation = policy?.trace.findLast(({ state }) => state === 'REVALIDATE');
+            const publication = result.outcomes[arm].adoptionHistory[0]?.publicationSnapshotDigest;
+            expect(result.outcomes[arm].observation).toBe('CORRECT_CURRENT');
+            expect(policy?.adoption?.content).toContain('return 43');
+            expect(initialRead?.requestSnapshotDigest).toMatch(/^[a-f0-9]{64}$/);
+            expect(revalidation?.requestSnapshotDigest).toMatch(/^[a-f0-9]{64}$/);
+            expect(revalidation?.requestSnapshotDigest).toBe(publication);
+            expect(initialRead?.requestSnapshotDigest).not.toBe(publication);
+          }
         }
       } finally {
         await scenarioFixture.dispose();
@@ -173,7 +183,7 @@ describe('quality benchmark core integration', () => {
     60_000,
   );
 
-  it('records stale adoption across the Q06 delete/recreate race', async () => {
+  it('revalidates the Q06 source after delete/recreate before publication', async () => {
     const scenarioFixture = await createQualityFixture(['Q06@quality-v1'], new AbortController().signal);
     try {
       const task = scenarioFixture.oracleCases[0];
@@ -181,12 +191,17 @@ describe('quality benchmark core integration', () => {
       const result = await runQualityPair(task, scenarioFixture, { signal: new AbortController().signal });
 
       for (const arm of ['R', 'N'] as const) {
-        const trace = result.outcomes[arm].policy?.trace[0];
+        const policy = result.outcomes[arm].policy;
+        const initialRead = policy?.trace.find(({ state }) => state === 'READ');
+        const revalidation = policy?.trace.findLast(({ state }) => state === 'REVALIDATE');
         const adoption = result.outcomes[arm].adoptionHistory[0];
-        expect(result.outcomes[arm].observation).toBe('FALSE_FRESH');
-        expect(trace?.requestSnapshotDigest).toMatch(/^[a-f0-9]{64}$/);
+        expect(result.outcomes[arm].observation).toBe('CORRECT_CURRENT');
+        expect(policy?.adoption?.content).toContain('return 43');
+        expect(initialRead?.requestSnapshotDigest).toMatch(/^[a-f0-9]{64}$/);
+        expect(revalidation?.requestSnapshotDigest).toMatch(/^[a-f0-9]{64}$/);
         expect(adoption?.publicationSnapshotDigest).toMatch(/^[a-f0-9]{64}$/);
-        expect(trace?.requestSnapshotDigest).not.toBe(adoption?.publicationSnapshotDigest);
+        expect(initialRead?.requestSnapshotDigest).not.toBe(adoption?.publicationSnapshotDigest);
+        expect(revalidation?.requestSnapshotDigest).toBe(adoption?.publicationSnapshotDigest);
       }
     } finally {
       await scenarioFixture.dispose();

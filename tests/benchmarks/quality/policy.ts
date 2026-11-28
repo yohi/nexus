@@ -54,6 +54,10 @@ export interface QualityTraceEvent {
   readonly resultCount: number;
   readonly exposedBytes: number;
   readonly requestSnapshotDigest?: string;
+  readonly mutationEvents?: readonly Readonly<{
+    phase: 'during_request' | 'before_publication';
+    boundary: 'after_invocation' | 'before_invocation';
+  }>[];
   readonly logicalOperations: number;
   readonly invocationCount: number;
   readonly retries: number;
@@ -364,26 +368,39 @@ const buildRReadArgs = (candidate: Candidate): { tool: QualityTool; args: Record
   };
 };
 
-const selectTargetDeclaration = (
-  adoption: SourceAdoption,
-  clues: ParsedClues,
-): SourceAdoption => {
-  const expectedName = clues.symbol ?? clues.id;
-  if (
-    adoption.sourceValidation !== 'verified' ||
-    expectedName === undefined ||
-    !/\.(?:[cm]?tsx?|[cm]?jsx?)$/iu.test(adoption.filePath)
-  ) {
-    return adoption;
-  }
+const declarationName = (node: ts.NamedDeclaration): string | undefined =>
+  node.name !== undefined && ts.isIdentifier(node.name) ? node.name.text : undefined;
 
-  const sourceFile = ts.createSourceFile(
-    adoption.filePath,
-    adoption.content,
-    ts.ScriptTarget.Latest,
-    true,
-  );
-  let match: ts.Node | undefined;
+const topLevelDeclarations = (sourceFile: ts.SourceFile): readonly Readonly<{ node: ts.Node; name: string }>[] => {
+  const declarations: Array<Readonly<{ node: ts.Node; name: string }>> = [];
+  for (const statement of sourceFile.statements) {
+    if (ts.isVariableStatement(statement)) {
+      for (const declaration of statement.declarationList.declarations) {
+        const name = declarationName(declaration);
+        if (name !== undefined) declarations.push({ node: statement, name });
+      }
+      continue;
+    }
+    if (
+      ts.isFunctionDeclaration(statement) ||
+      ts.isClassDeclaration(statement) ||
+      ts.isInterfaceDeclaration(statement) ||
+      ts.isTypeAliasDeclaration(statement) ||
+      ts.isEnumDeclaration(statement) ||
+      ts.isModuleDeclaration(statement)
+    ) {
+      const name = declarationName(statement);
+      if (name !== undefined) declarations.push({ node: statement, name });
+    }
+  }
+  return declarations;
+};
+
+const findDeclarationByName = (
+  sourceFile: ts.SourceFile,
+  expectedName: string,
+): Readonly<{ node: ts.Node; name: string }> | undefined => {
+  let selected: Readonly<{ node: ts.Node; name: string }> | undefined;
   const visit = (node: ts.Node): void => {
     if (
       (ts.isFunctionDeclaration(node) ||
@@ -398,23 +415,79 @@ const selectTargetDeclaration = (
       node.name !== undefined &&
       ts.isIdentifier(node.name) &&
       node.name.text === expectedName &&
-      match === undefined
+      selected === undefined
     ) {
-      match = ts.isVariableDeclaration(node) ? node.parent.parent : node;
+      selected = {
+        node: ts.isVariableDeclaration(node) ? node.parent.parent : node,
+        name: expectedName,
+      };
     }
     ts.forEachChild(node, visit);
   };
   visit(sourceFile);
-  if (match === undefined) return adoption;
+  return selected;
+};
 
-  const start = match.getStart(sourceFile);
-  const end = match.end;
+const conceptIdentifiers = (concept: string | undefined): readonly string[] =>
+  concept?.match(/[\p{ID_Start}_$][\p{ID_Continue}$\u200c\u200d]*/gu) ?? [];
+
+const selectTargetDeclaration = (
+  adoption: SourceAdoption,
+  clues: ParsedClues,
+): SourceAdoption | null => {
+  const expectedName = clues.symbol ?? clues.id;
+  if (
+    adoption.sourceValidation !== 'verified' ||
+    !/\.(?:[cm]?tsx?|[cm]?jsx?)$/iu.test(adoption.filePath)
+  ) {
+    return adoption;
+  }
+
+  const sourceFile = ts.createSourceFile(
+    adoption.filePath,
+    adoption.content,
+    ts.ScriptTarget.Latest,
+    true,
+  );
+  const declarations = topLevelDeclarations(sourceFile);
+  const conceptTokens = new Set(conceptIdentifiers(clues.concept));
+  const selected = expectedName !== undefined
+    ? findDeclarationByName(sourceFile, expectedName)
+    : clues.concept !== undefined
+      ? declarations.find(({ name }) => conceptTokens.has(name))
+      : clues.file !== undefined
+        ? declarations[0]
+        : undefined;
+  if (selected === undefined) {
+    return clues.concept !== undefined && declarations.length > 0 ? null : adoption;
+  }
+
+  const start = selected.node.getStart(sourceFile);
+  const end = selected.node.end;
   return Object.freeze({
     ...adoption,
     startByte: adoption.startByte + Buffer.byteLength(adoption.content.slice(0, start), 'utf8'),
     endByte: adoption.startByte + Buffer.byteLength(adoption.content.slice(0, end), 'utf8'),
     content: adoption.content.slice(start, end),
   });
+};
+
+const selectOutlineCandidate = (
+  candidates: readonly Candidate[],
+  clues: ParsedClues,
+): Candidate | undefined => {
+  const expectedName = clues.symbol ?? clues.id;
+  if (expectedName !== undefined) {
+    return candidates.find(({ preview }) => isIdentifierInPreview(expectedName, preview));
+  }
+  const conceptTokens = new Set(conceptIdentifiers(clues.concept));
+  if (conceptTokens.size > 0) {
+    const matching = candidates.find(({ preview }) =>
+      [...conceptTokens].some((identifier) => isIdentifierInPreview(identifier, preview)),
+    );
+    if (matching !== undefined) return matching;
+  }
+  return clues.file !== undefined ? candidates[0] : undefined;
 };
 
 const toAdoption = (
@@ -655,6 +728,66 @@ export async function runQualityPolicy(
     }
   };
 
+  const revalidateAdoption = async (
+    initial: SourceAdoption,
+    tool: QualityTool,
+    args: Record<string, unknown>,
+    currentClues: ParsedClues,
+    fallback: boolean,
+    baselineFilePath = initial.filePath,
+  ): Promise<{ readonly source: SourceAdoption; readonly traceSequence: number | undefined } | null> => {
+    if (!canContinue()) return null;
+    const observation = await invokeTool('REVALIDATE', tool, args, null, fallback, 0);
+    accountObservation(observation);
+    if (signal.aborted || contextBudgetExceeded || observation.status !== 'ok') return null;
+
+    const verified = adapter.arm === 'R'
+      ? toFileAdoption(baselineFilePath, observation, currentClues)
+      : toAdoption(observation, currentClues);
+    if (
+      verified === null ||
+      verified.filePath !== initial.filePath ||
+      !isVerifiedAdoption(verified, currentClues)
+    ) {
+      return null;
+    }
+    return {
+      source: verified,
+      traceSequence: trace[trace.length - 1]?.sequence,
+    };
+  };
+
+  const readSpecForCandidate = async (
+    candidate: Candidate,
+    currentClues: ParsedClues,
+    fallback: boolean,
+  ): Promise<{ readonly tool: QualityTool; readonly args: Record<string, unknown> } | null> => {
+    const defaultSpec = buildReadArgs(candidate);
+    if (
+      adapter.arm !== 'N' ||
+      candidate.symbolId !== undefined ||
+      currentClues.concept === undefined
+    ) {
+      return defaultSpec;
+    }
+    if (!canContinue()) return null;
+    const outline = await invokeTool(
+      'DISCOVER',
+      'get_file_outline',
+      { filePath: candidate.filePath },
+      null,
+      fallback,
+      0,
+    );
+    accountObservation(outline);
+    if (signal.aborted || contextBudgetExceeded) return null;
+    if (outline.status !== 'ok') return defaultSpec;
+    const outlinedCandidate = selectOutlineCandidate(outline.results, currentClues);
+    return outlinedCandidate?.symbolId === undefined
+      ? defaultSpec
+      : buildReadArgs(outlinedCandidate);
+  };
+
   const runSearchAndAdopt = async (
     state: string,
     tool: QualityTool,
@@ -687,7 +820,10 @@ export async function runQualityPolicy(
     const candidates = observation.results.slice(0, limits.maxCandidates);
     for (const candidate of candidates) {
       if (!canContinue()) return false;
-      const readSpec = adapter.arm === 'R' ? buildRReadArgs(candidate) : buildReadArgs(candidate);
+      const readSpec = adapter.arm === 'R'
+        ? buildRReadArgs(candidate)
+        : await readSpecForCandidate(candidate, currentClues, fallback);
+      if (readSpec === null) return false;
       const readObservation = await invokeTool('READ', readSpec.tool, readSpec.args, null, fallback, 0);
       accountObservation(readObservation);
       if (signal.aborted || contextBudgetExceeded) return false;
@@ -697,8 +833,17 @@ export async function runQualityPolicy(
       if (attemptedAdoption === null) continue;
       const readTraceSequence = trace[trace.length - 1]?.sequence;
       if (isVerifiedAdoption(attemptedAdoption, currentClues)) {
-        adoption = attemptedAdoption;
-        await publishAdoption(attemptedAdoption, readTraceSequence, candidate.rank);
+        const revalidated = await revalidateAdoption(
+          attemptedAdoption,
+          readSpec.tool,
+          readSpec.args,
+          currentClues,
+          fallback,
+          candidate.filePath,
+        );
+        if (revalidated === null) continue;
+        adoption = revalidated.source;
+        await publishAdoption(revalidated.source, revalidated.traceSequence, candidate.rank);
         return true;
       }
       // Tentative/wrong adoption is recorded but we continue searching.
@@ -721,12 +866,21 @@ export async function runQualityPolicy(
     if (signal.aborted || contextBudgetExceeded) return false;
     const attemptedAdoption =
       tool === 'read_file'
-        ? toFileAdoption(String(args.filePath ?? ''), observation, currentClues)
+        ? toFileAdoption(typeof args.filePath === 'string' ? args.filePath : '', observation, currentClues)
         : toAdoption(observation, currentClues);
     const readTraceSequence = trace[trace.length - 1]?.sequence;
     if (attemptedAdoption !== null && isVerifiedAdoption(attemptedAdoption, currentClues)) {
-      adoption = attemptedAdoption;
-      await publishAdoption(attemptedAdoption, readTraceSequence);
+      const revalidated = await revalidateAdoption(
+        attemptedAdoption,
+        tool,
+        args,
+        currentClues,
+        fallback,
+        typeof args.filePath === 'string' ? args.filePath : attemptedAdoption.filePath,
+      );
+      if (revalidated === null) return false;
+      adoption = revalidated.source;
+      await publishAdoption(revalidated.source, revalidated.traceSequence);
       return true;
     }
     if (attemptedAdoption !== null) {
@@ -787,9 +941,19 @@ export async function runQualityPolicy(
       if (clues.id !== undefined && (await runSearchAndAdopt('FALLBACK', 'grep_search', { pattern: clues.id, maxResults: limits.maxCandidates }, clues.id, true, clues))) return completeResult(cost, adoption, adoptionEvents, navigationEvents, trace);
       if (clues.file !== undefined && (await runReadRoute('FALLBACK', 'get_context', { filePath: clues.file, startLine: 1, endLine: 10, mode: 'bounded' }, clues, true))) return completeResult(cost, adoption, adoptionEvents, navigationEvents, trace);
     } else if (clues.file !== undefined) {
+      let outline: QualityObservation | undefined;
       if (canContinue()) {
-        const outline = await invokeTool('DISCOVER', 'get_file_outline', { filePath: clues.file }, null, false, 0);
+        outline = await invokeTool('DISCOVER', 'get_file_outline', { filePath: clues.file }, null, false, 0);
         accountObservation(outline);
+      }
+      if (outline?.status === 'ok') {
+        const candidate = selectOutlineCandidate(outline.results, clues);
+        if (candidate?.symbolId !== undefined) {
+          const sourceRead = buildReadArgs(candidate);
+          if (await runReadRoute('READ', sourceRead.tool, sourceRead.args, clues, false)) {
+            return completeResult(cost, adoption, adoptionEvents, navigationEvents, trace);
+          }
+        }
       }
       if (await runReadRoute('READ', 'get_context', { filePath: clues.file, startLine: 1, endLine: 10, mode: 'bounded' }, clues, false)) return completeResult(cost, adoption, adoptionEvents, navigationEvents, trace);
       if (clues.id !== undefined && (await runSearchAndAdopt('FALLBACK', 'grep_search', { pattern: clues.id, maxResults: limits.maxCandidates }, clues.id, true, clues))) return completeResult(cost, adoption, adoptionEvents, navigationEvents, trace);

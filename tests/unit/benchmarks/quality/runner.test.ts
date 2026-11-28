@@ -464,7 +464,7 @@ describe('quality route coverage', () => {
   );
 
   it.each([
-    ['Q07@quality-v1', 'INCOMPLETE', ['Q07-index_status', 'Q07-hybrid']],
+    ['Q07@quality-v1', 'COVERED', ['Q07-index_status', 'Q07-hybrid']],
     ['Q08@quality-v1', 'COVERED', ['Q08-index_status', 'Q08-generation-race']],
     ['Q10@quality-v1', 'COVERED', ['Q10-index_status', 'Q10-outline', 'Q10-scoped-source']],
   ] as const)(
@@ -484,6 +484,13 @@ describe('quality route coverage', () => {
           probeId: `${task.taskId}-index_status`,
           status: 'COVERED',
         });
+        if (scenarioId === 'Q07@quality-v1') {
+          expect(route?.probes[1]).toMatchObject({
+            probeId: 'Q07-hybrid',
+            oracleVerdict: 'CORRECT_CURRENT',
+            status: 'COVERED',
+          });
+        }
         if (scenarioId === 'Q08@quality-v1') {
           expect(route?.probes[1]).toMatchObject({
             expectedAction: 'stale_during_request',
@@ -560,10 +567,10 @@ describe('quality route coverage', () => {
       ]);
       expect(oldIdentity).toMatchObject({
         tool: 'get_symbol_source',
-        observedStatus: 'stale',
-        reasonCode: 'INDEX_FILE_MISSING',
-        oracleVerdict: 'INCONCLUSIVE',
-        status: 'INCOMPLETE',
+        observedStatus: 'stale_identity',
+        reasonCode: 'SYMBOL_RETIRED',
+        oracleVerdict: 'CORRECT_REFUSAL',
+        status: 'COVERED',
       });
       expect(currentIdentity).toMatchObject({
         tool: 'get_symbol_source',
@@ -571,7 +578,7 @@ describe('quality route coverage', () => {
         oracleVerdict: 'CORRECT_CURRENT',
         status: 'COVERED',
       });
-      expect(route?.status).toBe('INCOMPLETE');
+      expect(route?.status).toBe('COVERED');
     } finally {
       await fixture.dispose();
     }
@@ -905,7 +912,7 @@ describe('quality route coverage', () => {
     }
   });
 
-  it('runs both Q06 arms from isolated fixtures and publishes the recreated value', async () => {
+  it('revalidates both Q06 arms after recreation and publishes the current value', async () => {
     const fixture = await createQualityFixture(['Q06@quality-v1'], new AbortController().signal);
     try {
       const generatedTask = fixture.oracleCases[0];
@@ -913,12 +920,120 @@ describe('quality route coverage', () => {
 
       const result = await runQualityPair(generatedTask, fixture, { signal: new AbortController().signal });
 
-      expect(result.outcomes.R.observation).toBe('FALSE_FRESH');
-      expect(result.outcomes.N.observation).toBe('FALSE_FRESH');
-      expect(result.outcomes.R.policy?.adoption?.content).toContain('return 42');
-      expect(result.outcomes.N.policy?.adoption?.content).toContain('return 42');
+      expect(result.outcomes.R.observation).toBe('CORRECT_CURRENT');
+      expect(result.outcomes.N.observation).toBe('CORRECT_CURRENT');
+      expect(result.outcomes.R.policy?.adoption?.content).toContain('return 43');
+      expect(result.outcomes.N.policy?.adoption?.content).toContain('return 43');
+      expect(result.outcomes.R.policy?.trace.map(({ state }) => state)).toEqual(['READ', 'REVALIDATE']);
+      expect(result.outcomes.N.policy?.trace.map(({ state }) => state)).toEqual([
+        'DISCOVER',
+        'READ',
+        'REVALIDATE',
+        'READ',
+        'REVALIDATE',
+      ]);
+      for (const arm of ['R', 'N'] as const) {
+        const trace = result.outcomes[arm].policy?.trace ?? [];
+        expect(trace.find(({ state }) => state === 'READ')).toMatchObject({
+          mutationEvents: [{ phase: 'during_request', boundary: 'after_invocation' }],
+        });
+        expect(trace.find(({ state }) => state === 'REVALIDATE')).toMatchObject({
+          mutationEvents: [{ phase: 'before_publication', boundary: 'before_invocation' }],
+        });
+      }
+      expect(result.outcomes.R.policy?.trace.at(-1)?.requestSnapshotDigest).toBe(
+        result.outcomes.R.adoptionHistory[0]?.publicationSnapshotDigest,
+      );
+      expect(result.outcomes.N.policy?.trace.at(-1)?.requestSnapshotDigest).toBe(
+        result.outcomes.N.adoptionHistory[0]?.publicationSnapshotDigest,
+      );
       expect(result.outcomes.R.adoptionHistory[0]?.publicationSnapshotDigest).not.toBeNull();
       expect(result.outcomes.N.adoptionHistory[0]?.publicationSnapshotDigest).not.toBeNull();
+    } finally {
+      await fixture.dispose();
+    }
+  });
+
+  it('refuses to publish Q05 source after the scheduled deletion', async () => {
+    const fixture = await createQualityFixture(['Q05@quality-v1'], new AbortController().signal);
+    try {
+      const generatedTask = fixture.oracleCases[0];
+      if (generatedTask === undefined) throw new Error('Q05 fixture missing');
+
+      const result = await runQualityPair(generatedTask, fixture, { signal: new AbortController().signal });
+
+      for (const arm of ['R', 'N'] as const) {
+        const policy = result.outcomes[arm].policy;
+        expect(policy?.status).toBe('EXHAUSTED');
+        expect(policy?.adoption).toBeUndefined();
+        expect(policy?.adoptionEvents).toEqual([]);
+        expect(policy?.trace.some(({ state }) => state === 'REVALIDATE')).toBe(true);
+        expect(['not_found', 'error']).toContain(policy?.trace.at(-1)?.resultStatus);
+        expect(result.outcomes[arm].adoptionHistory).toEqual([]);
+      }
+    } finally {
+      await fixture.dispose();
+    }
+  });
+
+  it('grades Q08 concept selection against declaration-sized source on both arms', async () => {
+    const fixture = await createQualityFixture(['Q08@quality-v1'], new AbortController().signal);
+    try {
+      const task = fixture.oracleCases[0];
+      if (task === undefined) throw new Error('Q08 fixture missing');
+
+      const result = await runQualityPair(task, fixture, { signal: new AbortController().signal });
+      const expected = task.expectedSymbols[0];
+
+      expect(expected).toBeDefined();
+      for (const arm of ['R', 'N'] as const) {
+        const policy = result.outcomes[arm].policy;
+        expect(policy?.adoption).toMatchObject({
+          filePath: expected?.filePath,
+          startByte: expected?.startByte,
+          endByte: expected?.endByte,
+        });
+        expect(policy?.adoption?.content).toContain('return 43');
+        expect(result.outcomes[arm].observation).toBe('CORRECT_CURRENT');
+        const initialRead = policy?.trace.find(({ state }) => state === 'READ');
+        const revalidation = policy?.trace.find(({ state }) => state === 'REVALIDATE');
+        expect(initialRead?.requestSnapshotDigest).not.toBe(revalidation?.requestSnapshotDigest);
+        expect(revalidation?.requestSnapshotDigest).toBe(
+          result.outcomes[arm].adoptionHistory[0]?.publicationSnapshotDigest,
+        );
+      }
+      const nexusTrace = result.outcomes.N.policy?.trace ?? [];
+      expect(nexusTrace.some(({ tool }) => tool === 'get_file_outline')).toBe(true);
+      expect(nexusTrace.some(({ tool }) => tool === 'get_symbol_source')).toBe(true);
+    } finally {
+      await fixture.dispose();
+    }
+  });
+
+  it('grades Q11 first outline declaration against declaration-sized source on both arms', async () => {
+    const fixture = await createQualityFixture(['Q11@quality-v1'], new AbortController().signal);
+    try {
+      const task = fixture.oracleCases[0];
+      if (task === undefined) throw new Error('Q11 fixture missing');
+
+      const result = await runQualityPair(task, fixture, { signal: new AbortController().signal });
+      const expected = task.expectedSymbols[0];
+
+      expect(expected).toBeDefined();
+      for (const arm of ['R', 'N'] as const) {
+        const policy = result.outcomes[arm].policy;
+        expect(result.outcomes[arm].observation).toBe('CORRECT_CURRENT');
+        expect(policy?.adoption).toMatchObject({
+          filePath: expected?.filePath,
+          startByte: expected?.startByte,
+          endByte: expected?.endByte,
+        });
+      }
+      expect(result.outcomes.N.policy?.trace.map(({ tool }) => tool)).toEqual([
+        'get_file_outline',
+        'get_symbol_source',
+        'get_symbol_source',
+      ]);
     } finally {
       await fixture.dispose();
     }

@@ -12,7 +12,7 @@ import {
   type QualityObservation,
   type QualityTool,
 } from '../../../benchmarks/quality/adapters.js';
-import type { PublicQualityTask } from '../../../benchmarks/quality/contracts.js';
+import type { PublicQualityTask, QualityBudgets } from '../../../benchmarks/quality/contracts.js';
 import { QUALITY_BUDGETS_V1 } from '../../../benchmarks/quality/contracts.js';
 
 const okObservation = (
@@ -62,14 +62,14 @@ const fakeAdapter = (
   let calls = 0;
   return {
     arm,
-    invoke: async (tool, args, _signal, context) => {
+    invoke: (tool, args, _signal, context) => {
       calls += 1;
       const observation = handler(tool, args, calls);
       // Enforce traceSequence is recorded by returning a stable digest that includes it.
-      return {
+      return Promise.resolve({
         ...observation,
         rawDigest: `${observation.rawDigest}:${context.traceSequence}:${calls}`,
-      };
+      });
     },
   };
 };
@@ -142,15 +142,15 @@ describe('runQualityPolicy', () => {
     expect(result.status).toBe('COMPLETE');
     const sequences = result.trace.map((t) => t.sequence);
     expect(new Set(sequences).size).toBe(sequences.length);
-    expect(sequences).toEqual([1, 2]);
+    expect(sequences).toEqual([1, 2, 3]);
     expect(result.trace.find((event) => event.adoptionSequence !== undefined)).toMatchObject({
-      sequence: 2,
+      sequence: 3,
       adoptionSequence: 1,
     });
     expect(result.adoptionEvents[0]?.sequence).toBe(1);
   });
 
-  it('counts adopted bytes and tokens only once', async () => {
+  it('charges the verification read in context bytes and tokens', async () => {
     const adapter = fakeAdapter('N', (tool) => {
       if (tool === 'grep_search') return okObservation([{ filePath: 'a.ts', line: 1, preview: 'x', rank: 1 }]);
       return readObservation('a.ts', 'x');
@@ -158,9 +158,119 @@ describe('runQualityPolicy', () => {
     const result = await runQualityPolicy(makeTask(['id:x']), adapter, QUALITY_BUDGETS_V1, new AbortController().signal);
 
     expect(result.status).toBe('COMPLETE');
-    expect(result.contextBytes).toBe(2);
-    expect(result.contextTokens).toBe(2);
-    expect(result.adoptionEvents[0]?.cumulativeCost).toMatchObject({ contextBytes: 2, contextTokens: 2 });
+    expect(result.contextBytes).toBe(3);
+    expect(result.contextTokens).toBe(3);
+    expect(result.adoptionEvents[0]?.cumulativeCost).toMatchObject({ contextBytes: 3, contextTokens: 3 });
+  });
+
+  it('re-fetches the candidate after mutation before publishing the current source', async () => {
+    let currentSource = 'export function answer(): number { return 42; }';
+    let reads = 0;
+    const order: string[] = [];
+    const adapter = fakeAdapter('R', (tool, args) => {
+      expect(tool).toBe('read_file');
+      expect(args.filePath).toBe('src/answer.ts');
+      reads += 1;
+      const observedSource = currentSource;
+      order.push(`read:${observedSource.includes('43') ? '43' : '42'}`);
+      if (reads === 1) {
+        currentSource = 'export function answer(): number { return 43; }';
+        order.push('mutation:43');
+      }
+      return readObservation('src/answer.ts', observedSource);
+    });
+    const observer: QualityPolicyObserver = {
+      onAdoptionPublished(event) {
+        order.push(`publish:${event.source.content.includes('43') ? '43' : '42'}`);
+        return Promise.resolve();
+      },
+    };
+
+    const result = await runQualityPolicy(
+      makeTask(['file:src/answer.ts']),
+      adapter,
+      QUALITY_BUDGETS_V1,
+      new AbortController().signal,
+      observer,
+    );
+
+    expect(order).toEqual(['read:42', 'mutation:43', 'read:43', 'publish:43']);
+    expect(result.status).toBe('COMPLETE');
+    expect(result.adoption?.content).toBe(currentSource);
+    expect(result.trace.map(({ state }) => state)).toEqual(['READ', 'REVALIDATE']);
+    expect(result.trace[1]?.adoptionSequence).toBe(1);
+    expect(result).toMatchObject({
+      logicalOperations: 2,
+      invocations: 2,
+      contextBytes: Buffer.byteLength('export function answer(): number { return 42; }') +
+        Buffer.byteLength('export function answer(): number { return 43; }'),
+    });
+    expect(result.adoptionEvents[0]?.cumulativeCost).toMatchObject({
+      logicalOperations: 2,
+      invocations: 2,
+      contextBytes: result.contextBytes,
+      contextTokens: result.contextTokens,
+    });
+  });
+
+  it('does not publish the initial source when the verification read refuses', async () => {
+    let fileExists = true;
+    let reads = 0;
+    const published = vi.fn();
+    const adapter = fakeAdapter('R', (tool) => {
+      expect(tool).toBe('read_file');
+      reads += 1;
+      if (reads === 1) {
+        fileExists = false;
+        return readObservation('src/answer.ts', 'export function answer(): number { return 42; }');
+      }
+      expect(fileExists).toBe(false);
+      return {
+        status: 'not_found',
+        results: Object.freeze([]),
+        exposedBytes: 0,
+        sourceAdoptions: Object.freeze([]),
+        rawDigest: 'missing',
+        normalizedPublicArgs: Object.freeze({ filePath: 'src/answer.ts' }),
+        reasonCode: 'FILE_NOT_FOUND',
+      };
+    });
+
+    const result = await runQualityPolicy(
+      makeTask(['file:src/answer.ts']),
+      adapter,
+      QUALITY_BUDGETS_V1,
+      new AbortController().signal,
+      { onAdoptionPublished: published },
+    );
+
+    expect(reads).toBe(2);
+    expect(published).not.toHaveBeenCalled();
+    expect(result.status).toBe('EXHAUSTED');
+    expect(result.adoption).toBeUndefined();
+    expect(result.adoptionEvents).toEqual([]);
+    expect(result.trace.map(({ resultStatus }) => resultStatus)).toEqual(['ok', 'not_found']);
+  });
+
+  it('does not re-fetch after the logical-operation budget is consumed', async () => {
+    let calls = 0;
+    const adapter = fakeAdapter('R', (tool) => {
+      expect(tool).toBe('read_file');
+      calls += 1;
+      return readObservation('src/answer.ts', 'export function answer(): number { return 42; }');
+    });
+
+    const result = await runQualityPolicy(
+      makeTask(['file:src/answer.ts']),
+      adapter,
+      { ...QUALITY_BUDGETS_V1, maxLogicalOperations: 1 } as unknown as QualityBudgets,
+      new AbortController().signal,
+    );
+
+    expect(calls).toBe(1);
+    expect(result.invocations).toBe(1);
+    expect(result.adoption).toBeUndefined();
+    expect(result.status).toBe('EXHAUSTED');
   });
 
   it('does not double-count a rejected tentative adoption', async () => {
@@ -205,6 +315,127 @@ describe('runQualityPolicy', () => {
     expect(result.adoption?.filePath).toBe('src/answer.ts');
     expect(result.trace.some((t) => t.tool === 'get_file_outline')).toBe(true);
     expect(result.trace.some((t) => t.tool === 'get_context')).toBe(true);
+  });
+
+  it('uses the first public outline candidate as the N-arm file-clue source', async () => {
+    const firstDeclaration = 'export function largeAnswer(): number {\n  return 1;\n}';
+    const fileSource = `${firstDeclaration}\nexport function secondary(): number { return 2; }\n`;
+    const sourceCalls: string[] = [];
+    const adapter = fakeAdapter('N', (tool, args) => {
+      if (tool === 'get_file_outline') {
+        return okObservation([
+          { filePath: 'large.ts', preview: 'largeAnswer', rank: 1, symbolId: 'symbol-large' },
+          { filePath: 'large.ts', preview: 'secondary', rank: 2, symbolId: 'symbol-secondary' },
+        ]);
+      }
+      expect(tool).toBe('get_symbol_source');
+      expect(args.symbolId).toBe('symbol-large');
+      sourceCalls.push(String(args.symbolId));
+      return readObservation('large.ts', fileSource);
+    });
+
+    const result = await runQualityPolicy(
+      makeTask(['file:large.ts']),
+      adapter,
+      QUALITY_BUDGETS_V1,
+      new AbortController().signal,
+    );
+
+    expect(sourceCalls).toEqual(['symbol-large', 'symbol-large']);
+    expect(result.trace.map(({ tool, state }) => `${state}:${tool}`)).toEqual([
+      'DISCOVER:get_file_outline',
+      'READ:get_symbol_source',
+      'REVALIDATE:get_symbol_source',
+    ]);
+    expect(result.adoption?.content).toBe(firstDeclaration);
+    expect(result.adoption).toMatchObject({
+      filePath: 'large.ts',
+      startByte: 0,
+      endByte: Buffer.byteLength(firstDeclaration),
+    });
+  });
+
+  it('uses an outline declaration matching the public concept on N', async () => {
+    const answerDeclaration = 'export function answer(): number { return 42; }';
+    const adapter = fakeAdapter('N', (tool, args) => {
+      if (tool === 'hybrid_search') {
+        return okObservation([{ filePath: 'src/answer.ts', line: 1, preview: 'answer', rank: 1 }]);
+      }
+      if (tool === 'get_file_outline') {
+        return okObservation([
+          { filePath: 'src/answer.ts', preview: 'secondary', rank: 1, symbolId: 'symbol-secondary' },
+          { filePath: 'src/answer.ts', preview: 'answer', rank: 2, symbolId: 'symbol-answer' },
+        ]);
+      }
+      expect(tool).toBe('get_symbol_source');
+      expect(args.symbolId).toBe('symbol-answer');
+      return readObservation('src/answer.ts', `export function secondary(): number { return 2; }\n${answerDeclaration}\n`);
+    });
+
+    const result = await runQualityPolicy(
+      makeTask(['concept:answer']),
+      adapter,
+      QUALITY_BUDGETS_V1,
+      new AbortController().signal,
+    );
+
+    expect(result.trace.map(({ tool }) => tool)).toEqual([
+      'hybrid_search',
+      'get_file_outline',
+      'get_symbol_source',
+      'get_symbol_source',
+    ]);
+    expect(result.adoption?.content).toBe(answerDeclaration);
+  });
+
+  it('selects the declaration matching a public concept on R', async () => {
+    const answerDeclaration = 'export function answer(): number { return 42; }';
+    const fileSource = `export function secondary(): number { return 2; }\n${answerDeclaration}\n`;
+    const adapter = fakeAdapter('R', (tool) => {
+      if (tool === 'rg_search') {
+        return okObservation([{ filePath: 'src/answer.ts', line: 1, preview: 'answer', rank: 1 }]);
+      }
+      expect(tool).toBe('read_file');
+      return readObservation('src/answer.ts', fileSource);
+    });
+
+    const result = await runQualityPolicy(
+      makeTask(['concept:answer']),
+      adapter,
+      QUALITY_BUDGETS_V1,
+      new AbortController().signal,
+    );
+
+    expect(result.adoption?.content).toBe(answerDeclaration);
+    expect(result.adoption).toMatchObject({
+      filePath: 'src/answer.ts',
+      startByte: Buffer.byteLength('export function secondary(): number { return 2; }\n'),
+      endByte: Buffer.byteLength(`export function secondary(): number { return 2; }\n${answerDeclaration}`),
+    });
+  });
+
+  it('retains nested declaration selection for explicit identity clues', async () => {
+    const nestedDeclaration = 'function inner(): number { return 42; }';
+    const fileSource = `export function outer(): number {\n  ${nestedDeclaration}\n  return inner();\n}`;
+    const adapter = fakeAdapter('R', (tool) => {
+      if (tool === 'rg_search') {
+        return okObservation([{ filePath: 'src/nested.ts', line: 2, preview: 'inner', rank: 1 }]);
+      }
+      expect(tool).toBe('read_file');
+      return readObservation('src/nested.ts', fileSource);
+    });
+
+    const result = await runQualityPolicy(
+      makeTask(['id:inner']),
+      adapter,
+      QUALITY_BUDGETS_V1,
+      new AbortController().signal,
+    );
+    const startByte = Buffer.byteLength(fileSource.slice(0, fileSource.indexOf(nestedDeclaration)));
+
+    expect(result.adoption?.content).toBe(nestedDeclaration);
+    expect(result.adoption?.startByte).toBe(startByte);
+    expect(result.adoption?.endByte).toBe(startByte + Buffer.byteLength(nestedDeclaration));
   });
 
   it('adopts a symbol clue via get_symbol_source on N', async () => {
@@ -341,13 +572,13 @@ describe('runQualityPolicy', () => {
       new AbortController().signal,
     );
 
-    expect(calls).toEqual(['get_definition', 'grep_search', 'get_context']);
+    expect(calls).toEqual(['get_definition', 'grep_search', 'get_context', 'get_context']);
     expect(result.status).toBe('COMPLETE');
     expect(result.adoption?.filePath).toBe('src/answer.ts');
   });
 
   it('adopts an id clue via rg_search on R', async () => {
-    const adapter = fakeAdapter('R', (tool, args) => {
+    const adapter = fakeAdapter('R', (tool) => {
       if (tool === 'rg_search') {
         return okObservation([{ filePath: 'src/answer.ts', line: 1, preview: 'answer', rank: 1 }]);
       }
@@ -461,7 +692,13 @@ describe('runQualityPolicy', () => {
     });
     const result = await runQualityPolicy(makeTask(['concept:foo']), adapter, QUALITY_BUDGETS_V1, new AbortController().signal);
     expect(result.status).toBe('COMPLETE');
-    expect(calls).toEqual(['hybrid_search', 'semantic_search', 'get_context']);
+    expect(calls).toEqual([
+      'hybrid_search',
+      'semantic_search',
+      'get_file_outline',
+      'get_context',
+      'get_context',
+    ]);
     expect(result.trace[0]?.fallback).toBe(false);
     expect(result.trace[1]?.fallback).toBe(true);
   });
@@ -485,8 +722,8 @@ describe('runQualityPolicy', () => {
     expect(grepTraces[2]?.retries).toBe(2);
     expect(grepTraces.map((event) => event.logicalOperations)).toEqual([1, 1, 1]);
     expect(grepTraces.map((event) => event.invocationCount)).toEqual([1, 2, 3]);
-    expect(result.logicalOperations).toBe(2);
-    expect(result.invocations).toBe(4);
+    expect(result.logicalOperations).toBe(3);
+    expect(result.invocations).toBe(5);
   });
 
   it('allows retries when the logical-operation budget is already full', async () => {
@@ -500,7 +737,9 @@ describe('runQualityPolicy', () => {
           rank: index + 1,
         })));
       }
-      if (tool === 'get_context') return readObservation(String(args.filePath ?? ''), 'unrelated');
+      if (tool === 'get_context') {
+        return readObservation(typeof args.filePath === 'string' ? args.filePath : '', 'unrelated');
+      }
       if (tool === 'semantic_search') {
         semanticCalls += 1;
         return semanticCalls === 1 ? errorObservation('TOOL_ERROR') : emptyOk();
@@ -539,8 +778,8 @@ describe('runQualityPolicy', () => {
       retries: 0,
     });
     expect(searchTraces[1]).toMatchObject({ resultStatus: 'ok', retries: 1 });
-    expect(result.logicalOperations).toBe(2);
-    expect(result.invocations).toBe(3);
+    expect(result.logicalOperations).toBe(3);
+    expect(result.invocations).toBe(4);
     expect(JSON.stringify(result.trace)).not.toContain('private adapter failure');
   });
 
@@ -618,9 +857,9 @@ describe('runQualityPolicy', () => {
   it('notifies the observer at each adoption without allowing observer errors to abort policy', async () => {
     const events: Array<QualityPolicyResult['adoptionEvents'][number]> = [];
     const observer: QualityPolicyObserver = {
-      onAdoptionPublished: async (event) => {
+      onAdoptionPublished: (event) => {
         events.push(event);
-        throw new Error('observer must not abort');
+        return Promise.reject(new Error('observer must not abort'));
       },
     };
     const adapter = fakeAdapter('N', (tool) => {
