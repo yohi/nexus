@@ -31,18 +31,31 @@ function stubLocationsFor(task: QualityCaseManifest): { definition: PublicSource
 }
 
 describe('Q13 LSP boundary coverage', () => {
-  it('stubs can cover definition, references and implementations independently', async () => {
+  it('routes stubbed definition, references and implementations through production Tool Handlers', async () => {
     const fixture = await createQualityFixture(['Q13@quality-v1'], signal);
     try {
       for (const taskId of ['Q13-definition', 'Q13-references', 'Q13-implementations']) {
         const task = taskFor(fixture, taskId);
-        const adapter = createLspStubAdapter(stubLocationsFor(task));
-        const [coverage] = await collectQualityRouteCoverage(task, fixture, { signal, adapter });
+        const [coverage] = await collectQualityRouteCoverage(task, fixture, { signal });
         if (coverage === undefined) throw new Error('missing_route_coverage');
         const relevant = coverage.probes.find((probe) => probe.probeId.endsWith(taskId.split('-')[1] ?? ''));
         expect(relevant?.status).toBe('COVERED');
         expect(relevant?.observedStatus).toBe('ok');
+        expect(relevant?.oracleVerdict).toBe('CORRECT_CURRENT');
       }
+    } finally {
+      await fixture.dispose();
+    }
+  });
+
+  it('routes stub navigation through the production Tool Handler boundary', async () => {
+    const fixture = await createQualityFixture(['Q13@quality-v1'], signal);
+    try {
+      const task = taskFor(fixture, 'Q13-definition');
+      const [coverage] = await collectQualityRouteCoverage(task, fixture, { signal });
+      const definition = coverage?.probes.find((probe) => probe.tool === 'get_definition');
+      expect(definition?.status).toBe('COVERED');
+      expect(definition?.observedStatus).toBe('ok');
     } finally {
       await fixture.dispose();
     }

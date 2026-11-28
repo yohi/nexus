@@ -22,6 +22,7 @@ const taskDefinitions = [
 
 const refusalConditionsByTask: Readonly<Record<string, readonly string[]>> = {
   Q03: ['SYMBOL_RETIRED'],
+  Q05: ['INDEX_FILE_MISSING'],
   Q14: ['LSP_NOT_CONFIGURED'],
 };
 

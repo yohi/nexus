@@ -18,6 +18,8 @@ export interface RuntimeAssemblyDependencies {
   readonly onWriterLeaseLost?: (error: Error) => void;
   /** Internal: lost-lease detection interval (tests only). */
   readonly writerLeaseCheckIntervalMs?: number;
+  /** Internal: hook after a canonical source read (tests only). */
+  readonly afterCanonicalSourceRead?: (filePath: string) => void | Promise<void>;
 }
 export interface RuntimeDiagnostics {
   readonly metadataDbPath: string;

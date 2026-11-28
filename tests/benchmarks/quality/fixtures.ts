@@ -18,6 +18,11 @@ export interface OwnedQualityFixture {
   readonly dispose: () => Promise<void>;
 }
 
+export interface QualityRuntimeIndexSeed {
+  readonly filePath: string;
+  readonly source: string;
+}
+
 export class QualitySetupError extends Error {
   readonly status = 'setup_incomplete' as const;
 
@@ -32,10 +37,12 @@ type ScenarioShape = Readonly<{
   readonly targetName: string;
   readonly files: readonly FixtureFileSpec[];
   readonly mutations: readonly QualityCaseManifest['mutationSchedule'][number][];
+  readonly runtimeIndexSeeds?: readonly QualityRuntimeIndexSeed[];
 }>;
 
 const owned = new WeakSet<OwnedQualityFixture>();
 const mutationSources = new WeakMap<OwnedQualityFixture, ReadonlyMap<string, string>>();
+const runtimeIndexSeeds = new WeakMap<OwnedQualityFixture, ReadonlyMap<string, readonly QualityRuntimeIndexSeed[]>>();
 const declarationRange = (path: string, source: string, expectedName: string): Readonly<{ startByte: number; endByte: number }> => {
   const tree = ts.createSourceFile(path, source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
   let match: ts.FunctionDeclaration | undefined;
@@ -62,9 +69,11 @@ function scenarioShape(task: QualityCaseManifest): ScenarioShape {
   });
   switch (task.scenarioId) {
     case 'Q03@quality-v1':
-      return { targetPath: `${prefix}new-name.ts`, targetName: 'renamedAnswer', mutations: [], files: [
+      return { targetPath: `${prefix}new-name.ts`, targetName: 'renamedAnswer', files: [
         { path: `${prefix}old-name.ts`, source: sourceFor('oldAnswer') },
         { path: `${prefix}new-name.ts`, source: sourceFor('renamedAnswer') },
+      ], mutations: [
+        { phase: 'before_request', operation: 'delete', target: `${prefix}old-name.ts` },
       ] };
     case 'Q04@quality-v1':
       return { targetPath: `${prefix}moved.ts`, targetName: 'calculate', mutations: [], files: [
@@ -103,11 +112,17 @@ function scenarioShape(task: QualityCaseManifest): ScenarioShape {
     case 'Q01@quality-v1':
       return one('src/answer.ts', 'answer', `${sourceFor('answer')}\n`);
     case 'Q02@quality-v1':
-    case 'Q07@quality-v1':
     case 'Q09@quality-v1':
     case 'Q12@quality-v1':
     case 'Q13@quality-v1':
       return one('src/answer.ts', 'answer', sourceFor('answer'));
+    case 'Q07@quality-v1': {
+      const filePath = `${prefix}src/answer.ts`;
+      return {
+        ...one('src/answer.ts', 'answer', sourceFor('answer')),
+        runtimeIndexSeeds: [{ filePath, source: sourceFor('answer', 41) }],
+      };
+    }
     default:
       throw new Error(`unsupported_quality_scenario:${task.scenarioId}`);
   }
@@ -281,7 +296,19 @@ export async function createQualityFixture(scenarioIds: readonly string[], signa
     oracleCases, dispose: () => disposal ??= rm(root, { recursive: true, force: true }) });
   owned.add(fixture);
   mutationSources.set(fixture, mutationText);
+  runtimeIndexSeeds.set(fixture, new Map(selected.map((task) => [
+    task.taskId,
+    shapes.get(task.taskId)?.runtimeIndexSeeds ?? [],
+  ])));
   return fixture;
+}
+
+export function qualityRuntimeIndexSeed(
+  fixture: OwnedQualityFixture,
+  taskId: string,
+): readonly QualityRuntimeIndexSeed[] {
+  if (!owned.has(fixture)) throw new Error('quality_fixture_not_owned');
+  return runtimeIndexSeeds.get(fixture)?.get(taskId) ?? [];
 }
 
 export async function applyQualityMutation(fixture: OwnedQualityFixture, taskId: string,

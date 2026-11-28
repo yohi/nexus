@@ -114,6 +114,7 @@ export interface PairedQualityResult {
 
 export type RequiredProbeAction =
   | 'current_source'
+  | 'stale_during_request'
   | 'safe_refusal'
   | 'navigation_locations'
   | 'discovery_current'
@@ -128,13 +129,16 @@ export interface QualityRequiredProbe {
 }
 
 export interface QualityProbeEvidence extends QualityRequiredProbe {
+  readonly setupProofDigest: string;
   readonly publicArgsDigest: string | null;
   readonly traceSequence: number | null;
   readonly observedStatus: QualityObservation['status'] | null;
   readonly reasonCode: string | null;
   readonly oracleVerdict: ObservationKind | null;
+  readonly publicationSnapshotDigest: string | null;
   readonly resultDigest: string | null;
   readonly locationSetDigest: string | null;
+  readonly requestMutationApplied?: boolean;
   readonly status: 'COVERED' | 'INCOMPLETE' | 'BLOCKED';
 }
 
@@ -200,6 +204,7 @@ interface AdoptionGradingState {
 
 const REFUSAL_STATUSES = new Set<QualityTraceEvent['resultStatus']>([
   'not_found',
+  'stale',
   'stale_identity',
   'unsupported',
   'unavailable',

@@ -1,7 +1,7 @@
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { createQualityFixture, type OwnedQualityFixture } from '../../../tests/benchmarks/quality/fixtures.js';
+import { createQualityFixture, qualityRuntimeIndexSeed, type OwnedQualityFixture } from '../../../tests/benchmarks/quality/fixtures.js';
 import type { QualityCaseManifest } from '../../../tests/benchmarks/quality/contracts.js';
 import { collectQualityRouteCoverage, createNexusAdapterForRoot, runQualityPair } from '../../../tests/benchmarks/quality/runner.js';
 
@@ -94,7 +94,7 @@ describe('quality benchmark core integration', () => {
       expect(probe.taskId).toBe(task.taskId);
       expect(probe.traceSequence).toBeGreaterThan(0);
     }
-    expect(route.probeTrace.map(({ sequence }) => sequence)).toEqual(
+    expect(route.probeTrace.filter(({ state }) => state !== 'SETUP').map(({ sequence }) => sequence)).toEqual(
       route.probes.map(({ traceSequence }) => traceSequence),
     );
   }, 60_000);
@@ -123,16 +123,24 @@ describe('quality benchmark core integration', () => {
         if (scenarioId === 'Q07@quality-v1') {
           const root = scenarioFixture.roots.single;
           if (root === undefined) throw new Error('Q07 fixture root missing');
-          const adapter = await createNexusAdapterForRoot(root, task);
-          const observation = await adapter.invoke(
-            'hybrid_search',
-            { query: 'answer', topK: 20 },
-            new AbortController().signal,
-            { traceSequence: 1 },
+          const adapter = await createNexusAdapterForRoot(
+            root,
+            undefined,
+            qualityRuntimeIndexSeed(scenarioFixture, task.taskId),
           );
-          expect(observation.status).toBe('ok');
-          expect(observation.results.some(({ preview }) => preview?.includes('return 41'))).toBe(true);
-          expect(observation.results.some(({ preview }) => preview?.includes('return 42'))).toBe(false);
+          try {
+            const observation = await adapter.invoke(
+              'hybrid_search',
+              { query: 'answer', topK: 20 },
+              new AbortController().signal,
+              { traceSequence: 1 },
+            );
+            expect(observation.status).toBe('ok');
+            expect(observation.results.some(({ preview }) => preview?.includes('return 41'))).toBe(true);
+            expect(observation.results.some(({ preview }) => preview?.includes('return 42'))).toBe(true);
+          } finally {
+            await adapter.close();
+          }
         }
 
         const result = await runQualityPair(task, scenarioFixture, { signal: new AbortController().signal });
@@ -147,8 +155,16 @@ describe('quality benchmark core integration', () => {
             expect.objectContaining({ phase: 'during_request', operation: 'delete' }),
             expect.objectContaining({ phase: 'before_publication', operation: 'recreate' }),
           ]));
-          expect(result.outcomes.R.observation).not.toBe('CORRECT_CURRENT');
-          expect(result.outcomes.N.observation).not.toBe('CORRECT_CURRENT');
+          // This policy-only baseline does not claim race coverage; the structured Contract Probe
+          // exercises the mutation independently.
+          expect(result.armFixtureDigests.R).toBe(result.armFixtureDigests.N);
+          expect(result.outcomes.R.observation).toBe('WRONG_SOURCE');
+          expect(result.outcomes.N.observation).toBe('WRONG_SOURCE');
+          const request = result.outcomes.R.policy?.trace[0]?.requestSnapshotDigest;
+          const publication = result.outcomes.R.adoptionHistory[0]?.publicationSnapshotDigest;
+          expect(request).toMatch(/^[a-f0-9]{64}$/);
+          expect(publication).toMatch(/^[a-f0-9]{64}$/);
+          expect(request).toBe(publication);
         }
       } finally {
         await scenarioFixture.dispose();
@@ -156,4 +172,24 @@ describe('quality benchmark core integration', () => {
     },
     60_000,
   );
+
+  it('records stale adoption across the Q06 delete/recreate race', async () => {
+    const scenarioFixture = await createQualityFixture(['Q06@quality-v1'], new AbortController().signal);
+    try {
+      const task = scenarioFixture.oracleCases[0];
+      if (task === undefined) throw new Error('Q06 fixture missing');
+      const result = await runQualityPair(task, scenarioFixture, { signal: new AbortController().signal });
+
+      for (const arm of ['R', 'N'] as const) {
+        const trace = result.outcomes[arm].policy?.trace[0];
+        const adoption = result.outcomes[arm].adoptionHistory[0];
+        expect(result.outcomes[arm].observation).toBe('FALSE_FRESH');
+        expect(trace?.requestSnapshotDigest).toMatch(/^[a-f0-9]{64}$/);
+        expect(adoption?.publicationSnapshotDigest).toMatch(/^[a-f0-9]{64}$/);
+        expect(trace?.requestSnapshotDigest).not.toBe(adoption?.publicationSnapshotDigest);
+      }
+    } finally {
+      await scenarioFixture.dispose();
+    }
+  }, 60_000);
 });

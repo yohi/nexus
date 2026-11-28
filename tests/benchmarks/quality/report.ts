@@ -159,7 +159,7 @@ export interface PublicPairedQualityResult extends Omit<PairedQualityResult, 'ou
 }
 
 export interface QualityReport {
-  readonly schemaVersion: 1;
+  readonly schemaVersion: 2;
   readonly metadata: QualityReportMetadata;
   readonly profile: QualityProfile;
   readonly policyVersion: 'quality-policy-v1';
@@ -580,9 +580,12 @@ export function buildQualityReport(
   if (missingTaskIds.length > 0) limitations.push(`MISSING_TASKS:${missingTaskIds.join(',')}`);
   if (metadata.semanticEvidence === 'NOT_ESTABLISHED') limitations.push('SEMANTIC_RELEVANCE_NOT_ESTABLISHED');
   if (metadata.lspEvidence === 'NOT_RUN') limitations.push('REAL_LSP_NOT_RUN');
+  if (metadata.profile === 'quality-lsp-v1' && metadata.lspEvidence === 'STUB_ONLY') {
+    limitations.push('Q13 uses a stub adapter; it is not a real LSP validation.');
+  }
 
   return {
-    schemaVersion: 1,
+    schemaVersion: 2,
     metadata,
     profile: metadata.profile,
     policyVersion: metadata.policyVersion,
@@ -611,6 +614,7 @@ export function renderQualityMarkdown(report: QualityReport): string {
     `- Fixture digest: \`${report.fixtureDigest}\``,
     `- Nexus commit: \`${report.nexusCommit ?? 'unknown'}\``,
     `- rg version: \`${report.rgVersion}\``,
+    ...(report.profile === 'quality-lsp-v1' ? [`- LSP evidence: ${report.lspEvidence}`] : []),
     `- Run: ${report.metadata.runStartedAt} → ${report.metadata.runFinishedAt}`,
     '',
     '## Expected tasks',
@@ -646,6 +650,14 @@ export function renderQualityMarkdown(report: QualityReport): string {
     `- Missing: ${rateText(report.gate1.missingRate)}`,
     `- Unavailable: ${rateText(report.gate1.unavailableRate)}`,
     '',
+    '### Mandatory route coverage',
+    '',
+    '| Task | Probe | Tool | Sequence | Setup proof | Args digest | Request snapshot | Publication snapshot | Mutation applied | Observed | Reason | Oracle | Coverage |',
+    '|---|---|---|---:|---|---|---|---|---|---|---|---|---|',
+    ...report.routeCoverage.flatMap((route) => route.probes.map((probe) =>
+      `| ${route.taskId} | ${probe.probeId} | ${probe.tool} | ${probe.traceSequence ?? '—'} | ${probe.setupProofDigest} | ${probe.publicArgsDigest ?? '—'} | ${route.probeTrace.find(({ sequence }) => sequence === probe.traceSequence)?.requestSnapshotDigest ?? '—'} | ${probe.publicationSnapshotDigest ?? '—'} | ${probe.requestMutationApplied === undefined ? '—' : probe.requestMutationApplied ? 'yes' : 'no'} | ${probe.observedStatus ?? '—'} | ${escapeMarkdownCell(probe.reasonCode ?? '—')} | ${probe.oracleVerdict ?? '—'} | ${probe.status} |`,
+    )),
+    '',
     '## Gate 2 — Discovery',
     '',
   );
@@ -657,8 +669,9 @@ export function renderQualityMarkdown(report: QualityReport): string {
       '',
       `- Status: ${g.status}`,
       `- Evaluated queries: ${g.evaluatedQueries}`,
-      `- Recall@${g.recallK}: ${g.recallAtK === null ? 'N/A' : g.recallAtK.toFixed(4)}`,
+      `- Recall (unique related candidates; no rank limit): ${g.recallAtK === null ? 'N/A' : g.recallAtK.toFixed(4)}`,
       `- MRR: ${g.mrr === null ? 'N/A' : g.mrr.toFixed(4)}`,
+      '- Recall counts unique related candidates across the full collected set; MRR uses ranked adoption evidence. Unranked relevant hits count as 0 in MRR.',
       `- File discovery: ${g.expectedFileDiscoveryRate === null ? 'N/A' : g.expectedFileDiscoveryRate.toFixed(4)}`,
       `- Symbol discovery: ${g.expectedSymbolDiscoveryRate === null ? 'N/A' : g.expectedSymbolDiscoveryRate.toFixed(4)}`,
       `- Irrelevant candidate rate: ${g.irrelevantCandidateRate === null ? 'N/A' : g.irrelevantCandidateRate.toFixed(4)}`,
@@ -682,6 +695,10 @@ export function renderQualityMarkdown(report: QualityReport): string {
   );
 
   return lines.join('\n');
+}
+
+function escapeMarkdownCell(value: string): string {
+  return value.replaceAll('|', '\\|').replace(/\r\n|\r|\n/g, '<br>');
 }
 
 function rateText(rate: QualityRate): string {
@@ -800,7 +817,7 @@ async function runQualitySuiteWithFixtures(
 
   const rgVersion = await readRgVersion(options.rgExecutable, options.signal);
   const rgExecutableIdentityValue = rgExecutableIdentity(options.rgExecutable, rgVersion);
-  const rgFlags = [...sanitizedRgArgv('<public-query>')];
+  const rgFlags = [...sanitizedRgArgv()];
   const rgExclusionsList = [...rgExclusions];
   const rgExecutionContractDigest = digest({ argv: rgFlags, rootKey: 'single', searchScope: '.', readMaxBytesPerCall: 4096, policyVersion: 'quality-policy-v1' });
 

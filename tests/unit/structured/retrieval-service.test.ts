@@ -1,4 +1,4 @@
-import { mkdtemp, mkdir, rm, symlink, unlink, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, rename, rm, symlink, unlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -141,6 +141,91 @@ describe('SymbolRetrievalService', () => {
     await writeFile(join(projectRoot, 'src/a.ts'), 'changed');
     const result = await service.getSymbolSource({ symbolId: stage.symbolId });
     expect(result).toMatchObject({ status: 'stale', reasonCode: 'INDEX_FILE_HASH_MISMATCH' });
+    expect(result).not.toHaveProperty('source');
+  });
+
+  it.each([
+    { description: 'the file is deleted', mutation: 'delete', reasonCode: 'INDEX_FILE_MISSING' },
+    { description: 'the file contents change', mutation: 'change', reasonCode: 'INDEX_FILE_HASH_MISMATCH' },
+    { description: 'the same path is replaced', mutation: 'replace', reasonCode: 'INDEX_FILE_HASH_MISMATCH' },
+    { description: 'the active generation changes', mutation: 'generation', reasonCode: 'INDEX_FILE_HASH_MISMATCH' },
+  ] as const)(
+    'rejects source when $description after its initial canonical read',
+    async ({ mutation, reasonCode }) => {
+      const text = 'export function a() { return 1; }';
+      const target = join(projectRoot, 'src/a.ts');
+      const stage = createStructuredStage('src/a.ts', text, 'a');
+      await runStructuredFullRebuild(coordinator, stage);
+      await writeFile(target, text);
+
+      const originalResolveFile = catalog.resolveFile.bind(catalog);
+      let resolveFileCalls = 0;
+      vi.spyOn(catalog, 'resolveFile').mockImplementation(async (filePath) => {
+        resolveFileCalls += 1;
+        if (resolveFileCalls === 2) {
+          switch (mutation) {
+            case 'delete':
+              await unlink(target);
+              break;
+            case 'change':
+              await writeFile(target, 'export function a() { return 2; }');
+              break;
+            case 'replace': {
+              const replacement = `${target}.replacement`;
+              await writeFile(replacement, text, { flag: 'wx' });
+              await unlink(target);
+              await rename(replacement, target);
+              break;
+            }
+            case 'generation': {
+              const resolution = await originalResolveFile(filePath);
+              return resolution.kind === 'active'
+                ? { ...resolution, generationId: 'changed_generation' }
+                : resolution;
+            }
+          }
+        }
+        return originalResolveFile(filePath);
+      });
+
+      const result = await service.getSymbolSource({ symbolId: stage.symbolId });
+
+      expect(resolveFileCalls).toBe(2);
+      expect(result).toMatchObject({
+        status: 'stale',
+        freshness: 'stale',
+        reindexRequired: true,
+        reasonCode,
+      });
+      expect(result).not.toHaveProperty('source');
+    },
+  );
+
+  it('rejects source if the resolved symbol identity changes before response', async () => {
+    const text = 'export function a() { return 1; }';
+    const stage = createStructuredStage('src/a.ts', text, 'a');
+    await runStructuredFullRebuild(coordinator, stage);
+    await writeFile(join(projectRoot, 'src/a.ts'), text);
+    const originalResolveSymbol = catalog.resolveSymbol.bind(catalog);
+    let resolveSymbolCalls = 0;
+    vi.spyOn(catalog, 'resolveSymbol').mockImplementation(async (symbolId) => {
+      resolveSymbolCalls += 1;
+      const resolution = await originalResolveSymbol(symbolId);
+      if (resolveSymbolCalls === 2 && resolution.kind === 'active') {
+        return { ...resolution, filePath: 'src/replaced.ts' };
+      }
+      return resolution;
+    });
+
+    const result = await service.getSymbolSource({ symbolId: stage.symbolId });
+
+    expect(resolveSymbolCalls).toBe(2);
+    expect(result).toMatchObject({
+      status: 'index_incomplete',
+      freshness: 'unknown',
+      reindexRequired: true,
+      reasonCode: 'INDEX_SYMBOL_HASH_MISMATCH',
+    });
     expect(result).not.toHaveProperty('source');
   });
 

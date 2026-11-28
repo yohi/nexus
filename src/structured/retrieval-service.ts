@@ -9,7 +9,7 @@ import type {
 import { PathTraversalError, type PathSanitizer } from '../server/path-sanitizer.js';
 import type { VerifiedSymbolNavigationResult } from '../lsp/contracts.js';
 import { resolveTsIdentifierPosition } from '../lsp/identifier-locator.js';
-import { CanonicalSourceError, readCanonicalSource } from '../lsp/target-resolver.js';
+import { CanonicalSourceError, readCanonicalSource, type CanonicalSourceSnapshot } from '../lsp/target-resolver.js';
 import { sha256Hex, decodeUtf8 } from './hash.js';
 import { Utf8SourceError } from './utf8-offsets.js';
 import type { StructuredDeclaration, StructuredRetrievalReasonCode } from './contracts.js';
@@ -63,6 +63,8 @@ type VerifiedSymbol =
       /** Active generation checked during verification. */
       readonly generationId: string;
       readonly fileSha256: string;
+      /** Identity of the descriptor whose bytes were verified. */
+      readonly fileIdentity: CanonicalSourceSnapshot['identity'];
       readonly fileCompleteness: 'complete' | 'partial';
     }
   | { readonly ok: false; readonly status: SourceStatus & { request?: { symbolId: string } } };
@@ -108,6 +110,7 @@ export interface SymbolRetrievalServiceOptions {
   sanitizer: PathSanitizer;
   isExcluded?: (filePath: string) => boolean | Promise<boolean>;
   isSupportedLanguage?: (language: string) => boolean;
+  afterCanonicalSourceRead?: (filePath: string) => void | Promise<void>;
 }
 
 export class SymbolRetrievalService {
@@ -290,6 +293,11 @@ export class SymbolRetrievalService {
 
     const symbolSlice = verified.bytes.subarray(verified.declaration.startByte, verified.declaration.endByte);
     const source = decodeUtf8(symbolSlice);
+    const staleStatus = await this.revalidateVerifiedSymbol(input, verified);
+    if (staleStatus !== undefined) {
+      return { ...staleStatus, request: { symbolId: input.symbolId } };
+    }
+
     return {
       status: 'ok',
       freshness: 'fresh',
@@ -567,8 +575,104 @@ export class SymbolRetrievalService {
       filePath,
       generationId: activeGeneration,
       fileSha256: fileHash,
+      fileIdentity: readResult.identity,
       fileCompleteness: generation.fileCompleteness,
     };
+  }
+
+  private async revalidateVerifiedSymbol(
+    input: { readonly symbolId: string; readonly signal?: AbortSignal },
+    verified: Extract<VerifiedSymbol, { readonly ok: true }>,
+  ): Promise<SourceStatus | undefined> {
+    input.signal?.throwIfAborted();
+
+    const currentFile = await this.options.catalog.resolveFile(verified.filePath);
+    if (currentFile.kind !== 'active' || currentFile.generationId !== verified.generationId) {
+      return {
+        status: 'stale',
+        freshness: 'stale',
+        reindexRequired: true,
+        reasonCode: 'INDEX_FILE_HASH_MISMATCH',
+      };
+    }
+
+    const currentSymbol = await this.resolveSymbol(input.symbolId);
+    if (currentSymbol.kind === 'tombstone') {
+      return {
+        status: 'stale_identity',
+        freshness: 'unknown',
+        reindexRequired: false,
+        reasonCode: 'SYMBOL_RETIRED',
+      };
+    }
+    if (currentSymbol.kind === 'missing') {
+      return {
+        status: 'not_found',
+        freshness: 'unknown',
+        reindexRequired: false,
+        reasonCode: 'SYMBOL_NOT_FOUND',
+      };
+    }
+    if (currentSymbol.kind === 'pending') {
+      return {
+        status: 'index_incomplete',
+        freshness: 'unknown',
+        reindexRequired: true,
+        reasonCode: 'INDEX_PENDING_GENERATION',
+      };
+    }
+
+    const declaration = currentSymbol.declaration;
+    if (
+      currentSymbol.filePath !== verified.filePath ||
+      declaration.symbolId !== verified.declaration.symbolId ||
+      declaration.qualifiedName !== verified.declaration.qualifiedName ||
+      declaration.kind !== verified.declaration.kind ||
+      declaration.signatureDiscriminator !== verified.declaration.signatureDiscriminator ||
+      declaration.startByte !== verified.declaration.startByte ||
+      declaration.endByte !== verified.declaration.endByte ||
+      declaration.sourceHash !== verified.declaration.sourceHash
+    ) {
+      return {
+        status: 'index_incomplete',
+        freshness: 'unknown',
+        reindexRequired: true,
+        reasonCode: 'INDEX_SYMBOL_HASH_MISMATCH',
+      };
+    }
+
+    const currentSource = await this.readCurrentBytes(verified.filePath, input.signal);
+    if (currentSource.status === 'excluded') {
+      return {
+        status: 'excluded',
+        freshness: 'unknown',
+        reindexRequired: false,
+        reasonCode: 'PATH_EXCLUDED',
+      };
+    }
+    if (currentSource.status !== 'ok') {
+      return {
+        status: 'stale',
+        freshness: 'stale',
+        reindexRequired: true,
+        reasonCode: currentSource.reasonCode,
+      };
+    }
+    if (
+      currentSource.identity.device !== verified.fileIdentity.device ||
+      currentSource.identity.inode !== verified.fileIdentity.inode ||
+      sha256Hex(currentSource.bytes) !== verified.fileSha256
+    ) {
+      return {
+        status: 'stale',
+        freshness: 'stale',
+        reindexRequired: true,
+        reasonCode: 'INDEX_FILE_HASH_MISMATCH',
+      };
+    }
+
+    input.signal?.throwIfAborted();
+    return undefined;
   }
 
   private verifyImports(
@@ -598,7 +702,7 @@ export class SymbolRetrievalService {
     filePath: string,
     signal?: AbortSignal,
   ): Promise<
-    | { status: 'ok'; bytes: Uint8Array }
+    | { status: 'ok'; bytes: Uint8Array; identity: CanonicalSourceSnapshot['identity'] }
     | { status: 'stale'; reasonCode: 'INDEX_FILE_MISSING' | 'INDEX_FILE_HASH_MISMATCH' }
     | { status: 'excluded'; reasonCode: 'PATH_EXCLUDED' }
   > {
@@ -609,7 +713,8 @@ export class SymbolRetrievalService {
         isExcluded: this.options.isExcluded ?? (() => false),
         signal,
       });
-      return { status: 'ok', bytes: snapshot.bytes };
+      await this.options.afterCanonicalSourceRead?.(snapshot.filePath);
+      return { status: 'ok', bytes: snapshot.bytes, identity: snapshot.identity };
     } catch (error) {
       if (error instanceof CanonicalSourceError) {
         switch (error.failure) {

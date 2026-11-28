@@ -1,25 +1,18 @@
 import { createHash } from 'node:crypto';
-import { readFile, readdir, realpath } from 'node:fs/promises';
-import { resolve as resolvePath, relative, dirname } from 'node:path';
+import { lstat, readFile, readdir, realpath, writeFile } from 'node:fs/promises';
+import { resolve as resolvePath, relative, dirname, isAbsolute } from 'node:path';
+import { pathToFileURL } from 'node:url';
+import type { Location } from 'vscode-languageserver-protocol';
+import { LspNavigationService } from '../../../src/lsp/navigation-service.js';
+import type { ILspProvider } from '../../../src/lsp/contracts.js';
 import { buildToolHandlers } from '../../../src/server/tools/tool-support.js';
-import type { NexusServerOptions } from '../../../src/server/tools/types.js';
-import { PathSanitizer } from '../../../src/server/path-sanitizer.js';
-import { LocalContentStore } from '../../../src/storage/local/local-content-store.js';
-import ts from 'typescript';
-import { SearchOrchestrator } from '../../../src/search/orchestrator.js';
 import type {
   IGrepEngine,
   GrepMatch,
   GrepParams,
-  IVectorStore,
-  IMetadataStore,
-  IIndexPipeline,
-  IndexEvent,
-  SearchResult,
 } from '../../../src/types/index.js';
-import type { PluginRegistry } from '../../../src/plugins/registry.js';
-import type { ISemanticSearch, SemanticSearch } from '../../../src/search/semantic.js';
-import { QUALITY_BUDGETS_V1 } from './contracts.js';
+import { createBenchmarkRuntimeFactory } from '../performance/runtime.js';
+import { QUALITY_BUDGETS_V1, type ObservationKind } from './contracts.js';
 import {
   runQualityPolicy,
   type QualityPolicyObserver,
@@ -40,13 +33,15 @@ import {
 import { publicTask, type QualityCaseManifest, type QualityArm, type QualityRootKey } from './contracts.js';
 import {
   captureOracleSnapshot,
-  checkSourceFreshness,
+  gradeTaskSource,
   type SourceSnapshot,
   type SourceProvenance,
 } from './oracle.js';
 import {
   applyQualityMutation,
   createQualityFixture,
+  qualityRuntimeIndexSeed,
+  type QualityRuntimeIndexSeed,
   type OwnedQualityFixture,
 } from './fixtures.js';
 import {
@@ -217,264 +212,141 @@ async function fixtureFiles(root: string, directory = root): Promise<Array<{ fil
   return files;
 }
 
-function fixtureSymbolRetrievalService(
+export type RuntimeQualityAdapter = QualityAdapter & Readonly<{ close: () => Promise<void> }>;
+
+export async function createNexusAdapterForRoot(
   root: string,
-  sanitizer: PathSanitizer,
-  task: QualityCaseManifest,
-): NonNullable<NexusServerOptions['symbolRetrievalService']> {
-  const parseDeclarations = async (filePath: string) => {
-    const safePath = sanitizer.validateProjectRelative(filePath);
-    let content: string;
-    try {
-      content = await readFile(resolvePath(root, safePath), 'utf8');
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
-      throw error;
+  lspStubLocations?: Readonly<Record<'definition' | 'references' | 'implementations', readonly PublicSourceLocation[]>>,
+  indexSeed: readonly QualityRuntimeIndexSeed[] = [],
+  afterCanonicalSourceRead?: (filePath: string) => void | Promise<void>,
+): Promise<RuntimeQualityAdapter> {
+  const assembly = await createBenchmarkRuntimeFactory(
+    root,
+    undefined,
+    undefined,
+    afterCanonicalSourceRead,
+  )(new AbortController().signal);
+  let originals: Array<{ filePath: string; source: string }> = [];
+  let seedWritesStarted = false;
+  let originalsRestored = false;
+  try {
+    originals = indexSeed.length === 0
+      ? []
+      : await Promise.all(indexSeed.map(async ({ filePath }) => ({
+          filePath,
+          source: await readFile(resolvePath(root, filePath), 'utf8'),
+        })));
+    seedWritesStarted = indexSeed.length > 0;
+    await Promise.all(indexSeed.map(({ filePath, source }) =>
+      writeFile(resolvePath(root, filePath), source, 'utf8'),
+    ));
+    await assembly.runtime.initialize();
+    await assembly.runtime.reindex();
+    if (indexSeed.length > 0) {
+      await assembly.options.watcher.stop();
+      await Promise.all(originals.map(({ filePath, source }) =>
+        writeFile(resolvePath(root, filePath), source, 'utf8'),
+      ));
+      originalsRestored = true;
     }
-    const sourceFile = ts.createSourceFile(safePath, content, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
-    const declarations: Array<{
-      name: string;
-      start: number;
-      end: number;
-      startLine: number;
-      startColumn: number;
-      endLine: number;
-      endColumn: number;
-    }> = [];
-    const visit = (node: ts.Node): void => {
-      if (ts.isFunctionDeclaration(node) && node.name !== undefined) {
-        const start = node.getStart(sourceFile);
-        const end = node.end;
-        const startPosition = sourceFile.getLineAndCharacterOfPosition(start);
-        const endPosition = sourceFile.getLineAndCharacterOfPosition(end);
-        declarations.push({
-          name: node.name.text,
-          start,
-          end,
-          startLine: startPosition.line + 1,
-          startColumn: startPosition.character,
-          endLine: endPosition.line + 1,
-          endColumn: endPosition.character,
-        });
-      }
-      ts.forEachChild(node, visit);
-    };
-    visit(sourceFile);
-    return { content, declarations };
-  };
-
-  const getFileOutline = async ({ filePath }: { filePath: string }) => {
-    const parsed = await parseDeclarations(filePath);
-    if (parsed === null) {
-      return {
-        status: 'not_found',
-        freshness: 'unknown',
-        reindexRequired: false,
-        reasonCode: 'FILE_NOT_FOUND',
-        request: { filePath },
+    if (lspStubLocations !== undefined) {
+      const toLocations = (items: readonly PublicSourceLocation[]): readonly Location[] =>
+        items.map((item) => ({
+          uri: pathToFileURL(resolvePath(root, item.filePath)).href,
+          range: {
+            start: { line: item.startLine - 1, character: item.startCharacter },
+            end: { line: item.endLine - 1, character: item.endCharacter },
+          },
+        }));
+      const locations = {
+        definition: toLocations(lspStubLocations.definition),
+        references: toLocations(lspStubLocations.references),
+        implementations: toLocations(lspStubLocations.implementations),
       };
-    }
-    const { declarations } = parsed;
-    return {
-      status: 'ok',
-      freshness: 'fresh',
-      reindexRequired: false,
-      file: { filePath },
-      symbols: declarations.map((declaration) => ({
-        symbolId: declaration.name,
-        name: declaration.name,
-        position: {
-          startLine: declaration.startLine,
-          startColumn: declaration.startColumn,
-          endLine: declaration.endLine,
-          endColumn: declaration.endColumn,
+      const symbols = assembly.options.symbolRetrievalService;
+      if (symbols === undefined) throw new Error('quality_symbol_retrieval_unavailable');
+      const provider: ILspProvider = {
+        start() {
+          return Promise.resolve({ definition: true, references: true, implementations: true, positionEncoding: 'utf-16' });
         },
-      })),
-    };
-  };
-
-  const getSymbolSource = async ({ symbolId }: { symbolId: string }) => {
-    for (const symbol of task.expectedSymbols) {
-      if (symbol.name !== symbolId) continue;
-      const parsed = await parseDeclarations(symbol.filePath);
-      if (parsed === null) {
-        return {
-          status: 'not_found',
-          freshness: 'unknown',
-          reindexRequired: false,
-          reasonCode: 'SYMBOL_NOT_FOUND',
-          request: { symbolId },
-        };
-      }
-      const { content, declarations } = parsed;
-      const declaration = declarations.find((candidate) => candidate.name === symbol.name);
-      if (declaration === undefined) break;
-      return {
-        status: 'ok',
-        freshness: 'fresh',
-        reindexRequired: false,
-        filePath: symbol.filePath,
-        startByte: Buffer.byteLength(content.slice(0, declaration.start), 'utf8'),
-        endByte: Buffer.byteLength(content.slice(0, declaration.end), 'utf8'),
-        source: content.slice(declaration.start, declaration.end),
-        request: { symbolId },
+        async syncDocument() {},
+        async closeDocument() {},
+        listOpenDocumentUris() {
+          return [];
+        },
+        navigate({ kind, uri, position }) {
+          const requested = lspStubLocations[kind];
+          const matchesExpectedLocation = requested.some((item) =>
+            uri === pathToFileURL(resolvePath(root, item.filePath)).href &&
+            position.line === item.startLine - 1 &&
+            position.character === item.startCharacter,
+          );
+          return Promise.resolve(matchesExpectedLocation ? locations[kind] : []);
+        },
+        async shutdown() {},
       };
-    }
-    for (const file of await fixtureFiles(root)) {
-      const parsed = await parseDeclarations(file.filePath);
-      if (parsed === null) continue;
-      const { declarations } = parsed;
-      if (declarations.some((declaration) => declaration.name === symbolId)) {
-        return {
-          status: 'stale_identity',
-          freshness: 'unknown',
-          reindexRequired: false,
-          reasonCode: 'SYMBOL_RETIRED',
-          request: { symbolId },
-        };
-      }
-    }
-    return {
-      status: 'not_found',
-      freshness: 'unknown',
-      reindexRequired: false,
-      reasonCode: 'SYMBOL_NOT_FOUND',
-      request: { symbolId },
-    };
-  };
-
-  return {
-    getFileOutline,
-    getSymbolSource,
-    getSymbolContext: async ({ symbolId, tokenBudget }: { symbolId: string; tokenBudget: number }) => {
-      const result = await getSymbolSource({ symbolId });
-      if (result.status !== 'ok') return { ...result, request: { symbolId, tokenBudget } };
-      return {
-        status: 'ok',
-        freshness: 'fresh',
-        reindexRequired: false,
-        filePath: result.filePath,
-        context: result.source,
-        request: { symbolId, tokenBudget },
-      };
-    },
-  } as NonNullable<NexusServerOptions['symbolRetrievalService']>;
-}
-
-function stub<T>(value: object = {}): T {
-  return value as unknown as T;
-}
-
-function createStubMetadataStore(): IMetadataStore {
-  return stub<IMetadataStore>({
-    initialize: () => Promise.resolve(),
-    getIndexStats: () => Promise.resolve(null),
-    getDeadLetterEntries: () => Promise.resolve([]),
-    getStructuredIndexState: undefined,
-  });
-}
-
-function createStubVectorStore(): IVectorStore {
-  return stub<IVectorStore>({
-    initialize: () => Promise.resolve(),
-    getStats: () => Promise.resolve({
-      totalChunks: 0,
-      totalFiles: 0,
-      dimensions: 0,
-      fragmentationRatio: 0,
-    }),
-  });
-}
-
-function createStubPipeline(): IIndexPipeline {
-  return stub<IIndexPipeline>({
-    getProgress: () => ({
-      totalFiles: 0,
-      processedFiles: 0,
-      status: 'idle',
-    }),
-  });
-}
-
-function createStubPluginRegistry(): PluginRegistry {
-  return stub<PluginRegistry>({
-    registerLanguage: () => {},
-    getLanguagePlugin: () => undefined,
-    registerEmbeddingProvider: () => {},
-    getEmbeddingProvider: () => undefined,
-    setActiveEmbeddingProvider: () => {},
-    getActiveEmbeddingProviderName: () => undefined,
-    getRegisteredEmbeddingProviderNames: () => [],
-    getEmbeddingProviderHealth: () => undefined,
-    healthCheck: () => Promise.resolve({ status: 'ok' }),
-  });
-}
-
-export async function createNexusAdapterForRoot(root: string, task: QualityCaseManifest): Promise<QualityAdapter> {
-  const sanitizer = await PathSanitizer.create(root);
-
-  const loadFileContent = async (filePath: string): Promise<string> => {
-    const resolved = await realpath(filePath);
-    return readFile(resolved, 'utf8');
-  };
-
-  const grepEngine = new LocalGrepEngine();
-  const semanticSearch: ISemanticSearch = {
-    search: async (params): Promise<SearchResult[]> => {
-      if (params.abortSignal?.aborted) return [];
-      const files = await fixtureFiles(root);
-      return files
-        .filter(({ filePath }) => matchGlob(filePath, params.filePatterns)
-        )
-        .slice(0, params.topK ?? 20)
-        .map(({ filePath, content: currentContent }) => {
-          const content = task.scenarioId === 'Q07@quality-v1'
-            ? currentContent.replace('return 42', 'return 41')
-            : currentContent;
-          return {
-            chunk: {
-              id: `${filePath}:fixture`,
-              filePath,
-              content,
-              language: 'typescript',
-              symbolName: filePath.split('/').at(-1)?.replace(/\.[^.]+$/, '') ?? 'fixture',
-              symbolKind: 'unknown',
-              startLine: 1,
-              endLine: content.split('\n').length,
-              hash: sha256(content),
+      assembly.options.lspNavigationService = new LspNavigationService({
+        projectRoot: root,
+        sanitizer: assembly.options.sanitizer,
+        symbols,
+        isExcluded: () => false,
+        acquireProvider() {
+          return Promise.resolve({
+            status: 'ok',
+            provider,
+            capabilities: {
+              definition: true,
+              references: true,
+              implementations: true,
+              positionEncoding: 'utf-16',
             },
-            score: 1,
-            source: 'semantic',
-          };
+          });
+        },
+      });
+    }
+    const adapter = createNexusAdapter(buildToolHandlers(assembly.options, assembly.runtime.initialize.bind(assembly.runtime)));
+    const normalizePath = (filePath: string): string => {
+      if (!isAbsolute(filePath)) return filePath;
+      const pathFromRoot = relative(root, filePath).replaceAll('\\', '/');
+      return pathFromRoot === '..' || pathFromRoot.startsWith('../') ? filePath : pathFromRoot;
+    };
+    return Object.freeze({
+      arm: adapter.arm,
+      invoke: async (...args: Parameters<QualityAdapter['invoke']>) => {
+        const observation = await adapter.invoke(...args);
+        return Object.freeze({
+          ...observation,
+          results: Object.freeze(observation.results.map((candidate) =>
+            Object.freeze({ ...candidate, filePath: normalizePath(candidate.filePath) }),
+          )),
+          sourceAdoptions: Object.freeze(observation.sourceAdoptions.map((source) =>
+            Object.freeze({ ...source, filePath: normalizePath(source.filePath) }),
+          )),
         });
-    },
-  };
-  const options: NexusServerOptions = {
-    projectRoot: root,
-    sanitizer,
-    semanticSearch,
-    grepEngine,
-    orchestrator: new SearchOrchestrator({
-      semanticSearch: semanticSearch as unknown as SemanticSearch,
-      grepEngine,
-      projectRoot: root,
-    }),
-    vectorStore: createStubVectorStore(),
-    metadataStore: createStubMetadataStore(),
-    pipeline: createStubPipeline(),
-    pluginRegistry: createStubPluginRegistry(),
-    runReindex: (): Promise<IndexEvent[]> => Promise.resolve([]),
-    loadFileContent,
-    contentStore: new LocalContentStore({
-      projectRoot: root,
-      sanitize: (filePath) => sanitizer.sanitize(filePath),
-    }),
-    symbolRetrievalService: fixtureSymbolRetrievalService(root, sanitizer, task),
-    lspNavigationService: undefined,
-  };
-
-  const handlers = buildToolHandlers(options);
-  return createNexusAdapter(handlers);
+      },
+      close: () => assembly.runtime.close(),
+    });
+  } catch (error) {
+    const cleanupErrors: unknown[] = [];
+    if (seedWritesStarted && !originalsRestored) {
+      try {
+        await Promise.all(originals.map(({ filePath, source }) =>
+          writeFile(resolvePath(root, filePath), source, 'utf8'),
+        ));
+      } catch (restoreError) {
+        cleanupErrors.push(restoreError);
+      }
+    }
+    try {
+      await assembly.runtime.close();
+    } catch (closeError) {
+      cleanupErrors.push(closeError);
+    }
+    if (cleanupErrors.length > 0) {
+      throw new AggregateError([error, ...cleanupErrors], 'quality_runtime_setup_and_cleanup_failed', { cause: error });
+    }
+    throw error;
+  }
 }
 function buildProvenance(rootKey: QualityRootKey, canonicalRoot: string): SourceProvenance {
   return Object.freeze({
@@ -496,13 +368,33 @@ async function runSingleArm(
   const canonicalRoot = await realpath(root);
   const provenance = buildProvenance(rootKey, canonicalRoot);
   const observerWork = new Map<number, Promise<void>>();
+  const requestSnapshots = new Map<number, string>();
   let duringRequestApplied = false;
+  let beforePublicationWork: Promise<void> | undefined;
+  const applyBeforePublication = (): Promise<void> => beforePublicationWork ??= (async () => {
+    if (task.scenarioId === 'Q08@quality-v1') {
+      const deletion = task.mutationSchedule.find(({ phase, operation }) =>
+        phase === 'during_request' && operation === 'delete',
+      );
+      if (deletion === undefined) return;
+      try {
+        await lstat(resolvePath(root, deletion.target));
+        return;
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+      }
+    }
+    await applyQualityMutation(fixture, task.taskId, 'before_publication');
+  })();
 
   const armAdapter: QualityAdapter = {
     arm: adapter.arm,
     invoke: async (tool, args, invocationSignal, context) => {
+      const requestSnapshot = await captureOracleSnapshot(fixture, rootKey, task.taskId);
+      requestSnapshots.set(context.traceSequence, requestSnapshot.snapshotDigest);
       const observation = await adapter.invoke(tool, args, invocationSignal, context);
       if (
+        task.scenarioId !== 'Q08@quality-v1' &&
         !duringRequestApplied &&
         ['hybrid_search', 'read_file', 'get_context', 'get_symbol_source', 'get_symbol_context'].includes(tool)
       ) {
@@ -519,7 +411,7 @@ async function runSingleArm(
     if (signal.aborted) return Promise.resolve();
     const work = (async () => {
       if (signal.aborted) return;
-      await applyQualityMutation(fixture, task.taskId, 'before_publication');
+       await applyBeforePublication();
       if (signal.aborted) return;
       const snapshot = await captureOracleSnapshot(
         { root: dirname(canonicalRoot), roots: { [rootKey]: canonicalRoot }, publicTasks: [], oracleCases: [task], dispose: async () => {} } as OwnedQualityFixture,
@@ -544,17 +436,27 @@ async function runSingleArm(
     onAdoptionPublished: capturePublication,
   };
 
-  const policyResult = await runQualityPolicy(
+  const observedPolicyResult = await runQualityPolicy(
     publicTask(task),
     armAdapter,
     QUALITY_BUDGETS_V1,
     signal,
     observer,
   );
+  const policyResult: QualityPolicyResult = Object.freeze({
+    ...observedPolicyResult,
+    trace: Object.freeze(observedPolicyResult.trace.map((event) => {
+      const requestSnapshotDigest = requestSnapshots.get(event.sequence);
+      return requestSnapshotDigest === undefined
+        ? event
+        : Object.freeze({ ...event, requestSnapshotDigest });
+    })),
+  });
 
   await Promise.allSettled(
     policyResult.adoptionEvents.map((event) => capturePublication(event)),
   );
+  if (!signal.aborted && task.scenarioId !== 'Q08@quality-v1') await applyBeforePublication();
 
   const finalSnapshot = await captureOracleSnapshot(
     { root: dirname(canonicalRoot), roots: { [rootKey]: canonicalRoot }, publicTasks: [], oracleCases: [task], dispose: async () => {} } as OwnedQualityFixture,
@@ -598,12 +500,20 @@ export async function runQualityPair(
         throw new Error('quality_task_not_found');
       }
       const armTask = generatedTask ?? task;
-      await applyQualityMutation(armFixture, task.taskId, 'before_request');
       const adapter = arm === 'R'
         ? createRipgrepAdapter(root, rgExecutable, { rootKey })
-        : await createNexusAdapterForRoot(root, armTask);
-      const result = await runSingleArm(armTask, rootKey, root, adapter, armFixture, signal);
-      return { ...result, adapter, task: armTask };
+        : await createNexusAdapterForRoot(
+            root,
+            undefined,
+            qualityRuntimeIndexSeed(armFixture, task.taskId),
+          );
+      try {
+        await applyQualityMutation(armFixture, task.taskId, 'before_request');
+        const result = await runSingleArm(armTask, rootKey, root, adapter, armFixture, signal);
+        return { ...result, adapter, task: armTask };
+      } finally {
+        if ('close' in adapter && typeof adapter.close === 'function') await adapter.close();
+      }
     } finally {
       if (providedFixture === undefined) await armFixture.dispose();
     }
@@ -726,7 +636,7 @@ function requiredProbesForScenario(
     case 'Q01@quality-v1':
       return [
         ...base,
-        { probeId: `${task.taskId}-grep`, taskId: task.taskId, rootKey: task.worktreeIdentity.rootKey, tool: 'grep_search', expectedAction: 'discovery_current' },
+        { probeId: `${task.taskId}-source`, taskId: task.taskId, rootKey: task.worktreeIdentity.rootKey, tool: 'get_symbol_source', expectedAction: 'current_source' },
       ];
     case 'Q03@quality-v1':
       return [
@@ -735,16 +645,30 @@ function requiredProbesForScenario(
         { probeId: `${task.taskId}-new-identity-source`, taskId: task.taskId, rootKey: task.worktreeIdentity.rootKey, tool: 'get_symbol_source', expectedAction: 'current_source' },
       ];
     case 'Q07@quality-v1':
-    case 'Q08@quality-v1':
       return [
         ...base,
         { probeId: `${task.taskId}-hybrid`, taskId: task.taskId, rootKey: task.worktreeIdentity.rootKey, tool: 'hybrid_search', expectedAction: 'discovery_current' },
+      ];
+    case 'Q05@quality-v1':
+      return [
+        ...base,
+        { probeId: `${task.taskId}-retired-refusal`, taskId: task.taskId, rootKey: task.worktreeIdentity.rootKey, tool: 'get_symbol_source', expectedAction: 'safe_refusal' },
+      ];
+    case 'Q06@quality-v1':
+      return [
+        ...base,
+        { probeId: `${task.taskId}-recreated-source`, taskId: task.taskId, rootKey: task.worktreeIdentity.rootKey, tool: 'get_symbol_source', expectedAction: 'current_source' },
+      ];
+    case 'Q08@quality-v1':
+      return [
+        ...base,
+        { probeId: `${task.taskId}-generation-race`, taskId: task.taskId, rootKey: task.worktreeIdentity.rootKey, tool: 'get_symbol_source', expectedAction: 'stale_during_request' },
       ];
     case 'Q10@quality-v1':
       return [
         ...base,
         { probeId: `${task.taskId}-outline`, taskId: task.taskId, rootKey: task.worktreeIdentity.rootKey, tool: 'get_file_outline', expectedAction: 'discovery_current' },
-        { probeId: `${task.taskId}-scoped-source`, taskId: task.taskId, rootKey: task.worktreeIdentity.rootKey, tool: 'get_context', expectedAction: 'current_source' },
+        { probeId: `${task.taskId}-scoped-source`, taskId: task.taskId, rootKey: task.worktreeIdentity.rootKey, tool: 'get_symbol_source', expectedAction: 'current_source' },
       ];
     case 'Q13@quality-v1':
       return [
@@ -752,6 +676,31 @@ function requiredProbesForScenario(
         { probeId: `${task.taskId}-definition`, taskId: task.taskId, rootKey: task.worktreeIdentity.rootKey, tool: 'get_definition', expectedAction: 'navigation_locations' },
         { probeId: `${task.taskId}-references`, taskId: task.taskId, rootKey: task.worktreeIdentity.rootKey, tool: 'get_references', expectedAction: 'navigation_locations' },
         { probeId: `${task.taskId}-implementations`, taskId: task.taskId, rootKey: task.worktreeIdentity.rootKey, tool: 'get_implementations', expectedAction: 'navigation_locations' },
+      ];
+    case 'Q02@quality-v1':
+      return [
+        ...base,
+        { probeId: `${task.taskId}-dirty-source`, taskId: task.taskId, rootKey: task.worktreeIdentity.rootKey, tool: 'get_symbol_source', expectedAction: 'current_source' },
+      ];
+    case 'Q04@quality-v1':
+      return [
+        ...base,
+        { probeId: `${task.taskId}-moved-source`, taskId: task.taskId, rootKey: task.worktreeIdentity.rootKey, tool: 'get_symbol_source', expectedAction: 'current_source' },
+      ];
+    case 'Q09@quality-v1':
+      return [
+        ...base,
+        { probeId: `${task.taskId}-parser-capability`, taskId: task.taskId, rootKey: task.worktreeIdentity.rootKey, tool: 'get_file_outline', expectedAction: 'capability_status' },
+      ];
+    case 'Q11@quality-v1':
+      return [
+        ...base,
+        { probeId: `${task.taskId}-declaration-source`, taskId: task.taskId, rootKey: task.worktreeIdentity.rootKey, tool: 'get_symbol_source', expectedAction: 'current_source' },
+      ];
+    case 'Q12@quality-v1':
+      return [
+        ...base,
+        { probeId: `${task.taskId}-source`, taskId: task.taskId, rootKey: task.worktreeIdentity.rootKey, tool: 'get_symbol_source', expectedAction: 'current_source' },
       ];
     case 'Q14@quality-v1':
       return [
@@ -763,7 +712,7 @@ function requiredProbesForScenario(
     default:
       return [
         ...base,
-        { probeId: `${task.taskId}-exact`, taskId: task.taskId, rootKey: task.worktreeIdentity.rootKey, tool: 'grep_search', expectedAction: 'current_source' },
+        { probeId: `${task.taskId}-source`, taskId: task.taskId, rootKey: task.worktreeIdentity.rootKey, tool: 'get_symbol_source', expectedAction: 'current_source' },
       ];
   }
 }
@@ -772,6 +721,7 @@ function probeArgsForTool(
   tool: AdapterQualityTool,
   task: QualityCaseManifest,
   probeId?: string,
+  resolvedSymbolId?: string,
 ): Record<string, unknown> {
   switch (tool) {
     case 'index_status':
@@ -800,11 +750,7 @@ function probeArgsForTool(
     }
     case 'get_symbol_source':
     case 'get_symbol_context': {
-      const symbol = task.expectedSymbols[0];
-      if (task.scenarioId === 'Q03@quality-v1' && probeId?.endsWith('-old-identity-refusal')) {
-        return { symbolId: 'oldAnswer', tokenBudget: 1024 };
-      }
-      return symbol === undefined ? {} : { symbolId: symbol.name, tokenBudget: 1024 };
+      return resolvedSymbolId === undefined ? {} : { symbolId: resolvedSymbolId, tokenBudget: 1024 };
     }
     case 'get_definition':
     case 'get_references':
@@ -838,6 +784,7 @@ export function isProbeCovered(
       return observation.status === 'ok' && observation.results.some((candidate) => {
         const expectedFile = task.expectedFiles.includes(candidate.filePath);
         if (!expectedFile) return false;
+        if (task.scenarioId === 'Q07@quality-v1' && !candidate.preview?.includes('return 42')) return false;
         if (task.expectedSymbols.length === 0) return true;
         return task.expectedSymbols.some((symbol) =>
           symbol.filePath === candidate.filePath &&
@@ -845,26 +792,16 @@ export function isProbeCovered(
         );
       });
     case 'current_source':
-      return observation.status === 'ok' &&
-        observation.exposedBytes > 0 &&
-        observation.sourceAdoptions.some((source) => {
-          if (!task.expectedFiles.includes(source.filePath) || source.sourceValidation !== 'verified') return false;
-          if (sourceSnapshot === undefined ||
-            sourceSnapshot.rootKey !== probe.rootKey ||
-            checkSourceFreshness(sourceSnapshot, source) !== 'FRESH_BYTES') return false;
-          const expectedHash = task.expectedSourceHashes[source.filePath];
-          const expectedRange = task.expectedSymbols.find((symbol) => symbol.filePath === source.filePath);
-          if (expectedHash === undefined || expectedRange === undefined ||
-            source.startByte > expectedRange.startByte || source.endByte < expectedRange.endByte) return false;
-          const bytes = utf8Bytes(source.content);
-          const start = expectedRange.startByte - source.startByte;
-          const end = expectedRange.endByte - source.startByte;
-          return start >= 0 && end <= bytes.byteLength &&
-            sha256(bytes.subarray(start, end)) === expectedHash;
-        });
+      return currentSourceVerdictForProbe(probe, task, observation, sourceSnapshot) === 'CORRECT_CURRENT';
+    case 'stale_during_request':
+      return observation.status === 'stale' &&
+        observation.reasonCode === 'INDEX_FILE_MISSING' &&
+        observation.sourceAdoptions.length === 0 &&
+        observation.exposedBytes === 0;
     case 'safe_refusal': {
       const refusalStatus = observation.status === 'not_found' ||
         observation.status === 'stale_identity' ||
+        observation.status === 'stale' ||
         observation.status === 'unavailable' ||
         observation.status === 'unsupported';
       const expectedReason = task.expectedRefusalConditions.length > 0 &&
@@ -878,8 +815,75 @@ export function isProbeCovered(
         observation.navigation?.capability === 'supported' &&
         !observation.navigation.truncated &&
         observation.navigation.sourceValidation === 'verified' &&
-        observation.navigation.locations.length > 0;
+        observation.navigation.locations.length === task.expectedLocations.length &&
+        task.expectedLocations.every((expected) =>
+          observation.navigation?.locations.some((actual) =>
+            actual.filePath === expected.filePath &&
+            actual.startLine === expected.line &&
+            actual.startCharacter === expected.character,
+          ) === true,
+        );
   }
+}
+
+function currentSourceVerdictForProbe(
+  probe: QualityRequiredProbe,
+  task: QualityCaseManifest,
+  observation: QualityObservation,
+  sourceSnapshot?: SourceSnapshot,
+): ObservationKind {
+  if (sourceSnapshot === undefined || sourceSnapshot.rootKey !== probe.rootKey) return 'INCONCLUSIVE';
+  const adoptions = observation.sourceAdoptions.filter((source) => source.sourceValidation === 'verified');
+  if (adoptions.length === 0) return observation.status === 'not_found' ? 'MISSING' : 'INCONCLUSIVE';
+
+  const provenance = buildProvenance(probe.rootKey, sourceSnapshot.canonicalProjectRoot);
+  const verdicts = adoptions.map((adoption) => gradeTaskSource(task, sourceSnapshot, adoption, provenance));
+  if (verdicts.includes('WRONG_SOURCE')) return 'WRONG_SOURCE';
+  if (verdicts.includes('FALSE_FRESH')) return 'FALSE_FRESH';
+  if (observation.status !== 'ok' || observation.exposedBytes <= 0) return 'INCONCLUSIVE';
+  if (verdicts.includes('CORRECT_CURRENT')) return 'CORRECT_CURRENT';
+  return verdicts[0] ?? 'INCONCLUSIVE';
+}
+
+function oracleVerdictForProbe(
+  probe: QualityRequiredProbe,
+  task: QualityCaseManifest,
+  observation: QualityObservation,
+  sourceSnapshot?: SourceSnapshot,
+  requestMutationApplied = false,
+): ObservationKind {
+  if (probe.expectedAction === 'current_source') {
+    return currentSourceVerdictForProbe(probe, task, observation, sourceSnapshot);
+  }
+  if (probe.expectedAction === 'stale_during_request') {
+    if (!requestMutationApplied) return 'INCONCLUSIVE';
+    if (isProbeCovered(probe, task, observation, sourceSnapshot)) return 'CORRECT_REFUSAL';
+    if (observation.exposedBytes > 0 || observation.sourceAdoptions.length > 0) return 'FALSE_FRESH';
+    return observation.status === 'error' || observation.status === 'timeout'
+      ? 'UNAVAILABLE'
+      : 'INCONCLUSIVE';
+  }
+  if (isProbeCovered(probe, task, observation, sourceSnapshot)) {
+    return probe.expectedAction === 'safe_refusal' ? 'CORRECT_REFUSAL' : 'CORRECT_CURRENT';
+  }
+  if (probe.expectedAction === 'navigation_locations' && observation.status === 'ok') {
+    if (observation.navigation?.truncated ||
+      observation.navigation?.capability !== 'supported' ||
+      observation.navigation.sourceValidation !== 'verified') return 'INCONCLUSIVE';
+    return 'WRONG_SOURCE';
+  }
+  if (probe.expectedAction === 'safe_refusal' &&
+    (observation.exposedBytes > 0 || observation.sourceAdoptions.length > 0)) return 'WRONG_SOURCE';
+  if (probe.expectedAction === 'safe_refusal' &&
+    (observation.status === 'not_found' || observation.status === 'stale' ||
+      observation.status === 'stale_identity' || observation.status === 'unavailable' ||
+      observation.status === 'unsupported')) return 'INCONCLUSIVE';
+  if (observation.status === 'not_found' || observation.status === 'stale' ||
+    observation.status === 'stale_identity' || observation.status === 'unavailable' ||
+    observation.status === 'unsupported') return 'FALSE_REFUSAL';
+  return observation.status === 'error' || observation.status === 'timeout'
+    ? 'UNAVAILABLE'
+    : 'MISSING';
 }
 
 export async function collectQualityRouteCoverage(
@@ -905,27 +909,168 @@ export async function collectQualityRouteCoverage(
     ]);
   }
 
-  const adapter = options.adapter ?? (await createNexusAdapterForRoot(root, task));
-  const requiredProbes = requiredProbesForScenario(task);
-  const requiredProbeIds = Object.freeze(requiredProbes.map((p) => p.probeId));
-  const probes: QualityProbeEvidence[] = [];
-  const probeTrace: QualityTraceEvent[] = [];
-  const canonicalRoot = await realpath(root);
-  const setupProofDigest = sha256(utf8Bytes(`quality-route-coverage-v1\0${canonicalRoot}\0${task.scenarioId}`));
+  const lspStubLocations = task.evaluationEligibility === 'conditional_lsp' && task.expectedLocations.length > 0
+    ? {
+        definition: task.expectedLocations.map((location) => ({
+          filePath: location.filePath,
+          startLine: location.line,
+          startCharacter: location.character,
+          endLine: location.line,
+          endCharacter: location.character + 6,
+        })),
+        references: task.expectedLocations.map((location) => ({
+          filePath: location.filePath,
+          startLine: location.line,
+          startCharacter: location.character,
+          endLine: location.line,
+          endCharacter: location.character + 6,
+        })),
+        implementations: task.expectedLocations.map((location) => ({
+          filePath: location.filePath,
+          startLine: location.line,
+          startCharacter: location.character,
+          endLine: location.line,
+          endCharacter: location.character + 6,
+        })),
+      }
+    : undefined;
+  const sourceMutations = task.mutationSchedule.some(({ phase }) =>
+    phase === 'before_request' || phase === 'during_request' || phase === 'before_publication',
+  );
+  const ownedProbeFixture = options.adapter === undefined && sourceMutations
+    ? await createQualityFixture([task.scenarioId], new AbortController().signal)
+    : undefined;
+  let adapter: QualityAdapter | undefined = options.adapter;
+  const ownsAdapter = options.adapter === undefined;
 
-  let sequence = 0;
-  for (const probe of requiredProbes) {
+  try {
+    const probeTask = ownedProbeFixture?.oracleCases.find(({ taskId }) => taskId === task.taskId) ?? task;
+    const probeRoot = ownedProbeFixture?.roots[rootKey] ?? root;
+    const probeFixture = ownedProbeFixture ?? fixture;
+    let requestMutationArmed = false;
+    let requestMutationApplied = false;
+    const raceTarget = probeTask.expectedFiles[0];
+    const afterCanonicalSourceRead = async (filePath: string): Promise<void> => {
+      if (
+        !requestMutationArmed ||
+        requestMutationApplied ||
+        raceTarget === undefined ||
+        filePath !== raceTarget ||
+        ownedProbeFixture === undefined
+      ) return;
+      await applyQualityMutation(ownedProbeFixture, probeTask.taskId, 'during_request');
+      requestMutationApplied = true;
+    };
+    if (
+      probeTask.scenarioId === 'Q06@quality-v1' &&
+      ownedProbeFixture !== undefined
+    ) {
+      await applyQualityMutation(ownedProbeFixture, probeTask.taskId, 'during_request');
+      await applyQualityMutation(ownedProbeFixture, probeTask.taskId, 'before_publication');
+    }
+    if (adapter === undefined) {
+      adapter = await createNexusAdapterForRoot(
+        probeRoot,
+        lspStubLocations,
+        qualityRuntimeIndexSeed(probeFixture, task.taskId),
+        probeTask.scenarioId === 'Q08@quality-v1' ? afterCanonicalSourceRead : undefined,
+      );
+    }
+    const requiredProbes = requiredProbesForScenario(probeTask);
+    const requiredProbeIds = Object.freeze(requiredProbes.map((p) => p.probeId));
+    const probes: QualityProbeEvidence[] = [];
+    const probeTrace: QualityTraceEvent[] = [];
+    const canonicalRoot = await realpath(probeRoot);
+    let sequence = 0;
+    const indexedSymbols: Array<Readonly<{ filePath: string; symbolId: string; name: string }>> = [];
+    for (const { filePath } of (options.signal.aborted ? [] : await fixtureFiles(probeRoot))) {
+      sequence += 1;
+      const requestSnapshot = await captureOracleSnapshot(probeFixture, rootKey, probeTask.taskId);
+      const args = { filePath };
+      let observation: QualityObservation;
+      try {
+        observation = await adapter.invoke('get_file_outline', args, options.signal, { traceSequence: sequence });
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        observation = {
+          status: 'error',
+          results: Object.freeze([]),
+          exposedBytes: 0,
+          sourceAdoptions: Object.freeze([]),
+          rawDigest: digest(message),
+          normalizedPublicArgs: Object.freeze(normalizeProbeArgs('get_file_outline', args)) as Readonly<Record<string, PublicJsonValue>>,
+          reasonCode: 'ADAPTER_INVOKE_FAILED',
+        };
+      }
+      probeTrace.push(Object.freeze({
+        sequence,
+        state: 'SETUP',
+        tool: 'get_file_outline',
+        normalizedPublicArgs: observation.normalizedPublicArgs,
+        argsDigest: digest(observation.normalizedPublicArgs),
+        queryDigest: null,
+        resultDigest: observation.rawDigest,
+        resultStatus: observation.status,
+        reasonCode: observation.reasonCode ?? null,
+        resultCount: observation.results.length,
+        exposedBytes: observation.exposedBytes,
+        requestSnapshotDigest: requestSnapshot.snapshotDigest,
+        logicalOperations: 1,
+        invocationCount: 1,
+        retries: 0,
+        fallback: false,
+      }));
+      for (const candidate of observation.results) {
+        if (candidate.symbolId === undefined || candidate.preview === undefined) continue;
+        indexedSymbols.push({ filePath: candidate.filePath, symbolId: candidate.symbolId, name: candidate.preview });
+      }
+    }
+    if (ownedProbeFixture !== undefined) {
+      await applyQualityMutation(ownedProbeFixture, probeTask.taskId, 'before_request');
+    }
+    const setupProofDigest = digest({
+      version: 'quality-route-coverage-v3',
+      canonicalRoot,
+      scenarioId: probeTask.scenarioId,
+      setupTrace: probeTrace.map(({ argsDigest, resultDigest, resultStatus, requestSnapshotDigest }) =>
+        ({ argsDigest, resultDigest, resultStatus, requestSnapshotDigest })),
+    });
+    const clueFile = probeTask.initialClues
+      .map((clue) => /^file:(.+)$/.exec(clue)?.[1])
+      .find((filePath): filePath is string => filePath !== undefined);
+    const clueIdentity = probeTask.initialClues
+      .map((clue) => /^(?:id|symbol):(.+)$/.exec(clue)?.[1])
+      .find((identity): identity is string => identity !== undefined);
+    const resolveSymbolId = (probe: QualityRequiredProbe): string | undefined => {
+      const candidates = indexedSymbols.filter((candidate) =>
+        clueFile === undefined || candidate.filePath === clueFile,
+      );
+      if (probe.expectedAction === 'safe_refusal' && clueIdentity !== undefined) {
+        return indexedSymbols.find(({ name }) => name === clueIdentity)?.symbolId;
+      }
+      if (probe.expectedAction === 'current_source' && probeTask.scenarioId === 'Q03@quality-v1' && clueIdentity !== undefined) {
+        return indexedSymbols.find(({ name }) => name !== clueIdentity)?.symbolId;
+      }
+      if (clueIdentity !== undefined) {
+        return candidates.find(({ name }) => name === clueIdentity)?.symbolId;
+      }
+      return candidates[0]?.symbolId;
+    };
+    for (const probe of requiredProbes) {
     if (options.signal.aborted) {
       probes.push(
         Object.freeze({
-          ...probe,
-          publicArgsDigest: null,
+        ...probe,
+        setupProofDigest,
+        publicArgsDigest: null,
           traceSequence: null,
           observedStatus: 'cancelled',
           reasonCode: 'REQUEST_CANCELLED',
           oracleVerdict: null,
+          publicationSnapshotDigest: null,
           resultDigest: null,
           locationSetDigest: null,
+          ...(probe.expectedAction === 'stale_during_request' ? { requestMutationApplied: false } : {}),
           status: 'BLOCKED',
         }),
       );
@@ -933,10 +1078,16 @@ export async function collectQualityRouteCoverage(
     }
 
     sequence += 1;
-    const args = probeArgsForTool(probe.tool, task, probe.probeId);
+    const args = probeArgsForTool(probe.tool, probeTask, probe.probeId, resolveSymbolId(probe));
     const context: QualityInvocationContext = { traceSequence: sequence };
+    const requestSnapshot = await captureOracleSnapshot(probeFixture, rootKey, probeTask.taskId);
+    if (probe.expectedAction === 'safe_refusal' && ownedProbeFixture !== undefined) {
+      // Resolve the pre-deletion identity first, then test it after the file is gone.
+      await applyQualityMutation(ownedProbeFixture, probeTask.taskId, 'before_publication');
+    }
     let observation: QualityObservation;
     try {
+      if (probe.expectedAction === 'stale_during_request') requestMutationArmed = true;
       // Probe order determines traceSequence and abort behavior; keep invocations sequential.
       observation = await adapter.invoke(probe.tool, args, options.signal, context);
     } catch (error) {
@@ -948,17 +1099,27 @@ export async function collectQualityRouteCoverage(
         sourceAdoptions: Object.freeze([]),
         rawDigest: digest(message),
         normalizedPublicArgs: Object.freeze(normalizeProbeArgs(probe.tool, args)) as Readonly<Record<string, PublicJsonValue>>,
-        reasonCode: message,
+        reasonCode: 'ADAPTER_INVOKE_FAILED',
       };
+    } finally {
+      requestMutationArmed = false;
     }
 
+    if (
+      probe.expectedAction === 'stale_during_request' &&
+      ownedProbeFixture !== undefined &&
+      requestMutationApplied
+    ) {
+      await applyQualityMutation(ownedProbeFixture, probeTask.taskId, 'before_publication');
+    }
     const locationDigest = locationSetDigest(observation);
-    const sourceSnapshot = probe.expectedAction === 'current_source'
-      ? await captureOracleSnapshot(fixture, rootKey, task.taskId)
+    const sourceSnapshot = probe.expectedAction === 'current_source' ||
+      probe.expectedAction === 'stale_during_request'
+      ? await captureOracleSnapshot(probeFixture, rootKey, probeTask.taskId)
       : undefined;
     probeTrace.push(Object.freeze({
       sequence,
-      state: 'ROUTE_PROBE',
+      state: 'CONTRACT_PROBE',
       tool: probe.tool,
       normalizedPublicArgs: observation.normalizedPublicArgs,
       argsDigest: digest(observation.normalizedPublicArgs),
@@ -968,42 +1129,64 @@ export async function collectQualityRouteCoverage(
       reasonCode: observation.reasonCode ?? null,
       resultCount: observation.results.length,
       exposedBytes: observation.exposedBytes,
+      requestSnapshotDigest: requestSnapshot.snapshotDigest,
       logicalOperations: 1,
       invocationCount: 1,
       retries: 0,
       fallback: false,
     }));
 
+    const oracleVerdict = oracleVerdictForProbe(
+      probe,
+      probeTask,
+      observation,
+      sourceSnapshot,
+      requestMutationApplied,
+    );
     probes.push(
       Object.freeze({
         ...probe,
+        setupProofDigest,
         publicArgsDigest: digest(observation.normalizedPublicArgs),
         traceSequence: sequence,
         observedStatus: observation.status,
         reasonCode: observation.reasonCode ?? null,
-        oracleVerdict: null,
+        oracleVerdict,
+        publicationSnapshotDigest: sourceSnapshot?.snapshotDigest ?? null,
         resultDigest: observation.rawDigest,
         locationSetDigest: locationDigest,
-        status: isProbeCovered(probe, task, observation, sourceSnapshot) ? 'COVERED' : 'INCOMPLETE',
+        ...(probe.expectedAction === 'stale_during_request' ? { requestMutationApplied } : {}),
+        status: oracleVerdict === 'CORRECT_CURRENT' || oracleVerdict === 'CORRECT_REFUSAL'
+          ? 'COVERED'
+          : 'INCOMPLETE',
       }),
     );
+    }
+
+    const allCovered = probes.length > 0 && probes.every((p) => p.status === 'COVERED');
+
+    return Object.freeze([
+      Object.freeze({
+        taskId: task.taskId,
+        scenarioId: probeTask.scenarioId,
+        rootKey,
+        requiredProbeIds,
+        probes: Object.freeze(probes),
+        probeTrace: Object.freeze(probeTrace),
+        setupProofDigest,
+        status: allCovered ? 'COVERED' : 'INCOMPLETE',
+        reasonCode: allCovered ? undefined : 'MISSING_REQUIRED_PROBE',
+      }),
+    ]);
+  } finally {
+    try {
+      if (ownsAdapter && adapter !== undefined) {
+        await (adapter as RuntimeQualityAdapter).close();
+      }
+    } finally {
+      if (ownedProbeFixture !== undefined) await ownedProbeFixture.dispose();
+    }
   }
-
-  const allCovered = probes.length > 0 && probes.every((p) => p.status === 'COVERED');
-
-  return Object.freeze([
-    Object.freeze({
-      taskId: task.taskId,
-      scenarioId: task.scenarioId,
-      rootKey,
-      requiredProbeIds,
-      probes: Object.freeze(probes),
-      probeTrace: Object.freeze(probeTrace),
-      setupProofDigest,
-      status: allCovered ? 'COVERED' : 'INCOMPLETE',
-      reasonCode: allCovered ? undefined : 'MISSING_REQUIRED_PROBE',
-    }),
-  ]);
 }
 
 export type CapabilityEvidenceClass =
@@ -1045,12 +1228,12 @@ export function createLspStubAdapter(
 ): QualityAdapter {
   return {
     arm: 'N',
-    async invoke(tool): Promise<QualityObservation> {
+    invoke(tool): Promise<QualityObservation> {
       const kind: 'definition' | 'references' | 'implementations' | null = (tool === 'get_definition' || tool === 'get_references' || tool === 'get_implementations')
         ? tool.slice(4) as 'definition' | 'references' | 'implementations'
         : null;
       if (kind === null) {
-        return {
+        return Promise.resolve({
           status: 'unavailable',
           results: Object.freeze([]),
           exposedBytes: 0,
@@ -1058,10 +1241,10 @@ export function createLspStubAdapter(
           rawDigest: digest({ reason: 'lsp_stub_tool_unavailable', tool }),
           normalizedPublicArgs: Object.freeze({}),
           reasonCode: 'lsp_stub_tool_unavailable',
-        };
+        });
       }
       const selected = locations[kind];
-      return {
+      return Promise.resolve({
         status: 'ok',
         results: Object.freeze([]),
         exposedBytes: 0,
@@ -1074,7 +1257,7 @@ export function createLspStubAdapter(
           sourceValidation: 'verified',
           capability: 'supported',
         }),
-      };
+      });
     },
   };
 }

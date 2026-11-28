@@ -101,6 +101,8 @@ function makeRoute(taskId: string): QualityRouteCoverage {
       observedStatus: 'ok' as const,
       reasonCode: null,
       oracleVerdict: null,
+      setupProofDigest: 'setup-digest',
+      publicationSnapshotDigest: null,
       resultDigest: null,
       locationSetDigest: null,
       status: 'COVERED' as const,
@@ -117,7 +119,7 @@ describe('buildQualityReport', () => {
     const route = makeRoute('Q01');
     const report = buildQualityReport(['Q01'], [pair], [route], baseMetadata);
 
-    expect(report.schemaVersion).toBe(1);
+    expect(report.schemaVersion).toBe(2);
     expect(report.profile).toBe('quality-core-v1');
     expect(report.gate1.status).toBe('SAFETY_PASS');
     expect(report.gate1.expected).toBe(1);
@@ -244,6 +246,37 @@ describe('buildQualityReport', () => {
     expect(markdown).toContain('SAFETY_PASS');
     expect(markdown).not.toContain('secret');
     expect(markdown).not.toContain('/home/');
+  });
+
+  it('states that LSP results are stub-only and distinguishes unbounded Recall from ranked MRR', () => {
+    const report = buildQualityReport(
+      ['Q13-definition'],
+      [],
+      [],
+      { ...baseMetadata, profile: 'quality-lsp-v1', lspEvidence: 'STUB_ONLY' },
+    );
+    const markdown = renderQualityMarkdown(report);
+
+    expect(markdown).toContain('LSP evidence: STUB_ONLY');
+    expect(markdown).toContain('Q13 uses a stub adapter; it is not a real LSP validation.');
+    expect(markdown).toContain('Recall (unique related candidates; no rank limit)');
+    expect(markdown).toContain('MRR uses ranked adoption evidence.');
+    expect(markdown).toContain('Unranked relevant hits count as 0 in MRR.');
+  });
+
+  it('escapes pipe characters and line breaks in reason-code table cells', () => {
+    const route = {
+      ...makeRoute('Q01'),
+      probes: [{
+        ...makeRoute('Q01').probes[0]!,
+        reasonCode: 'PRIVATE|DETAIL\nSECOND LINE',
+      }],
+    } as QualityRouteCoverage;
+    const report = buildQualityReport(['Q01'], [makePair()], [route], baseMetadata);
+    const markdown = renderQualityMarkdown(report);
+
+    expect(markdown).toContain('PRIVATE\\|DETAIL<br>SECOND LINE');
+    expect(markdown).not.toContain('PRIVATE|DETAIL\nSECOND LINE');
   });
 
   it('reports zero-candidate evaluated query with known golden as measured zero rates', () => {

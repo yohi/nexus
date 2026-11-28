@@ -196,6 +196,8 @@ export interface CanonicalSourceSnapshot {
   readonly requestedPath: string;
   readonly absolutePath: string;
   readonly uri: string;
+  /** Device and inode reported by fstat on the file descriptor used to read `bytes`. */
+  readonly identity: Readonly<{ device: number; inode: number }>;
   readonly bytes: Uint8Array;
 }
 
@@ -308,7 +310,14 @@ export const readCanonicalSource = async (input: {
     throw new CanonicalSourceError('changed');
   }
 
-  return { filePath, requestedPath, absolutePath, uri: pathToFileURL(absolutePath).href, bytes };
+  return {
+    filePath,
+    requestedPath,
+    absolutePath,
+    uri: pathToFileURL(absolutePath).href,
+    identity: { device: openedStat.dev, inode: openedStat.ino },
+    bytes,
+  };
 };
 
 // ---------------------------------------------------------------------------
