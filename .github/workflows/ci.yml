@@ -73,9 +73,6 @@ jobs:
     - name: Run tests
       run: npm run test
 
-    - name: Run E2E tests
-      run: npm run test:e2e
-
     - name: Run performance smoke
       run: npm run --silent test:perf -- --profile smoke --output reports/performance-smoke.json
 
@@ -86,3 +83,30 @@ jobs:
         name: performance-smoke-node-${{ matrix.node-version }}
         path: reports/performance-smoke.json
         if-no-files-found: error
+
+  e2e:
+    runs-on: ubuntu-24.04
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Use Node.js 24.x
+      uses: actions/setup-node@v4
+      with:
+        node-version: 24.x
+        cache: 'npm'
+
+    - name: Install dependencies
+      run: npm ci --ignore-scripts
+
+    - name: Build approved native dependencies
+      run: npm rebuild better-sqlite3 esbuild tree-sitter tree-sitter-c tree-sitter-c-sharp tree-sitter-cpp tree-sitter-go tree-sitter-java tree-sitter-python tree-sitter-rust
+
+    - name: Install ripgrep
+      run: |
+        sudo apt-get update
+        sudo apt-get install --yes ripgrep
+        rg --version
+
+    - name: Run E2E tests
+      run: npm run test:e2e
