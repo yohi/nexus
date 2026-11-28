@@ -1,0 +1,3 @@
+NEXUS_QUALITY_SUITE=quality-issue320-v1
+NEXUS_QUALITY_OUTPUT_ROOT=/tmp/nexus-quality-final.UJN57BAO
+coverage.enabled=false
