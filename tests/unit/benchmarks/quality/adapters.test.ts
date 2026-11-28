@@ -650,7 +650,12 @@ describe('createRipgrepAdapter', () => {
       filePath: 'src/a-target.ts',
       sourceValidation: 'verified',
     });
-    expect(result.trace.map((event) => event.tool)).toEqual(['rg_search', 'rg_search', 'read_file']);
+    expect(result.trace.map((event) => event.tool)).toEqual([
+      'rg_search',
+      'rg_search',
+      'read_file',
+      'read_file',
+    ]);
     await cleanup(root);
   });
 

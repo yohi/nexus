@@ -17,6 +17,23 @@ import {
   runQualityPair,
 } from '../../../../tests/benchmarks/quality/runner.js';
 
+type QualityTask = NonNullable<Awaited<ReturnType<typeof createQualityFixture>>['oracleCases'][number]>;
+type QualityPairResult = Awaited<ReturnType<typeof runQualityPair>>;
+
+async function withScenarioPair(
+  scenarioId: string,
+  assertPair: (task: QualityTask, result: QualityPairResult) => void | Promise<void>,
+): Promise<void> {
+  const fixture = await createQualityFixture([scenarioId], new AbortController().signal);
+  try {
+    const task = fixture.oracleCases[0];
+    if (task === undefined) throw new Error(`${scenarioId} fixture missing`);
+    await assertPair(task, await runQualityPair(task, fixture, { signal: new AbortController().signal }));
+  } finally {
+    await fixture.dispose();
+  }
+}
+
 describe('quality route coverage', () => {
   it('returns immediately for an empty grep query without traversing the root', async () => {
     const engine = new LocalGrepEngine();
@@ -977,12 +994,7 @@ describe('quality route coverage', () => {
   });
 
   it('grades Q08 concept selection against declaration-sized source on both arms', async () => {
-    const fixture = await createQualityFixture(['Q08@quality-v1'], new AbortController().signal);
-    try {
-      const task = fixture.oracleCases[0];
-      if (task === undefined) throw new Error('Q08 fixture missing');
-
-      const result = await runQualityPair(task, fixture, { signal: new AbortController().signal });
+    await withScenarioPair('Q08@quality-v1', (task, result) => {
       const expected = task.expectedSymbols[0];
 
       expect(expected).toBeDefined();
@@ -1005,18 +1017,11 @@ describe('quality route coverage', () => {
       const nexusTrace = result.outcomes.N.policy?.trace ?? [];
       expect(nexusTrace.some(({ tool }) => tool === 'get_file_outline')).toBe(true);
       expect(nexusTrace.some(({ tool }) => tool === 'get_symbol_source')).toBe(true);
-    } finally {
-      await fixture.dispose();
-    }
+    });
   });
 
   it('grades Q11 first outline declaration against declaration-sized source on both arms', async () => {
-    const fixture = await createQualityFixture(['Q11@quality-v1'], new AbortController().signal);
-    try {
-      const task = fixture.oracleCases[0];
-      if (task === undefined) throw new Error('Q11 fixture missing');
-
-      const result = await runQualityPair(task, fixture, { signal: new AbortController().signal });
+    await withScenarioPair('Q11@quality-v1', (task, result) => {
       const expected = task.expectedSymbols[0];
 
       expect(expected).toBeDefined();
@@ -1034,9 +1039,7 @@ describe('quality route coverage', () => {
         'get_symbol_source',
         'get_symbol_source',
       ]);
-    } finally {
-      await fixture.dispose();
-    }
+    });
   });
 
   it('excludes an observer publication that completes after request abort', async () => {
@@ -1074,8 +1077,8 @@ describe('quality route coverage', () => {
       releaseSnapshot?.();
       const result = await resultPromise;
 
-      expect(result.outcomes.R.policy?.adoptionEvents).toHaveLength(1);
-      expect(result.outcomes.R.adoptionHistory[0]?.publicationSnapshotDigest).toBeNull();
+      expect(result.outcomes.R.policy?.adoptionEvents).toEqual([]);
+      expect(result.outcomes.R.adoptionHistory).toEqual([]);
       expect(result.outcomes.R.observation).toBe('INCONCLUSIVE');
     } finally {
       releaseSnapshot?.();

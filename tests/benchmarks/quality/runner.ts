@@ -768,6 +768,38 @@ function requiredProbesForScenario(
   }
 }
 
+function searchProbeArgs(
+  tool: 'grep_search' | 'rg_search' | 'hybrid_search' | 'semantic_search',
+  task: QualityCaseManifest,
+): Record<string, unknown> {
+  if (tool === 'grep_search' || tool === 'rg_search') {
+    const symbol = task.expectedSymbols[0];
+    const file = task.expectedFiles[0];
+    const pattern = symbol?.name ?? file?.split('/').pop()?.replace(/\.[^.]+$/, '') ?? 'answer';
+    return { pattern, maxResults: 20 };
+  }
+  const concept = task.initialClues
+    .map((clue) => /^concept:(.+)$/u.exec(clue)?.[1])
+    .find((value): value is string => value !== undefined);
+  const query = task.scenarioId === 'Q07@quality-v1' && concept !== undefined
+    ? concept
+    : task.taskDescription;
+  return { query, topK: 20 };
+}
+
+function navigationProbeArgs(task: QualityCaseManifest): Record<string, unknown> {
+  const location = task.expectedLocations[0];
+  const symbol = task.expectedSymbols[0];
+  const file = task.expectedFiles[0];
+  if (location !== undefined) {
+    return { filePath: location.filePath, line: location.line, character: location.character, maxResults: 20 };
+  }
+  if (symbol !== undefined && file !== undefined) {
+    return { filePath: file, line: 1, character: 0, maxResults: 20 };
+  }
+  return {};
+}
+
 function probeArgsForTool(
   tool: AdapterQualityTool,
   task: QualityCaseManifest,
@@ -778,22 +810,10 @@ function probeArgsForTool(
     case 'index_status':
       return {};
     case 'grep_search':
-    case 'rg_search': {
-      const symbol = task.expectedSymbols[0];
-      const file = task.expectedFiles[0];
-      const pattern = symbol?.name ?? file?.split('/').pop()?.replace(/\.[^.]+$/, '') ?? 'answer';
-      return { pattern, maxResults: 20 };
-    }
+    case 'rg_search':
     case 'hybrid_search':
-    case 'semantic_search': {
-      const concept = task.initialClues
-        .map((clue) => /^concept:(.+)$/u.exec(clue)?.[1])
-        .find((value): value is string => value !== undefined);
-      const query = task.scenarioId === 'Q07@quality-v1' && concept !== undefined
-        ? concept
-        : task.taskDescription;
-      return { query, topK: 20 };
-    }
+    case 'semantic_search':
+      return searchProbeArgs(tool, task);
     case 'get_context': {
       const file = task.expectedFiles[0];
       return file === undefined ? {} : { filePath: file, startLine: 1, endLine: 10, mode: 'bounded' };
@@ -812,18 +832,8 @@ function probeArgsForTool(
     }
     case 'get_definition':
     case 'get_references':
-    case 'get_implementations': {
-      const location = task.expectedLocations[0];
-      const symbol = task.expectedSymbols[0];
-      const file = task.expectedFiles[0];
-      if (location !== undefined) {
-        return { filePath: location.filePath, line: location.line, character: location.character, maxResults: 20 };
-      }
-      if (symbol !== undefined && file !== undefined) {
-        return { filePath: file, line: 1, character: 0, maxResults: 20 };
-      }
-      return {};
-    }
+    case 'get_implementations':
+      return navigationProbeArgs(task);
     default:
       return {};
   }
