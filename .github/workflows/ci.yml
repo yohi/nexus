@@ -97,7 +97,10 @@ jobs:
         cache: 'npm'
 
     - name: Install dependencies
-      run: npm ci
+      run: npm ci --ignore-scripts
+
+    - name: Build approved native dependencies
+      run: npm rebuild better-sqlite3 esbuild tree-sitter tree-sitter-c tree-sitter-c-sharp tree-sitter-cpp tree-sitter-go tree-sitter-java tree-sitter-python tree-sitter-rust
 
     - name: Install ripgrep
       run: |
