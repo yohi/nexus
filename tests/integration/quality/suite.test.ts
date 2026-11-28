@@ -64,7 +64,7 @@ describe('runQualitySuite integration', () => {
       expect(['SAFETY_PASS', 'SAFETY_FAIL', 'INCOMPLETE']).toContain(result.aggregateStatus);
 
       for (const report of Object.values(result.reports)) {
-        expect(report.schemaVersion).toBe(1);
+        expect(report.schemaVersion).toBe(2);
         expect(report.metadata.profile).toBe(report.profile);
         expect(report.metadata.fixtureDigest).toBe(report.fixtureDigest);
         expect(report.metadata.policyVersion).toBe(report.policyVersion);
