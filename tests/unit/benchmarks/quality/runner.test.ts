@@ -437,7 +437,7 @@ describe('quality route coverage', () => {
 
   it.each([
     ['Q02@quality-v1', ['Q02-index_status', 'Q02-dirty-source'], 'COVERED', 'CORRECT_CURRENT'],
-    ['Q06@quality-v1', ['Q06-index_status', 'Q06-recreated-source'], 'INCOMPLETE', 'FALSE_FRESH'],
+    ['Q06@quality-v1', ['Q06-index_status', 'Q06-recreated-source'], 'COVERED', 'CORRECT_CURRENT'],
     ['Q11@quality-v1', ['Q11-index_status', 'Q11-declaration-source'], 'COVERED', 'CORRECT_CURRENT'],
   ] as const)(
     'uses the frozen get_symbol_source route for %s',
@@ -697,7 +697,7 @@ describe('quality route coverage', () => {
     }
   });
 
-  it('grades the Q06 request-time source against the later recreated publication snapshot', async () => {
+  it('reads the Q06 recreated source before evaluating the current-source probe', async () => {
     const fixture = await createQualityFixture(['Q06@quality-v1'], new AbortController().signal);
     try {
       const task = fixture.oracleCases[0];
@@ -712,9 +712,9 @@ describe('quality route coverage', () => {
       expect(probe?.setupProofDigest).toBe(route?.setupProofDigest);
       expect(trace?.requestSnapshotDigest).toMatch(/^[a-f0-9]{64}$/);
       expect(probe?.publicationSnapshotDigest).toMatch(/^[a-f0-9]{64}$/);
-      expect(trace?.requestSnapshotDigest).not.toBe(probe?.publicationSnapshotDigest);
-      expect(probe?.oracleVerdict).toBe('FALSE_FRESH');
-      expect(probe?.status).toBe('INCOMPLETE');
+      expect(trace?.requestSnapshotDigest).toBe(probe?.publicationSnapshotDigest);
+      expect(probe?.oracleVerdict).toBe('CORRECT_CURRENT');
+      expect(probe?.status).toBe('COVERED');
     } finally {
       await fixture.dispose();
     }

@@ -961,6 +961,13 @@ export async function collectQualityRouteCoverage(
       await applyQualityMutation(ownedProbeFixture, probeTask.taskId, 'during_request');
       requestMutationApplied = true;
     };
+    if (
+      probeTask.scenarioId === 'Q06@quality-v1' &&
+      ownedProbeFixture !== undefined
+    ) {
+      await applyQualityMutation(ownedProbeFixture, probeTask.taskId, 'during_request');
+      await applyQualityMutation(ownedProbeFixture, probeTask.taskId, 'before_publication');
+    }
     if (adapter === undefined) {
       adapter = await createNexusAdapterForRoot(
         probeRoot,
@@ -1104,12 +1111,6 @@ export async function collectQualityRouteCoverage(
       requestMutationApplied
     ) {
       await applyQualityMutation(ownedProbeFixture, probeTask.taskId, 'before_publication');
-    }
-    if (probe.expectedAction === 'current_source' && ownedProbeFixture !== undefined) {
-      if (probeTask.scenarioId !== 'Q08@quality-v1') {
-        await applyQualityMutation(ownedProbeFixture, probeTask.taskId, 'during_request');
-        await applyQualityMutation(ownedProbeFixture, probeTask.taskId, 'before_publication');
-      }
     }
     const locationDigest = locationSetDigest(observation);
     const sourceSnapshot = probe.expectedAction === 'current_source' ||
