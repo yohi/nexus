@@ -201,7 +201,7 @@ describe('Q08 structured retrieval contract probe', () => {
       if (mutationStatus === 'EXECUTED') {
         expect(structuredReadSelected).toBe(true);
         expect(mutationEvents).toEqual(['actual_structured_source_read', 'file_delete_completed']);
-        expect(result.outcomes.N.observation).toBe('FALSE_FRESH');
+        expect(result.outcomes.N.observation).toBe('CORRECT_CURRENT');
       } else {
         expect(mutationEvents).toEqual([]);
         expect(result.outcomes.N.observation).toBe('WRONG_SOURCE');

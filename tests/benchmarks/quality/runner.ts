@@ -212,7 +212,10 @@ async function fixtureFiles(root: string, directory = root): Promise<Array<{ fil
   return files;
 }
 
-export type RuntimeQualityAdapter = QualityAdapter & Readonly<{ close: () => Promise<void> }>;
+export type RuntimeQualityAdapter = QualityAdapter & Readonly<{
+  close: () => Promise<void>;
+  reindex: () => Promise<void>;
+}>;
 
 export async function createNexusAdapterForRoot(
   root: string,
@@ -322,9 +325,12 @@ export async function createNexusAdapterForRoot(
           sourceAdoptions: Object.freeze(observation.sourceAdoptions.map((source) =>
             Object.freeze({ ...source, filePath: normalizePath(source.filePath) }),
           )),
-        });
+      });
       },
       close: () => assembly.runtime.close(),
+      reindex: async () => {
+        await assembly.runtime.reindex(true);
+      },
     });
   } catch (error) {
     const cleanupErrors: unknown[] = [];
@@ -369,8 +375,28 @@ async function runSingleArm(
   const provenance = buildProvenance(rootKey, canonicalRoot);
   const observerWork = new Map<number, Promise<void>>();
   const requestSnapshots = new Map<number, string>();
+  const mutationEvents = new Map<
+    number,
+    Array<NonNullable<QualityTraceEvent['mutationEvents']>[number]>
+  >();
   let duringRequestApplied = false;
+  let sourceReadInvocations = 0;
   let beforePublicationWork: Promise<void> | undefined;
+  let beforePublicationMutationApplied = false;
+  const hasScheduledMutation = (
+    phase: 'during_request' | 'before_publication',
+  ): boolean => task.mutationSchedule.some(
+    (mutation) => mutation.phase === phase && mutation.operation !== 'noop',
+  );
+  const recordMutationEvent = (
+    traceSequence: number,
+    phase: 'during_request' | 'before_publication',
+    boundary: 'after_invocation' | 'before_invocation',
+  ): void => {
+    const events = mutationEvents.get(traceSequence) ?? [];
+    events.push(Object.freeze({ phase, boundary }));
+    mutationEvents.set(traceSequence, events);
+  };
   const applyBeforePublication = (): Promise<void> => beforePublicationWork ??= (async () => {
     if (task.scenarioId === 'Q08@quality-v1') {
       const deletion = task.mutationSchedule.find(({ phase, operation }) =>
@@ -385,21 +411,40 @@ async function runSingleArm(
       }
     }
     await applyQualityMutation(fixture, task.taskId, 'before_publication');
+    beforePublicationMutationApplied = hasScheduledMutation('before_publication');
   })();
 
   const armAdapter: QualityAdapter = {
     arm: adapter.arm,
     invoke: async (tool, args, invocationSignal, context) => {
+      const isSourceRead = ['read_file', 'get_context', 'get_symbol_source', 'get_symbol_context'].includes(tool);
+      if (
+        isSourceRead &&
+        sourceReadInvocations > 0 &&
+        task.mutationSchedule.some(({ phase }) => phase === 'before_publication')
+      ) {
+        const isFirstBeforePublicationAttempt = beforePublicationWork === undefined;
+        await applyBeforePublication();
+        if (isFirstBeforePublicationAttempt && beforePublicationMutationApplied) {
+          recordMutationEvent(context.traceSequence, 'before_publication', 'before_invocation');
+        }
+      }
+      if (isSourceRead) sourceReadInvocations += 1;
       const requestSnapshot = await captureOracleSnapshot(fixture, rootKey, task.taskId);
       requestSnapshots.set(context.traceSequence, requestSnapshot.snapshotDigest);
       const observation = await adapter.invoke(tool, args, invocationSignal, context);
+      const mutationTriggerTools = task.scenarioId === 'Q08@quality-v1'
+        ? ['read_file', 'get_context', 'get_symbol_source', 'get_symbol_context']
+        : ['hybrid_search', 'read_file', 'get_context', 'get_symbol_source', 'get_symbol_context'];
       if (
-        task.scenarioId !== 'Q08@quality-v1' &&
         !duringRequestApplied &&
-        ['hybrid_search', 'read_file', 'get_context', 'get_symbol_source', 'get_symbol_context'].includes(tool)
+        mutationTriggerTools.includes(tool)
       ) {
         duringRequestApplied = true;
         await applyQualityMutation(fixture, task.taskId, 'during_request');
+        if (hasScheduledMutation('during_request')) {
+          recordMutationEvent(context.traceSequence, 'during_request', 'after_invocation');
+        }
       }
       return observation;
     },
@@ -447,9 +492,15 @@ async function runSingleArm(
     ...observedPolicyResult,
     trace: Object.freeze(observedPolicyResult.trace.map((event) => {
       const requestSnapshotDigest = requestSnapshots.get(event.sequence);
-      return requestSnapshotDigest === undefined
-        ? event
-        : Object.freeze({ ...event, requestSnapshotDigest });
+      const invocationMutationEvents = mutationEvents.get(event.sequence);
+      if (requestSnapshotDigest === undefined && invocationMutationEvents === undefined) return event;
+      return Object.freeze({
+        ...event,
+        ...(requestSnapshotDigest !== undefined ? { requestSnapshotDigest } : {}),
+        ...(invocationMutationEvents !== undefined
+          ? { mutationEvents: Object.freeze([...invocationMutationEvents]) }
+          : {}),
+      });
     })),
   });
 
@@ -717,6 +768,38 @@ function requiredProbesForScenario(
   }
 }
 
+function searchProbeArgs(
+  tool: 'grep_search' | 'rg_search' | 'hybrid_search' | 'semantic_search',
+  task: QualityCaseManifest,
+): Record<string, unknown> {
+  if (tool === 'grep_search' || tool === 'rg_search') {
+    const symbol = task.expectedSymbols[0];
+    const file = task.expectedFiles[0];
+    const pattern = symbol?.name ?? file?.split('/').pop()?.replace(/\.[^.]+$/, '') ?? 'answer';
+    return { pattern, maxResults: 20 };
+  }
+  const concept = task.initialClues
+    .map((clue) => /^concept:(.+)$/u.exec(clue)?.[1])
+    .find((value): value is string => value !== undefined);
+  const query = task.scenarioId === 'Q07@quality-v1' && concept !== undefined
+    ? concept
+    : task.taskDescription;
+  return { query, topK: 20 };
+}
+
+function navigationProbeArgs(task: QualityCaseManifest): Record<string, unknown> {
+  const location = task.expectedLocations[0];
+  const symbol = task.expectedSymbols[0];
+  const file = task.expectedFiles[0];
+  if (location !== undefined) {
+    return { filePath: location.filePath, line: location.line, character: location.character, maxResults: 20 };
+  }
+  if (symbol !== undefined && file !== undefined) {
+    return { filePath: file, line: 1, character: 0, maxResults: 20 };
+  }
+  return {};
+}
+
 function probeArgsForTool(
   tool: AdapterQualityTool,
   task: QualityCaseManifest,
@@ -727,15 +810,10 @@ function probeArgsForTool(
     case 'index_status':
       return {};
     case 'grep_search':
-    case 'rg_search': {
-      const symbol = task.expectedSymbols[0];
-      const file = task.expectedFiles[0];
-      const pattern = symbol?.name ?? file?.split('/').pop()?.replace(/\.[^.]+$/, '') ?? 'answer';
-      return { pattern, maxResults: 20 };
-    }
+    case 'rg_search':
     case 'hybrid_search':
     case 'semantic_search':
-      return { query: task.taskDescription, topK: 20 };
+      return searchProbeArgs(tool, task);
     case 'get_context': {
       const file = task.expectedFiles[0];
       return file === undefined ? {} : { filePath: file, startLine: 1, endLine: 10, mode: 'bounded' };
@@ -754,18 +832,8 @@ function probeArgsForTool(
     }
     case 'get_definition':
     case 'get_references':
-    case 'get_implementations': {
-      const location = task.expectedLocations[0];
-      const symbol = task.expectedSymbols[0];
-      const file = task.expectedFiles[0];
-      if (location !== undefined) {
-        return { filePath: location.filePath, line: location.line, character: location.character, maxResults: 20 };
-      }
-      if (symbol !== undefined && file !== undefined) {
-        return { filePath: file, line: 1, character: 0, maxResults: 20 };
-      }
-      return {};
-    }
+    case 'get_implementations':
+      return navigationProbeArgs(task);
     default:
       return {};
   }
@@ -941,6 +1009,7 @@ export async function collectQualityRouteCoverage(
     ? await createQualityFixture([task.scenarioId], new AbortController().signal)
     : undefined;
   let adapter: QualityAdapter | undefined = options.adapter;
+  let reindex: (() => Promise<void>) | undefined;
   const ownsAdapter = options.adapter === undefined;
 
   try {
@@ -969,12 +1038,14 @@ export async function collectQualityRouteCoverage(
       await applyQualityMutation(ownedProbeFixture, probeTask.taskId, 'before_publication');
     }
     if (adapter === undefined) {
-      adapter = await createNexusAdapterForRoot(
+      const runtimeAdapter = await createNexusAdapterForRoot(
         probeRoot,
         lspStubLocations,
         qualityRuntimeIndexSeed(probeFixture, task.taskId),
         probeTask.scenarioId === 'Q08@quality-v1' ? afterCanonicalSourceRead : undefined,
       );
+      adapter = runtimeAdapter;
+      reindex = runtimeAdapter.reindex;
     }
     const requiredProbes = requiredProbesForScenario(probeTask);
     const requiredProbeIds = Object.freeze(requiredProbes.map((p) => p.probeId));
@@ -1084,6 +1155,7 @@ export async function collectQualityRouteCoverage(
     if (probe.expectedAction === 'safe_refusal' && ownedProbeFixture !== undefined) {
       // Resolve the pre-deletion identity first, then test it after the file is gone.
       await applyQualityMutation(ownedProbeFixture, probeTask.taskId, 'before_publication');
+      if (probeTask.scenarioId === 'Q03@quality-v1') await reindex?.();
     }
     let observation: QualityObservation;
     try {

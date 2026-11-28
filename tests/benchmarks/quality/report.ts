@@ -368,6 +368,14 @@ function buildGate1(
     ...requiredExpectedProbeIds,
   ].filter((id) => !coveredIds.has(id));
   const coveredCoverageCount = [...requiredCoverageIds].filter((id) => coveredIds.has(id)).length;
+  const unsafeRequiredProbeVerdict = routeCoverage.some((route) => {
+    const requiredProbeIds = new Set(route.requiredProbeIds);
+    return route.probes.some((probe) =>
+      requiredProbeIds.has(probe.probeId) &&
+      (probe.oracleVerdict === 'FALSE_FRESH' || probe.oracleVerdict === 'WRONG_SOURCE'),
+    );
+  });
+  if (unsafeRequiredProbeVerdict) safetyFail = true;
 
   let status: GateSafetyReport['status'] = 'SAFETY_PASS';
   if (safetyFail) {

@@ -161,6 +161,26 @@ describe('buildQualityReport', () => {
     expect(report.gate1.status).toBe('INCOMPLETE');
   });
 
+  it.each(['FALSE_FRESH', 'WRONG_SOURCE'] as const)(
+    'marks Gate 1 safety-failed for an unsafe required probe verdict: %s',
+    (oracleVerdict) => {
+      const route = makeRoute('Q01');
+      const incompleteRoute: QualityRouteCoverage = {
+        ...route,
+        status: 'INCOMPLETE',
+        probes: route.probes.map((probe) => ({
+          ...probe,
+          oracleVerdict,
+          status: 'INCOMPLETE',
+        })),
+      };
+      const report = buildQualityReport(['Q01'], [makePair()], [incompleteRoute], baseMetadata);
+
+      expect(report.gate1.status).toBe('SAFETY_FAIL');
+      expect(report.gate1.missingCoverageIds).toContain('Q01-index_status');
+    },
+  );
+
   it('uses required task count for Gate 3 denominator and incomplete status', () => {
     const report = buildQualityReport(['Q01', 'Q02'], [makePair()], [makeRoute('Q01')], baseMetadata);
     expect(report.gate3.status).toBe('INCOMPLETE');
