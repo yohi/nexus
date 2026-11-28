@@ -61,6 +61,42 @@ describe('quality route coverage', () => {
     }
   });
 
+  it('requires the Q07 discovery candidate to contain the current source, while accepting it among stale candidates', async () => {
+    const fixture = await createQualityFixture(['Q07@quality-v1'], new AbortController().signal);
+    try {
+      const task = fixture.oracleCases[0];
+      if (task === undefined) throw new Error('Q07 fixture missing');
+      const probe = {
+        probeId: 'Q07-current-source-candidate',
+        taskId: task.taskId,
+        rootKey: task.worktreeIdentity.rootKey,
+        tool: 'hybrid_search',
+        expectedAction: 'discovery_current',
+      } as const;
+      const observation = (previews: string[]) => ({
+        status: 'ok' as const,
+        results: previews.map((preview, index) => ({
+          filePath: task.expectedFiles[0]!,
+          symbolId: 'answer',
+          rank: index + 1,
+          preview,
+        })),
+        exposedBytes: 0,
+        sourceAdoptions: [],
+        rawDigest: 'discovery',
+        normalizedPublicArgs: {},
+      });
+
+      expect(isProbeCovered(probe, task, observation(['export function answer() { return 41; }']))).toBe(false);
+      expect(isProbeCovered(probe, task, observation([
+        'export function answer() { return 41; }',
+        'export function answer() { return 42; }',
+      ]))).toBe(true);
+    } finally {
+      await fixture.dispose();
+    }
+  });
+
   it('does not count verified but stale source bytes as current-source coverage', async () => {
     const fixture = await createQualityFixture(['Q01@quality-v1'], new AbortController().signal);
     try {
@@ -132,6 +168,75 @@ describe('quality route coverage', () => {
       } as const;
 
       expect(isProbeCovered(probe, task, observation, currentSnapshot)).toBe(false);
+    } finally {
+      await fixture.dispose();
+    }
+  });
+
+  it('uses the same current-source adoption for the Oracle verdict and Gate 1 coverage', async () => {
+    const fixture = await createQualityFixture(['Q01@quality-v1'], new AbortController().signal);
+    try {
+      const task = fixture.oracleCases[0];
+      const root = fixture.roots.single;
+      const filePath = task?.expectedFiles[0];
+      const expectedRange = task?.expectedSymbols[0];
+      if (task === undefined || root === undefined || filePath === undefined || expectedRange === undefined) {
+        throw new Error('Q01 fixture missing');
+      }
+      const currentFile = new TextEncoder().encode(await readFile(join(root, filePath), 'utf8'));
+      const currentSource = new TextDecoder().decode(currentFile.slice(expectedRange.startByte, expectedRange.endByte));
+      const staleSource = currentSource.replace('return 42', 'return 41');
+      const adoption = (content: string) => ({
+        filePath,
+        startByte: expectedRange.startByte,
+        endByte: expectedRange.endByte,
+        content,
+        sourceValidation: 'verified' as const,
+      });
+      const misplacedSource = new TextDecoder().decode(currentFile.slice(1, expectedRange.endByte + 1));
+      const misplacedAdoption = {
+        filePath,
+        startByte: 1,
+        endByte: expectedRange.endByte + 1,
+        content: misplacedSource,
+        sourceValidation: 'verified' as const,
+      };
+      const collect = async (sourceAdoptions: readonly ReturnType<typeof adoption>[]) => {
+        const adapter = {
+          arm: 'N' as const,
+          invoke(tool: string) {
+            if (tool === 'get_symbol_source') {
+              return Promise.resolve({
+                status: 'ok' as const,
+                results: [],
+                exposedBytes: sourceAdoptions.reduce((sum, source) => sum + Buffer.byteLength(source.content), 0),
+                sourceAdoptions,
+                rawDigest: 'multi-adoption',
+                normalizedPublicArgs: {},
+              });
+            }
+            return Promise.resolve({
+              status: 'ok' as const,
+              results: [],
+              exposedBytes: 0,
+              sourceAdoptions: [],
+              rawDigest: 'empty',
+              normalizedPublicArgs: {},
+            });
+          },
+        };
+        return collectQualityRouteCoverage(task, fixture, {
+          signal: new AbortController().signal,
+          adapter,
+        });
+      };
+      const [mixedRoute] = await collect([adoption(staleSource), adoption(currentSource)]);
+      const [wrongRoute] = await collect([misplacedAdoption]);
+      const mixedProbe = mixedRoute?.probes.find(({ expectedAction }) => expectedAction === 'current_source');
+      const wrongProbe = wrongRoute?.probes.find(({ expectedAction }) => expectedAction === 'current_source');
+
+      expect(mixedProbe).toMatchObject({ oracleVerdict: 'CORRECT_CURRENT', status: 'COVERED' });
+      expect(wrongProbe).toMatchObject({ oracleVerdict: 'WRONG_SOURCE', status: 'INCOMPLETE' });
     } finally {
       await fixture.dispose();
     }
@@ -300,7 +405,7 @@ describe('quality route coverage', () => {
   );
 
   it.each([
-    ['Q07@quality-v1', 'COVERED', ['Q07-index_status', 'Q07-hybrid']],
+    ['Q07@quality-v1', 'INCOMPLETE', ['Q07-index_status', 'Q07-hybrid']],
     ['Q08@quality-v1', 'INCOMPLETE', ['Q08-index_status', 'Q08-generation-race']],
     ['Q10@quality-v1', 'COVERED', ['Q10-index_status', 'Q10-outline', 'Q10-scoped-source']],
   ] as const)(
@@ -364,7 +469,7 @@ describe('quality route coverage', () => {
     }
   });
 
-  it('records Q05 as unsafe when the retired identity remains available before publication', async () => {
+  it('queries the Q05 identity acquired before deletion and accepts the specified stale refusal', async () => {
     const fixture = await createQualityFixture(['Q05@quality-v1'], new AbortController().signal);
     try {
       const task = fixture.oracleCases[0];
@@ -372,21 +477,114 @@ describe('quality route coverage', () => {
       expect(task.mutationSchedule).toEqual([
         expect.objectContaining({ phase: 'before_publication', operation: 'delete' }),
       ]);
-      expect(task.expectedRefusalConditions).toEqual([]);
+      expect(task.expectedRefusalConditions).toContain('INDEX_FILE_MISSING');
 
       const [route] = await collectQualityRouteCoverage(task, fixture, {
         signal: new AbortController().signal,
       });
 
-      expect(route?.status).toBe('INCOMPLETE');
+      expect(route?.status).toBe('COVERED');
       expect(route?.probes.at(-1)).toMatchObject({
         probeId: 'Q05-retired-refusal',
         tool: 'get_symbol_source',
-        observedStatus: 'ok',
-        oracleVerdict: 'WRONG_SOURCE',
-        status: 'INCOMPLETE',
+        observedStatus: 'stale',
+        reasonCode: 'INDEX_FILE_MISSING',
+        oracleVerdict: 'CORRECT_REFUSAL',
+        status: 'COVERED',
       });
     } finally {
+      await fixture.dispose();
+    }
+  });
+
+  it('records adapter exceptions as sanitized evidence and continues to later probes', async () => {
+    const fixture = await createQualityFixture(['Q01@quality-v1'], new AbortController().signal);
+    try {
+      const task = fixture.oracleCases[0];
+      if (task === undefined) throw new Error('Q01 fixture missing');
+      let outlineCalls = 0;
+      const adapter = {
+        arm: 'N' as const,
+        invoke(tool: string) {
+          if (tool === 'get_file_outline' && outlineCalls++ === 0) {
+            return Promise.reject(new Error('private setup failure'));
+          }
+          if (tool === 'get_symbol_source') return Promise.reject(new Error('private probe failure'));
+          return Promise.resolve({
+            status: 'ok' as const,
+            results: [],
+            exposedBytes: 0,
+            sourceAdoptions: [],
+            rawDigest: 'result',
+            normalizedPublicArgs: {},
+          });
+        },
+      };
+
+      const [route] = await collectQualityRouteCoverage(task, fixture, {
+        signal: new AbortController().signal,
+        adapter,
+      });
+
+      expect(route?.probeTrace[0]).toMatchObject({
+        state: 'SETUP',
+        resultStatus: 'error',
+        reasonCode: 'ADAPTER_INVOKE_FAILED',
+      });
+      expect(route?.setupProofDigest).toMatch(/^[a-f0-9]{64}$/);
+      expect(route?.probeTrace.filter(({ state }) => state === 'CONTRACT_PROBE')).toHaveLength(2);
+      expect(route?.probes.at(-1)).toMatchObject({
+        observedStatus: 'error',
+        reasonCode: 'ADAPTER_INVOKE_FAILED',
+      });
+      expect(JSON.stringify(route?.probeTrace)).not.toContain('private setup failure');
+      expect(JSON.stringify(route?.probes)).not.toContain('private probe failure');
+    } finally {
+      await fixture.dispose();
+    }
+  });
+
+  it('returns stub navigation results only for the expected URI and coordinates', async () => {
+    const fixture = await createQualityFixture(['Q13@quality-v1'], new AbortController().signal);
+    let close: (() => Promise<void>) | undefined;
+    try {
+      const task = fixture.oracleCases[0];
+      const root = fixture.roots.single;
+      const location = task?.expectedLocations[0];
+      if (task === undefined || root === undefined || location === undefined) {
+        throw new Error('Q13 fixture missing');
+      }
+      const stubLocations = {
+        definition: [{
+          filePath: location.filePath,
+          startLine: location.line,
+          startCharacter: location.character,
+          endLine: location.line,
+          endCharacter: location.character + 6,
+        }],
+        references: [],
+        implementations: [],
+      };
+      const adapter = await createNexusAdapterForRoot(root, stubLocations);
+      close = adapter.close;
+      const signal = new AbortController().signal;
+      const valid = await adapter.invoke(
+        'get_definition',
+        { filePath: location.filePath, line: location.line, character: location.character },
+        signal,
+        { traceSequence: 1 },
+      );
+      const invalid = await adapter.invoke(
+        'get_definition',
+        { filePath: location.filePath, line: location.line, character: location.character + 1 },
+        signal,
+        { traceSequence: 2 },
+      );
+
+      expect(valid.navigation?.locations).toHaveLength(1);
+      expect(invalid.navigation?.locations).toEqual([]);
+    } finally {
+      await close?.();
       await fixture.dispose();
     }
   });

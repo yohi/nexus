@@ -90,8 +90,9 @@
 
 - Status: MEASURED
 - Evaluated queries: 4
-- Recall@10: 0.3750
+- Recall (unique related candidates; no rank limit): 0.3750
 - MRR: 0.7500
+- Recall counts unique related candidates across the full collected set; MRR uses ranked adoption evidence. Unranked relevant hits count as 0 in MRR.
 - File discovery: 0.2500
 - Symbol discovery: 0.2500
 - Irrelevant candidate rate: 0.0000
@@ -100,8 +101,9 @@
 
 - Status: MEASURED
 - Evaluated queries: 11
-- Recall@10: 0.4091
+- Recall (unique related candidates; no rank limit): 0.4091
 - MRR: 0.2727
+- Recall counts unique related candidates across the full collected set; MRR uses ranked adoption evidence. Unranked relevant hits count as 0 in MRR.
 - File discovery: 0.8333
 - Symbol discovery: 0.7500
 - Irrelevant candidate rate: 0.1111
@@ -177,8 +179,9 @@
 
 - Status: NOT_ESTABLISHED
 - Evaluated queries: 0
-- Recall@10: N/A
+- Recall (unique related candidates; no rank limit): N/A
 - MRR: N/A
+- Recall counts unique related candidates across the full collected set; MRR uses ranked adoption evidence. Unranked relevant hits count as 0 in MRR.
 - File discovery: 0.0000
 - Symbol discovery: 0.0000
 - Irrelevant candidate rate: N/A
@@ -187,8 +190,9 @@
 
 - Status: MEASURED
 - Evaluated queries: 2
-- Recall@10: 0.5000
+- Recall (unique related candidates; no rank limit): 0.5000
 - MRR: 0.0000
+- Recall counts unique related candidates across the full collected set; MRR uses ranked adoption evidence. Unranked relevant hits count as 0 in MRR.
 - File discovery: 1.0000
 - Symbol discovery: 1.0000
 - Irrelevant candidate rate: 0.0000
@@ -213,6 +217,7 @@
 - Fixture digest: `ac184f73bd82fbfea60beac11f7fa84fc2bcae880eba461ab917f34cca04c599`
 - Nexus commit: `unknown`
 - rg version: `ripgrep 15.2.0`
+- LSP evidence: STUB_ONLY
 - Run: 2026-11-27T17:52:03.746Z → 2026-11-27T17:52:19.027Z
 
 ## Expected tasks
@@ -273,8 +278,9 @@
 
 - Status: NOT_ESTABLISHED
 - Evaluated queries: 0
-- Recall@10: N/A
+- Recall (unique related candidates; no rank limit): N/A
 - MRR: N/A
+- Recall counts unique related candidates across the full collected set; MRR uses ranked adoption evidence. Unranked relevant hits count as 0 in MRR.
 - File discovery: 0.0000
 - Symbol discovery: 0.0000
 - Irrelevant candidate rate: N/A
@@ -283,8 +289,9 @@
 
 - Status: NOT_ESTABLISHED
 - Evaluated queries: 0
-- Recall@10: N/A
+- Recall (unique related candidates; no rank limit): N/A
 - MRR: N/A
+- Recall counts unique related candidates across the full collected set; MRR uses ranked adoption evidence. Unranked relevant hits count as 0 in MRR.
 - File discovery: 0.0000
 - Symbol discovery: 0.0000
 - Irrelevant candidate rate: N/A
@@ -300,3 +307,4 @@
 ## Limitations
 
 - SEMANTIC_RELEVANCE_NOT_ESTABLISHED
+- Q13 uses a stub adapter; it is not a real LSP validation.

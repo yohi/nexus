@@ -248,6 +248,37 @@ describe('buildQualityReport', () => {
     expect(markdown).not.toContain('/home/');
   });
 
+  it('states that LSP results are stub-only and distinguishes unbounded Recall from ranked MRR', () => {
+    const report = buildQualityReport(
+      ['Q13-definition'],
+      [],
+      [],
+      { ...baseMetadata, profile: 'quality-lsp-v1', lspEvidence: 'STUB_ONLY' },
+    );
+    const markdown = renderQualityMarkdown(report);
+
+    expect(markdown).toContain('LSP evidence: STUB_ONLY');
+    expect(markdown).toContain('Q13 uses a stub adapter; it is not a real LSP validation.');
+    expect(markdown).toContain('Recall (unique related candidates; no rank limit)');
+    expect(markdown).toContain('MRR uses ranked adoption evidence.');
+    expect(markdown).toContain('Unranked relevant hits count as 0 in MRR.');
+  });
+
+  it('escapes pipe characters and line breaks in reason-code table cells', () => {
+    const route = {
+      ...makeRoute('Q01'),
+      probes: [{
+        ...makeRoute('Q01').probes[0]!,
+        reasonCode: 'PRIVATE|DETAIL\nSECOND LINE',
+      }],
+    } as QualityRouteCoverage;
+    const report = buildQualityReport(['Q01'], [makePair()], [route], baseMetadata);
+    const markdown = renderQualityMarkdown(report);
+
+    expect(markdown).toContain('PRIVATE\\|DETAIL<br>SECOND LINE');
+    expect(markdown).not.toContain('PRIVATE|DETAIL\nSECOND LINE');
+  });
+
   it('reports zero-candidate evaluated query with known golden as measured zero rates', () => {
     const discovery = Object.freeze({
       evidenceStatus: 'EVALUATED' as const,
